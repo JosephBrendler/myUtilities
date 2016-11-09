@@ -1,0 +1,512 @@
+#!/bin/bash
+# Standardized Gentoo update sequence, implemented as interactive
+#   script with "resume" functionality
+# Author: Joe Brendler 23 Jan 2011
+# Rev 31 Dec 12 - ver 3.0 added package cleaning w/ eclean-pkg if applicable
+# Rev 24 Feb 13 - ver 3.1 made "emerge --depclean" interactive by adding options "-av"
+# Rev 21 Jul 13 - ver 3.2 removed lafilefixer and changed "revdep-rebuild -p" (obsoleted by portage improvements)
+# Rev 9 Feb 14 - ver 4.0 added binary package support (for embedded, e.g. raspberryPi)
+# Rev 2 Mar 14 - ver 4.1-4.2.2 bugfixes and improvement to check news, maintain configs, and add log entry
+# Rev 22 Mar 14 - ver 4.2.3 bugfix for maintain configs
+# Rev 11 May 14 - ver 4.2.4 bugfix for maintain /usr/share/config configs
+# Rev 26 May 14 - ver 4.2.5 add aesthetics of prog name and build in each step
+# Rev 27 Jul 14 - ver 4.2.6 bugfix (display $BUILD)
+# Rev 17 Aug 14 - ver 4.3.0 added --exclude <atom> option
+# Rev 16 Oct 14 - ver 4.3.1 added --with-bdeps=y to default options OPTS2
+#                           also bugfix compound arg processing and sanity checks
+# Rev 1 Dec 15 - ver 4.3.3 changed from emerge --sync to emerge-webrsync to support gpg source tree authentication
+#     26 Dec 15 - .a fixed typo; turned off DEBUG
+# Rev 14 May 16 - ver 4.3.4 changed to selectable emerge --sync or emerge-webrsync
+# Rev 23 Sep 16 - ver 4.4.0 added --binpkg-respect-use=y by default, and fixed isues with whitespace and multiple args for --exclude
+#
+# Source the variable assignments made in update-sequence.conf (/etc/ overrides pwd)
+#   This will supercede/modify the default assignments made below
+CONF_DIR="defaults"
+[[ -e update-sequence.conf ]] && . update-sequence.conf && CONF_DIR=$PWD"/update-sequence.conf"
+[[ -e /etc/update-sequence.conf ]] && . /etc/update-sequence.conf && CONF_DIR="/etc/update-sequence.conf"
+
+# User-defined variables - modify according to your system
+# SCRIPT_DIR is the directory in which you have placed
+#   this script and the show-elogs script
+[ -z "$SCRIPT_DIR" ] && SCRIPT_DIR="/usr/local/sbin/"    # must end with '/'
+
+# STATUS_FILE is the name of the status file
+#   generated and used by this script.  Provide the complete pathname
+[ -z "$STATUS_FILE" ] && \
+    STATUS_FILE="/root/bin/update-sequence-status" || \
+    STATUS_FILE=$STATUS_FILE
+
+# SYNC_TS is the pathname of the file the timestamp of which will
+#   be checked to determine how long it's been since the portage
+#   tree was last sync'd
+[ -z "$SYNC_TS" ] && SYNC_TS="/usr/portage/metadata/timestamp.chk"       # emerge --sync timestamp
+
+# SYNC_CMD is the command used to sync the portage tree
+#[ -z "$SYNC_CMD" ] && SYNC_CMD="WEBRSYNC"       # emerge-webrsync
+[ -z "$SYNC_CMD" ] && SYNC_CMD="SYNC"       # emerge --sync
+
+# MAX_AGE is the maximum time in hours since last sync before this script
+#   will automatically choose to emerge --sync
+[ -z "$MAX_AGE" ] && MAX_AGE=24
+
+# ELOG_DIR is the location of elog files
+[ -z "$ELOG_DIR" ] && ELOG_DIR="/var/log/portage/elog/"
+
+# --- source common functions and variables --------------------
+source /usr/local/sbin/script_header_joe_brendler
+
+# --- Define local variables -----------------------------------
+DEBUG="true"
+#DEBUG="false"
+
+BUILD="4.4.0 (20160923)"
+
+step=1
+laststep=5
+continue="y"
+RESUME="no"
+GO_AHEAD="no"
+SYNC="no"
+USEPKG="no"
+USEPKGONLY="no"
+GETBINPKG="no"
+GETBINPKGONLY="no"
+KEEPGOING="no"
+EXCLUDE=""
+
+# Array of messages used to announce each step
+step_message[1]="update-sequence-"$BUILD" step 1 - Sync and Emerge Updates"
+step_message[2]="update-sequence-"$BUILD" step 2 - Review news and Maintain Config Files"
+step_message[3]="update-sequence-"$BUILD" step 3 - Review elogs"
+step_message[4]="update-sequence-"$BUILD" step 4 - Handle Dependencies"
+step_message[5]="update-sequence-"$BUILD" step 5 - Final Cleanup"
+step_message[6]='update-sequence-'$BUILD' step 6 - Update Sequence Complete.  Enter "y" to exit'
+
+
+# --- function blocks ------------------------------------------
+
+
+sanity_check()
+{
+# veryfy the sanity of the combination of arguments on the command line
+[ "$SYNC" = "yes" ] && [ "$RESUME" = "yes" ] && \
+   E_message "Nonsensical option combination: sync and resume" && \
+   useage && exit 1
+
+[ "$SYNC" = "yes" ] && [ "$GO_AHEAD" = "yes" ] && \
+   E_message "Dangerous option combination: sync and go_ahead" && \
+   E_message "(you should never merge packages blindly, please check first)" && \
+   useage && exit 1
+
+# if both remote/local and local-only are set local-only should over-ride
+[ "$GETBINPKG" == "yes" ] && [ "$GETBINPKGONLY" == "yes" ] && GETBINPKG="no"
+[ "$USEPKG" == "yes" ] && [ "$USEPKGONLY" == "yes" ] && USEPKG="no"
+
+}
+
+process_command_line()
+{
+# process command line arguments (for now only -x/--exclude option can have argument(s))
+last=""
+[ "$DEBUG" == "true" ] && message "processing command line with argument(s): [ ${*} ]"
+# shift each argument into position $1 and examine it
+#   process the argument or processit with its own arguments
+while [ ! -z "$1" ]
+do
+  [ "$DEBUG" == "true" ] && message "arg1 = [ $1 ]"
+  # if arg begins with a single dash, process it alone
+  if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ]
+  then
+    [ "$DEBUG" == "true" ] && message "processing [ $1 ] alone as single-dash argument"
+    process_argument $1
+    shift
+  # if arg begins with a double dash, process it alone if it is not --exclude
+  elif [ "${1:0:2}" == "--" ] && [ "$1" != "--exclude" ]
+  then
+    [ "$DEBUG" == "true" ] && message "processing [ $1 ] alone as double-dash non-exclude argument"
+    process_argument $1
+    shift
+  # if arg begins with a double dash, and it is --exclude,
+  #   then process it with its own agruments (identified by no leading - or --)
+  elif [ "${1:0:2}" == "--" ] && [ "$1" == "--exclude" ]
+  then
+    [ "$DEBUG" == "true" ] && message "processing [ $1 ] as --exclude, with own args:"
+    tmp_cmd=$1
+    tmp_args=""
+    shift
+    while [ ! -z "$1" ]
+    do
+      if [ "${1:0:1}" != "-" ]
+      then
+        [ "$DEBUG" == "true" ] && message "adding [ $1 ] to tmp_args:"
+        # formulate this so as to preserve internal white space between multiple exclude atoms, but to not add extra whitespace
+        [ -z "${tmp_args}" ] && tmp_args=${1} || tmp_args="${tmp_args} ${1}"
+      else
+        [ "$DEBUG" == "true" ] && message "non-argument [ $1 ], exiting"
+        exit
+      fi
+      shift
+    done
+    [ "$DEBUG" == "true" ] && message "processing [ $tmp_cmd \"$tmp_args\" ]"
+    process_argument $tmp_cmd "$tmp_args"
+  else
+    # bogus argument
+    [ "$DEBUG" == "true" ] && message "bogus argument [ $1 ]"
+    E_message "${E_BAD_ARGS}" && useage && exit 1
+  fi
+done
+sanity_check
+}
+
+process_argument()
+{
+EXCLUDE=""
+[ "$DEBUG" == "true" ] && message "about to process argument(s): [ $* ]"
+[ "$DEBUG" == "true" ] && message "1: [ $1 ], 2: [ $2 ]"
+# process command line argument (must be one of the following)
+[ ! -z "$1" ] && case "$1" in
+    "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
+    "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
+    "-k" | "--usepkg"        ) USEPKG="yes" ;;
+    "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
+    "-r" | "--resume"        ) RESUME="yes" ;;
+    "-s" | "--status"        ) status ; exit 0 ;;
+    "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
+    "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
+    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
+    "-y" | "--sync"          ) SYNC="yes" ;;
+    "-Z" | "--keep-going"    ) KEEPGOING="yes" ;;
+    "-h" | "--help"          ) useage ; exit 0 ;;
+    *                        ) process_compound_arg $1 ;;
+esac
+
+}
+
+process_compound_arg()
+{
+# must begin with a single dash
+[ ! "${1:0:1}" = "-" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+# must not begin with two dashes (would have been picked in process_argument)
+[ "${1:0:2}" = "--" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+# strip leading dash(es)
+myargs=${1##-}
+# handle remaining characters in sequence
+while [ -n "${myargs}" ]
+do
+    #handle first char
+    case ${myargs:0:1} in
+        "g") GETBINPKG="yes" ;;
+        "G") GETBINPKGONLY="yes" ;;
+        "k") USEPKG="yes" ;;
+        "K") USEPKGONLY="yes" ;;
+        "r") RESUME="yes" ;;
+        "w") WITH_BDEPS_Y="yes" ;;
+        "Y") GO_AHEAD="yes" ;;
+        "y") SYNC="yes" ;;
+        "Z") KEEPGOING="yes" ;;
+        *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
+    esac
+    #strip first char from myargs
+    myargs=${myargs:1}
+done
+
+}
+
+useage()
+{
+   echo -e $BGon"Useage: update-sequence [option]"$Boff
+   echo -e " Command line options:"
+   echo -e "  "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
+   echo -e "  "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
+   echo -e "  "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
+   echo -e "  "$BBon"[-K | --usepkgonly]"$Boff".......use local binary packages only"
+   echo -e "  "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next step"
+   echo -e "  "$BBon"[-s | --status]"$Boff"...........print next step in update sequence"
+   echo -e "  "$BBon"[-w | --WITH_BDEPS_Y]"$Boff".....emerge with build-time dependencies"
+   echo -e "  "$BBon"[-x | --exclude <atom>]"$Boff"...exclude <atom> from emerge"
+   echo -e "  "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
+   echo -e "  "$BBon"[-Y | --go-ahead]"$Boff".........automatically continue to next steps"
+   echo -e "  "$BBon"[-Z | --keep-going]"$Boff".......on emerge failure, try to keep emerging other packages"
+   echo -e "  "$BBon"[-h | --help]"$Boff".............print this text"
+   echo
+   echo -e "  "$BYon"Notes: "$Boff
+   echo -e "  "$BYon" 1)"$Boff" --status and --resume both identify the next step"
+   echo -e "    (which is the last successfully completed step + 1)"
+   echo -e "  "$BYon" 2)"$Boff" --sync is set automatically if portage tree is older"
+   echo -e "    than MAX_AGE (set in update-sequence.conf)"
+   echo -e "  "$BYon" 3)"$Boff" option(s) -[k|K|g|G] function as explained in gentoo binary package guide:"
+   echo -e "    https://wiki.gentoo.org/wiki/Binary_package_guide"
+   echo
+}
+
+status()
+{
+    read step < ${STATUS_FILE}
+    echo "next step: ${step_message[${step}]}"
+    echo
+}
+
+display_config()
+{
+message "Using configuration data below: "
+echo "Configuration: "${CONF_DIR}
+echo "SCRIPT_DIR: "${SCRIPT_DIR}
+echo "STATUS_FILE: "${STATUS_FILE}
+echo "SYNC_TS: "${SYNC_TS}
+echo "MAX_AGE: "${MAX_AGE}
+echo "SYNC: "${SYNC}
+echo "RESUME: "${RESUME}
+echo "GO_AHEAD: "${GO_AHEAD}
+echo "USEPKG: "${USEPKG}
+echo "USEPKGONLY: "${USEPKGONLY}
+echo "GETBINPKG: "${GETBINPKG}
+echo "GETBINPKGONLY: "${GETBINPKGONLY}
+echo "WITH_BDEPS_Y: "${WITH_BDEPS_Y}
+echo "KEEPGOING: "${KEEPGOING}
+echo "EXCLUDE: "${EXCLUDE}
+}
+
+check_timestamp()
+{
+    # compute age in hours of timestamp on file passed as argument
+    # set $SYNC flag to "yes" if timestamp is older than $MAX_AGE allows
+    SPM=60   # seconds per minute
+    MPH=60   # minutes per hour
+    agehours=$(( $(( $(date -u +%s) - $(date -u -r $1 +%s))) / $SPM / $MPH ))
+    #if it's old, set SYNC flag
+    message "Portage tree last sync'd $agehours hours ago"
+    [ "$SYNC" = "yes" ] && \
+        message "option: sync set by command line" || \
+        message "option: sync not set by command line"
+    if [ $agehours -gt $MAX_AGE ] 
+    then
+        if [ "$GO_AHEAD" = "yes" ]
+        then
+            # sanity-check: unwise to go-ahead immediately after sync 
+            #  without checking what will be merged
+            E_message "You selected option: go-ahead " && \
+            E_message "but you also set MAX_AGE: $MAX_AGE hours in update-sequence.conf" && \
+            E_message "The latter would cause this program to sync and then auto-emerge non-interactively" && \
+            E_message "(you should never merge packages blindly, please check first)" && \
+            useage && exit 1
+        else
+            SYNC="yes" && \
+            message "portage tree sync required by MAX_AGE ($MAX_AGE hours) set in update-sequence.conf"
+        fi
+    else
+        message "portage tree sync not required by MAX_AGE ($MAX_AGE hours) set in update-sequence.conf"
+    fi
+}
+
+emerge_sync()
+{
+    # check to see if portage tree is up to date
+    # if timestamp of last emerge --sync is old, do a new one
+    check_timestamp "$SYNC_TS"
+    [ "$SYNC" = "yes" ] && \
+        if [ "$SYNC_CMD" = "WEBRSYNC" ]
+        then
+            message "Running emerge-webrsync... " && emerge-webrsync
+        else
+            if [ "$SYNC_CMD" = "SYNC" ]
+            then
+                message "Running emerge --sync... " && emerge --sync
+            else
+              E_message "Error: invalid sync option [ $SYNC_CMD ]"
+              return 1
+            fi
+        fi
+    return 0
+}
+
+emerge_updates()
+{
+    # assemble the emerge option string and message
+    OPTS1="uvDN"
+    OPTS2=""
+    MSG="emerging updates"
+    if [ ! "${GO_AHEAD}" = "yes" ]
+    then
+        OPTS1="a"${OPTS1}
+        MSG=${MSG}" interactively"
+    else
+        MSG=${MSG}" non-interactively"
+    fi
+    [ "${USEPKG}" == "yes" ] && OPTS1=${OPTS1}"k"
+    [ "${USEPKGONLY}" == "yes" ] && OPTS1=${OPTS1}"K"
+    [ "${GETBINPKG}" == "yes" ] && OPTS1=${OPTS1}"g"
+    [ "${GETBINPKGONLY}" == "yes" ] && OPTS1=${OPTS1}"G"
+    [ "${KEEPGOING}" == "yes" ] && OPTS2=${OPTS2}" --keep-going"
+    [ "${WITH_BDEPS_Y}" == "yes" ] && OPTS2=${OPTS2}" --with-bdeps=y"
+
+    # add --binpkg-respect-use=y universally (for now anyway)
+    OPTS2=${OPTS2}" --binpkg-respect-use=y"
+
+    # if we have an exclude, put it on the end of the command line
+    [ ! -z "${EXCLUDE}" ] && OPTS2=${OPTS2}" --exclude "${EXCLUDE}
+
+    MyCMD="emerge -"${OPTS1}" world${OPTS2}"
+    MSG="${MSG} [${BRon} ${MyCMD}${Boff} ] per command line options..."
+#    MSG=${MSG}" [${BRon} emerge -"${OPTS1}" world${OPTS2} ${Boff}] per command line options..."
+    message "${MSG}"
+    ${MyCMD} && return 0
+#    emerge -${OPTS1} world ${OPTS2} && return 0
+
+    return 1
+}
+
+show_news()
+{
+    # display any news...
+    message "The following news has been generated:"
+    eselect news read new
+    echo
+}
+
+maintain_config_files()
+{
+    # run dispatch-conf to maintain configs, if this is necessary
+    # if the optional go-ahead flag is set, skip this (remind user later)
+    if $( [[ -z "$(find /etc/ -iname '*._cfg***')" ]] && \
+       [[ -z "$(find /usr/share/config/ -iname '*._mrg***')" ]] )
+    then
+        message "No config files need maintenance."
+    else
+        if [ ! "$GO_AHEAD" = "yes" ]     # note: use of the GO_AHEAD option will cause this step to be skipped
+        then
+            message "Launching dispatch-conf to maintain the following config files:"
+            echo $(find /etc/ -iname '*._cfg***')
+            dispatch-conf
+        fi  # not go_ahead
+    fi  # find/not-find
+    echo
+    return 0
+}
+
+showelogs()
+{
+    # run show-elogs script to apply important steps from emerge notes
+    # if the optional go-ahead flag is set, skip this (remind user later)
+    message "Running show-elogs -l | less ..." && [ "$GO_AHEAD" = "no" ] && ${SCRIPT_DIR}show-elogs -l | less && return 0 || return 1
+}
+
+handle_dependencies()
+{
+    echo && message "Running emerge -av --depclean ..." && emerge -av --depclean
+    echo && message "Running emerge @preserved-rebuild ..." && emerge @preserved-rebuild
+    echo && message "Running revdep-rebuild -p ..." && revdep-rebuild -p
+    # recommend you run revdep-rebuild again if it had to
+    #   emerge something to fix dependencies
+    # TO DO: check if that's the case and ask this only if so
+    [ "$GO_AHEAD" = "no" ] && \
+    echo -en $BYon"would you like to run revdep-rebuild again, for action? (y/n) "$Boff && \
+    read rerun && echo || \
+    rerun="y"
+    case $rerun in
+        "y") revdep-rebuild ;;
+        *) ;; # do nothing
+    esac
+    echo && message "Double-checking configuration files now ..." && maintain_config_files
+    return 0
+}
+
+final_cleanup()
+{
+    # clean un-needed package and distribution files, run localepurge
+    [ -d "/usr/portage/packages" ] && message "Running eclean-pkg ..." && eclean-pkg
+    message "Running eclean-dist -d ..." && eclean-dist -d && \
+    message "Running localepurge ..." && localepurge && \
+    return 0
+}
+
+ask_continue()
+{
+    # prompt to determine if or how to continue
+    # y = continue to next step, n = stop now, g = go ahead through all remaining steps non-interactively
+    continue="x"
+    while [[ ! `echo ${continue:0:1} | sed 's/^[yngYNG]*//' | wc -c` -eq 1 ]]
+    do
+        echo -en $BGon"*"$Boff" continue to ${step_message[${step}]} (y), stop (n), or go ahead through (g)? [Y/n/g] :" && \
+        read continue && echo
+        # if the response is "g" then set the GO_AHEAD flag and continue; if null apply default (y)
+        case ${continue:0:1} in
+            "g" | "G" ) GO_AHEAD="yes" && continue="y" ;;
+            ""        ) continue="y" ;;
+            "y" | "Y" ) continue="y" ;;
+        esac
+    done
+
+}
+
+# --- start main script ---------------------------------------------------------
+
+# display script kick-off separator
+separator "update-sequence-${BUILD}"
+
+# process command line to set and check sanity of option flags
+process_command_line $*
+
+# must be root
+message "Checking root UID... "&& checkroot
+
+# display config variables from update-sequence.conf and option flags from command line
+display_config
+
+# if resuming, retrieve number of next step to be performed from status file
+[ "$RESUME" = "yes" ] && read step < $STATUS_FILE
+
+# proceed thru each step, as allowed to continue, until complete
+while [ "$continue" = "y" ] && [ "$step" -le "$laststep" ]
+do
+    separator "${step_message[$step]}"
+    case $step in
+        "1") emerge_sync ;
+             emerge_updates && echo -e $BGon"OK"$Boff  ;;
+        "2") show_news ;
+             maintain_config_files && echo -e $BGon"OK"$Boff ;;
+        "3") showelogs && echo -e $BGon"OK"$Boff ;;
+        "4") handle_dependencies && echo -e $BGon"OK"$Boff ;;
+        "5") final_cleanup && echo -e $BGon"OK"$Boff ;;
+    esac
+    message "Successfully completed: ${step_message[${step}]}"
+    let "step += 1"
+    echo $step > $STATUS_FILE
+    # determine whether or how to proceed to next step
+    case $GO_AHEAD in
+        "yes") continue="y" ;;
+        "no")  ask_continue ;;
+    esac
+done
+
+# if go-ahead flag was set, remind user
+if [ "$GO_AHEAD" = "yes" ]
+then
+    message "You ran update sequence with option: go-ahead."
+fi
+
+# if go-ahead flag was set and new configs are pending, tell user
+if [ "$GO_AHEAD" = "yes" ]
+then
+    if [[ ! -z "$(find /etc/ -iname '*._cfg***')" ]] || \
+       [[ ! -z "$(find /usr/share/config/ -iname '*._mrg***')" ]]
+    then
+        E_message 'You have updated config files pending. You should run "dispatch-conf"'
+        E_message "found the following pending config file updates:"
+        echo $(find /etc/ -iname '*._cfg***')
+    fi # found configs
+fi  # go_ahead
+
+# if go-ahead flag was set and new elogs resulted from updates, tell user
+if [ "$GO_AHEAD" = "yes" ]
+then
+    for x in $(ls $ELOG_DIR | cut -d":" -f 3 | cut -d"-" -f 1 | sort -nu); do : ; done && \
+    [ "$x" = "$(date -u +%Y%m%d)" ] && \
+    E_message 'update-sequence produced new elogs.  You should run "show-elogs"'
+fi
+
+echo && message "Don't forget rebuild modules if needed\n\temerge @[x11-]module-rebuild\n"
+
+/usr/bin/logger -p cron.notice "update-sequence complete."
+msg="Logged and done at: "$(date +"%T %Z, %d %B %Y.")
+message "$msg"
+exit 0
