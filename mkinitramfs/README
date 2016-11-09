@@ -1,0 +1,142 @@
+Basic initramfs setup instructions
+References:
+#   http://en.gentoo-wiki.com/wiki/Custom_Initramfs
+#   http://en.gentoo-wiki.com/wiki/Root_filesystem_over_LVM2,_DM-Crypt_and_RAID
+#   http://www.gentoo.org/doc/en/lvm2.xml
+#   http://en.gentoo-wiki.com/wiki/Booting_encrypted_system_from_USB_stick
+#   http://jkroon.blogs.uls.co.za/it/security/encrypted-harddrive-gentoo
+#   http://blog.infion.de/archives/2007/05/15/Full-disk-encryption-with-LUKS-on-new-notebook/
+
+0.  boot from live or minimal CD, and (as root) use e.g. fdisk, to create at 
+least two partitions on your to-be-encrypted drive.  (a few 100M for /boot and 
+the rest for your encrypted LVM.)
+   - Initialize the to-be-encrypted drive with random data to 
+increase security (makes it harder to identify the presence of the encrypted
+structure) - "#dd if=/dev/urandom of=/dev/sda2"  
+   - Then format and encrypt sda2 
+with "cryptsetup -y -c aes-cbc-essiv:sha256 -s 256 luksFormat /dev/sda2"  
+   - This will prompt you for a passphrase to secure the key (don't lose it)
+   - open your encrypted partition with "cryptsetup luksOpen /dev/sda2 eda2"
+     (where /dev/sda2 is <device> and eda2 is <name> cryptsetup assigns to it 
+      for devicemapper - produces /dev/mapper/<name> device node, but you
+      won't need to refer to that)
+   - with lvm, create your volume group and logical volume structure
+      -- "# pvcreate /dev/mapper/root " (creates the pv "root")
+      -- "# vgcreate lvm /dev/mapper/root" (creates vg "lvm")
+      -- "# lvcreate -L1G -nswap lvm" (creates 1G lv for swap in vg "lvm"
+         (repeat with appropriate size and name for e.g.
+           root, usr, var, home, opt, tmp)
+   - create filesystems in these volumes with standard fs tools, e.g.
+       "# yes | for i in /dev/lvm/*; do mkfs.reiserfs $i; done
+        # mkswap -v1 /dev/lvm/swap
+        # swapon /dev/lvm/swap"
+   - create filesystem in your boot partition, too
+        "# mkfs.ext2 /dev/sda1"
+
+   - Now mount your root volume with "mount /dev/mapper/lvm-root /mnt/gentoo"
+   - and proceed with installation per the gentoo handbook for your 
+     architecture
+
+   ** Note: if (and it's likely) you need to access your encrypted drive before 
+      your initramfs is fully functional, you can boot from the CD again and access
+      as follows:
+      "# cryptsetup luksOpen /dev/sda2 eda2
+       # vgscan
+       # vgchange -a y
+       # mount /dev/mapper/lvm-root /mnt/gentoo
+       (then chroot as normal and continue installation/configuration)
+
+   ** Note: if you plan to use a key-file (say, on a usb drive) to access your 
+system w/o having to supply a passphrase, you can add this key to your system 
+as follows:
+       # cryptsetup luksDump /dev/sda2
+       (copy and paste the "salt" string from the output
+        # salt="<paste-here>"
+        this is an initialization vector for the following.)
+       # hashalot -s "$salt" -x -n32 "ripemd160" > mykeyfilepath
+       (copy this file to usb device and specify the location in init.conf
+        - see below)
+       # cryptsetup luksAddKey /dev/sda2 mykeyfilepath
+       (this adds your key to the next open key slot for your device)
+       (Note: the current init script assumes this is slot 1 and that you still 
+have your passphrase key in slot 0 - recommend you keep the passphrase there as 
+a fall-back so you can access the system even if you've lost/destroyed your usb 
+device)
+       
+Next, build your initramfs - you can either build it into your 
+kernel, or as a separate cpio.gz compressed archive.
+
+1.  configure your kernel -- the basic principle is that you need to compile
+into the kernel anything that it will need at boot time 
+(before modules are loaded).  It is possible to extend the work on this 
+initramfs instruction to build your own module loader, but I'm not doing that
+here.  (see http://en.gentoo-wiki.com/wiki/Custom_Initramfs if you're interested)
+Here are the basic kernel requirements for initramfs supporting LUKS and LVM:
+# make menuconfig
+CONFIG_BLK_DEV_INITRD=y
+
+(optional) CONFIG_INITRAMFS_SOURCE="/usr/src/initramfs"
+
+[*] Initial RAM fs & RAM disk
+(0) Userid
+(0) Groupid
+
+CONFIG_BLK_DEV_RAM=y
+CONFIG_CRAMFS=y
+
+<*> Device Mapper Support
+[ ] Device Mapper Debugging
+<*> Crypt Target Support
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_CRYPT=y
+
+<*> SHA1
+<*> SHA224 & 256
+<*> XTS
+<*> AES
+
+CONFIG_CRYPTO_SHA1=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_XTS=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_x86=y    (etc - to match your arch)
+
+2. build your initramfs
+Start by copying this directory (mkinitramfs) to /usr/src/.  Then cd to that
+location and edit the cryptab and init.conf files to match your configuraton.
+Detailed instructions are in each file regarding each of the possible
+configuration settings.  Then build the initramfs source tree as follows:
+# rm -r ../initramfs
+# ./mkinitramfs.sh  # <--- this script will auto-generate ../initramfs per your config
+Note: the mkinitramfs script will confirm you have the most basic components 
+that it will need, or it will prompt you to emerge them.  
+*** You must have busybox installed with USE=static ***
+*** You must also have cryptsetup and lvm2, but you can no longer install 
+cryptsetup or lvm2 as static binaries.  Therefor, the mkinitramfs script will 
+now install the dynamic binaries and discover and install all of the 
+necessary dynamically linked libraries upon which your basic programs will 
+depend.
+
+Next, ensure your boot device is mounted and create the compressed archive 
+of the initramfs as follows:
+# cd ../initramfs
+# mount /dev/<your-boot> /boot
+# ./makeinitramfs  # <--- this script will create the compressed archive and 
+                          copy it to /boot/my-initramfs.cpio.gz
+Note: alternatively, you can build the initramfs into your kernel by setting:
+CONFIG_INITRAMFS_SOURCE="/usr/src/initramfs"
+and compiling your kernel
+
+3. reboot - good luck
+
+**************************************************
+The mkinitramfs.sh script will also automatically generate an initramfs that
+will support boot-splash via fbcondecor.  If you desire that functionality,
+first be aware of the following:
++ get this with one easy setting in init.conf (init_splash="yes")
++ However, there is additional kernel configuration required (not covered here.)
+  See gentoo wiki how-to documentation for splash-utils).
++ One of the required kernel settings ( CONFIG_FB_CON_DECOR=y )
+  IS NOT AVAILABLE with hardened-sources -- due to security issues.
+  So if you have HARDENED, then you CANNOT use the framebuffer console
+  decorations needed by the splash utilities --> HARDENED = no splash

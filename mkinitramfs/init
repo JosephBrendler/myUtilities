@@ -1,0 +1,466 @@
+#!/bin/sh
+#
+# /usr/src/initramfs/init
+# Joe Brendler   28 Feb 2008
+#    rev 1 Jan 2009 adding  mini_udev and separator functions
+#    rev 5 Jan 2009 adding cryptsetup of multiple volumes opened w/ key-file
+#    rev 12 Feb 2011 bugfix for new busybox shell compatibility
+#    rev 20 Feb 2011 further bugfix for busybox-v1.17.4 shell compatibility
+#        (bb sh chokes on or ignores parameter substitution like ${init_passdevice##*" "} or ${line:0:4}
+#    rev 18 Sep 2012 - modified text output format of separator, using "-[ ... ]-" instead of "-| ... |-"
+#        also fixed attempts to umount passdevice when method is "prompt" (passdevice not mounted)
+#    rev 22 Jan 2013 - mod to mount /usr volume (as reqd by udev >181
+#    rev 26 Jan 2013 - generalized filesystem for / and /usr as init.conf variables
+#    rev 31 Mar 2013 - revised mdev section consequent to new udev and busybox publication
+#    rev 21 Aug 2013 - revised to launch systemd as alt init system
+#    rev 18 Jan 2014 - lvm2-2.02.103 broke the automatic creation of device nodes for lvs,
+#        so the script fixes with vgscan --mknodes (looped until successful)
+#                    - also removed use of  gentoo's systemd (not yet ready for prime time)
+#                    - added optional use of splashutils
+#    rev 21/22 Jan 2014 - bugfixes and improved progress messaging
+#                    - added support for UUID device specification for passdevice and encrypted drives
+#    rev 14 Sep 2014 - updated as part of auto-initramfs-building process with mkinitramfs.sh and makeinitramfs.sh
+#                    - tried bugfix for init_passdevice with UUID specification [still having issues with
+#                       findfs command in busybox shell...
+#    rev 2-7 Jan 15  - bugfixes for blank lines in cryptab, simplified with script_header
+#                    - bugfix for findfs (included binary and needed libraries)
+#                    - bugfix for "mycmd" and added shred
+#
+# based on concepts and techniques in:
+#   http://en.gentoo-wiki.com/wiki/Root_filesystem_over_LVM2,_DM-Crypt_and_RAID
+#   http://www.gentoo.org/doc/en/lvm2.xml
+#   http://en.gentoo-wiki.com/wiki/Initramfs
+#   http://en.gentoo-wiki.com/wiki/Booting_encrypted_system_from_USB_stick
+#   http://jkroon.blogs.uls.co.za/it/security/encrypted-harddrive-gentoo
+#   http://blog.infion.de/archives/2007/05/15/Full-disk-encryption-with-LUKS-on-new-notebook/
+#
+#   http://en.gentoo-wiki.com/wiki/Custom_Initramfs  *** new tips as of 31 Dec 14 ***
+
+source script_header_joe_brendler
+
+#Define local variables
+#BUILD="3.2.3 20150104"  *** decided to put this in a separate file, so I don't forget to update it
+source BUILD
+
+rescue_shell() {
+    # echo a simply formatted message explaining the source of our problem
+    #   and drop to a shell
+    # arguments: string message to explain source of error
+    #
+    echo && separator "${BRon}${1} - Dropping to a shell...${Boff}" "initramfs-$BUILD"
+    splash 'verbose'
+    # pause for time to read message
+    sleep $((init_wait*3))
+    busybox --install -s
+    exec /bin/sh
+}
+
+mini_udev() {
+    # start mdev to identify devices, building nodes for them in /dev
+    #   this is still experimental
+    # arguments: none
+    # external variables: none
+    # Notes: initramfs must include the following directories
+    #    /proc/sys/kernel
+    #    /proc/partitions
+    #    /sys/class
+    #    /sbin  - with binary udevadm and link to busybox for mdev
+
+    # The simple explanation here is that you need to [1] make sure /dev is
+    # a tmpfs filesystem.  Then you want to [2] create the /dev/pts mount point
+    # and [3] mount the devpts filesystem on it. Then [4] you want to have /sys
+    # mounted before executing mdev. (these steps handled before call to mini_udev)
+    # Then you [5] instruct the kernel to execute /sbin/mdev whenever
+    # a device is added or removed so that the device node can be created or
+    # destroyed.  Then you [6] seed /dev with all the device nodes that were created
+    # while the system was booting.
+
+    sysctl -w kernel.hotplug=/sbin/mdev
+    mdev -s || E_message ${BRon}"mdev failed to start"${Boff}
+}
+
+unlock_devices() {
+    # unlock the encrypted device(s) identified in cryptab using a passphrase
+    #   which may either be read from a file (e.g. on a removable device such
+    #   as a usb "thumb" drive) or from the terminal as determined by associated
+    #   values in init.conf
+    # arguments: none
+    # external variables: all variables must be set in the shell calling this function
+
+    # determine the method (prompt or keyfile) to use to unlock device(s)
+    if [[ -z "$init_passdevice" ]]
+    then
+        # no passdevice specified - user to be prompted for password
+        method="prompt"
+        message "No passdevice specified - using prompt method..."
+    else
+        # check key file
+        if [[ -z "$init_keyfile" ]]
+        then
+            # no keyfile specified - user to be prompted for password
+            method="prompt"
+            message "passdevice specified, but no keyfile specified - using prompt method..."
+        else
+            method="prompt"
+            # $init_passdevice includes both the device and mount point.
+            #   we need both for the mount command and only the mount point
+            #   in conjunction with the full keyfile path for the keyfile existence test
+            # Note that the test in the command chain below looks for the key-file itself.
+            #   Thus, method remains "prompt" unless the key-file exists
+            #     <device>  <mountpoint>    <mountpoint><file-path-w/in-mountpoint>
+            [ "$init_DEBUG" == "true" ] && \
+                message "Debug: about to execute command: mount -t ${init_passdevice_fs} ${init_passdevice} ${init_passdevice_mount_point}" && \
+                sh_countdown 6
+            mount -t "${init_passdevice_fs}" "${init_passdevice}" "${init_passdevice_mount_point}" && \
+                message "Successfully mounted init_passdevice: ${init_passdevice} on ${init_passdevice_mount_point}" || \
+                message $BRon"Failed to mount init_passdevice: ${init_passdevice} on ${init_passdevice_mount_point}"$Boff
+            if [[ -e $(echo "${init_passdevice_mount_point}${init_keyfile}") ]]
+            then
+                method="key"
+                message "$(echo ${init_passdevice_mount_point}${init_keyfile}) exists - using automatic keying method..."
+            else
+                E_message $BRon"Keystore $(echo ${init_passdevice_mount_point}${init_keyfile}) does not exist - reverting to prompt method..."$Boff
+            fi
+        fi
+    fi
+
+    # if method is "prompt" get passphrase from user
+    [[ "$method" = "prompt" ]] && read -s -p "Enter your LUKS passphrase: " pass && echo
+
+    # parse cryptab file and unlock the devices identified there, using the method identified above
+    while read line
+    do
+        # substitute a single space for repeated spaces in line
+        line=$(echo "$line" | sed 's/[ ]\+/ /g')
+        [ "$init_DEBUG" == "true" ] && message "Debug: Line = [$line]"
+
+        # confirm $line is a device node path or a UUID specification, and then open it accordingly
+        # case blocks start with "xxx" ) and contain commands each terminated by ";"
+        #   - block terminated with line ending ";;"
+        #   Note: bb sh ignores ${x:start:len}, so use echo $x| cut -c1
+        case $(echo "$line" | cut -c1 ) in
+            "#")
+                # This is a comment line - ignore it
+                DEVTYPE="comment";
+                ;;
+            "/")
+                # This might be a /dev line - check it // note: ${x:start:len} doesn't work use | cut -d"/" -f2
+                # Then check if this device exists
+                [[ "$(echo $line | cut -d'/' -f2)" = "dev" ]] && \
+                [[ -b $(echo "$line" | cut -d" " -f1) ]] && DEVTYPE="dev" || DEVTYPE="invalid";
+                ;;
+            "U")
+                # This might be a UUID line - check it // note: ${x:start:len} doesn't work - use | cut -d"=" -f1
+                # Then check if findfs will return a device node path for this UUID
+                # If so, reformat the $line to be used as last two arguments by cryptsetup luksOpen
+                [[ "$(echo $line | cut -d'=' -f1)" = "UUID" ]] && \
+                dev_node_path='';
+                dev_node_path="$(findfs $(echo $line | cut -d' ' -f1))" && \
+                  message "findfs returned: $dev_node_path" || \
+                  E_message $BRon"Error: findfs command failed"$Boff;
+                old_line="$line";
+                [[ ! "$dev_node_path" == "" ]] && line="$dev_node_path $(echo $line | cut -d' ' -f2)" && \
+                  message "Substituted [$line] for [$old_line]" && \
+                  DEVTYPE="UUID" || DEVTYPE="invalid";
+                ;;
+            *  )
+                # This is an invalid line - either blank (note $line unquoted) or invalid device specification
+                [[ -z $line ]] && DEVTYPE="blank" || DEVTYPE="invalid";
+                ;;
+        esac
+
+        # comment on device type determined from parsing cryptab line, verbosity depending on $DEBUG boolean
+        [ "$init_DEBUG" == "true" ] && message "debug: parsing cryptab line -- handling type: [ $DEVTYPE ]"
+        [[ ! "$DEVTYPE" == "comment" ]] && [[ ! "$DEVTYPE" == "blank" ]] && \
+        [ ! "$init_DEBUG" == "true" ] && message "parsing cryptab line -- handling type: [ $DEVTYPE ]"
+        [ "$init_DEBUG" == "true" ] && [ ! "$DEVTYPE" == "comment" ] && sh_countdown 5
+
+        if [[ "$DEVTYPE" == "dev" ]] || [[ "$DEVTYPE" == "UUID" ]] # valid device specifications
+        then
+            message "unlock method: $method"
+            case "$method" in
+                "prompt")
+                    echo "echo $pass | /sbin/cryptsetup luksOpen $line" > mycmd;
+#                    echo "echo \"$pass\" | /sbin/cryptsetup luksOpen $line" > mycmd;
+#                    echo 'echo "$pass" | /sbin/cryptsetup luksOpen $line' > mycmd;
+                    chmod 777 mycmd;
+                    [ "$init_DEBUG" == "true" ] && message "about to execute from file ./mycmd:" && \
+                        message "[ $(cat mycmd) ]" && sh_countdown 10;
+                    ./mycmd;
+                    if [ $? -eq 0 ]
+                    then
+                        message "Unlocked $line with passphrase provided"
+                    else
+                        E_message "${BRon}mycmd failed. Dropping to a shell. ${Boff}"
+                        sh_countdown 20
+                        rescue_shell
+                    fi;
+                    [ "$init_DEBUG" == "true" ] && sh_countdown 10
+                    shred mycmd;
+                    ;;
+                "key")
+                    # passdevice already mounted,
+                    # Use cryptsetup option for key file -d <mountpoint><keyfile> and -S <key slot #>
+                    # unmount the passdevice when we are done with it
+                    message "About to execute command [ cryptsetup -d ${init_passdevice_mount_point}${init_keyfile} -S 1 luksOpen $line ]"
+                    cryptsetup -d $(echo "${init_passdevice_mount_point}${init_keyfile}") -S 1 luksOpen $line;
+                    if [ $? -eq 0 ]
+                    then  # cryptsetup luksOpen with key worked
+                        message "Unlocked $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
+                    else  # cryptsetup luksOpen with key failed
+                        E_message $BRon"Error: Could not unlock $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"$Boff
+                        E_message $BRon"Dropping to a shell"$Boff
+                        sh_countdown 20
+                        rescue_shell
+                    fi;
+                    [ "$init_DEBUG" == "true" ] && sh_countdown 10
+                    ;;
+            esac
+        elif [[ "$DEVTYPE" == "invalid" ]]
+        then  # Send an invalid line to rescue_shell
+            rescue_shell "Error: Invalid device specification in cryptab (Type: $DEVTYPE, Line: $line )"
+        elif [[ "$DEVTYPE" == "comment" ]] || [[ "$DEVTYPE" == "blank" ]]
+        then   # Ignore a comment or blank line
+            :   # null command, equivalent to asm NOP
+            [ "$init_DEBUG" == "true" ] && message "debug: cryptab line type: $DEVTYPE"
+            [ "$init_DEBUG" == "true" ] && sleep 1
+        fi
+    done < "$init_cryptab"
+
+    # unmount passdevice - unless method was "prompt" and it wasn't mounted to begin with
+    if [[ ! -z "$init_passdevice" ]] && [[ -b $(echo "${init_passdevice}") ]]
+    then
+      umount $(echo "${init_passdevice_mount_point}") && \
+        message "umount $(echo ${init_passdevice}) succeded" || \
+        E_message "${BRon}umount $(echo ${init_passdevice}) failed${Boff}"
+        [ "$init_DEBUG" == "true" ] && sh_countdown 3
+    fi
+}
+
+sub_main() {
+    # this is the main code of the init script.  It is built as a function called or not called by the
+    #   init main init script below if only single factor authentication is required --
+    #   or if two factor authentication is required, and the password check has succeded.
+
+    # mount proc, devpts, and sys
+    mount -t proc proc /proc
+#    mount -t tmpfs -o size=64k,mode=0755 tmpfs /dev
+    mount -t devtmpfs none /dev
+    [[ ! -d /dev/pts ]] && mkdir /dev/pts
+    mount -t devpts devpts /dev/pts
+    mount -t sysfs sysfs /sys
+    message "mounted /proc, /dev, /dev/pts, and /sys"
+    message "\n${BYon}NOTE: ${BRon}if using init_passdevice, ensure it is inserted and active...${Boff}"
+    sh_countdown 10
+    # uncomment to debug: wait a while to avoid trailing kernel output
+    [ "$init_DEBUG" == "true" ] && sh_countdown 10
+
+    # start udev (EXPERIMENTAL) - Note: /proc and /sys must already be mounted
+    [[ "$init_mdev_support" = "yes" ]] && separator "Starting mini udev" "initramfs-$BUILD" && \
+        mini_udev && message "mdev started" && sleep $((init_wait*3))
+
+    # parse the init_passdevice and init_passdevice_mount_point values specified
+    #   in init.conf - and prepare to chose the method by which we'll unlock the encrypted volumes
+    case $(echo $init_passdevice | cut -c1) in
+        "/" )
+            # this is a device node specification; just use it
+            message "init_passdevice was: $init_passdevice (type = device node)"
+            init_passdevice_mount_point=$(echo $init_passdevice | cut -d" " -f2)
+            init_passdevice=$(echo $init_passdevice | cut -d" " -f1)
+            message "init_passdevice is now: $init_passdevice"
+            message "init_passdevice_mount_point is now: $init_passdevice_mount_point"
+            ;;
+        "U" )
+            # this is a UUID specification; convert it
+            message "init_passdevice was: $init_passdevice (type = UUID)"
+            init_passdevice_mount_point=$(echo "$init_passdevice" | cut -d" " -f2)
+            [ "$init_DEBUG" == "true" ] && message "Debug: init_passdevice_mount_point: $init_passdevice_mount_point"
+            init_passdevice=$(echo "$init_passdevice" | cut -d" " -f1)
+            [ "$init_DEBUG" == "true" ] && message "Debug: init_passdevice: $init_passdevice"
+            init_uuid=$(echo "$init_passdevice" | cut -d"=" -f2)
+            [ "$init_DEBUG" == "true" ] && message "Debug: init_uuid: $init_uuid"
+            init_passdevice="$(findfs UUID=$init_uuid)" && \
+              message "${BGon}***${Boff} findfs UUID=$init_uuid returned: $init_passdevice" || \
+              E_message $BRon"Error: findfs command failed"$Boff
+            [ "$init_DEBUG" == "true" ] && message "Debug: init_uuid: $init_uuid"
+            [ "$init_DEBUG" == "true" ] && message "Debug: init_passdevice: $init_passdevice"
+            [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid"
+            [ "$init_DEBUG" == "true" ] && blkid
+            [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid | grep vfat"
+            [ "$init_DEBUG" == "true" ] && blkid | grep vfat
+            ;;
+        *   )
+            # this is an invalid specification
+            message "init_passdevice: $init_passdevice "$BRon"(type = invalid init_passdevice specification in init.conf)"$Boff" -- Removing..."
+            init_passdevice=""
+            ;;
+    esac
+    sleep $((init_wait*3))
+    [ "$init_DEBUG" == "true" ] && sh_countdown 10
+
+    # if init.conf indicates there is a keyfile (i.e. init_passdevice and init_keyfile strings are not null),
+    #   then wait for mdev to process its device and create the associated device node
+    if [[ -n "$init_passdevice" ]] && [[ -n "$init_keyfile" ]]
+    then
+        # (wait no more than # minutes specified by init_mdev_wait in init.conf)
+        message "Waiting [${init_mdev_wait} min] for mdev to identify $(echo ${init_passdevice} | cut -d " " -f1) ..."
+        NOW=$(date +%M)
+        seconds=$(date +%S)
+        # round the current time off to the closest minute
+        [[ ${seconds} -gt 30 ]] && NOW=$((${NOW} + 1))
+        echo "  Started at "$(date +%H:%M:%S)", ("$(date +%H)":"${NOW}")"
+        # check for existence of block device matching passdevice specification
+        # *** TBD? posibly check for /dev/by-uuid/$init_uuid instead
+        while [[ ! -b $(echo "${init_passdevice}") ]] && \
+              [[ $(date +%M) -lt $(( $(( ${NOW} + ${init_mdev_wait} )) % 60 )) ]]
+        do
+            echo -en "\r  "$(date +%H:%M:%S)
+            sleep $((init_wait))
+        done
+        echo -e "\n  Done"
+    else
+        message "No keyfile specified - proceeding without waiting for passdevice..."
+        sleep $((init_wait*3))
+    fi
+
+    # echo to console to confirm attempt to unlock HDs
+    separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
+    # call function to unlock HD(s)
+    unlock_devices
+    # uncomment to debug:
+    [ "$init_DEBUG" == "true" ] &&  sleep $((init_wait*3))
+
+    separator "Accessing logical volumes" "initramfs-$BUILD"
+    root_volume=$(lvs | awk '$1~/root/ {print $2"-"$1}')
+    usr_volume=$(lvs | awk '$1~/usr/ {print $2"-"$1}')
+    # make lvm logical volumes available
+    /sbin/vgscan
+    /sbin/vgchange -a y
+
+    # show what we've found...
+    separator "The following volume groups are available" "initramfs-$BUILD"
+    /sbin/vgs
+    separator "The following volumes are available" "initramfs-$BUILD"
+    /sbin/lvs
+    sleep $((init_wait))
+
+    # interactive stop for debugging
+    if [ "$init_interactive_pause" == "true" ]
+    then
+      ans="z"
+      while [ "$(echo `expr index "$ans" [yY]`)" -eq "0" ]
+      do
+        echo -n "Pausing, continue? "
+        read ans
+      done
+    fi
+
+    separator "Attempting to mount new root lvm..." "initramfs-$BUILD"
+    # keep scanning to make device nodes untill you succeed
+    message "Ensuring volume is available"
+    while [[ ! -b $(echo "/dev/mapper/$root_volume") ]]
+    do
+        message "checking for existence of block device /dev/mapper/$root_volume"
+        /sbin/vgscan --mknodes --ignorelockingfailure
+    done
+    message "running fsck.${init_root_fs} on /dev/mapper/$root_volume" && fsck.${init_root_fs} -p /dev/mapper/$root_volume
+    message "running fsck.${init_usr_fs} on /dev/mapper/$usr_volume" && fsck.${init_usr_fs} -p /dev/mapper/$usr_volume
+
+    # mount root - drop to shell if not locked down
+    # Note: assumes you have one and only one lvm volume which appropriately includes "root" in its name
+    mount -r -t ${init_root_fs} "/dev/mapper/"$root_volume /newroot || \
+    ( [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount root volume" )
+    mount -t ${init_usr_fs} -o defaults,noatime "/dev/mapper/"$usr_volume /newroot/usr || \
+    ( [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount usr volume" )
+
+    separator "Mounts" "initramfs-$BUILD"
+    mount
+    sleep $((init_wait*3))
+
+    umount /sys
+
+    CMDLINE=`cat /proc/cmdline`
+
+    # clean up
+    umount /proc
+    umount /dev/pts
+    umount /dev
+    umount /sys
+
+    separator "Switching root to encrypted volume" "initramfs-$BUILD"
+    message "-  Will continue with /sbin/init"
+    [[ -z $CMDLINE ]] || message "-  using cmdline: ${CMDLINE}"
+    separator "Switching to /newroot mounted on /dev/mapper/$root_volume" "initramfs-$BUILD"
+
+    # boot the real thing or exit to rescue shell if not locked down
+    exec /bin/busybox switch_root /newroot /sbin/init ${CMDLINE} || [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to pivot root"
+#    exec /bin/busybox switch_root /newroot /usr/lib/systemd/systemd ${CMDLINE} || [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to pivot root"
+}
+
+# -- not sure why this is needed - copied from livedvd ----------
+splash() {
+        return 0
+}
+
+#--------------------------------------------------------------------------------------------------------------
+# main section of init script
+
+# source the variable assignments made in init.conf
+. init.conf
+
+# wait for normal trailing kernel output expected at this point
+sleep $((init_wait*8))
+
+# start the splash screen
+if [[ "${init_splash}" == "yes" ]] && [[ -e /etc/initrd.splash ]]
+then
+    . /etc/initrd.splash && message "Sourced initrd.splash"
+else
+    message "No splash."
+fi
+[ "$init_DEBUG" == "true" ] &&  sleep $((init_wait))
+
+# Required for splash to work.  Not an issue with the initrd as this
+# device isn't created there and is not needed.
+if [[ -e /dev/tty1 ]]
+then
+    [[ ! -e "/newroot/dev/tty1" ]] && mknod "/newroot/dev/tty1" c 4 1 && \
+    message "Created device node /newroot/dev/tty1" || \
+    E_message $BRon"Error: Failed to create device node /newroot/dev/tty1"$Boff
+else
+    E_message $BRon"Error: /dev/tty1 not found -- splash will not function"$Boff
+fi
+
+# uncomment to debug: wait before using splash
+#sleep $((init_wait*3))
+[ "${init_splash}" == "yes" ] && splash 'init' "Initializing Brendlefly kernel..." && message "Splash initialized"
+[ "${init_splash}" == "yes" ] && sleep $((init_wait*5))
+
+[ "${init_splash}" == "yes" ] && splash set_msg "Splash initialized and used" && /sbin/fbcondecor_helper 2 'repaint'
+# uncomment to debug: wait before using splash
+#sleep $((init_wait*3))
+
+# echo to console to confirm entry into init; pause so we can read this
+separator "Running /init" "initramfs-$BUILD"
+message "Init Configuration:"
+# display variable assignments sourced from init.conf; do not show password
+grep -e '^init' init.conf | grep -v password
+sleep $((init_wait*3))
+
+# if two factor authentication is required, check password to allow continued execution of init
+if [[ "$init_two_factor_required" = "yes" ]]
+then
+    read -s -p "Enter password to continue: " pass && echo
+    if [[ "$pass" = "$init_two_factor_password" ]]
+    then
+        sub_main
+        exit 0
+    fi
+else
+    sub_main
+    exit 0
+fi
+
+message "Authentication failure, exiting"
+sleep $((init_wait*3))
+shutdown -hP now
