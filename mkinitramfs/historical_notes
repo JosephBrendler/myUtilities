@@ -1,0 +1,154 @@
+# init.conf
+#
+# configuration file for initramfs init script
+#
+# Joe Brendler
+#   rev 8 Jan 10
+#   rev 26 Jan 13 - added filesystem support for / and /usr, now that
+#                   udev >181 requires /usr mounted in intiramfs
+#   rev 18 Jan 14 - added optional use of splashutils
+#   rev 22 Jan 14 - added timeout for mdev, drop to passphrase
+# rev 09 Nov 2016 - to do list:
+#   1 - accept a *list* of key containing pass-devices (list of UUIDs)
+#   2 - possibly replace cryptab with code that scans for "LUKS" partitions,
+#       tries available keys, or asks for password to unlock them
+#   3 - use lddtree (python pkg) to simplify loading dependencies
+#   4 - default init.conf to no splash
+#   5 - output initramfs to a format that grub2 will recognize, so I can use grub-mkconfig
+#   6 - integrate "makeinitramfs" and output directly to /boot (after checking for it)
+#
+# change defaults to tailor for your environment
+#   all configurations must be legitimate variable assignment statements
+#   because they are assigned in the init script by simply sourcing this file
+
+# location of the cryptab file, identifying encrypted devices and the names luks 
+#   should use to address them
+init_cryptab="/cryptab"
+
+# To enable bootup without user intervention at terminal (such as when w/o monitor),
+#   identify the device containing the cryptsetup passkey that init will use to unlock
+#   the encrypted devices.  Default is no device, and init will prompt for passphrase.
+# Devices must be identified by a reliable device name, label, or by UUID (preferred).
+# Hint: Using any linux boot disk, you can use "blkid -c /dev/null | grep -i LUKS" 
+#   to get the UUIDs of all of your luks-formatted block devices.
+# Historical note: In update to ver 4.x, we changed to a *list* of devices that are
+#   authorized to be used to unlock the system's encrypted luks-formatted devices.
+# Format note: use '\' character to use multiple lines. In the example below, the user
+#   identifies the following four authorized devices:
+#UUID="ABCD-EA85" (xD card)
+#UUID="1234-3072" (MS/MSpro card)
+#UUID="9876-C3EC" (usb thumb drive)
+#UUID="EFCB-C4A3" (usb thumb drive)
+#
+# Example:
+# init_passdevice_list=" \
+# ABCD-EA85 \
+# 1234-3072 \
+# 9876-C3EC \
+# EFCB-C4A3"
+init_passdevice_list=" \
+ADC6-EA85 \
+407A-3072 \
+9BE8-C3EC \
+EFC5-C4A3"
+
+# The init_passdevice's mount point and filesystem must also be specified here 
+init_passdevice_mount_point="/mnt/thumb"
+init_passdevice_fs="vfat"
+
+# Enable debugging output - like increased verbosity
+#init_DEBUG="true"
+init_DEBUG="false"
+
+# if an initpassdevice is used, specify the full quoted pathname of the file containing
+#   nothing but a single line with the hex key
+# Note: if you already have a key with a passphrase you can use hashalot to generate
+#   the corresponding key file with the command:
+#    hashalot -s "$salt" -x "<hash>"
+#   where $salt is the initialization vector avaliable using the command:
+#    cryptsetup luksDump <device>
+#   Default is null, as above.
+#init_keyfile=
+init_keyfile="/crypt/dat"
+
+# Specify the time in minutes you want init to wait for mdev to identify
+# your init_passdevice before giving up and prompting you for a passphrase.
+# (this can be any integer greater than or equal to zero)
+init_mdev_wait=1
+
+# If you want more time to read the information provided by init during
+#   bootup, change this.  This can be helpful in troubleshooting your
+#   initial configuration.  This is a multiplyer for the number of seconds 
+#   used for "sleep" commands in the init script 
+init_wait=1
+
+# Identify the filesystem(s) used by your boot device(s).
+# Note that if you have /usr on a separate partition, it must
+# be mounted by initramfs also (hence the defaults below).
+#init_root_fs="reiserfs"
+#init_usr_fs="reiserfs"
+init_root_fs="ext4"
+init_usr_fs="ext4"
+
+# Tell init whether to use splash by choosing "yes" or "no"
+#   You also need to set the theme in your grub kernel command line
+#   example: 
+#   kernel /vmlinuz root=/dev/mapper/lvm-root splash=silent,fadein,theme:emergence console=tty1
+#   Chose theme from: 
+#   [ emerge-world | emergence | gentoo | livecd-2007.0 | livecd-12.0 | natural_gentoo ]
+init_splash="yes"
+#init_splash="no"
+
+# --------------- Additional Security ----------------
+
+# lock_down:
+# Note that the purpose of encrypting your drives was to protect them
+#   against unauthorized access when your machine is unattended (such as
+#   when you inadvertently lose or simply lose custody of a notebook computer),
+#   by preventing an unauthorized person from reading the drive if they were
+#   to try to boot your machine (or put the drive in their own machine).
+# This security is only really achieved if you prevent such an adversary
+#   from getting any form of root access -- to include from your rescue
+#   shell.  Thus, you should strongly consider changing the following 
+#   option to "yes" once you feel you've achieved a stable configuration.
+init_lock_down="no"
+#init_lock_down="yes"
+
+# two-factor authentication:
+# To further secure your machine against the possibility that someone may
+#   "find" (or steal) your key-file (such as if they were to gain access to
+#   the usb drive you have stored it on), you may change the following option
+#   to "yes" and setting a password.
+# Note that this will require that you enter the password below in order to 
+#   execute the init script.  Thus, you will need to have a monitor and keyboard
+#   connected.
+# !! init_two_factor_password must be single-quoted (apostrophes) to allow
+#   use of special characters in password
+init_two_factor_required="no"
+#init_two_factor_required="yes"
+init_two_factor_password=''
+#init_two_factor_password='1234qwer!@#$QWER'
+
+# If you need dynmaic device support, using mini_udev, say "yes" here.
+# Historical note:
+# Earlier versions (1.x) of this initramfs builder expecte the user to manually
+#   identify "/dev/sda1" style device names and to manually create the corresponding
+#   device nodes in the initramfs with a command like "cp -a /dev /usr/src/initramfs"
+# Later versions (2.x) mitigated the uncertainty in how the kernel would assign such
+#   device names by adding this mdev functionality to enable dynamic device node
+#   creation.  (however, the user still needed to supply the init script with a list
+#   of device names to unlock...)
+# Starting with version 3.x, the user was encouraged to use UUIDs to identify
+#   the block devices to unlock, eliminating that remaining uncertainty.
+# Bottom line: you should say "yes" here.
+# This can be helpful for troubleshooting when first configuring an initramfs, 
+#   if you are unsure how your kernel will identify your devices.  You may want to 
+#   enable this option during initial configuration, and then disable it after            
+#   identifying the devices you need in cryptab.
+# Note also that if you make significant changes to your system, udev may identify
+#   your devices differently, thus invalidating your configuration.  If this happens,
+#   you will need to change device names in cryptab, and either create device nodes
+#   in /dev, or use mdev to identify your devices and build nodes for them in /dev
+#init_mdev_support="no"
+init_mdev_support="yes"
+
