@@ -4,13 +4,6 @@
 # Joe Brendler   28 Feb 2008
 #  for version history and "credits", see accompanying file "historical_notes"
 # rev 09 Nov 2016 - to do list:
-#   1 - accept a *list* of key containing pass-devices (list of UUIDs)
-#   2 - possibly replace cryptab with code that scans for "LUKS" partitions,
-#       tries available keys, or asks for password to unlock them
-#   3 - use lddtree (python pkg) to simplify loading dependencies
-#   4 - default init.conf to no splash
-#   5 - output initramfs to a format that grub2 will recognize, so I can use grub-mkconfig
-#   6 - integrate "makeinitramfs" and output directly to /boot (after checking for it)
 #
 source script_header_joe_brendler
 
@@ -153,18 +146,19 @@ id_passdevice() {
     my_candidate="$1";
     dev_t="$2";
     local int OK=1;   # def'n: 0 is logical true; any other int = false
-    [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() \$\1 = [ $1 ]; \$\2 = [ $2 ]";
-    [ "${init_DEBUG}" == "true" ] && message "${BWon}Debug: id_passdevice() ${BMon}arg1 = [ $my_candidate ]; ${LBon}arg2 = [ $dev_type ]${Boff}";
-    [ "${init_DEBUG}" == "true" ] && message "${BWon}Debug: id_passdevice() ${BMon}arg1 = [ $my_candidate ]; ${LBon}arg2 = [ $dev_type ]${Boff}";
+    [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() \$1 = [ $1 ]; \$2 = [ $2 ]";
     [ "${init_DEBUG}" == "true" ] && message "${BWon}Debug: id_passdevice() ${BMon}arg1 = [ $my_candidate ]; ${LBon}arg2 = [ $dev_type ]${Boff}";
     case "${dev_t}" in
         "name")
+            [ "${init_DEBUG}" == "true" ] && message "In case [name]";
             init_passdevice="${my_candidate}"; OK=0;
             ;;
         "uuid")
+            [ "${init_DEBUG}" == "true" ] && message "In case [uuid]";
             init_passdevice="$(findfs UUID=${my_candidate})"; OK=0;
             ;;
         "label")
+            [ "${init_DEBUG}" == "true" ] && message "In case [label]";
             init_passdevice="$(findfs LABEL=${my_candidate})"; OK=0;
             ;;
         *)
@@ -184,7 +178,6 @@ right_most() {
     mystring=$1;
     echo ${mystring:$((${#mystring}-1)):1};
 }
-            [ "$init_DEBUG" == "true" ] && sh_countdown 10;
 
 select_device() {
     # go through the list of devices presented as argv -- select the first one that
@@ -203,9 +196,10 @@ select_device() {
         VALID="false"; EXISTS="false";
         # determine the validity of the type and name of the candidate passdevice
         dev_type=$(type_of_key ${candidate_key_device});
-        echo -en "Checking validity of specified device [ ${candidate_key_device} ] of type [ ${dev_type} ]";
-        id_passdevice ${candidate_key_device} ${dev_type}; answer=$?; [ $answer -eq 0 ] && VALID="true" || VALID="false"
+        id_passdevice ${candidate_key_device} ${dev_type}; answer=$?;
+        [ $answer -eq 0 ] && VALID="true" || VALID="false";
         # note that if VALID returns true, the id_passdevice procedure will have set the global config variable init_passdevice
+        echo -en "Checking validity of specified device [ ${candidate_key_device} ] of type [ ${dev_type} ]" ; \
         [ "${VALID}" == "true" ]; right_status $?;
         [ "${init_DEBUG}" == "true" ] && message "Debug: dev_type = [ $dev_type ]";
         [ "${init_DEBUG}" == "true" ] && message "Debug: candidate_key_device = [ $candidate_key_device ]";
@@ -219,22 +213,14 @@ select_device() {
                 message "${BGon}***${Boff} findfs returned the corresponding device name: ${LBon}${init_passdevice}${Boff}";
             fi
             # determine if this valid device acutally exists and is a block device
-            # wait (according to init.conf) for mdev to process its device and create the associated device node
-            message "Waiting up to [${init_mdev_wait} seconds] for mdev to identify ${BMon}${init_passdevice}${Boff} ...";
-            hour_glass=$((${init_mdev_wait}));
-            # check for existence of block device matching passdevice specification
-            while [ $hour_glass -gt 0 ] && [ ! -b $(echo "${init_passdevice}") ]
-            do
-                echo -en "\r  "${hour_glass};
-                sleep 1;
-                hour_glass=$(($hour_glass - 1));
-            done
-            echo -e "\n  Done";
-            # post-wait-period existence check
-            echo -en "Checking for device with ${dev_type} [ ${BMon}${init_passdevice}${Boff} ]";
-            [ -b $(echo ${init_passdevice}) ] && EXISTS="true" || EXISTS="false";
+            echo -en "Checking for device with ${dev_type} [ ${BMon}${candidate_key_device}${Boff} ]";
+            # Careful! in the busybox ash shell, [ -b "" ] will return true
+            #   (indicating the existence of a block device named by a null string
+            # and [ -n "" ] will also return true, indicating non-zero length for a null string
+            [ ! -z ${init_passdevice} ] && [ -b ${init_passdevice} ] && EXISTS="true" || EXISTS="false";
             [ "${EXISTS}" == "true" ]; right_status $?;
             [ "$init_DEBUG" == "true" ] && message "Debug: Result -- EXISTS = [ ${BMon}${EXISTS}${Boff} ]";
+            sh_countdown 10
 
             sleep $(($init_wait));
             [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid | grep vfat";
@@ -306,8 +292,11 @@ sub_main() {
     # devices, then see if we can select one that will work, otherwise use passphrase method
 
     [ "${init_DEBUG}" == "true" ] && message "checking for non-zero-length init_keyfile [ ${init_keyfile} ] and init_passdevice_list [ ${init_passdevice_list} ]"
-    if [ -n $init_keyfile ] && [ -n "${init_passdevice_list}" ]
+    if [ ! -z "$init_keyfile" ] && [ ! -z "${init_passdevice_list}" ]
     then
+        # pause to give mdev a chance to recognize devices
+        echo -en "${BGon}*${Boff} Waiting ${init_mdev_wait} more seconds, per init.conf, to give mdev a chance to recognize hardware..."
+        sleep $(($init_mdev_wait)); echo "Done"
         select_device ${init_passdevice_list};
         # note that if this succeded, it will have set init_unlock_method="key"
         # and it will have set the global config variable "init_passdevice"
