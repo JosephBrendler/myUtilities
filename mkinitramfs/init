@@ -27,7 +27,7 @@ rescue_shell() {
     echo && separator "${BRon}${1} - Dropping to a shell...${Boff}" "initramfs-$BUILD"
     splash 'verbose'
     # pause for time to read message
-    sleep $((init_wait*3))
+    sleep $(($init_wait * 3))
     busybox --install -s
     exec /bin/sh
 }
@@ -189,19 +189,20 @@ select_device() {
     local HAS_KEY="false";
     local dev_type="";
     local candidate_key_device="";
+    local count=$#;
 
-    while [ ! "${HAS_KEY}" == "true" ]
+    while [ $count -gt 0 ] && [ ! "${HAS_KEY}" == "true" ]
     do
         candidate_key_device=$1;
         VALID="false"; EXISTS="false";
         # determine the validity of the type and name of the candidate passdevice
         dev_type=$(type_of_key ${candidate_key_device});
+        echo -en "Checking validity of specified device [ ${candidate_key_device} ] of type [ ${dev_type} ]";
         VALID=$(id_passdevice ${candidate_key_device} ${dev_type});
-        [ "${init_DEBUG}" == "true" ] && message "Debug: Running select_device(), inside while loop"
+        [ "${VALID}" == "true" ] && right_status $?;
         [ "${init_DEBUG}" == "true" ] && message "Debug: candidate_key_device = [ $candidate_key_device ]"
         [ "${init_DEBUG}" == "true" ] && message "Debug: dev_type = [ $dev_type ]"
         [ "${init_DEBUG}" == "true" ] && message "Debug: VALID = [ $VALID ]"
-        [ "$init_DEBUG" == "true" ] && sh_countdown 10
         if [ "${VALID}" == "true" ]
         then
             message "Found candidate key device ${LBon}${candidate_key_device}${Boff} of type ${LBon}${dev_type}${Boff} to be ${BGon}valid${Boff}";
@@ -210,57 +211,53 @@ select_device() {
                 message "${BGon}***${Boff} findfs returned the corresponding device name: ${LBon}${init_passdevice}${Boff}";
             fi
             # determine if this valid device acutally exists and is a block device
-            sleep $((init_wait*3));
-            [ "$init_DEBUG" == "true" ] && sh_countdown 10
             # wait (according to init.conf) for mdev to process its device and create the associated device node
-            message "Waiting [${init_mdev_wait} min] for mdev to identify $(echo ${init_passdevice} | cut -d " " -f1) ...";
-            NOW=$(date +%M);
-            seconds=$(date +%S);
-            # round the current time off to the closest minute
-            [[ ${seconds} -gt 30 ]] && NOW=$((${NOW} + 1))
-            echo "  Started at "$(date +%H:%M:%S)", ("$(date +%H)":"${NOW}")";
+            message "Waiting up to [${init_mdev_wait} seconds] for mdev to identify $(echo ${init_passdevice} | cut -d " " -f1) ...";
+            hour_glass=$((${init_mdev_wait}))
             # check for existence of block device matching passdevice specification
-            while [[ ! -b $(echo "${init_passdevice}") ]] && \
-                [[ $(date +%M) -lt $(( $(( ${NOW} + ${init_mdev_wait} )) % 60 )) ]]
+            while [ $hour_glass -gt 0 ] && [ ! -b $(echo "${init_passdevice}") ]
             do
-                echo -en "\r  "$(date +%H:%M:%S);
-                sleep $((init_wait));
+                echo -en "\r  "${hour_glass};
+                sleep 1;
+                hour_glass=$(($hour_glass - 1));
             done
             echo -e "\n  Done";
-            # Debug info --------
+            # post-wait-period existence check
+            echo -en "Checking for device with ${dev_type} [ ${init_passdevice} ]"
+            [ -b $(echo ${init_passdevice}) ] && EXISTS="true" || EXISTS="false";
+            [ "${EXISTS}" == "true" ] && right_status $?;
+            [ "$init_DEBUG" == "true" ] && message "Debug: Result -- EXISTS = [ ${EXISTS} ]"
+
+            sleep $(($init_wait));
             [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid";
             [ "$init_DEBUG" == "true" ] && blkid;
             [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid | grep vfat";
             [ "$init_DEBUG" == "true" ] && blkid | grep vfat;
-            [ "$init_DEBUG" == "true" ] && sh_countdown 10
-            # post-wait-period existence check
-            [ -b $(echo ${init_passdevice}) ] && EXISTS="true" || EXISTS="false";
-            [ "${init_DEBUG}" == "true" ] && echo && message "Debug: Result of existance test: ${EXISTS}" && \
-                sleep $((init_wait));
-            [ "$init_DEBUG" == "true" ] && sh_countdown 10
+
             if [ "${EXISTS}" == "true" ]
             then
-                # try to mount it we need the full keyfile path for the keyfile existence test
+                # try to mount it. Note: we need the full keyfile path for the keyfile existence test
                 # check for trailing / character...
                 if [ ! "$(right_most $init_passdevice_mountpoint)" == "/" ]
                 then
                     init_passdevice_mountpoint="${init_passdevice_mountpoint}/";
                 fi
-                [ "$init_DEBUG" == "true" ] && \
-                    message "Debug: about to execute command: mount -t ${init_passdevice_fs} ${init_passdevice} ${init_passdevice_mount_point}" && \
-                    sh_countdown 6;
+                message "${BYon}Trying${Boff} mount -t ${init_passdevice_fs} ${init_passdevice} ${init_passdevice_mount_point}";
                 mount -t "${init_passdevice_fs}" "${init_passdevice}" "${init_passdevice_mount_point}" && \
                     message "Successfully mounted init_passdevice: ${init_passdevice} on ${init_passdevice_mount_point}" || \
-                    message $BRon"Failed to mount init_passdevice: ${init_passdevice} on ${init_passdevice_mount_point}"$Boff;
+                    E_message "Failed to mount init_passdevice: ${init_passdevice} on ${init_passdevice_mount_point}";
                 # here's the actual keyfile existence check
+                echo -en "Looking for keyfile"
                 if [[ -e $(echo "${init_passdevice_mount_point}${init_keyfile}") ]]
                 then
                     HAS_KEY="true";
                 else
                     HAS_KEY="false";
                 fi
+                [ "${HAS_KEY}" == "true" ] && right_status $?;
             fi
         fi
+        sleep $(($init_wait * 3));
         [ "${init_DEBUG}" == "true" ] && message "Debug: Results for $candidate_key_device --"
         [ "${init_DEBUG}" == "true" ] && message "Debug: VALID =  [ $VALID ]"
         [ "${init_DEBUG}" == "true" ] && message "Debug: EXISTS = [ $EXISTS ]"
@@ -271,6 +268,7 @@ select_device() {
 
         # if not found, move on the the next one on the list; if found, then
         shift;
+        count=$(($count - 1));
     done
     # to leave the loop above, I either --
     #    (a) found a valid extant device, mounted it and confirmed it contains a key (HAS_KEY is now "true"), or
@@ -284,7 +282,7 @@ select_device() {
         init_unlock_method="prompt"
         E_message $BRon"Keystore $(echo ${init_passdevice_mount_point}${init_keyfile}) does not exist - reverting to prompt method..."$Boff;
     fi
-    sleep $((init_wait))
+    sleep $(($init_wait))
     [ "${init_DEBUG}" == "true" ] && sh_countdown 10
 }
 
@@ -296,7 +294,7 @@ sub_main() {
     # start mini-udev (mdev) and wait long enough for devices to be recognized
     #   As of ver 4.x, this is no longer a configuration *option*; just do it
     separator "Starting mini udev" "initramfs-$BUILD" && \
-        mini_udev && message "mdev started" && sleep $((init_wait*3))
+        mini_udev && message "mdev started" && sleep $(($init_wait * 3))
 
     # if init.conf indicates there is a non-zero-lenght keyfile name to be looked for on a non-empty list of
     # devices, then see if we can select one that will work, otherwise use passphrase method
@@ -320,7 +318,7 @@ sub_main() {
     unlock_devices ${init_unlock_method}
 
     # uncomment to debug:
-    [ "$init_DEBUG" == "true" ] &&  sleep $((init_wait*3))
+    [ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait * 3))
 
     separator "Accessing logical volumes" "initramfs-$BUILD"
     root_volume=$(lvs | awk '$1~/root/ {print $2"-"$1}')
@@ -334,7 +332,7 @@ sub_main() {
     /sbin/vgs
     separator "The following volumes are available" "initramfs-$BUILD"
     /sbin/lvs
-    sleep $((init_wait))
+    sleep $(($init_wait))
 
     # interactive stop for debugging
     if [ "$init_interactive_pause" == "true" ]
@@ -367,7 +365,7 @@ sub_main() {
 
     separator "Mounts" "initramfs-$BUILD"
     mount
-    sleep $((init_wait*3))
+    sleep $(($init_wait * 3))
 
     umount /sys
 
@@ -413,7 +411,7 @@ then
 else
     message "No splash."
 fi
-[ "$init_DEBUG" == "true" ] &&  sleep $((init_wait))
+[ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait))
 
 # Required for splash to work.  Not an issue with the initrd as this
 # device isn't created there and is not needed.
@@ -432,20 +430,20 @@ else
 fi
 
 # uncomment to debug: wait before using splash
-#sleep $((init_wait*3))
+#sleep $(($init_wait * 3))
 [ "${init_splash}" == "yes" ] && splash 'init' "Initializing Brendlefly kernel..." && message "Splash initialized"
 [ "${init_splash}" == "yes" ] && sleep $((init_wait*5))
 
 [ "${init_splash}" == "yes" ] && splash set_msg "Splash initialized and used" && /sbin/fbcondecor_helper 2 'repaint'
 # uncomment to debug: wait before using splash
-#sleep $((init_wait*3))
+#sleep $(($init_wait * 3))
 
 # echo to console to confirm entry into init; pause so we can read this
 separator "Running /init" "initramfs-$BUILD"
 message "Init Configuration:"
 # display variable assignments sourced from init.conf; do not show password
 grep -e '^init' init.conf | grep -v password
-sleep $((init_wait*3))
+sleep $(($init_wait * 3))
 [ "${init_DEBUG}" == "true" ] && sh_countdown 10
 
 # if two factor authentication is required, check password to allow continued execution of init
@@ -463,5 +461,5 @@ else
 fi
 
 message "Authentication failure, exiting"
-sleep $((init_wait*3))
+sleep $(($init_wait * 3))
 shutdown -hP now
