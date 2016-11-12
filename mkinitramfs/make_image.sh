@@ -2,10 +2,20 @@
 # Joe Brendler  29 Dec 2012
 #   for version history and "credits", see the accompanying "historical_notes" file
 
-# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs), and the MAKE_DIR (parent dir of this script)
+myDEBUG="true"
+#myDEBUG="false"
+
+# source my usual functions and formatting "shortcuts" (must be in the MAKE_DIR)
+source script_header_joe_brendler
+# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs),
+#   and the MAKE_DIR (parent dir of this script). This must follow the sourcing of
+#   script_header_joe_brendler, so that BUILD will be properly assigned
 source GLOBALS
-# source my usual functions and formatting "shortcuts"
-source ${MAKE_DIR}/script_header_joe_brendler
+
+[ "${myDEBUG}" == "true" ] && echo "make_image.sh Debug - dump config"
+[ "${myDEBUG}" == "true" ] && echo "BUILD: [ ${BUILD} ]"
+[ "${myDEBUG}" == "true" ] && echo "MAKE_DIR: [ ${MAKE_DIR} ]"
+[ "${myDEBUG}" == "true" ] && echo "SOURCES_DIR: [ ${SOURCES_DIR} ]"
 
 E_BADBOOT=68
 

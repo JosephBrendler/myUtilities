@@ -120,20 +120,17 @@ copy_parts()
   calculate_termwidth
   #copy executable parts
   message "Copying necessary executable files..."
-#  for i in busybox kmod udevadm lsblk
   for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
   do
     copy_one_part /bin/$i ${SOURCES_DIR}/bin/
   done
   # note: included findfs here explicitly rather than use busybox's own
-#  for i in lvm cryptsetup blkid e2fsck findfs fsadm lvmconf lvmdump vgimportclone
   for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
   do
     copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/
   done
   # note: for the moment, I'm only getting shred from /usr/bin,
   #    but I put the whole block in case that changes in the future
-#  for i in shred
   for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
   do
     copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/
@@ -149,7 +146,7 @@ copy_parts()
 
   # copy config files
   message "Copying necessary configuration files..."
-  for i in init.conf cryptab README BUILD
+  for i in init.conf cryptab README GLOBALS
   do
     copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/
   done
