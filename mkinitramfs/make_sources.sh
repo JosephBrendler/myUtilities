@@ -1,19 +1,13 @@
 #!/bin/bash
-# mkinitramfs.sh -- set up my custom initramfs
+# make_sources.sh (formerly mkinitramfs.sh) -- set up my custom initramfs
 # Joe Brendler - 9 September 2014
-#  rev 15 September 2014 - bugfixes, added e2fsck along w its libs and links
-#  rev 31 December 2014 -- incorporated splashutils option
-#  rev 02 January 2015   - bugfix for missing libraries needed by executables
-
-INITRAMFS_DIR="/usr/src/initramfs"
-SOURCE_DIR="/usr/src/mkinitramfs"
-
-source ${SOURCE_DIR}/script_header_joe_brendler
+#    for version history and "credits", see the accompanying "historical_notes" file
 
 # --- Define local variables -----------------------------------
-#BUILD="0.3.1 (20150102)"
-# defined in single file (BUILD) in initramfs's root / -- used for both mkinitramfs.sh and makeinitramfs
-source ${SOURCE_DIR}/BUILD
+
+# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs), and the MAKE_DIR (parent dir of this script)
+source GLOBALS
+source ${MAKE_DIR}/script_header_joe_brendler
 
 # Error messages used by script
 E_NOLVM="You need to install lvm first."
@@ -53,8 +47,8 @@ DEBUG_LIB_COPY2="false"
 
 display_config()
 {
-  message "INITRAMFS_DIR: "${INITRAMFS_DIR}
-  message "SOURCE_DIR: "${SOURCE_DIR}
+  message "SOURCES_DIR: "${SOURCES_DIR}
+  message "MAKE_DIR: "${MAKE_DIR}
 }
 
 calculate_termwidth()
@@ -126,49 +120,46 @@ copy_parts()
   calculate_termwidth
   #copy executable parts
   message "Copying necessary executable files..."
-#  for i in busybox kmod udevadm lsblk
   for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
   do
-    copy_one_part /bin/$i ${INITRAMFS_DIR}/bin/
+    copy_one_part /bin/$i ${SOURCES_DIR}/bin/
   done
   # note: included findfs here explicitly rather than use busybox's own
-#  for i in lvm cryptsetup blkid e2fsck findfs fsadm lvmconf lvmdump vgimportclone
   for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
   do
-    copy_one_part /sbin/$i ${INITRAMFS_DIR}/sbin/
+    copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/
   done
   # note: for the moment, I'm only getting shred from /usr/bin,
   #    but I put the whole block in case that changes in the future
-#  for i in shred
   for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
   do
-    copy_one_part /usr/bin/$i ${INITRAMFS_DIR}/usr/bin/
+    copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/
   done
 
   if [ "${init_splash}" == "yes" ]
   then
-    copy_one_part /sbin/fbcondecor_helper ${INITRAMFS_DIR}/sbin/
+    copy_one_part /sbin/fbcondecor_helper ${SOURCES_DIR}/sbin/
   else
     message "Skipping copy for /sbin/fbcondecor_helper... (splash not requested)"
   fi
-  copy_one_part ./init ${INITRAMFS_DIR}/
+  copy_one_part ./init ${SOURCES_DIR}/
 
   # copy config files
   message "Copying necessary configuration files..."
-  for i in init.conf cryptab README BUILD
+  for i in init.conf cryptab README GLOBALS
   do
-    copy_one_part ${SOURCE_DIR}/$i ${INITRAMFS_DIR}/
+    copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/
   done
 
   # copy other required content from ...
   message "Copying other required content ..."
-  copy_one_part ${SOURCE_DIR}/script_header_joe_brendler ${INITRAMFS_DIR}/
-  copy_one_part /etc/lvm/lvm.conf ${INITRAMFS_DIR}/etc/lvm/
-  copy_one_part ./etc/modules ${INITRAMFS_DIR}/etc/
+  copy_one_part ${MAKE_DIR}/script_header_joe_brendler ${SOURCES_DIR}/
+  copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
+  copy_one_part ./etc/modules ${SOURCES_DIR}/etc/
   if [ "${init_splash}" == "yes" ]
   then
-    copy_one_part ${SOURCE_DIR}/etc/initrd.splash ${INITRAMFS_DIR}/etc/
-    copy_one_part ${SOURCE_DIR}/etc/splash ${INITRAMFS_DIR}/etc/
+    copy_one_part ${MAKE_DIR}/etc/initrd.splash ${SOURCES_DIR}/etc/
+    copy_one_part ${MAKE_DIR}/etc/splash ${SOURCES_DIR}/etc/
   else
     message "Skipping copy for splash files in /etc/ ... (splash not requested)"
   fi
@@ -215,7 +206,7 @@ create_links()
   old_pwd="$PWD"
   # create symlinks in bin and sbin
   message "Creating busybox links in initramfs/bin/ ..."
-  cd ${INITRAMFS_DIR}/bin/
+  cd ${SOURCES_DIR}/bin/
   #  let's just link everything that's in busybox... (except commands we explicitly include
   #    findfs, blkid, e2fsck (fsck)... and of course, our own init
   for i in \
@@ -270,7 +261,7 @@ create_links()
   print_result $msg_len "$result"
 
   message "Creating lvm2 links in initramfs/sbin/ ..."
-  cd ${INITRAMFS_DIR}/sbin/
+  cd ${SOURCES_DIR}/sbin/
   for i in lvchange lvconvert lvcreate lvdisplay lvextend lvmchange \
            lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
            lvs lvscan pscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
@@ -333,7 +324,7 @@ create_links()
   print_result $msg_len "$result"
 
   message "Creating links in initramfs/dev/vc/ ..."
-  cd ${INITRAMFS_DIR}/dev/vc/
+  cd ${SOURCES_DIR}/dev/vc/
   msg="Linking:   ${LBon}0${Boff} --> ${BGon}../console${Boff} ..."
   msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
   print_pending_op_msg "$msg"
@@ -341,7 +332,7 @@ create_links()
   print_result $msg_len "$result"
 
   message "Creating links in initramfs/usr/ ..."
-  cd ${INITRAMFS_DIR}/usr/
+  cd ${SOURCES_DIR}/usr/
   msg="Linking:   ${LBon}lib${Boff} --> ${BGon}../lib${Boff} ..."
   msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
   print_pending_op_msg "$msg"
@@ -355,7 +346,7 @@ create_links()
   print_result $msg_len "$result"
 
   message "Creating links in initramfs/ ..."
-  cd ${INITRAMFS_DIR}/
+  cd ${SOURCES_DIR}/
   msg="Linking:   ${LBon}lib64${Boff} --> ${BGon}lib${Boff} ..."
   msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
   print_pending_op_msg "$msg"
@@ -373,17 +364,17 @@ create_links()
 
 build_dir_tree()
 {
-message "Building directory tree in ${INITRAMFS_DIR} ..."
-for i in $(grep -v "#" ${SOURCE_DIR}/initramfs_dir_tree)
+message "Building directory tree in ${SOURCES_DIR} ..."
+for i in $(grep -v "#" ${MAKE_DIR}/initramfs_dir_tree)
 do
   msg="${BGon}*${Boff} $i ..."
   msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
   print_pending_op_msg "$msg"
-  if [ ! -e ${INITRAMFS_DIR}$i ]
+  if [ ! -e ${SOURCES_DIR}$i ]
   then
-    mkdir ${INITRAMFS_DIR}$i && result="$OK_MSG" || result="$FAIL_MSG"
+    mkdir ${SOURCES_DIR}$i && result="$OK_MSG" || result="$FAIL_MSG"
   else
-    already_msg=" directory $i already created in ${INITRAMFS_DIR} "
+    already_msg=" directory $i already created in ${SOURCES_DIR} "
     let "msg_len=$msg_len + ${#already_msg}"
     echo -en "$already_msg"
     result="$NA_MSG"
@@ -397,62 +388,62 @@ create_device_nodes()
   calculate_termwidth
 
   # character special device nodes in dev
-  make_one_device_node ${INITRAMFS_DIR}/dev/console c 5 1
-  make_one_device_node ${INITRAMFS_DIR}/dev/null c 1 3
-  make_one_device_node ${INITRAMFS_DIR}/dev/tty1 c 4 1
-  make_one_device_node ${INITRAMFS_DIR}/dev/urandom c 1 9
-  make_one_device_node ${INITRAMFS_DIR}/dev/mapper/control c 10 236
+  make_one_device_node ${SOURCES_DIR}/dev/console c 5 1
+  make_one_device_node ${SOURCES_DIR}/dev/null c 1 3
+  make_one_device_node ${SOURCES_DIR}/dev/tty1 c 4 1
+  make_one_device_node ${SOURCES_DIR}/dev/urandom c 1 9
+  make_one_device_node ${SOURCES_DIR}/dev/mapper/control c 10 236
 
   # block device nodes in dev
-  make_one_device_node ${INITRAMFS_DIR}/dev/sda b 8 0
-  make_one_device_node ${INITRAMFS_DIR}/dev/sda1 b 8 1
-  make_one_device_node ${INITRAMFS_DIR}/dev/sda2 b 8 2
-  make_one_device_node ${INITRAMFS_DIR}/dev/sda3 b 8 3
+  make_one_device_node ${SOURCES_DIR}/dev/sda b 8 0
+  make_one_device_node ${SOURCES_DIR}/dev/sda1 b 8 1
+  make_one_device_node ${SOURCES_DIR}/dev/sda2 b 8 2
+  make_one_device_node ${SOURCES_DIR}/dev/sda3 b 8 3
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdb b 8 16
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdb1 b 8 17
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdb2 b 8 18
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdb3 b 8 19
+  make_one_device_node ${SOURCES_DIR}/dev/sdb b 8 16
+  make_one_device_node ${SOURCES_DIR}/dev/sdb1 b 8 17
+  make_one_device_node ${SOURCES_DIR}/dev/sdb2 b 8 18
+  make_one_device_node ${SOURCES_DIR}/dev/sdb3 b 8 19
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdc b 8 32
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdc1 b 8 33
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdc2 b 8 34
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdc3 b 8 35
+  make_one_device_node ${SOURCES_DIR}/dev/sdc b 8 32
+  make_one_device_node ${SOURCES_DIR}/dev/sdc1 b 8 33
+  make_one_device_node ${SOURCES_DIR}/dev/sdc2 b 8 34
+  make_one_device_node ${SOURCES_DIR}/dev/sdc3 b 8 35
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdd b 8 48
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdd1 b 8 49
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdd2 b 8 50
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdd3 b 8 51
+  make_one_device_node ${SOURCES_DIR}/dev/sdd b 8 48
+  make_one_device_node ${SOURCES_DIR}/dev/sdd1 b 8 49
+  make_one_device_node ${SOURCES_DIR}/dev/sdd2 b 8 50
+  make_one_device_node ${SOURCES_DIR}/dev/sdd3 b 8 51
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sde b 8 64
-  make_one_device_node ${INITRAMFS_DIR}/dev/sde1 b 8 65
-  make_one_device_node ${INITRAMFS_DIR}/dev/sde2 b 8 66
-  make_one_device_node ${INITRAMFS_DIR}/dev/sde3 b 8 67
+  make_one_device_node ${SOURCES_DIR}/dev/sde b 8 64
+  make_one_device_node ${SOURCES_DIR}/dev/sde1 b 8 65
+  make_one_device_node ${SOURCES_DIR}/dev/sde2 b 8 66
+  make_one_device_node ${SOURCES_DIR}/dev/sde3 b 8 67
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdf b 8 80
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdf1 b 8 81
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdf2 b 8 82
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdf3 b 8 83
+  make_one_device_node ${SOURCES_DIR}/dev/sdf b 8 80
+  make_one_device_node ${SOURCES_DIR}/dev/sdf1 b 8 81
+  make_one_device_node ${SOURCES_DIR}/dev/sdf2 b 8 82
+  make_one_device_node ${SOURCES_DIR}/dev/sdf3 b 8 83
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdg b 8 96
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdg1 b 8 97
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdg2 b 8 98
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdg3 b 8 99
+  make_one_device_node ${SOURCES_DIR}/dev/sdg b 8 96
+  make_one_device_node ${SOURCES_DIR}/dev/sdg1 b 8 97
+  make_one_device_node ${SOURCES_DIR}/dev/sdg2 b 8 98
+  make_one_device_node ${SOURCES_DIR}/dev/sdg3 b 8 99
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdh b 8 112
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdh1 b 8 113
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdh2 b 8 114
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdh3 b 8 115
+  make_one_device_node ${SOURCES_DIR}/dev/sdh b 8 112
+  make_one_device_node ${SOURCES_DIR}/dev/sdh1 b 8 113
+  make_one_device_node ${SOURCES_DIR}/dev/sdh2 b 8 114
+  make_one_device_node ${SOURCES_DIR}/dev/sdh3 b 8 115
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdi b 8 128
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdi1 b 8 129
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdi2 b 8 130
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdi3 b 8 131
+  make_one_device_node ${SOURCES_DIR}/dev/sdi b 8 128
+  make_one_device_node ${SOURCES_DIR}/dev/sdi1 b 8 129
+  make_one_device_node ${SOURCES_DIR}/dev/sdi2 b 8 130
+  make_one_device_node ${SOURCES_DIR}/dev/sdi3 b 8 131
 
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdj b 8 144
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdj1 b 8 145
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdj2 b 8 146
-  make_one_device_node ${INITRAMFS_DIR}/dev/sdj3 b 8 147
+  make_one_device_node ${SOURCES_DIR}/dev/sdj b 8 144
+  make_one_device_node ${SOURCES_DIR}/dev/sdj1 b 8 145
+  make_one_device_node ${SOURCES_DIR}/dev/sdj2 b 8 146
+  make_one_device_node ${SOURCES_DIR}/dev/sdj3 b 8 147
 
 }
 
@@ -536,9 +527,9 @@ copy_dependent_libraries()
       then
         real_target="$real_link_line"
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_target: $real_target"
-        real_link_directory=${INITRAMFS_DIR}${real_target%/*}/
+        real_link_directory=${SOURCES_DIR}${real_target%/*}/
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_directory: $real_link_directory"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $source_directory$real_target $real_link_directory"
+        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $make_directory$real_target $real_link_directory"
         copy_one_part "$real_target" "$real_link_directory"
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "--------------------------------------------"
       else
@@ -546,18 +537,18 @@ copy_dependent_libraries()
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_target: $real_target"
         real_link_name=$( echo "$real_link_line" | cut -c -$(( $real_link_index - 2 )) )
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_name: $real_link_name"
-        source_directory=${real_link_name%/*}/
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "source_directory: $source_directory"
-        real_link_directory=${INITRAMFS_DIR}${real_link_name%/*}/
+        make_directory=${real_link_name%/*}/
+        [ "$DEBUG_LIB_COPY" == "true" ] && echo "make_directory: $make_directory"
+        real_link_directory=${SOURCES_DIR}${real_link_name%/*}/
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_directory: $real_link_directory"
         really_real_link_name=$( echo ${real_link_name} | sed -e "s%${real_link_name%/*}/%%" )
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "really_real_link_name: $really_real_link_name"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $source_directory$real_target $real_link_directory"
+        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $make_directory$real_target $real_link_directory"
         if [ ! -e $real_link_directory$real_target ] 
         then
-          copy_one_part "$source_directory$real_target" "$real_link_directory"
+          copy_one_part "$make_directory$real_target" "$real_link_directory"
         else
-          msg=" {file $source_directory$real_target already copied to  $real_link_directory} "
+          msg=" {file $make_directory$real_target already copied to  $real_link_directory} "
           msg_len=${#msg}
           print_pending_op_msg "$msg"
           result="$NA_MSG"
@@ -598,18 +589,18 @@ copy_dependent_libraries()
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_target: $real_target"
       real_link_name=$( echo "$linkname" | cut -c -$(( $real_name_index - 2 )) )
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_link_name: $real_link_name"
-      source_directory=${real_link_name%/*}/
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "source_directory: $source_directory"
-      real_link_directory=${INITRAMFS_DIR}${real_link_name%/*}/
+      make_directory=${real_link_name%/*}/
+      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "make_directory: $make_directory"
+      real_link_directory=${SOURCES_DIR}${real_link_name%/*}/
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_link_directory: $real_link_directory"
       really_real_link_name=$( echo ${real_link_name} | sed -e "s%${real_link_name%/*}/%%" )
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "really_real_link_name: $really_real_link_name"
 
       if [ ! -e $real_link_directory$real_target ]
       then
-        copy_one_part "$source_directory$real_target" "$real_link_directory"
+        copy_one_part "$make_directory$real_target" "$real_link_directory"
       else
-        msg=" {file $source_directory$real_target already copied to  $real_link_directory} "
+        msg=" {file $make_directory$real_target already copied to  $real_link_directory} "
         msg_len=${#msg}
         print_pending_op_msg "$msg"
         result="$NA_MSG"
@@ -640,8 +631,8 @@ copy_dependent_libraries()
 
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
-#   ${SOURCE_DIR}/initramfs_dir_tree to tailor this
-separator "mkinitramfs.sh - $BUILD"
+#   ${MAKE_DIR}/initramfs_dir_tree to tailor this
+separator "make_sources.sh - $BUILD"
 checkroot
 display_config
 # determine if splash is requested in init.conf
