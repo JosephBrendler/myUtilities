@@ -3,13 +3,24 @@
 # /usr/src/initramfs/init
 # Joe Brendler   28 Feb 2008
 #  for version history and "credits", see accompanying file "historical_notes"
-# rev 09 Nov 2016 - to do list:
 #
+
+# make my usual functions and formatting "shortcuts" available
 source script_header_joe_brendler
 
 #----[ Define local variables ]-------------------------------------------------------------------
-#BUILD="3.2.3 20150104"  *** decided to put this in a separate file, so I don't forget to update it
-source BUILD
+# I treat both the init and the scripts that generate the initramfs as part of the "build" so I've
+#   chosen to identify the build value in a file that both scripts can refer to and use in their
+#   interactive communication with the user
+# I also use the GLOBALS file to identify the SOURCES_DIR (e.g. /usr/src/initramfs) and the MAKE_DIR (e.g. /usr/src/mkinitramfs)
+source GLOBALS
+
+# source the variable assignments made in init.conf
+source init.conf
+
+# initialize some additional global variables
+init_passdevice="";
+init_unlock_method="";
 
 #----[ Define local functions ]-------------------------------------------------------------------
 rescue_shell() {
@@ -23,6 +34,17 @@ rescue_shell() {
     sleep $(($init_wait * 3));
     busybox --install -s;
     exec /bin/sh;
+}
+
+print_config() {
+    # display variable assignments sourced from init.conf; do not show password
+    message "Init Configuration:";
+    grep -e '^init' init.conf | grep -v password | grep -v "init_passdevice_list";
+    echo "init_passdevice_list=\"${init_passdevice_list}\"";
+    echo "init_passdevice=\"\"";
+    echo "init_unlock_method=\"\"";
+    echo "Note: init_passdevice and init_unlock_method are not set in init.conf; they will be determined analytically"
+    echo
 }
 
 mini_udev() {
@@ -389,29 +411,15 @@ splash() {
 
 #---[ Main script ]----------------------------------------------------------------------------------------
 
-# source the variable assignments made in init.conf
-. init.conf
-
-# initialize some additional global variables
-init_passdevice="";
-init_unlock_method="";
-
 # wait for normal trailing kernel output expected at this point
-sleep $((init_wait*8))
+sleep $((${init_wait} * 8))
 
-# start the splash screen
-if [[ "${init_splash}" == "yes" ]] && [[ -e /etc/initrd.splash ]]
-then
-    . /etc/initrd.splash && message "Sourced initrd.splash"
-else
-    message "No splash."
-fi
-[ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait))
-
-# Required for splash to work.  Not an issue with the initrd as this
-# device isn't created there and is not needed.
+# start the splash screen, if required by init.conf
 if [[ "${init_splash}" == "yes" ]]
 then
+    # source the stuff in initrd.splash if it found in /etc
+    [[ -e /etc/initrd.splash ]] && source /etc/initrd.splash && message "Sourced initrd.splash"
+    # Required for splash to work.  Not an issue with the initrd as this device isn't created there and is not needed.
     if [[ ! -e "/newroot/dev/tty1" ]]
     then
         mknod "/newroot/dev/tty1" c 4 1 && message "Created device node /newroot/dev/tty1" || \
@@ -419,25 +427,23 @@ then
     else
         :  # /newroot/dev/tty1 already exists - no action required
     fi
+    # copied this from a livedvd implementation -- not sure about it
     [[ ! -e "/dev/tty1" ]] && E_message $BRon"Error: /dev/tty1 not found -- splash will not function"$Boff
 else
-    :  # No splash; no action required
+    message "No splash."
 fi
+[ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait))
 
-# uncomment to debug: wait before using splash
-#sleep $(($init_wait * 3))
+# this splash messaging has not worked for me yet
+[ "${init_DEBUG}" == "true" } && sleep $(($init_wait * 3))
 [ "${init_splash}" == "yes" ] && splash 'init' "Initializing Brendlefly kernel..." && message "Splash initialized"
-[ "${init_splash}" == "yes" ] && sleep $((init_wait*5))
-
+[ "${init_splash}" == "yes" ] && sleep $(($init_wait * 5))
 [ "${init_splash}" == "yes" ] && splash set_msg "Splash initialized and used" && /sbin/fbcondecor_helper 2 'repaint'
-# uncomment to debug: wait before using splash
-#sleep $(($init_wait * 3))
+[ "${init_DEBUG}" == "true" } && sleep $(($init_wait * 3))
 
 # echo to console to confirm entry into init; pause so we can read this
 separator "Running /init" "initramfs-$BUILD"
-message "Init Configuration:"
-# display variable assignments sourced from init.conf; do not show password
-grep -e '^init' init.conf | grep -v password
+print_config
 sleep $(($init_wait * 3))
 [ "${init_DEBUG}" == "true" ] && sh_countdown 10
 
