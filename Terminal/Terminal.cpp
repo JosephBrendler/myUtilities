@@ -94,7 +94,38 @@ void Terminal::right_status( int status )  // output a boolean status (arg) at t
   cout << out_msg << endl;
 }
 
-//*************** right_status ************************//
+//*************** progress ***************************//
+void Terminal::progress( int step, int num_steps )     // display an arrow depicting progress (visualize arg[1] of arg[2] steps complete
+{                                                      // assumes the line it writes on has already been blanked/cleared
+  // Configurable variables                            //
+  int margin = 15; int i=0;
+  std::string marker = "-"; std::string bracket = "|"; std::string arrowhead = ">"; std::string space = " ";
+  std::string line = ""; std::string percentcolor = "";
+  // Analytically determined variables
+  int termwidth = this->width();    int percentstart = termwidth - 9;
+  int range = (termwidth -3 -(margin * 2));           // -3 accounts for the two margin marker brackets "|" and the arrowhead ">"
+  int myprogress = (int)( ( range * step ) / num_steps );   // how many marker to draw to represent a single step of progress
+  int start = ( margin + 1 );    int end = ( termwidth - margin - 1 );  // this is where the brackets go
+  int myrow = this->height();    int startofline = ( start + 1 );
+  int endofline = startofline + myprogress;
+  if ( endofline >= (end-2) ) { endofline = ( end - 2 ); }  int lengthofline = ( endofline - startofline +1 );
+  int percent = ( (100 *  step) / num_steps );
+  if ( percent < 70 ) { percentcolor = BR_ON; } else if ( percent >= 90 ) { percentcolor = BG_ON; } else { percentcolor = BY_ON; }
+  // action: move to start, draw bracket, draw line and arrowhead, move to end and draw bracket,
+  //         move middle, show percent, return to original position
+  for (i=0; i<=end; i++) { line.insert(i, space); }   // initialize line with blanks
+  line.replace(margin+1, 1, bracket);
+  for ( i=startofline; i <= endofline; i++) { line.replace(i, 1, marker); }
+  line.replace(endofline+1, 1, arrowhead);
+  line.replace(end, 1, bracket);
+  this->HCU();  this->SCP();
+  cout << line; this->CUF(1);
+  this->CUP( myrow, percentstart );
+  cout << "( " << percentcolor << percent << "%" << B_OFF << " )";
+  this->RCP();  this->SCU();
+}
+
+//*************** summarize_me ***********************//
 bool Terminal::summarize_me()   // summarize what the utilities in this library do
 {
   string msg("");

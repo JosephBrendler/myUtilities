@@ -5,7 +5,8 @@
  * example program for running my terminal library
  */
 #include "Terminal.h"
-#include "../colorHeader/colorHeader.h"
+#include "colorHeader.h"
+#include <unistd.h>
 
 bool DEBUG = true;
 bool EXTRA_DEBUG = false;
@@ -15,6 +16,8 @@ bool EXTRA_VERBOSE = false;
 using namespace std;
 
 bool done = false;
+
+unsigned int microseconds;
 
 Terminal term;
 
@@ -74,5 +77,11 @@ int main ()
   term.right_status( term.countdown( 6 ) );
   cout << "\n";
 */
+  cout << endl;
+  cout << endl;
+  for (int i=1; i < 1005; i++ ) { term.progress( i, 1005 ); usleep(1000); }
+  cout << endl;
+  cout << endl;
   term.summarize_me();
+
 }
