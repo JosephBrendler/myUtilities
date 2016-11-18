@@ -1,8 +1,8 @@
 /*
- * kernelConfigLibTest.cpp
+ * compareConfigs.cpp
  * Joe Brendler
  * 28 January 2015
- * example program for running my kernel configuration file library
+ * compare two kernel configurations, using kernel configuration file library
  */
 
 #include "KernelConfig.h"
