@@ -19,7 +19,7 @@
 #include <unistd.h>	// a POSIX header
 
 #include "../colorHeader/colorHeader.h"
-#include "../Terminal/Terminal.h"
+#include "../../Terminal/Terminal.h"
 
 using namespace std;
 
@@ -34,6 +34,10 @@ class KernelConfig
     string value[6000];			// the value of a configuration parameter (e.g. "y" or "is not set")
     int length;				// the number of lines in the configuration file
     int records;			// the number of configuration parameter records loaded
+    int blanks;				// the number of blank lines (skipped)
+    int comments;			// the number of comment lines (skipped)
+    int set_params;			// the number of set parameters (set records loaded)
+    int unset_params;			// the number of unset parameters (unset records loaded)
   private:
     bool _DEBUG;
     int _example;

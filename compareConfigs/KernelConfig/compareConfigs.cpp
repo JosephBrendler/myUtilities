@@ -1,20 +1,18 @@
 /*
- * kernelConfigLibTest.cpp
+ * compareConfigs.cpp
  * Joe Brendler
  * 28 January 2015
- * example program for running my kernel configuration file library
+ * compare two kernel configurations, using kernel configuration file library
  */
+
 #include "KernelConfig.h"
 #include "../colorHeader/colorHeader.h"
-#include "../Terminal/Terminal.h"
+#include "../../Terminal/Terminal.h"
 
 #include <fstream>      // file operatons, e.g. myFile.close()
 #include <sys/ioctl.h>  // a linux header with io controls
 #include <unistd.h>     // a POSIX header
 #include <cstdlib>      // itoa(), etc
-
-#include "../colorHeader/colorHeader.h"
-#include "../Terminal/Terminal.h"
 
 using namespace std;
 
@@ -23,7 +21,8 @@ int main ( int argc, char* argv[] )
 //  bool DEBUGME = true;
   bool DEBUGME = false;
 
-  bool include_same = false;  // set to true if you also want to see which settings are the same
+  bool include_same = false;  // set to true if you also want to see which settings
+                              //   are the same in both configurations
   Terminal term;
 
   int i, j, d;
@@ -232,8 +231,8 @@ int main ( int argc, char* argv[] )
         }  // if-else (values are the same)
       }  // parameters are the same
       j++;
-    }  // inner while loop
-    if ( ! found )
+    }  // inner while loop (checked every record in config2 against a single record in config1
+    if ( ! found )   // this single config1 parameter isn't in config2 at all
     {
       if ( ! outfilename[0] )  // output to screen
       {
@@ -276,17 +275,19 @@ int main ( int argc, char* argv[] )
   cout << BM_ON << "-------------------------[ half-time answer: " << B_OFF << (d-1) << BM_ON << " records differ ]------------------------" << B_OFF << endl;
 
   // now find each record in file2 -- if not in file1, output comparison; ignore otherwise
+  //   (do not include paramaters that appear in both but have different settings --
+  //    we did that above already)
   for ( i=0; i<myConfig2.records; i++ )
   {
     found = false;
     j = 0;
     while ( ( ! found ) && ( j < myConfig1.records ) )
     {
-      if ( myConfig1.parameter[j] == myConfig2.parameter[i] )  //--- we found the record from 1 in 2
-      { found = true; }
+      // if we find the record in config1 to be the same, just skip to the next config2 record
+      if ( myConfig1.parameter[j] == myConfig2.parameter[i] ) { found = true; }
       j++;
     }  // inner while loop
-    if ( ! found )
+    if ( ! found )  // config1 does not contain this config2 parameter at all, so include it in output
     {
       if ( ! outfilename[0] )  // output to screen
       {
@@ -324,8 +325,8 @@ int main ( int argc, char* argv[] )
         }
       }
       d++;
-    }  // not found
-  }  // outer for loop
+    }  // while not found - check next config1 record
+  }  // outer for loop (iterate all config1 records against single config2 record)
   d -= 1;
   if ( d > 0 ) { cout << "\nDone.  Found " << d << " records differring.\n\n"; }
 }
