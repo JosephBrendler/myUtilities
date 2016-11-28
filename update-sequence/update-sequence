@@ -90,21 +90,23 @@ step=1
 laststep=5
 continue="y"
 RESUME="no"
-GO_AHEAD="no"
 SYNC="no"
+EXCLUDE=""
+# TODO: move these to .conf and set like those above
+GO_AHEAD="no"
 USEPKG="no"
 USEPKGONLY="no"
 GETBINPKG="no"
 GETBINPKGONLY="no"
 KEEPGOING="no"
-EXCLUDE=""
+WITH_BDEPS_Y="yes"
 
 # Array of messages used to announce each step
 step_message[1]="update-sequence-"$BUILD" step 1 - Sync and Emerge Updates"
 step_message[2]="update-sequence-"$BUILD" step 2 - Review news and Maintain Config Files"
 step_message[3]="update-sequence-"$BUILD" step 3 - Review elogs"
 step_message[4]="update-sequence-"$BUILD" step 4 - Handle Dependencies"
-step_message[5]="update-sequence-"$BUILD" step 5 - Final Cleanup"
+step_message[5]="update-sequence-"$BUILD" step 5 - Final Steps"
 step_message[6]='update-sequence-'$BUILD' step 6 - Update Sequence Complete.  Enter "y" to exit'
 
 
@@ -256,7 +258,7 @@ useage()
 {
    echo -e $BGon"Useage: update-sequence [option]"$Boff
    echo -e " Command line options:"
-   echo -e "  "$BBon"[-e | --eix]"Boff"...............run eix-update"
+   echo -e "  "$BBon"[-e | --eix]"$Boff"..............run eix-update"
    echo -e "  "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
    echo -e "  "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
    echo -e "  "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
@@ -320,7 +322,7 @@ echo -e ${LBon}"SYNC...................: "${Boff}${SYNC}
 echo -e ${LBon}"GO_AHEAD...............: "${Boff}${GO_AHEAD}
 echo -e ${LBon}"KEEPGOING..............: "${Boff}${KEEPGOING}
 echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
-[ "${DEBUG}" == "true" ] && countdown 10
+[ "${DEBUG}" == "true" ] && countdown 15 "Debug: pausing so you can review config..."
 }
 
 check_timestamp()
@@ -335,11 +337,11 @@ check_timestamp()
     [ "$SYNC" = "yes" ] && \
         message "option: sync set by command line" || \
         message "option: sync not set by command line"
-    if [ $agehours -gt $MAX_AGE ] 
+    if [ $agehours -gt $MAX_AGE ]
     then
         if [ "$GO_AHEAD" = "yes" ]
         then
-            # sanity-check: unwise to go-ahead immediately after sync 
+            # sanity-check: unwise to go-ahead immediately after sync
             #  without checking what will be merged
             E_message "You selected option: go-ahead " && \
             E_message "but you also set MAX_AGE: $MAX_AGE hours in update-sequence.conf" && \
@@ -467,8 +469,18 @@ handle_dependencies()
     return 0
 }
 
-final_cleanup()
+final_steps()
 {
+    # as indicated by option flags, perform additional steps
+    [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && message "Running emerge --regen ..." && emerge --regen
+    [ "${EIX_UPDATE}" == "yes" ] && message "Running eix-update ..." && eix-update
+    [ "${PERL_CLEANER}" == "yes" ] && message "Running perl-cleaner --all ..." && perl-cleaner --all
+    [ "${HASKELL_UPDATER}" == "yes" ] && message "Running haskell-updater ..." && haskell-updater
+    [ "${PYTHON_UPDATER}" == "yes" ] && message "Running python-updater ..." && python-updater
+    [ "${MODULE_REBUILD}" == "yes" ] && message "Running emerge @module-rebuild ..." && emerge @module-rebuild
+    [ "${X11_MODULE_REBUILD}" == "yes" ] && message "Running emerge @x11-module-rebuild ..." && emerge @x11-module-rebuild
+    [ "${SELINUX_RELABEL}" == "yes" ] && message "Running rlpkg -a -r ..." && rlpkg -a -r
+
     # clean un-needed package and distribution files, run localepurge
     [ -d "/usr/portage/packages" ] && message "Running eclean-pkg ..." && eclean-pkg
     message "Running eclean-dist -d ..." && eclean-dist -d && \
@@ -523,7 +535,7 @@ do
              maintain_config_files && echo -e $BGon"OK"$Boff ;;
         "3") showelogs && echo -e $BGon"OK"$Boff ;;
         "4") handle_dependencies && echo -e $BGon"OK"$Boff ;;
-        "5") final_cleanup && echo -e $BGon"OK"$Boff ;;
+        "5") final_steps && echo -e $BGon"OK"$Boff ;;
     esac
     message "Successfully completed: ${step_message[${step}]}"
     let "step += 1"
