@@ -190,21 +190,28 @@ EXCLUDE=""
 [ "$DEBUG" == "true" ] && message "1: [ $1 ], 2: [ $2 ]"
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
+    "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
     "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
     "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
     "-k" | "--usepkg"        ) USEPKG="yes" ;;
     "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
+    "-m" | "--modules"       ) MODULE_REBUILD="yes" ;;
+    "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
+    "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
+    "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
     "-s" | "--status"        ) status ; exit 0 ;;
+    "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
     "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
     "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
-    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
+    "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
     "-y" | "--sync"          ) SYNC="yes" ;;
+    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
     "-Z" | "--keep-going"    ) KEEPGOING="yes" ;;
+    "-H" | "--haskell"       ) HASKELL_UPDATER="yes" ;;
     "-h" | "--help"          ) useage ; exit 0 ;;
     *                        ) process_compound_arg $1 ;;
 esac
-
 }
 
 process_compound_arg()
@@ -220,18 +227,26 @@ while [ -n "${myargs}" ]
 do
     #handle first char
     case ${myargs:0:1} in
+        "e") EIX_UPDATE="yes" ;;
         "g") GETBINPKG="yes" ;;
         "G") GETBINPKGONLY="yes" ;;
         "k") USEPKG="yes" ;;
         "K") USEPKGONLY="yes" ;;
+        "m") MODULE_REBUILD="yes" ;;
+        "p") PERL_CLEANER="yes" ;;
+        "P") PYTHON_UPDATER="yes" ;;
         "r") RESUME="yes" ;;
+        "R") REGEN_OVERLAY_METADATA="yes" ;;
+        "S") SELINUX_RELABEL="yes" ;;
         "w") WITH_BDEPS_Y="yes" ;;
+        "X") X11_MODULE_REBUILD="yes" ;;
         "Y") GO_AHEAD="yes" ;;
         "y") SYNC="yes" ;;
         "Z") KEEPGOING="yes" ;;
+        "H") HASKELL_UPDATER="yes" ;;
         *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
-    esac
-    #strip first char from myargs
+esac
+    #strip first char from myargs (i.e. "shift")
     myargs=${myargs:1}
 done
 
@@ -241,17 +256,25 @@ useage()
 {
    echo -e $BGon"Useage: update-sequence [option]"$Boff
    echo -e " Command line options:"
+   echo -e "  "$BBon"[-e | --eix]"Boff"...............run eix-update"
    echo -e "  "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
    echo -e "  "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
    echo -e "  "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
    echo -e "  "$BBon"[-K | --usepkgonly]"$Boff".......use local binary packages only"
+   echo -e "  "$BBon"[-m | --modules]"$Boff"..........run emerge @module-rebuild"
+   echo -e "  "$BBon"[-p | --perl_cleaner]"$Boff".....run perl-cleaner --all"
+   echo -e "  "$BBon"[-P | --python]"$Boff"...........run python-updater"
    echo -e "  "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next step"
+   echo -e "  "$BBon"[-R | --regen]"$Boff"............regenerate portage tree metadata (including overlays) "
    echo -e "  "$BBon"[-s | --status]"$Boff"...........print next step in update sequence"
+   echo -e "  "$BBon"[-S | --selinux]"$Boff"..........redo selinux lablels"
    echo -e "  "$BBon"[-w | --WITH_BDEPS_Y]"$Boff".....emerge with build-time dependencies"
    echo -e "  "$BBon"[-x | --exclude <atom>]"$Boff"...exclude <atom> from emerge"
+   echo -e "  "$BBon"[-X | --X11]"$Boff"..............run emerge @x11-module-rebuild"
    echo -e "  "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
    echo -e "  "$BBon"[-Y | --go-ahead]"$Boff".........automatically continue to next steps"
    echo -e "  "$BBon"[-Z | --keep-going]"$Boff".......on emerge failure, try to keep emerging other packages"
+   echo -e "  "$BBon"[-H | --haskell]"$Boff"..........run haskell-updater"
    echo -e "  "$BBon"[-h | --help]"$Boff".............print this text"
    echo
    echo -e "  "$BYon"Notes: "$Boff
@@ -274,21 +297,29 @@ status()
 display_config()
 {
 message "Using configuration data below: "
-echo "Configuration: "${CONF_DIR}
-echo "SCRIPT_DIR: "${SCRIPT_DIR}
-echo "STATUS_FILE: "${STATUS_FILE}
-echo "SYNC_TS: "${SYNC_TS}
-echo "MAX_AGE: "${MAX_AGE}
-echo "SYNC: "${SYNC}
-echo "RESUME: "${RESUME}
-echo "GO_AHEAD: "${GO_AHEAD}
-echo "USEPKG: "${USEPKG}
-echo "USEPKGONLY: "${USEPKGONLY}
-echo "GETBINPKG: "${GETBINPKG}
-echo "GETBINPKGONLY: "${GETBINPKGONLY}
-echo "WITH_BDEPS_Y: "${WITH_BDEPS_Y}
-echo "KEEPGOING: "${KEEPGOING}
-echo "EXCLUDE: "${EXCLUDE}
+echo -e ${LBon}"Configuration..........: "${Boff}${CONF_DIR}
+echo -e ${LBon}"SCRIPT_DIR.............: "${Boff}${SCRIPT_DIR}
+echo -e ${LBon}"STATUS_FILE............: "${Boff}${STATUS_FILE}
+echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
+echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
+echo -e ${LBon}"EIX_UPDATE.............: "${Boff}${EIX_UPDATE}
+echo -e ${LBon}"USEPKG.................: "${Boff}${USEPKG}
+echo -e ${LBon}"USEPKGONLY.............: "${Boff}${USEPKGONLY}
+echo -e ${LBon}"GETBINPKG..............: "${Boff}${GETBINPKG}
+echo -e ${LBon}"GETBINPKGONLY..........: "${Boff}${GETBINPKGONLY}
+echo -e ${LBon}"HASKELL_UPDATER........: "${Boff}${HASKELL_UPDATER}
+echo -e ${LBon}"MODULE_REBUILD.........: "${Boff}${MODULE_REBUILD}
+echo -e ${LBon}"PERL_CLEANER...........: "${Boff}${PERL_CLEANER}
+echo -e ${LBon}"PYTHON_UPDATER.........: "${Boff}${PYTHON_UPDATER}
+echo -e ${LBon}"RESUME.................: "${Boff}${RESUME}
+echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "${Boff}${REGEN_OVERLAY_METADATA}
+echo -e ${LBon}"SELINUX_RELABEL........: "${Boff}${SELINUX_RELABEL}
+echo -e ${LBon}"WITH_BDEPS_Y...........: "${Boff}${WITH_BDEPS_Y}
+echo -e ${LBon}"X11_MODULE_REBUILD.....: "${Boff}${X11_MODULE_REBUILD}
+echo -e ${LBon}"SYNC...................: "${Boff}${SYNC}
+echo -e ${LBon}"GO_AHEAD...............: "${Boff}${GO_AHEAD}
+echo -e ${LBon}"KEEPGOING..............: "${Boff}${KEEPGOING}
+echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
 }
 
 check_timestamp()
