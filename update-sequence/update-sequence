@@ -18,6 +18,7 @@
 #     26 Dec 15 - .a fixed typo; turned off DEBUG
 # Rev 14 May 16 - ver 4.3.4 changed to selectable emerge --sync or emerge-webrsync
 # Rev 23 Sep 16 - ver 4.4.0 added --binpkg-respect-use=y by default, and fixed isues with whitespace and multiple args for --exclude
+# Rev 28 Nov 16 - ver 5.0.0 adding multiple optional steps switchable by either .conf or command line options
 #
 # Source the variable assignments made in update-sequence.conf (/etc/ overrides pwd)
 #   This will supercede/modify the default assignments made below
@@ -52,6 +53,33 @@ CONF_DIR="defaults"
 # ELOG_DIR is the location of elog files
 [ -z "$ELOG_DIR" ] && ELOG_DIR="/var/log/portage/elog/"
 
+# SELINUX_RELABEL
+[ -z "$SELINUX_RELABEL" ] && SELINUX_RELABEL="no"
+
+# PERL_CLEANER
+[ -z "$PERL_CLEANER" ] && PERL_CLEANER="no"
+
+# HASKELL_UPDATER
+[ -z "$HASKELL_UPDATER" ] && HASKELL_UPDATER="no"
+
+# REGEN_OVERLAY_METADATA
+[ -z "$REGEN_OVERLAY_METADATA" ] && REGEN_OVERLAY_METADATA="no"
+
+# EIX_UPDATE
+[ -z "$EIX_UPDATE" ] && EIX_UPDATE="no"
+
+# PYTHON_UPDATER
+[ -z "$PYTHON_UPDATER" ] && PYTHON_UPDATER="no"
+
+# MODULE_REBUILD
+[ -z "$MODULE_REBUILD" ] && MODULE_REBUILD="no"
+
+# X11_MODULE_REBUILD
+[ -z "$X11_MODULE_REBUILD" ] && X11_MODULE_REBUILD="no"
+
+# RKHUNTER propupd
+[ -z "$RKHUNTER" ] && RKHUNTER="no"
+
 # --- source common functions and variables --------------------
 source /usr/local/sbin/script_header_joe_brendler
 
@@ -59,27 +87,29 @@ source /usr/local/sbin/script_header_joe_brendler
 DEBUG="true"
 #DEBUG="false"
 
-BUILD="4.4.0 (20160923)"
+BUILD="5.0.0 (20161203)"
 
 step=1
 laststep=5
 continue="y"
 RESUME="no"
-GO_AHEAD="no"
 SYNC="no"
+EXCLUDE=""
+# TODO: move these to .conf and set like those above
+GO_AHEAD="no"
 USEPKG="no"
 USEPKGONLY="no"
 GETBINPKG="no"
 GETBINPKGONLY="no"
 KEEPGOING="no"
-EXCLUDE=""
+WITH_BDEPS_Y="yes"
 
 # Array of messages used to announce each step
 step_message[1]="update-sequence-"$BUILD" step 1 - Sync and Emerge Updates"
 step_message[2]="update-sequence-"$BUILD" step 2 - Review news and Maintain Config Files"
 step_message[3]="update-sequence-"$BUILD" step 3 - Review elogs"
 step_message[4]="update-sequence-"$BUILD" step 4 - Handle Dependencies"
-step_message[5]="update-sequence-"$BUILD" step 5 - Final Cleanup"
+step_message[5]="update-sequence-"$BUILD" step 5 - Final Steps"
 step_message[6]='update-sequence-'$BUILD' step 6 - Update Sequence Complete.  Enter "y" to exit'
 
 
@@ -165,21 +195,33 @@ EXCLUDE=""
 [ "$DEBUG" == "true" ] && message "1: [ $1 ], 2: [ $2 ]"
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
+    "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
     "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
     "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
     "-k" | "--usepkg"        ) USEPKG="yes" ;;
     "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
+    "-m" | "--modules"       ) MODULE_REBUILD="yes" ;;
+    "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
+    "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
+    "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
     "-s" | "--status"        ) status ; exit 0 ;;
+    "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
+    "-t" | "--rkhunter"      ) RKHUNTER="yes" ;;
     "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
     "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
-    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
+    "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
     "-y" | "--sync"          ) SYNC="yes" ;;
+    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
     "-Z" | "--keep-going"    ) KEEPGOING="yes" ;;
+    "-H" | "--haskell"       ) HASKELL_UPDATER="yes" ;;
     "-h" | "--help"          ) useage ; exit 0 ;;
+    "-u" | "--update-all"    ) EIX_UPDATE="yes"; MODULE_REBUILD="yes"; PERL_CLEANER="yes"; \
+                               PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
+                               SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes" \
+                               X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
     *                        ) process_compound_arg $1 ;;
 esac
-
 }
 
 process_compound_arg()
@@ -195,18 +237,30 @@ while [ -n "${myargs}" ]
 do
     #handle first char
     case ${myargs:0:1} in
+        "e") EIX_UPDATE="yes" ;;
         "g") GETBINPKG="yes" ;;
         "G") GETBINPKGONLY="yes" ;;
         "k") USEPKG="yes" ;;
         "K") USEPKGONLY="yes" ;;
+        "m") MODULE_REBUILD="yes" ;;
+        "p") PERL_CLEANER="yes" ;;
+        "P") PYTHON_UPDATER="yes" ;;
         "r") RESUME="yes" ;;
+        "R") REGEN_OVERLAY_METADATA="yes" ;;
+        "S") SELINUX_RELABEL="yes" ;;
         "w") WITH_BDEPS_Y="yes" ;;
+        "X") X11_MODULE_REBUILD="yes" ;;
         "Y") GO_AHEAD="yes" ;;
         "y") SYNC="yes" ;;
         "Z") KEEPGOING="yes" ;;
+        "H") HASKELL_UPDATER="yes" ;;
+        "u") EIX_UPDATE="yes"; MODULE_REBUILD="yes"; PERL_CLEANER="yes"; \
+             PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
+             SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes" \
+             X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
         *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
-    esac
-    #strip first char from myargs
+esac
+    #strip first char from myargs (i.e. "shift")
     myargs=${myargs:1}
 done
 
@@ -216,17 +270,26 @@ useage()
 {
    echo -e $BGon"Useage: update-sequence [option]"$Boff
    echo -e " Command line options:"
+   echo -e "  "$BBon"[-e | --eix]"$Boff"..............run eix-update"
    echo -e "  "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
    echo -e "  "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
    echo -e "  "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
    echo -e "  "$BBon"[-K | --usepkgonly]"$Boff".......use local binary packages only"
+   echo -e "  "$BBon"[-m | --modules]"$Boff"..........run emerge @module-rebuild"
+   echo -e "  "$BBon"[-p | --perl_cleaner]"$Boff".....run perl-cleaner --all"
+   echo -e "  "$BBon"[-P | --python]"$Boff"...........run python-updater"
    echo -e "  "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next step"
+   echo -e "  "$BBon"[-R | --regen]"$Boff"............regenerate portage tree metadata (including overlays) "
    echo -e "  "$BBon"[-s | --status]"$Boff"...........print next step in update sequence"
+   echo -e "  "$BBon"[-S | --selinux]"$Boff"..........redo selinux lablels"
+   echo -e "  "$BBon"[-t | --rkhunter]"$Boff".........run rkhunter --propupd"
    echo -e "  "$BBon"[-w | --WITH_BDEPS_Y]"$Boff".....emerge with build-time dependencies"
    echo -e "  "$BBon"[-x | --exclude <atom>]"$Boff"...exclude <atom> from emerge"
+   echo -e "  "$BBon"[-X | --X11]"$Boff"..............run emerge @x11-module-rebuild"
    echo -e "  "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
    echo -e "  "$BBon"[-Y | --go-ahead]"$Boff".........automatically continue to next steps"
    echo -e "  "$BBon"[-Z | --keep-going]"$Boff".......on emerge failure, try to keep emerging other packages"
+   echo -e "  "$BBon"[-H | --haskell]"$Boff"..........run haskell-updater"
    echo -e "  "$BBon"[-h | --help]"$Boff".............print this text"
    echo
    echo -e "  "$BYon"Notes: "$Boff
@@ -249,21 +312,32 @@ status()
 display_config()
 {
 message "Using configuration data below: "
-echo "Configuration: "${CONF_DIR}
-echo "SCRIPT_DIR: "${SCRIPT_DIR}
-echo "STATUS_FILE: "${STATUS_FILE}
-echo "SYNC_TS: "${SYNC_TS}
-echo "MAX_AGE: "${MAX_AGE}
-echo "SYNC: "${SYNC}
-echo "RESUME: "${RESUME}
-echo "GO_AHEAD: "${GO_AHEAD}
-echo "USEPKG: "${USEPKG}
-echo "USEPKGONLY: "${USEPKGONLY}
-echo "GETBINPKG: "${GETBINPKG}
-echo "GETBINPKGONLY: "${GETBINPKGONLY}
-echo "WITH_BDEPS_Y: "${WITH_BDEPS_Y}
-echo "KEEPGOING: "${KEEPGOING}
-echo "EXCLUDE: "${EXCLUDE}
+echo -e ${LBon}"Configuration..........: "${Boff}${CONF_DIR}
+echo -e ${LBon}"SCRIPT_DIR.............: "${Boff}${SCRIPT_DIR}
+echo -e ${LBon}"STATUS_FILE............: "${Boff}${STATUS_FILE}
+echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
+echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
+echo -e ${LBon}"EIX_UPDATE.............: "${Boff}${EIX_UPDATE}
+echo -e ${LBon}"USEPKG.................: "${Boff}${USEPKG}
+echo -e ${LBon}"USEPKGONLY.............: "${Boff}${USEPKGONLY}
+echo -e ${LBon}"GETBINPKG..............: "${Boff}${GETBINPKG}
+echo -e ${LBon}"GETBINPKGONLY..........: "${Boff}${GETBINPKGONLY}
+echo -e ${LBon}"HASKELL_UPDATER........: "${Boff}${HASKELL_UPDATER}
+echo -e ${LBon}"MODULE_REBUILD.........: "${Boff}${MODULE_REBUILD}
+echo -e ${LBon}"PERL_CLEANER...........: "${Boff}${PERL_CLEANER}
+echo -e ${LBon}"PYTHON_UPDATER.........: "${Boff}${PYTHON_UPDATER}
+echo -e ${LBon}"RESUME.................: "${Boff}${RESUME}
+echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "${Boff}${REGEN_OVERLAY_METADATA}
+echo -e ${LBon}"SELINUX_RELABEL........: "${Boff}${SELINUX_RELABEL}
+echo -e ${LBon}"WITH_BDEPS_Y...........: "${Boff}${WITH_BDEPS_Y}
+echo -e ${LBon}"RKHUNTER...............: "${Boff}${RKHUNTER}
+echo -e ${LBon}"X11_MODULE_REBUILD.....: "${Boff}${X11_MODULE_REBUILD}
+echo -e ${LBon}"SYNC...................: "${Boff}${SYNC}
+echo -e ${LBon}"SYNC_CMD...............: "${Boff}${SYNC_CMD}
+echo -e ${LBon}"GO_AHEAD...............: "${Boff}${GO_AHEAD}
+echo -e ${LBon}"KEEPGOING..............: "${Boff}${KEEPGOING}
+echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
+[ "${DEBUG}" == "true" ] && countdown 15 "Debug: pausing so you can review config..."
 }
 
 check_timestamp()
@@ -278,11 +352,11 @@ check_timestamp()
     [ "$SYNC" = "yes" ] && \
         message "option: sync set by command line" || \
         message "option: sync not set by command line"
-    if [ $agehours -gt $MAX_AGE ] 
+    if [ $agehours -gt $MAX_AGE ]
     then
         if [ "$GO_AHEAD" = "yes" ]
         then
-            # sanity-check: unwise to go-ahead immediately after sync 
+            # sanity-check: unwise to go-ahead immediately after sync
             #  without checking what will be merged
             E_message "You selected option: go-ahead " && \
             E_message "but you also set MAX_AGE: $MAX_AGE hours in update-sequence.conf" && \
@@ -303,19 +377,17 @@ emerge_sync()
     # check to see if portage tree is up to date
     # if timestamp of last emerge --sync is old, do a new one
     check_timestamp "$SYNC_TS"
-    [ "$SYNC" = "yes" ] && \
-        if [ "$SYNC_CMD" = "WEBRSYNC" ]
-        then
-            message "Running emerge-webrsync... " && emerge-webrsync
-        else
-            if [ "$SYNC_CMD" = "SYNC" ]
-            then
-                message "Running emerge --sync... " && emerge --sync
-            else
-              E_message "Error: invalid sync option [ $SYNC_CMD ]"
-              return 1
-            fi
-        fi
+    if [ "$SYNC" = "yes" ]
+    then
+        case ${SYNC_CMD} in
+            "WEBRSYNC" ) message "Running emerge-webrsync... " && emerge-webrsync ;;
+            "SYNC"     ) message "Running emerge --sync... " && emerge --sync ;;
+            "EIX_SYNC" ) message "Running eix-sync..." && eix-sync ;;
+            *          ) E_message "Error: invalid sync option [ $SYNC_CMD ]" ; return 1 ;;
+        esac
+    else
+        message "Not running a sync for portage tree."
+    fi
     return 0
 }
 
@@ -410,8 +482,19 @@ handle_dependencies()
     return 0
 }
 
-final_cleanup()
+final_steps()
 {
+    # as indicated by option flags, perform additional steps
+    [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && message "Running emerge --regen ..." && emerge --regen
+    [ "${EIX_UPDATE}" == "yes" ] && [ "${SYNC_CMD}" != "EIX_SYNC" ] &&message "Running eix-update ..." && eix-update
+    [ "${PERL_CLEANER}" == "yes" ] && message "Running perl-cleaner --all ..." && perl-cleaner --all
+    [ "${HASKELL_UPDATER}" == "yes" ] && message "Running haskell-updater ..." && haskell-updater
+    [ "${PYTHON_UPDATER}" == "yes" ] && message "Running python-updater ..." && python-updater
+    [ "${MODULE_REBUILD}" == "yes" ] && message "Running emerge @module-rebuild ..." && emerge @module-rebuild
+    [ "${X11_MODULE_REBUILD}" == "yes" ] && message "Running emerge @x11-module-rebuild ..." && emerge @x11-module-rebuild
+    [ "${SELINUX_RELABEL}" == "yes" ] && message "Running rlpkg -a -r ..." && rlpkg -a -r
+    [ "${RKHUNTER}" == "yes" ] && message "Running rkhunter --propupd" && rkhunter --propupd
+
     # clean un-needed package and distribution files, run localepurge
     [ -d "/usr/portage/packages" ] && message "Running eclean-pkg ..." && eclean-pkg
     message "Running eclean-dist -d ..." && eclean-dist -d && \
@@ -435,7 +518,6 @@ ask_continue()
             "y" | "Y" ) continue="y" ;;
         esac
     done
-
 }
 
 # --- start main script ---------------------------------------------------------
@@ -466,7 +548,7 @@ do
              maintain_config_files && echo -e $BGon"OK"$Boff ;;
         "3") showelogs && echo -e $BGon"OK"$Boff ;;
         "4") handle_dependencies && echo -e $BGon"OK"$Boff ;;
-        "5") final_cleanup && echo -e $BGon"OK"$Boff ;;
+        "5") final_steps && echo -e $BGon"OK"$Boff ;;
     esac
     message "Successfully completed: ${step_message[${step}]}"
     let "step += 1"
