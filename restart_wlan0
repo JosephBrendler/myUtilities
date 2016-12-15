@@ -1,0 +1,91 @@
+#!/bin/bash
+#kill -9 $(ps -e | grep wpa | awk '{print $1}')
+source /usr/local/sbin/script_header_joe_brendler
+short_wait=".5"
+long_wait="10"
+dhcpcd_timeout="120"
+#DEBUG="true"
+DEBUG="false"
+
+echo
+separator "restart_wlan0"
+
+#-----[ function blocks ]-----------------------------------------------------------------
+
+wpa_state_wait()
+{
+  # wait for the return of "wpa_cli status" to have state with status COMPLETED
+  search_filter="state"
+  search_condition="COMPLETED"
+  wpa_state=""; count=0
+  [ "${DEBUG}" == "true" ] && message "Debug: search_filter = $search_filter"
+  [ "${DEBUG}" == "true" ] && message "Debug: search_condition = $search_condition"
+  SCP
+  while [ "${wpa_state}" != "${search_condition}" ]
+  do
+    let count++
+    wpa_state=$(wpa_cli status | grep -i ${search_filter} | cut -d'=' -f2)
+    RCP && echo -en "${BGon}*${Boff} waiting for ${search_filter} to match [ ${search_condition} ]. ${count} ${LBon}Current state: ${BYon}${wpa_state}${Boff}          "
+    sleep 1
+  done
+  echo
+
+}
+
+wpa_ip_wait()
+{
+  # wait for the return of "wpa_cli status" to have arg ip_address with a non-blank, non LL_V4 value
+  search_filter="ip_address"
+  search_condition1=""          # blank
+  search_condition2="169.254"   # LL_V4
+  wpa_state=""; count=0
+  [ "${DEBUG}" == "true" ] && message "Debug: search_filter = $search_filter"
+  [ "${DEBUG}" == "true" ] && message "Debug: search_condition1 = $search_condition1"
+  [ "${DEBUG}" == "true" ] && message "Debug: search_condition2 = $search_condition2"
+  SCP
+  while [ "${wpa_state}" == "${search_condition1}" ] || [ "${wpa_state}" == "${search_condition2}" ]
+  do
+    [ "${DEBUG}" == "true" ] && [ "${wpa_state}" == "${search_condition1}" ] && message "while condition is true; matched [ $search_condition1 ]"
+    [ "${DEBUG}" == "true" ] && [ "${wpa_state}" == "${search_condition2}" ] && message "while condition is true; matched [ $search_condition2 ]"
+    let count++
+    wpa_state=$(wpa_cli status | grep -i ${search_filter} | cut -d'=' -f2 | cut -d'.' -f1,2)
+    RCP && echo -en "${BGon}*${Boff} waiting for ${search_filter} to NOT match [ ${search_condition1} ] or [ ${search_condition2} ]. ${count} ${LBon}Current state: ${BYon}${wpa_state}${Boff}           "
+    sleep 1
+  done
+  echo
+
+}
+
+#-----[ start main script ]---------------------------------------------------------------
+message "stopping wpa_supplicant..."
+killall wpa_supplicant
+result=$? && right_status $result
+sleep $short_wait
+
+message "stopping wlan0..."
+ifconfig wlan0 down
+result=$? && right_status $result
+sleep $short_wait
+
+message "starting wlan0..."
+ifconfig wlan0 up
+result=$? && right_status $result
+sleep $short_wait
+
+message "starting wpa_supplicant..."
+wpa_supplicant -Dnl80211 -iwlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf -B > /dev/null
+result=$? && right_status $result
+
+# wait for wpa_cli to return state=COMPLETED
+wpa_state_wait
+sleep $short_wait; sleep $short_wait; sleep $short_wait
+
+message "starting dhcpcd for wlan0..."
+dhcpcd wlan0 -t $dhcpcd_timeout > /dev/null
+result=$? && right_status $result
+
+# wait for wpa_cli to return a non blank, non LL_V4 address
+wpa_ip_wait
+
+message "done; results below:"
+ifconfig wlan0
