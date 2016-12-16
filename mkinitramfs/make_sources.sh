@@ -24,8 +24,10 @@ tmpfile="./temporary_file"
 tmpfile2="./temporary_file2"
 
 # define dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
-bin_dyn_executables="kmod udevadm lsblk"
-bin_non_dyn_executables="busybox"
+#bin_dyn_executables="kmod udevadm lsblk"
+#bin_non_dyn_executables="busybox"  # update 16 Dec 16 removed "static" USE, busybox now dynamic
+bin_dyn_executables="busybox kmod udevadm lsblk"
+bin_non_dyn_executables=""
   # note: included findfs here explicitly rather than use busybox's own
 sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm"
 sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
@@ -480,23 +482,26 @@ copy_dependent_libraries()
 
   # Process the dynamic executables in /bin to identify libraries they depend on
   echo "# temporary file to capture list of libraries upon which my initramfs executables depend"
-  for i in kmod udevadm lsblk
+#  for i in kmod udevadm lsblk
+  for i in "$bin_dyn_executables"
   do
     ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # Process the dynamic executables in /usr/bin (for now only shred)
-  for i in shred
+#  for i in shred
+  for i in "$usr_bin_dyn_executables"
   do
     ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # Process the dynamic executables in /sbin to identify libraries they depend on
   #  Note: included findfs
-  for i in blkid cryptsetup findfs e2fsck lvm
+#  for i in blkid cryptsetup findfs e2fsck lvm
+  for i in "$sbin_dyn_executables"
   do
     ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # note: the following required executables are NOT dynamic -- no other libs needed for them:
-  #   /bin/busybox
+  #   /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
   #   /sbin/fbcondecor_helper
   #   /sbin/fsadm
   #   /sbin/lvmconf
