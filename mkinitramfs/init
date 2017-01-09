@@ -1,0 +1,465 @@
+#!/bin/sh
+#
+# /usr/src/initramfs/init
+# Joe Brendler   28 Feb 2008
+#  for version history and "credits", see accompanying file "historical_notes"
+#
+
+# make my usual functions and formatting "shortcuts" available
+source script_header_joe_brendler
+
+#----[ Define local variables ]-------------------------------------------------------------------
+# I treat both the init and the scripts that generate the initramfs as part of the "build" so I've
+#   chosen to identify the build value in a file that both scripts can refer to and use in their
+#   interactive communication with the user
+# I also use the GLOBALS file to identify the SOURCES_DIR (e.g. /usr/src/initramfs) and the MAKE_DIR (e.g. /usr/src/mkinitramfs)
+source GLOBALS
+
+# source the variable assignments made in init.conf
+source init.conf
+
+# initialize some additional global variables
+init_passdevice="";
+init_unlock_method="";
+
+#----[ Define local functions ]-------------------------------------------------------------------
+rescue_shell() {
+    # echo a simply formatted message explaining the source of our problem
+    #   and drop to a shell
+    # arguments: string message to explain source of error
+    #
+    echo && separator "${BRon}${1} - Dropping to a shell...${Boff}" "initramfs-$BUILD";
+    splash 'verbose';
+    # pause for time to read message
+    sleep $(($init_wait * 3));
+    busybox --install -s;
+    exec /bin/sh;
+}
+
+print_config() {
+    # display variable assignments sourced from init.conf; do not show password
+    message "Init Configuration:";
+    grep -e '^init' init.conf | grep -v password | grep -v "init_passdevice_list";
+    echo "init_passdevice_list=\"${init_passdevice_list}\"";
+    echo "init_passdevice=\"\"";
+    echo "init_unlock_method=\"\"";
+    echo "Note: init_passdevice and init_unlock_method are not set in init.conf; they will be determined analytically"
+    echo
+}
+
+mini_udev() {
+    # start mdev to identify devices, building nodes for them in /dev
+    # arguments: none
+    # external variables: none
+    # Notes: initramfs must include the following directories
+    #    /proc/sys/kernel
+    #    /proc/partitions
+    #    /sys/class
+    #    /sbin  - with binary udevadm and link to busybox for mdev
+
+    # The simple explanation here is that you need to [1] make sure /dev is
+    # a tmpfs filesystem.  Then you want to [2] create the /dev/pts mount point
+    # and [3] mount the devpts filesystem on it. Then [4] you want to have /sys
+    # mounted before executing mdev. (these steps handled before call to mini_udev)
+    # Then you [5] instruct the kernel to execute /sbin/mdev whenever
+    # a device is added or removed so that the device node can be created or
+    # destroyed.  Then you [6] seed /dev with all the device nodes that were created
+    # while the system was booting.
+
+    # As required, mount proc, devpts, and sys
+    mount -t proc proc /proc;
+    mount -t devtmpfs none /dev;
+    [[ ! -d /dev/pts ]] && mkdir /dev/pts;
+    mount -t devpts devpts /dev/pts;
+    mount -t sysfs sysfs /sys;
+    message "mounted /proc, /dev, /dev/pts, and /sys";
+
+    # pause so kernel can finish identifying devices
+    message "\n${BYon}NOTE: ${BRon}if using removable keying device, ensure it is inserted and active...${Boff}";
+    sh_countdown $(( ${init_wait} * 3 ));
+
+    # instruct kernel to execute mdev whenever a device is added or removed
+    sysctl -w kernel.hotplug=/sbin/mdev;
+
+    # seed /dev/ with all the device nodes that were created while the system was booting
+    mdev -s || E_message ${BRon}"mdev failed to start"${Boff};
+}
+
+unlock_devices() {
+    # for version 4.x and beyond, this is a complete re-write of the unlocking procedure.
+    # The unlock method has already been determined, and the script will now "scan" for LUKS
+    # devices and automatically use that method to unlock all of them
+    # arguments: method
+    local method=$1;
+    local device="";
+    local line="";
+
+    [[ "$method" = "prompt" ]] && read -s -p "Enter your LUKS passphrase: " pass && echo;
+
+    for device in $(blkid | grep -i luks | cut -d':' -f1)
+    do
+        # use cryptsetup luksOpen to open each device /dev/sdxn with corresponding name edxn
+        line="${device} $(echo $device | cut -d'/' -f3 | sed 's/^s/e/')";
+        case "$method" in
+            "prompt")
+                echo "echo $pass | /sbin/cryptsetup luksOpen $line" > mycmd;
+                chmod 777 mycmd;
+                [ "$init_DEBUG" == "true" ] && message "about to execute from file ./mycmd:" && \
+                    message "[ $(cat mycmd) ]" && sh_countdown 10;
+                ./mycmd;
+                if [ $? -eq 0 ]
+                then
+                    message "Unlocked $line with passphrase provided";
+                else
+                    E_message "${BRon}mycmd failed. Dropping to a shell. ${Boff}";
+                    sh_countdown 20;
+                    rescue_shell;
+                fi;
+                [ "$init_DEBUG" == "true" ] && sh_countdown 10;
+                shred mycmd;
+                ;;
+            "key")
+                # passdevice already mounted,
+                # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
+                # unmount the passdevice when we are done with it
+                message "About to execute command [ cryptsetup -d ${init_passdevice_mount_point}${init_keyfile} -S 1 luksOpen $line ]";
+                cryptsetup -d $(echo "${init_passdevice_mount_point}${init_keyfile}") -S 1 luksOpen $line;
+                if [ $? -eq 0 ]
+                then  # cryptsetup luksOpen with key worked
+                    message "Unlocked $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})";
+                else  # cryptsetup luksOpen with key failed
+                    E_message $BRon"Error: Could not unlock ${BYon}$line ${BRon}with key found at ${BMon}$(echo ${init_passdevice_mount_point}${init_keyfile})"$Boff;
+                    E_message $BRon"Dropping to a shell"$Boff;
+                    sh_countdown 20;
+                    rescue_shell;
+                fi;
+                [ "$init_DEBUG" == "true" ] && sh_countdown 10;
+                ;;
+        esac
+    done
+}
+
+type_of_key() {
+    # return (by echo) the likely type of candidate key device presented as str arg $1
+    # i.e. is this is a devicename (1st char = '/'), label (contains no '-'), or uuid (hhhh-hhhh)?
+    local candidate="$1";
+    local type="unknown";
+
+    if [ "${candidate:0:1}" == "/" ]
+    then
+        # assume the candidate is the name of a device node (e.g. "/dev/sda1")
+        type="name";
+    else
+        if [ "${candidate:4:1}" == "-" ]
+        then
+            # assume the candidate is a UUID (e.g. "A47C-B53E")
+            type="uuid";
+        else
+            # assume the candidate is a label (e.g. "LinuxROOT")
+            type="label";
+        fi
+    fi
+    echo "${type}";
+}
+
+id_passdevice() {
+    # assign an answer to the global configuration variable init_passdevice
+    #   and return true or false according to validity type/name device specification
+    my_candidate="$1";
+    dev_t="$2";
+    local int OK=1;   # def'n: 0 is logical true; any other int = false
+    [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() \$1 = [ $1 ]; \$2 = [ $2 ]";
+    [ "${init_DEBUG}" == "true" ] && message "${BWon}Debug: id_passdevice() ${BMon}arg1 = [ $my_candidate ]; ${LBon}arg2 = [ $dev_type ]${Boff}";
+    case "${dev_t}" in
+        "name")
+            [ "${init_DEBUG}" == "true" ] && message "In case [name]";
+            init_passdevice="${my_candidate}"; OK=0;
+            ;;
+        "uuid")
+            [ "${init_DEBUG}" == "true" ] && message "In case [uuid]";
+            init_passdevice="$(findfs UUID=${my_candidate})"; OK=0;
+            ;;
+        "label")
+            [ "${init_DEBUG}" == "true" ] && message "In case [label]";
+            init_passdevice="$(findfs LABEL=${my_candidate})"; OK=0;
+            ;;
+        *)
+            # invalid or error
+            init_passdevice="InvalidDevice"; OK=1;
+            ;;
+    esac
+
+    [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() just set init_passdevice = ${BMon}[ $init_passdevice ]${Boff}";
+    [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() is about to return OK = [ $OK ]";
+
+    #return the result int 0 for true, int 1 for false
+    return $OK;
+}
+
+right_most() {
+    mystring=$1;
+    echo ${mystring:$((${#mystring}-1)):1};
+}
+
+select_device() {
+    # go through the list of devices presented as argv -- select the first one that
+    #   has a valid type, actually exists, mounts successfully, and contains a key, else fail
+    #   upon exhaustion of the list
+    local VALID="false";
+    local EXISTS="false";
+    local HAS_KEY="false";
+    local dev_type="";
+    local candidate_key_device="";
+    local count=$#;
+
+    while [ $count -gt 0 ] && [ ! "${HAS_KEY}" == "true" ]
+    do
+        candidate_key_device=$1;
+        VALID="false"; EXISTS="false";
+        # determine the validity of the type and name of the candidate passdevice
+        dev_type=$(type_of_key ${candidate_key_device});
+        id_passdevice ${candidate_key_device} ${dev_type}; answer=$?;
+        [ $answer -eq 0 ] && VALID="true" || VALID="false";
+        # note that if VALID returns true, the id_passdevice procedure will have set the global config variable init_passdevice
+        echo -en "Checking validity of specified device [ ${candidate_key_device} ] of type [ ${dev_type} ]" ; \
+        [ "${VALID}" == "true" ]; right_status $?;
+        [ "${init_DEBUG}" == "true" ] && message "Debug: dev_type = [ $dev_type ]";
+        [ "${init_DEBUG}" == "true" ] && message "Debug: candidate_key_device = [ $candidate_key_device ]";
+        [ "${init_DEBUG}" == "true" ] && message "Debug: id_passdevice() set init_passdevice = ${BMon}[ $init_passdevice ]${Boff}";
+        [ "${init_DEBUG}" == "true" ] && message "Debug: VALID = [ $VALID ]";
+        if [ "${VALID}" == "true" ];
+        then
+            message "Found candidate key device ${LBon}${candidate_key_device}${Boff} of type ${LBon}${dev_type}${Boff} to be ${BGon}valid${Boff}";
+            if [ "${dev_type}" == "uuid" ] || [ "${dev_type}" == "label" ]
+            then
+                message "${BGon}***${Boff} findfs returned the corresponding device name: ${LBon}${init_passdevice}${Boff}";
+            fi
+            # determine if this valid device acutally exists and is a block device
+            echo -en "Checking for device with ${dev_type} [ ${BMon}${candidate_key_device}${Boff} ]";
+            # Careful! in the busybox ash shell, [ -b "" ] will return true
+            #   (indicating the existence of a block device named by a null string
+            # and [ -n "" ] will also return true, indicating non-zero length for a null string
+            [ ! -z ${init_passdevice} ] && [ -b ${init_passdevice} ] && EXISTS="true" || EXISTS="false";
+            [ "${EXISTS}" == "true" ]; right_status $?;
+            [ "$init_DEBUG" == "true" ] && message "Debug: Result -- EXISTS = [ ${BMon}${EXISTS}${Boff} ]";
+            [ "$init_DEBUG" == "true" ] && sh_countdown 10
+
+#            sleep $(($init_wait));
+            [ "$init_DEBUG" == "true" ] && echo && message "Debug: about to run command: blkid | grep vfat";
+            [ "$init_DEBUG" == "true" ] && blkid | grep vfat;
+
+            if [ "${EXISTS}" == "true" ]
+            then
+                # try to mount it. Note: we need the full keyfile path for the keyfile existence test
+                # check for trailing / character...
+                if [ ! "$(right_most $init_passdevice_mount_point)" == "/" ]
+                then
+                    init_passdevice_mount_point="${init_passdevice_mount_point}/";
+                fi
+                message "${BYon}Trying${Boff} mount -t ${BGon}${init_passdevice_fs} ${BMon}${init_passdevice} ${LBon}${init_passdevice_mount_point}${Boff}";
+                mount -t "${init_passdevice_fs}" "${init_passdevice}" "${init_passdevice_mount_point}" && \
+                    message "${BGon}Successfully mounted removable keying device: ${BMon}${init_passdevice} on ${LBon}${init_passdevice_mount_point}${Boff}" || \
+                    E_message "${BRon}Failed to mount removable keying device: ${BMon}${init_passdevice}${Boff} on ${LBon}${init_passdevice_mount_point}${Boff}";
+                # here's the actual keyfile existence check
+                echo -en "Looking for keyfile";
+                if [[ -e $(echo "${init_passdevice_mount_point}${init_keyfile}") ]]
+                then
+                    HAS_KEY="true";
+                else
+                    HAS_KEY="false";
+                fi
+                [ "${HAS_KEY}" == "true" ]; right_status $?;
+            fi
+        fi
+ #       sleep $(($init_wait * 3));
+        [ "${init_DEBUG}" == "true" ] && message "Debug: Results for $candidate_key_device --"
+        [ "${init_DEBUG}" == "true" ] && message "Debug: VALID =  [ $VALID ]"
+        [ "${init_DEBUG}" == "true" ] && message "Debug: EXISTS = [ $EXISTS ]"
+        [ "${init_DEBUG}" == "true" ] && message "Debug: HAS_KEY = [ $HAS_KEY ]"
+        [ "${init_DEBUG}" == "true" ] && message "Debug: init_passdevice = ${BMon}[ $init_passdevice ]${Boff}"
+        [ "${init_DEBUG}" == "true" ] && message "Debug: init_passdevice_mount_point = [ $init_passdevice_mount_point ]"
+        [ "${init_DEBUG}" == "true" ] && sh_countdown 10
+
+        # if not found, move on the the next one on the list; if found, then
+        shift;
+        count=$(($count - 1));
+    done
+    # to leave the loop above, I either --
+    #    (a) found a valid extant device, mounted it and confirmed it contains a key (HAS_KEY is now "true"), or
+    #    (b) exhausted the init_passdevice_list of devices authorized to be used and found none of them 
+    #        on this system (HAS_KEY is still "false")
+    if [ "${HAS_KEY}" == "true" ]
+    then
+        init_unlock_method="key"
+        message "$(echo ${init_passdevice_mount_point}${init_keyfile}) exists - using automatic keying method...";
+    else
+        init_unlock_method="prompt"
+        E_message $BRon"Keystore $(echo ${init_passdevice_mount_point}${init_keyfile}) does not exist - reverting to prompt method..."$Boff;
+    fi
+#    sleep $(($init_wait))
+    [ "${init_DEBUG}" == "true" ] && sh_countdown 10
+}
+
+sub_main() {
+    # this is the main code of the init script.  It is built as a function called or not called by the
+    #   init main init script below if only single factor authentication is required --
+    #   or if two factor authentication is required, and the password check has succeded.
+
+    # start mini-udev (mdev) and wait long enough for devices to be recognized
+    #   As of ver 4.x, this is no longer a configuration *option*; just do it
+    separator "Starting mini udev" "initramfs-$BUILD" && \
+        mini_udev && message "mdev started" && sleep $(($init_wait))
+
+    # if init.conf indicates there is a non-zero-lenght keyfile name to be looked for on a non-empty list of
+    # devices, then see if we can select one that will work, otherwise use passphrase method
+
+    [ "${init_DEBUG}" == "true" ] && message "checking for non-zero-length init_keyfile [ ${init_keyfile} ] and init_passdevice_list [ ${init_passdevice_list} ]"
+    if [ ! -z "$init_keyfile" ] && [ ! -z "${init_passdevice_list}" ]
+    then
+        # pause to give mdev a chance to recognize devices
+        echo -en "${BGon}*${Boff} Waiting ${init_mdev_wait} more seconds, per init.conf, to give mdev a chance to recognize hardware..."
+        sleep $(($init_mdev_wait)); echo "Done"
+        select_device ${init_passdevice_list};
+        # note that if this succeded, it will have set init_unlock_method="key"
+        # and it will have set the global config variable "init_passdevice"
+    else
+        init_unlock_method="prompt"
+    fi
+    [ "${init_DEBUG}" == "true" ] && message "Result: init_passdevice = ${BMon}[ $init_passdevice ]${Boff}"
+    [ "${init_DEBUG}" == "true" ] && message "Result: init_unlock_method = [ $init_unlock_method ]"
+    [ "${init_DEBUG}" == "true" ] && sh_countdown 10
+
+    # echo to console to confirm attempt to unlock HDs
+    separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
+    # call function to unlock HD(s)
+    unlock_devices ${init_unlock_method}
+
+    [ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait * 3))
+
+    separator "Accessing logical volumes" "initramfs-$BUILD"
+    root_volume=$(lvs | awk '$1~/root/ {print $2"-"$1}')
+    usr_volume=$(lvs | awk '$1~/usr/ {print $2"-"$1}')
+    # make lvm logical volumes available
+    /sbin/vgscan
+    /sbin/vgchange -a y
+
+    # show what we've found...
+    separator "The following volume groups are available" "initramfs-$BUILD"
+    /sbin/vgs
+    separator "The following volumes are available" "initramfs-$BUILD"
+    /sbin/lvs
+    sleep $(($init_wait))
+
+    # interactive stop for debugging
+    if [ "$init_interactive_pause" == "true" ]
+    then
+      ans="z"
+      while [ "$(echo `expr index "$ans" [yY]`)" -eq "0" ]
+      do
+        echo -n "Pausing, continue? "
+        read ans
+      done
+    fi
+
+    separator "Attempting to mount new root lvm..." "initramfs-$BUILD"
+    # keep scanning to make device nodes untill you succeed
+    message "Ensuring volume is available"
+    while [[ ! -b $(echo "/dev/mapper/$root_volume") ]]
+    do
+        message "checking for existence of block device /dev/mapper/$root_volume"
+        /sbin/vgscan --mknodes --ignorelockingfailure
+    done
+    message "running fsck.${init_root_fs} on /dev/mapper/$root_volume" && fsck.${init_root_fs} -p /dev/mapper/$root_volume
+    message "running fsck.${init_usr_fs} on /dev/mapper/$usr_volume" && fsck.${init_usr_fs} -p /dev/mapper/$usr_volume
+
+    # mount root - drop to shell if not locked down
+    # Note: assumes you have one and only one lvm volume which appropriately includes "root" in its name
+    mount -r -t ${init_root_fs} "/dev/mapper/"$root_volume /newroot || \
+    ( [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount root volume" )
+    mount -t ${init_usr_fs} -o defaults,noatime "/dev/mapper/"$usr_volume /newroot/usr || \
+    ( [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount usr volume" )
+
+    separator "Mounts" "initramfs-$BUILD"
+    mount
+    sleep $(($init_wait))
+
+    umount /sys
+
+    CMDLINE=`cat /proc/cmdline`
+
+    # clean up
+    umount /proc
+    umount /dev/pts
+    umount /dev
+    umount /sys
+
+    separator "Switching root to encrypted volume" "initramfs-$BUILD"
+    message "-  Will continue with /sbin/init"
+    [[ -z $CMDLINE ]] || message "-  using cmdline: ${CMDLINE}"
+    separator "Switching to /newroot mounted on /dev/mapper/$root_volume" "initramfs-$BUILD"
+
+    # boot the real thing or exit to rescue shell if not locked down
+    exec /bin/busybox switch_root /newroot /sbin/init ${CMDLINE} || [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to pivot root"
+#    exec /bin/busybox switch_root /newroot /usr/lib/systemd/systemd ${CMDLINE} || [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to pivot root"
+}
+
+# -- not sure why this is needed - copied from livedvd ----------
+splash() {
+        return 0
+}
+
+#---[ Main script ]----------------------------------------------------------------------------------------
+
+# wait for normal trailing kernel output expected at this point
+sleep $((${init_wait} * 5))
+
+# start the splash screen, if required by init.conf
+if [[ "${init_splash}" == "yes" ]]
+then
+    # source the stuff in initrd.splash if it found in /etc
+    [[ -e /etc/initrd.splash ]] && source /etc/initrd.splash && message "Sourced initrd.splash"
+    # Required for splash to work.  Not an issue with the initrd as this device isn't created there and is not needed.
+    if [[ ! -e "/newroot/dev/tty1" ]]
+    then
+        mknod "/newroot/dev/tty1" c 4 1 && message "Created device node /newroot/dev/tty1" || \
+            E_message $BRon"Splash Error: Failed to create device node /newroot/dev/tty1"$Boff
+    else
+        :  # /newroot/dev/tty1 already exists - no action required
+    fi
+    # copied this from a livedvd implementation -- not sure about it
+    [[ ! -e "/dev/tty1" ]] && E_message $BRon"Error: /dev/tty1 not found -- splash will not function"$Boff
+else
+    message "No splash."
+fi
+[ "$init_DEBUG" == "true" ] &&  sleep $(($init_wait))
+
+# this splash messaging has not worked for me yet
+[ "${init_DEBUG}" == "true" ] && sleep $(($init_wait * 3))
+[ "${init_splash}" == "yes" ] && splash 'init' "Initializing Brendlefly kernel..." && message "Splash initialized"
+[ "${init_splash}" == "yes" ] && sleep $(($init_wait * 5))
+[ "${init_splash}" == "yes" ] && splash set_msg "Splash initialized and used" && /sbin/fbcondecor_helper 2 'repaint'
+[ "${init_DEBUG}" == "true" ] && sleep $(($init_wait * 3))
+
+# echo to console to confirm entry into init; pause so we can read this
+separator "Running /init" "initramfs-$BUILD"
+print_config
+sleep $(($init_wait * 3))
+[ "${init_DEBUG}" == "true" ] && sh_countdown 10
+
+# if two factor authentication is required, check password to allow continued execution of init
+if [[ "$init_two_factor_required" = "yes" ]]
+then
+    read -s -p "Enter password to continue: " pass && echo
+    if [[ "$pass" = "$init_two_factor_password" ]]
+    then
+        sub_main
+        exit 0
+    fi
+else
+    sub_main
+    exit 0
+fi
+
+message "Authentication failure, exiting"
+sleep $(($init_wait * 3))
+shutdown -hP now
