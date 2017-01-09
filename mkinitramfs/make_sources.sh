@@ -34,6 +34,7 @@ sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
   # note: for the moment, I'm only getting shred from /usr/bin,
 usr_bin_dyn_executables="shred"
 usr_bin_non_dyn_executables=""
+config_files="init.conf README GLOBALS"
 
 DEBUG="false"
 #DEBUG="true"
@@ -148,7 +149,7 @@ copy_parts()
 
   # copy config files
   message "Copying necessary configuration files..."
-  for i in init.conf cryptab README GLOBALS
+  for i in $config_files
   do
     copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/
   done
@@ -483,20 +484,20 @@ copy_dependent_libraries()
   # Process the dynamic executables in /bin to identify libraries they depend on
   echo "# temporary file to capture list of libraries upon which my initramfs executables depend"
 #  for i in kmod udevadm lsblk
-  for i in "$bin_dyn_executables"
+  for i in $bin_dyn_executables
   do
     ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # Process the dynamic executables in /usr/bin (for now only shred)
 #  for i in shred
-  for i in "$usr_bin_dyn_executables"
+  for i in $usr_bin_dyn_executables
   do
     ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # Process the dynamic executables in /sbin to identify libraries they depend on
   #  Note: included findfs
 #  for i in blkid cryptsetup findfs e2fsck lvm
-  for i in "$sbin_dyn_executables"
+  for i in $sbin_dyn_executables
   do
     ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
