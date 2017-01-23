@@ -10,7 +10,7 @@
 #DEBUG="true"
 DEBUG="false"
 BUILD="0.0"
-source /usr/local/sbin/script_header_joe_brendler
+source /usr/local/sbin/script_header_brendlefly
 
 kern1="$1"; kern2="$2"; param="$3"
 [ "$DEBUG" == "true" ] && echo "hello"

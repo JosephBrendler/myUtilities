@@ -7,7 +7,7 @@
 
 # the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs), and the MAKE_DIR (parent dir of this script)
 source GLOBALS
-source ${MAKE_DIR}/script_header_joe_brendler
+source ${MAKE_DIR}/script_header_brendlefly
 
 # Error messages used by script
 E_NOLVM="You need to install lvm first."
@@ -156,7 +156,7 @@ copy_parts()
 
   # copy other required content from ...
   message "Copying other required content ..."
-  copy_one_part ${MAKE_DIR}/script_header_joe_brendler ${SOURCES_DIR}/
+  copy_one_part ${MAKE_DIR}/script_header_brendlefly ${SOURCES_DIR}/
   copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
   copy_one_part ./etc/modules ${SOURCES_DIR}/etc/
   if [ "${init_splash}" == "yes" ]
