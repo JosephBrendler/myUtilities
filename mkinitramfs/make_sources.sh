@@ -7,7 +7,9 @@
 
 # the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs), and the MAKE_DIR (parent dir of this script)
 source GLOBALS
-source ${MAKE_DIR}/script_header_brendlefly
+source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
+# script header will over-ride BUILD, but globals must be sourced 1st to get _DIRs
+BUILD="${KERNEL_VERSION}-${DATE_STAMP}"
 
 # Error messages used by script
 E_NOLVM="You need to install lvm first."
@@ -665,7 +667,7 @@ separator "Copy Dependent Libraries"
 copy_dependent_libraries
 
 separator "Create the BUILD reference file"
-echo ${BUILD} > ${SOURCES_DIR}/BUILD
+echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 
 message "cleaning up..."
 # don't remove these temporary files if debugging...
