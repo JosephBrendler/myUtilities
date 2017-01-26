@@ -664,6 +664,9 @@ create_links
 separator "Copy Dependent Libraries"
 copy_dependent_libraries
 
+separator "Create the BUILD reference file"
+echo ${BUILD} > ${SOURCES_DIR}/BUILD
+
 message "cleaning up..."
 # don't remove these temporary files if debugging...
 [ ! "$DEBUG" == "true" ] && rm $tmpfile
