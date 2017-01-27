@@ -158,7 +158,7 @@ copy_parts()
 
   # copy other required content from ...
   message "Copying other required content ..."
-  copy_one_part ${MAKE_DIR}/script_header_brendlefly ${SOURCES_DIR}/
+  copy_one_part /usr/local/sbin/script_header_brendlefly ${SOURCES_DIR}/
   copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
   copy_one_part ./etc/modules ${SOURCES_DIR}/etc/
   if [ "${init_splash}" == "yes" ]
