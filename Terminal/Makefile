@@ -14,11 +14,14 @@ progress: libTerminal.so
 
 install:
 	cp -v libTerminal.so /usr/lib/
+
+examples_install:
 	cp -v terminalLibTest /usr/local/bin/
 	cp -v progress /usr/local/bin/
+	cp -v progress-example.sh /usr/local/bin/
 
 clean:
 	rm -fv *.o *.so
 	rm -fv /usr/lib/libTerminal.so
 	rm -fv /usr/local/bin/terminalLibTest
-	rm -fv /usr/local/bin/progress
+	rm -fv /usr/local/bin/progress*

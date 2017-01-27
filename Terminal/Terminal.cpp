@@ -149,18 +149,18 @@ bool Terminal::summarize_me()   // summarize what the utilities in this library 
   cout << "    " << BG_ON << "void right_status( int status );      " << BB_ON << "output a boolean status (arg) at the right margin" << B_OFF << "\n";
   cout << "    " << BG_ON << "void message ( string msg );          " << BB_ON << "print message after a green asterisk" << B_OFF << "\n";
   cout << "    " << BG_ON << "void E_message ( string msg );        " << BB_ON << "print out error message after a red asterisk" << B_OFF << "\n";
-  cout << "    " << BG_ON << "bool summarize_me();                  " << BB_ON << "print out error message after a red asterisk" << B_OFF << "\n";
   cout << "    " << BG_ON << "void CLR();                           " << BB_ON << "clear the screen" << B_OFF << "\n";
   cout << "    " << BG_ON << "void SCP();                           " << BB_ON << "save the current cursor position" << B_OFF << "\n";
   cout << "    " << BG_ON << "void RCP();                           " << BB_ON << "restore the cursor to the saved position" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void HCU();                           " << BB_ON << "Hide the cursor (Note: the trailing character is lowercase L)" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void SCU();                           " << BB_ON << "Show the cursor" << B_OFF << "\n";
+  cout << "    " << BG_ON << "void HCU();                           " << BB_ON << "hide the cursor" << B_OFF << "\n";
+  cout << "    " << BG_ON << "void SCU();                           " << BB_ON << "show the cursor" << B_OFF << "\n";
   cout << "    " << BG_ON << "void HVP( int row, int col );         " << BB_ON << "move cursor to position row, col" << B_OFF << "\n";
   cout << "    " << BG_ON << "void CUP( int row, int col );         " << BB_ON << "move cursor to position row, col" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void CUU( int reps );                 " << BB_ON << "Move the cursor up ( #reps cells )" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void CUD( int reps );                 " << BB_ON << "Move the cursor down ( #reps cells )" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void CUF( int reps );                 " << BB_ON << "Move the cursor forward ( #reps cells )" << B_OFF << "\n";
-  cout << "    " << BG_ON << "void CUB( int reps );                 " << BB_ON << "Move the cursor backward ( #reps cells )" << B_OFF << "\n\n";
+  cout << "    " << BG_ON << "void CUU( int reps );                 " << BB_ON << "move the cursor up ( #reps cells )" << B_OFF << "\n";
+  cout << "    " << BG_ON << "void CUD( int reps );                 " << BB_ON << "move the cursor down ( #reps cells )" << B_OFF << "\n";
+  cout << "    " << BG_ON << "void CUF( int reps );                 " << BB_ON << "move the cursor forward ( #reps cells )" << B_OFF << "\n";
+  cout << "    " << BG_ON << "void CUB( int reps );                 " << BB_ON << "move the cursor backward ( #reps cells )" << B_OFF << "\n\n";
+  cout << "    " << BG_ON << "bool summarize_me();                  " << BB_ON << "print a summary of the functions in this library" << B_OFF << "\n";
   this->right_status( printf("Finishing with status of summarization --->\n") );   // "\n" replicates normal output of generalized call
   this->right_status(this->countdown(4));
   return true;
