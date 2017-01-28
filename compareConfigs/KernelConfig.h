@@ -18,8 +18,8 @@
 #include <sys/ioctl.h>  // a linux header with io controls
 #include <unistd.h>	// a POSIX header
 
-#include "../colorHeader/colorHeader.h"
-#include "../../Terminal/Terminal.h"
+#include "colorHeader.h"
+#include "Terminal.h"
 
 using namespace std;
 

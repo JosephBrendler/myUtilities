@@ -6,8 +6,8 @@
  */
 
 #include "KernelConfig.h"
-#include "../colorHeader/colorHeader.h"
-#include "../../Terminal/Terminal.h"
+#include "colorHeader.h"
+#include "Terminal.h"	// at /usr/include
 
 #include <fstream>      // file operatons, e.g. myFile.close()
 #include <sys/ioctl.h>  // a linux header with io controls
