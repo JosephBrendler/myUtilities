@@ -2,6 +2,8 @@ CXX=g++
 #uncomment below to debug (set the "-g" flag)
 #DEBUG=-g
 
+all: terminalLibTest libTerminal.so progress
+
 terminalLibTest: libTerminal.so terminalLibTest.o
 	$(CXX) $(DEBUG) terminalLibTest.cpp -o terminalLibTest -L. -lTerminal
 
@@ -9,7 +11,7 @@ libTerminal.so: Terminal.cpp
 	$(CXX) $(DEBUG) -fPIC -c Terminal.cpp -o Terminal.o
 	$(CXX) $(DEBUG) -shared -Wl,-soname,libTerminal.so -o libTerminal.so Terminal.o
 
-progress: libTerminal.so
+progress: progress.cpp libTerminal.so
 	$(CXX) $(DEBUG) progress.cpp -o progress -L. -lTerminal
 
 install:
@@ -22,6 +24,8 @@ examples_install:
 
 clean:
 	rm -fv *.o *.so
+	rm -fv terminalLibTest
+	rm -fv progress
 	rm -fv /usr/lib/libTerminal.so
 	rm -fv /usr/local/bin/terminalLibTest
 	rm -fv /usr/local/bin/progress*
