@@ -21,6 +21,8 @@ examples_install:
 	cp -v terminalLibTest /usr/local/bin/
 	cp -v progress /usr/local/bin/
 	cp -v progress-example.sh /usr/local/bin/
+	cp -v Terminal.h /usr/include/
+	cp -v colorHeader.h /usr/include/
 
 clean:
 	rm -fv *.o *.so
