@@ -11,6 +11,12 @@ E_NOTROOT="Must be root to run this script."
 E_ROOT="Please run this script as user, not root."
 E_BAD_ARGS="Improperly formatted command line argument."
 
+TRUE=0    # will evaluate to be logically true in a boolean operation
+FALSE=""  # will evaluate to be logically false in a boolean operation
+  # play with test function:
+  # test() { [ $1 ] && echo "$1 is true" || echo "$1 is false"; }
+VERBOSE=$FALSE
+
 #--[ Easy ANSI Escape sequences to put color in my scripts ]---
 #  see http://en.wikipedia.org/wiki/ANSI_escape_code
 #  see also http://ascii-table.com/ansi-escape-sequences.php
@@ -118,7 +124,7 @@ checkroot()     # Run as root, of course.
   if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; exit 1; else return 0; fi
 }
 
-checknotroot()     # Run as root, of course.
+checknotroot()  # Run as not root, of course.
 {
   if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; exit 1; else return 0; fi
 }
@@ -132,6 +138,31 @@ message_n()     # echo -n a simply formatted message (arg $1) to the screen
 E_message()     # echo a simply formatted error message (arg $1) to the screen
 { echo -e "${BRon}*${Boff} ${1}" && return 0 || return 1; }
 
+d_message()     # pass argument $1 to message() if "external" boolean VERBOSE tests true
+{ [ $VERBOSE ] && message "$1"; }
+
+d_message_n()   # pass argument $1 to message_n() if "external" boolean VERBOSE tests true
+{ [ $VERBOSE ] && message_n "$1"; }
+
+dE_message()    # pass argument $1 to E_message() if "external" boolean VERBOSE tests true
+{ [ $VERBOSE ] && E_message "$1"; }
+
+d_echo()        # echo all arguments if "external" boolean VERBOSE tests true
+{ [ $VERBOSE ] && echo "$@"; }
+
+status_color()  # emit to stdout the escape seq for color based on arg $1 (T/F Y/N 1/0)
+{ case $1 in "1"|"y"|"Y"|$TRUE) echo -en ${BGon};; "0"|"n"|"N"|$FALSE) echo -en ${BRon};; *) echo -en ${BYon};; esac ; }
+
+prompt() {      # get answer to a y/n question - return response in "external" variable $answer
+  ps=$1; SCP; echo -en $ps; answer="x";
+  while [[ ! `echo ${answer:0:1} | sed 's/^[yYnN]*//' | wc -c` -eq 1 ]];
+    do
+      RCP; echo -en "$(repeat ' ' $(termwidth))"; 
+      RCP; message_n "$ps [Y/n]: " && read answer;
+      case ${answer:0:1} in "" | "n" | "N" ) answer="n" ;; "y" | "Y" ) answer="y" ;; *) answer="x";; esac;
+  done;
+}
+
 my_date()       # echo a simply formatted date string (DDD MM dd hh:mm:ss AP TZ yyyy)
 {
   day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
@@ -139,7 +170,7 @@ my_date()       # echo a simply formatted date string (DDD MM dd hh:mm:ss AP TZ 
   echo "$day $month $monthday $timeofday $timezone $year"
 }
 
-my_short_date()       # echo a short formatted date string (yyyymmdd)
+my_short_date() # echo a short formatted date string (yyyymmdd)
 {
   month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
   echo "${monthday}${month}${year}-${timehack}";
@@ -283,7 +314,7 @@ progress()      # display an arrow depicting progress (visualize $1 of $2 steps 
   CUP $myrow $middlestart; echo -en "( ${pct_color}$percent%${Boff} )"; RCP
 }
 
-watchdistcc()  # until interrupted, display the count of distcc compile jobs done for clients
+watchdistcc()   # until interrupted, display the count of distcc compile jobs done for clients
 { CLR; while [ 1 ]; do CUP 1 1; echo | count_distcc_jobs 2>/dev/null; sleep 2; done; }
 
 summarize_me()  # list contents of this script header (employ me with "source" or ".")
@@ -296,9 +327,16 @@ summarize_me()  # list contents of this script header (employ me with "source" o
   message "  ${BYon}cursor${Boff} movement in my scripts, and it provides a number of" && \
   message "  useful ${BGon}functions${Boff}, for some routine tasks, as described below\n" && \
   grep "()" /usr/local/sbin/script_header_brendlefly | grep -v "grep" && echo && \
-  message "  ${BYon}About to run ${BBon}sh_countdown ${Boff}6 ${BGon}&& \\ ${Boff}"
-  message "               ${BBon}message_n${Boff} "'"\\nFinishing with status of summarization --->" '"${BGon}; ${BBon}right_status ${BRon}"'$?'"${BGon}; ${BBon}echo${Boff}"
-  echo
+  msg="${BGon}* ${Boff}  ${BYon}About to run:\n        ${BBon}message${Boff}" && \
+  msg="${msg}  ${BYon}\""'${BYon}VERBOSE is currently ' && \
+  msg="${msg}${BGon}\$(${BBon}status_color ${BRon}\$VERBOSE${BGon})${Boff}" && \
+  msg="${msg}${BGon}\$( [[ ${BRon}\$VERBOSE ${BGon}]] && ${BBon}echo ${Boff}-en true ${BGon}|| ${BBon}echo ${Boff}-en false" && \
+  msg="${msg}${BGon})${BYon}\"${BGon}; ${BBon}echo${Boff}" && echo -e "${msg}" && \
+  echo && \
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$( [[ $VERBOSE ]] && echo -en true || echo -en false)" && echo && \
+  message "  ${BYon}About to run:\n        ${BBon}sh_countdown ${Boff}6 ${BGon}&& \\ ${Boff}" && \
+  echo -e "        ${BBon}message_n${Boff} "'"\\nFinishing with status of summarization --->" '"${BGon}; ${BBon}right_status ${BRon}"'$?'"${BGon}; ${BBon}echo${Boff}" && \
+  echo && \
   sh_countdown 6 && \
   message_n "\nFinishing with status of summarization --->" ; right_status $?; echo
 
