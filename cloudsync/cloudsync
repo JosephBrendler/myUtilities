@@ -1,0 +1,454 @@
+#!/bin/bash
+#
+# Joe Brendler
+# 27 Apr 2014
+# Rev 22 May 2014 - bug fixes for cron jobs not running
+# Rev 01 Jun 2014 - ver 0.03 - added cloudsync.conf functionality
+# Rev 19 Aug 2014 - ver 0.1.1 - (1) added delete capability in two parts
+#                   script will first run a purgelist_command located
+#                   in the local_scripts_folder (this is necessary for
+#                   nat'd remote hosts that cannot receive pushed
+#                   rsync delete commands from servers (hubs).
+#                   (2) Also implemented command line options
+#                   and sanity checking
+# Rev 10 Jan 2017 - removed purge crap (in favor of delete option)
+#
+# cloudsync -- synchronize my cloud servers - replaces several
+#  separate rsync cron jobs this only works for content category
+#  where rsync and storage are symmetrically configured on all
+#  servers, scripts and packages on the other hand sync only a
+#  single folder possibly asymetrically
+#
+# For each category of cloud server (content, scripts, packages),
+#   User should configure each instance of this script with:
+#   + list of servers that this should pull-sync with
+#     -- list of rsync-served folders that should be pull-sync'd
+#   + list of servers that this should push-sync with
+#     -- list of rsync-served folders that should be push-sync'd
+#   This is more clearly explained by the actual assignments, below
+#
+# NOTE: (on actual or virtual raspberries, just push to package server
+#  only, and let emerge pull later)
+# -----------------------------------------------------------
+# Source the variable assignments made in cloudsync.conf - look for, in
+# order: . , /usr/local/sbin/, /etc/ (if multiple .confs exist, the latter
+#   found in that order will over-write the assignments made by the former).
+# This will also supercede/modify the default assignments made below
+#
+# ** NOTE ** Options provided via the command line will supercede both defaults
+#   and the contents of any .conf files found
+#
+[[ -e cloudsync.conf ]] && . cloudsync.conf & config_file=$PWD
+[[ -e /usr/local/sbin/cloudsync.conf ]] && . /usr/local/sbin/cloudsync.conf \
+    && config_file="/usr/local/sbin/cloudsync.conf"
+[[ -e /etc/cloudsync.conf ]] && . /etc/cloudsync.conf \
+    && config_file="/etc/cloudsync.conf"
+
+[ -z MyPackagesROOT ] && MyPackagesROOT="/"
+
+#---[ user - configure servers and folders ]-------------------------------------------------------
+#
+#   Note that remote "folders" are the served rsync folder names, whereas
+#     the local folder names are actual folder paths
+# --- do not include leading or trailing "/" in folder lists ---------
+
+[ -z $MyContentROOT ] && MyContentROOT="/srv/public"
+[ "${content_serverlist}" == "default" ] && \
+    content_serverlist="oromis persephone spartacus raspberry03"
+[ -z "${content_folderlist}" ] && \
+    content_folderlist="Documents Joe_Laptop Music MyArduinoProjects My_Audio_Projects Pictures Software Video"
+
+[ "${pull_scripts_serverlist}" == "default" ] && \
+    pull_scripts_serverlist="oromis persephone raspberry03 raspberry06"
+[ "${push_scripts_serverlist}" == "default" ] && \
+    push_scripts_serverlist="oromis persephone raspberry03 raspberry06"
+[ -z "${local_scripts_folder}" ] && local_scripts_folder="/usr/local/sbin"
+[ -z "${remote_scripts_folder}" ] && remote_scripts_folder="usr-local-sbin"
+
+[ "${pull_packages_serverlist}" == "default" ] && pull_packages_serverlist=""
+[ "${push_packages_serverlist}" == "default" ] && push_packages_serverlist=""
+[ -z "${local_packages_folder}" ] && \
+    local_packages_folder=${MyPackagesROOT}"usr/portage/packages"
+[ -z "${remote_packages_folder}" ] && \
+    remote_packages_folder="armv6j-hardfloat-linux-gnueabi-packages"
+
+PKGDIR=${local_packages_folder}
+
+tmp_cmd_file="/root/bin/tmp_cmd"
+
+source /usr/local/sbin/script_header_brendlefly
+
+[ -z "$PROGRESS" ] && PROGRESS="no"
+[ -z "$QUIET" ] && QUIET="yes"
+[ -z "$VERBOSE" ] && VERBOSE="no"
+#[ -z "$EXCLUDE" ] && EXCLUDE=""  ### "" IS -z
+[ -z "$CONTENT" ] && CONTENT="no"
+[ -z "$SCRIPTS" ] && SCRIPTS="no"
+[ -z "$PACKAGES" ] && PACKAGES="no"
+[ -z "$DELETE" ] && DELETE="no"
+
+# --- Define local variables -----------------------------------
+BUILD="0.1.2 (20170201)"
+
+OPTS1=" -uaz"
+OPTS2=""
+CMDLINE_OVERRIDE="no"
+
+DEBUG="yes"
+#DEBUG="no"
+
+# --- function blocks ------------------------------------------
+
+sanity_check()
+{
+  # check for invalid option combinations
+  [ "$QUIET" == "yes" ] && [ "$VERBOSE" == "yes" ] && QUIET="no"  # verbose overrides
+  [ "$QUIET" == "no" ] && [ "$VERBOSE" == "no" ] && VERBOSE="yes"  # default to verbose
+  [ "$PROGRESS" == "yes" ] && VERBOSE="yes" && QUIET="no"  # progress implies verbose and overrides quiet
+}
+
+process_command_line()
+{
+# process command line arguments (for now only -x/--exclude option can have an argument)
+last=""
+[ "$DEBUG" == "yes" ] && message "process(ing)_command_line with argument(s): [ ${*} ]"
+for i in $*
+do
+  if [[ "$last" == "--exclude" ]]
+  then     # last was --exclude
+    [ "$DEBUG" == "yes" ] && message "about to process_argument with [ $last $i ]"
+    process_argument $last $i
+    last="arg"
+  else     # last was not --exclude
+    process_argument $i
+    last=$i
+  fi
+done
+sanity_check
+
+[ "$PROGRESS" == "yes" ] && OPTS2=$OPTS2" --progress"
+[ "$QUIET" == "yes" ] && OPTS2=$OPTS2" --quiet"
+[ "$VERBOSE" == "yes" ] && OPTS2=$OPTS2" --verbose"
+[ "$DELETE" == "yes" ] && OPTS2=$OPTS2" --delete --force"
+
+
+}
+
+process_argument()
+{
+EXCLUDE=""
+[ "$DEBUG" == "yes" ] && message "process(ing)_argument: [ $* ] with parts 1: [ $1 ], 2: [ $2 ]"
+# process command line argument (must be one of the following)
+[ ! -z "$1" ] && case "$1" in
+    "-P" | "--progress"      ) PROGRESS="yes" ;;
+    "-q" | "--quiet"         ) QUIET="yes" ;;
+    "-v" | "--verbose"       ) VERBOSE="yes" ;;
+           "--exclude"       ) EXCLUDE="$2" ;;
+    "-c" | "--content"       ) CONTENT="yes"  ; check_cmdline_override $1;;
+    "-s" | "--scripts"       ) SCRIPTS="yes"  ; check_cmdline_override $1;;
+    "-k" | "--packages"      ) PACKAGES="yes" ; check_cmdline_override $1;;
+    "-d" | "--delete"        ) DELETE="yes" ;;
+    "-h" | "--help"          ) useage ; exit 0 ;;
+    *                        ) process_compound_arg $1 ;;
+esac
+
+}
+
+process_compound_arg()
+{
+# must begin with a single dash
+[ ! "${1:0:1}" = "-" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+# must not begin with two dashes (would have been picked in process_argument)
+[ "${1:0:2}" = "--" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+# strip leading dash(es)
+myargs=${1##-}
+# handle remaining characters in sequence
+while [ -n "${myargs}" ]
+do
+    #handle first char
+    case ${myargs:0:1} in
+      "P" ) PROGRESS="yes" ;;
+      "q" ) QUIET="yes" ;;
+      "v" ) VERBOSE="yes" ;;
+      "c" ) CONTENT="yes"  ; check_cmdline_override "-${myargs:0:1}";;
+      "s" ) SCRIPTS="yes"  ; check_cmdline_override "-${myargs:0:1}";;
+      "k" ) PACKAGES="yes" ; check_cmdline_override "-${myargs:0:1}";;
+      "d" ) DELETE="yes" ;;
+      "h" ) useage ; exit 0 ;;
+      *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
+    esac
+    #strip first char from myargs
+    myargs=${myargs:1}
+done
+}
+
+check_cmdline_override()
+{
+# if user specifies any one of [content | scripts | packages ] on the command line, then
+#   execute only those specified via the command line (set others to "no" when first
+#   is detected, others may reset above when processed as subsequent arguments
+[ "$DEBUG" == "yes" ] && message "Checking for command line override for [ $1 ]: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
+[ "$DEBUG" == "yes" ] && message "Test of '[[ ! "$CMDLINE_OVERRIDE" == "yes" ]]':" && \
+  [[ ! "$CMDLINE_OVERRIDE" == "yes" ]] && echo true || echo false
+
+if [[ ! "$CMDLINE_OVERRIDE" == "yes" ]]
+then
+  CMDLINE_OVERRIDE="yes"
+  case "$1" in
+    "-c" | "--content"       ) CONTENT="yes" ; SCRIPTS="no"  ; PACKAGES="no"  ;;
+    "-s" | "--scripts"       ) CONTENT="no"  ; SCRIPTS="yes" ; PACKAGES="no"  ;;
+    "-k" | "--packages"      ) CONTENT="no"  ; SCRIPTS="no"  ; PACKAGES="yes" ;;
+    *                        ) E_message "Error in command line argument override of config/default"; exit 1 ;;
+  esac
+  [ "$DEBUG" == "yes" ] && message "Overrode [ $1 ], subsequently: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
+else
+  [ "$DEBUG" == "yes" ] && message "No additional override necessary: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
+fi
+}
+
+# ---[ display config ]-------------------------------------------
+display_config()
+{
+[ "$PROGRESS" == "yes" ] && PROGRESS_COLOR=$BGon || PROGRESS_COLOR=$BRon
+[ "$QUIET" == "yes" ] && QUIET_COLOR=$BGon || QUIET_COLOR=$BRon
+[ "$VERBOSE" == "yes" ] && VERBOSE_COLOR=$BGon || VERBOSE_COLOR=$BRon
+[ "$DELETE" == "yes" ] && DELETE_COLOR=$BGon || DELETE_COLOR=$BRon
+[ "$CONTENT" == "yes" ] && CONTENT_COLOR=$BGon || CONTENT_COLOR=$BRon
+[ "$SCRIPTS" == "yes" ] && SCRIPTS_COLOR=$BGon || SCRIPTS_COLOR=$BRon
+[ "$PACKAGES" == "yes" ] && PACKAGES_COLOR=$BGon || PACKAGES_COLOR=$BRon
+
+message "Current Configuration from [${config_file}]:"
+/bin/echo -e "${BGon}PROGRESS${BBon}..................: "$PROGRESS_COLOR$PROGRESS${Boff}
+/bin/echo -e "${BGon}QUIET${BBon}.....................: "$QUIET_COLOR$QUIET${Boff}
+/bin/echo -e "${BGon}VERBOSE${BBon}...................: "$VERBOSE_COLOR$VERBOSE${Boff}
+/bin/echo -e "${BGon}EXCLUDE${BBon}...................: ${Boff}"$EXCLUDE
+/bin/echo -e "${BGon}DELETE${BBon}....................: "$DELETE_COLOR$DELETE${Boff}
+/bin/echo
+/bin/echo -e "${BGon}rsync OPTS1${BBon}...............: ${Boff}"$OPTS1
+/bin/echo -e "${BGon}rsync OPTS2${BBon}...............: ${Boff}"$OPTS2
+/bin/echo
+/bin/echo -e "${BGon}CONTENT${BBon}...................: "$CONTENT_COLOR$CONTENT${Boff}
+/bin/echo -e "${BBon}MyContentROOT.............: ${Boff}"${MyContentROOT}
+/bin/echo -e "${BBon}content_serverlist........: ${Boff}"${content_serverlist}
+/bin/echo -e "${BBon}content_folderlist........: ${Boff}"${content_folderlist}
+/bin/echo
+/bin/echo -e "${BGon}SCRIPTS${BBon}...................: "$SCRIPTS_COLOR$SCRIPTS${Boff}
+/bin/echo -e "${BBon}pull_scripts_serverlist...: ${Boff}"${pull_scripts_serverlist}
+/bin/echo -e "${BBon}push_scripts_serverlist...: ${Boff}"${push_scripts_serverlist}
+/bin/echo -e "${BBon}local_scripts_folder......: ${Boff}"${local_scripts_folder}
+/bin/echo -e "${BBon}remote_scripts_folder.....: ${Boff}"${remote_scripts_folder}
+/bin/echo
+/bin/echo -e "${BGon}PACKAGES${BBon}..................: "$PACKAGES_COLOR$PACKAGES${Boff}
+/bin/echo -e "${BBon}PKGDIR....................: ${Boff}"${PKGDIR}
+/bin/echo -e "${BBon}MyPackagesROOT............: ${Boff}"${MyPackagesROOT}
+/bin/echo -e "${BBon}pull_packages_serverlist..: ${Boff}"${pull_packages_serverlist}
+/bin/echo -e "${BBon}push_packages_serverlist..: ${Boff}"${push_packages_serverlist}
+/bin/echo -e "${BBon}local_packages_folder.....: ${Boff}"${local_packages_folder}
+/bin/echo -e "${BBon}remote_packages_folder....: ${Boff}"${remote_packages_folder}
+/bin/echo
+/bin/echo -e "${BGon}Pull command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} rsync://${server}/${folder} ${MyContentROOT}/${folder}"
+/bin/echo -e "${BGon}Push command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} ${MyContentROOT}/${folder}/ rsync://${server}/${folder}"
+/bin/echo
+
+}
+
+# ---[ display useage message ]-------------------------------------------
+useage()
+{
+   /bin/echo -e $BGon"Useage: cloudsync [option]"$Boff
+   /bin/echo -e " Command line options:"
+   /bin/echo -e "  "$BBon"[-P | --progress]"$Boff".........display progress during transfer"
+   /bin/echo -e "  "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
+   /bin/echo -e "  "$BBon"[-q | --quiet]"$Boff"............supress non-error messages"
+   /bin/echo -e "  "$BBon"[     --exclude=PATTERN]"$Boff"..exclude <atom> from emerge"
+   /bin/echo -e "  "$BBon"[-c | --content]"$Boff"..........sync server content directories"
+   /bin/echo -e "  "$BBon"[-s | --scripts]"$Boff"..........sync custom scripts"
+   /bin/echo -e "  "$BBon"[-k | --packages]"$Boff".........sync binary packages"
+   /bin/echo -e "  "$BBon"[-d | --delete]"$Boff"...........force delete from receiver"
+   /bin/echo -e "  "$BBon"[-h | --help]"$Boff".............print this text"
+   /bin/echo
+   /bin/echo -e "  "$BYon"Notes: "$Boff
+   /bin/echo -e "  "$BYon" 1)"$Boff" ** will sync hosts, content, scripts, packages"
+   /bin/echo -e "    directories as directed in cloudsync.conf (looked for in PWD,"
+   /bin/echo -e "    /usr/local/sbin, and /etc -- latter overrides former"
+   /bin/echo -e "  "$BYon" 2)"$Boff" --progress implies --verbose;"
+   /bin/echo -e "    --verbose is default and overrides --quiet if both are selected"
+   /bin/echo -e "  "$BYon" 3)"$Boff" Example cloudsync -sdP will sync only scripts, deleting"
+   /bin/echo -e "    from receiver, showing progress \(verbosity implied\)"
+   /bin/echo -e "  "$BYon" 4)"$Boff" Delete capability is now in the -d option."
+   /bin/echo -e "    Spokes have no role in this, hubs can run cloudsync -cskd"
+   /bin/echo
+}
+
+r_sync()  #args: source destinaton opts
+{
+  message "${BGon}Executing:${Boff} /usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}"
+#  /usr/bin/rsync "$1 $2 $OPTS1 $OPTS2" "${excludestring}"
+  [ "${DEBUG}" == "true" ] && message "writing: \"/usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}\" to \$tmp_cmd_file [ $tmp_cmd_file ]"
+  echo "/usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}" > $tmp_cmd_file
+  [ "${DEBUG}" == "true" ] && message echo "running \$tmp_cmd_file [ $tmp_cmd_file ]"
+  chmod +x $tmp_cmd_file
+  $tmp_cmd_file
+  rm $tmp_cmd_file
+}
+# ---[ Pull ]-------------------------------------------------------------------------------------------------
+pull_sync()
+{
+  message "${BYon}---[ ${BGon}pull${BBon}-synchronizing ${BGon}$1${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
+  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing $1 with ${server}"
+  r_sync "rsync://${server}/${remote_folder}" "${local_folder}" && \
+    message "Done pull sync of $1 with $server" || \
+    E_message "Error in pull sync of $1 with $server"
+  /bin/echo
+}
+
+pull_content_sync()
+{
+  message "${BYon}---[ ${BGon}pull${BBon}-synchronizing ${BGon}${folder}${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
+  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing ${folder} with ${server}"
+  r_sync "rsync://${server}/${folder}" "${MyContentROOT}/${folder}" && \
+    message "Done pull sync of ${folder} with ${server}" || \
+    E_message "Error in pull sync of ${folder} with ${server}"
+  /bin/echo
+}
+
+# ---[ Push ]-------------------------------------------------------------------------------------------------
+push_sync()
+{
+  message "${BYon}---[ ${BGon}push${BBon}-synchronizing ${BGon}$1${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
+  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing $1 with ${server}"
+  r_sync "${local_folder}/" "rsync://${server}/${remote_folder}" && \
+    message "Done push sync of $1 with $server" || \
+    E_message "Error in push sync of $1 with $server"
+ /bin/echo
+}
+
+push_content_sync()
+{
+  message "${BYon}---[ ${BGon}push${BBon}-synchronizing ${BGon}${folder}${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
+  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing ${folder} with ${server}"
+  r_sync "${MyContentROOT}/${folder}/" "rsync://${server}/${folder}" && \
+    message "Done push sync of  ${folder} with ${server}" || \
+    E_message "Error in push sync of ${folder} with ${server}"
+  /bin/echo
+}
+
+# ---[ Sync script and packages source and destination folders on list of servers ]---------------------------
+sync_loop()
+{
+separator "sync $1"
+case $1 in
+  "scripts"  )
+    excludestring="$EXCLUDE"
+    pull_serverlist="${pull_scripts_serverlist}"
+    push_serverlist="${push_scripts_serverlist}"
+    local_folder="${local_scripts_folder}"
+    remote_folder="${remote_scripts_folder}"
+    [ "$DEBUG" == "yes" ] && message "chose scripts sync case"
+    ;;
+  "packages" )
+    excludestring="Packages *.html $EXCLUDE"
+    pull_serverlist="${pull_packages_serverlist}"
+    push_serverlist="${push_packages_serverlist}"
+    local_folder="${PKGDIR}"
+    remote_folder="${remote_packages_folder}"
+    [ "$DEBUG" == "yes" ] && message "chose packages sync case"
+    ;;
+  *          )
+    /usr/bin/logger -p cron.notice "Error in $1; job not completed"
+    exit
+    ;;
+esac
+
+# finish assembling excludestring
+[ ! -z "${excludestring}" ] && excludestring=" --exclude \"${excludestring}\""
+
+# Normally, we pull first and then push to improve efficiency of distribution across cloud
+#  However, if delete is selected, then push(delete) first, and then pull
+if [ "$DELETE" == "yes" ]
+then
+  [ "$DEBUG" == "yes" ] && message "push_serverlist: ${push_serverlist}"
+  for server in ${push_serverlist}
+  do
+    push_sync $1
+  done
+  [ "$DEBUG" == "yes" ] && message "pull_serverlist: ${pull_serverlist}"
+  for server in ${pull_serverlist}
+  do
+    pull_sync $1
+  done
+else
+  [ "$DEBUG" == "yes" ] && message "pull_serverlist: ${pull_serverlist}"
+  for server in ${pull_serverlist}
+  do
+    pull_sync $1
+  done
+  [ "$DEBUG" == "yes" ] && message "push_serverlist: ${push_serverlist}"
+  for server in ${push_serverlist}
+  do
+    push_sync $1
+  done
+fi
+}
+
+# ---[ Sync script and packages source and destination folders on list of servers ]---------------------------
+sync_content_loop()
+{
+separator "sync content"
+excludestring="*~ $EXCLUDE"
+# finish assembling excludestring
+[ ! -z "${excludestring}" ] && excludestring=" --exclude \"${excludestring}\""
+
+for server in ${content_serverlist}
+do
+  for folder in ${content_folderlist}
+    do
+      # Normally, we pull first and then push to improve efficiency of distribution across cloud
+      #  However, if delete is selected, then push(delete) first, and then pull
+      if [ "$DELETE" == "yes" ]
+      then
+        push_content_sync
+        pull_content_sync
+      else
+        pull_content_sync
+        push_content_sync
+      fi
+  done
+done
+}
+
+#---[ main script ]-----------------------------------------------
+separator "Running cloudsync-${BUILD}"
+checkroot
+
+process_command_line $*
+display_config
+sleep 5
+#exit
+
+[ "$CONTENT" == "yes" ] && sync_content_loop || message "content sync not requested"
+[ "$SCRIPTS" == "yes" ] && sync_loop "scripts" || message "script sync not requested"
+
+if [ "$PACKAGES" == "yes" ]
+then
+  # first, force correct permissions on all my package files
+  message "Setting proper ownership and permissions on all my package files"
+  /bin/chown -R portage:portage ${MyPackagesROOT}usr/portage/packages/
+  /usr/bin/find ${MyPackagesROOT}usr/portage/packages/ -type d -exec /bin/chmod 755 '{}' \;
+  /usr/bin/find ${MyPackagesROOT}usr/portage/packages/ -type f -exec /bin/chmod 644 '{}' \;
+  sync_loop "packages"
+  # force correct permissions on all my package files again
+  message "Setting proper ownership and permissions on all my package files"
+  /bin/chown -R portage:portage ${MyPackagesROOT}usr/portage/packages/
+  /usr/bin/find ${MyPackagesROOT}usr/portage/packages/ -type d -exec /bin/chmod 755 '{}' \;
+  /usr/bin/find ${MyPackagesROOT}usr/portage/packages/ -type f -exec /bin/chmod 644 '{}' \;
+  # update the local ${PKGDIR}/Packages file - so it can list sync'd files properly
+  separator "Updating the local ${PKGDIR}/Packages file"
+  ROOT=${MyPackagesROOT} /usr/sbin/emaint binhost --fix
+else
+  message "packages sync not requested"
+fi
+
+/usr/bin/logger -p cron.notice "cloudsync complete."
+#. /root/bin/loggit
+message "Logged and Done."
