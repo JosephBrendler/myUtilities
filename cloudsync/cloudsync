@@ -14,10 +14,13 @@
 # Rev 10 Jan 2017 - removed purge crap (in favor of delete option)
 #
 # cloudsync -- synchronize my cloud servers - replaces several
-#  separate rsync cron jobs this only works for content category
-#  where rsync and storage are symmetrically configured on all
-#  servers, scripts and packages on the other hand sync only a
-#  single folder possibly asymetrically
+#  separate rsync cron jobs.  participating nodes may have symmetrically
+#  or asymetrically configured rsync services and/or storage.
+#
+# Rev 5 Feb 2017 - packaged with ebuild for distribution.  Introduced
+#                  more robust argument processing, and included
+#                  a new "targets" option, to identify specific
+#                  remote targets that should be affected by the operation
 #
 # For each category of cloud server (content, scripts, packages),
 #   User should configure each instance of this script with:
@@ -27,227 +30,408 @@
 #     -- list of rsync-served folders that should be push-sync'd
 #   This is more clearly explained by the actual assignments, below
 #
-# NOTE: (on actual or virtual raspberries, just push to package server
-#  only, and let emerge pull later)
 # -----------------------------------------------------------
-# Source the variable assignments made in cloudsync.conf - look for, in
-# order: . , /usr/local/sbin/, /etc/ (if multiple .confs exist, the latter
-#   found in that order will over-write the assignments made by the former).
-# This will also supercede/modify the default assignments made below
-#
+# Set default values and then source the variable assignments made in cloudsync.conf.
+#   Look for: ./cloudsync.conf , /usr/local/sbin/cloudsync.conf, /etc/cloudsync.conf
+#   (if multiple .confs exist, the latter found in that order will over-ride the
+#   assignments made by the former (and the default assignments made below)
 # ** NOTE ** Options provided via the command line will supercede both defaults
 #   and the contents of any .conf files found
 #
-[[ -e cloudsync.conf ]] && . cloudsync.conf & config_file=$PWD
-[[ -e /usr/local/sbin/cloudsync.conf ]] && . /usr/local/sbin/cloudsync.conf \
-    && config_file="/usr/local/sbin/cloudsync.conf"
-[[ -e /etc/cloudsync.conf ]] && . /etc/cloudsync.conf \
-    && config_file="/etc/cloudsync.conf"
-
-[ -z MyPackagesROOT ] && MyPackagesROOT="/"
-
-#---[ user - configure servers and folders ]-------------------------------------------------------
-#
-#   Note that remote "folders" are the served rsync folder names, whereas
-#     the local folder names are actual folder paths
-# --- do not include leading or trailing "/" in folder lists ---------
-
-[ -z $MyContentROOT ] && MyContentROOT="/srv/public"
-[ "${content_serverlist}" == "default" ] && \
-    content_serverlist="oromis persephone spartacus raspberry03"
-[ -z "${content_folderlist}" ] && \
-    content_folderlist="Documents Joe_Laptop Music MyArduinoProjects My_Audio_Projects Pictures Software Video"
-
-[ "${pull_scripts_serverlist}" == "default" ] && \
-    pull_scripts_serverlist="oromis persephone raspberry03 raspberry06"
-[ "${push_scripts_serverlist}" == "default" ] && \
-    push_scripts_serverlist="oromis persephone raspberry03 raspberry06"
-[ -z "${local_scripts_folder}" ] && local_scripts_folder="/usr/local/sbin"
-[ -z "${remote_scripts_folder}" ] && remote_scripts_folder="usr-local-sbin"
-
-[ "${pull_packages_serverlist}" == "default" ] && pull_packages_serverlist=""
-[ "${push_packages_serverlist}" == "default" ] && push_packages_serverlist=""
-[ -z "${local_packages_folder}" ] && \
-    local_packages_folder=${MyPackagesROOT}"usr/portage/packages"
-[ -z "${remote_packages_folder}" ] && \
-    remote_packages_folder="armv6j-hardfloat-linux-gnueabi-packages"
-
-PKGDIR=${local_packages_folder}
-
-tmp_cmd_file="/root/bin/tmp_cmd"
 
 source /usr/local/sbin/script_header_brendlefly
-
-[ -z "$PROGRESS" ] && PROGRESS="no"
-[ -z "$QUIET" ] && QUIET="yes"
-[ -z "$VERBOSE" ] && VERBOSE="no"
-#[ -z "$EXCLUDE" ] && EXCLUDE=""  ### "" IS -z
-[ -z "$CONTENT" ] && CONTENT="no"
-[ -z "$SCRIPTS" ] && SCRIPTS="no"
-[ -z "$PACKAGES" ] && PACKAGES="no"
-[ -z "$DELETE" ] && DELETE="no"
 
 # --- Define local variables -----------------------------------
 BUILD="0.1.2 (20170201)"
 
-OPTS1=" -uaz"
+OPTS1="-uaz"
 OPTS2=""
-CMDLINE_OVERRIDE="no"
+CMDLINE_OVERRIDE=$FALSE
 
-DEBUG="yes"
-#DEBUG="no"
+DEBUG=$TRUE     #I'm using this to generate cron output for debugging purposes
+#DEBUG=$FALSE
 
 # --- function blocks ------------------------------------------
+set_defaults() {
+[[ -e cloudsync.conf ]] && config_file=$PWD/cloudsync.conf
+#[[ -e /usr/local/sbin/cloudsync.conf ]] && config_file="/usr/local/sbin/cloudsync.conf"  ## comment out to debug
+#[[ -e /etc/cloudsync.conf ]] && config_file="/etc/cloudsync.conf"                        ## comment out to debug
+
+PUT=$FALSE
+GET=$FALSE
+DELETE=$FALSE
+CONTENT=$FALSE
+SCRIPTS=$FALSE
+PACKAGES=$FALSE
+TARGETS=("")
+EXCLUDE=("")
+QUIET=$FALSE
+VERBOSE=$TRUE
+PROGRESS=$TRUE
+CMDLINE_OVERRIDE_PUTGET=$FALSE
+CMDLINE_OVERRIDE_CATEGORY=$FALSE
+
+#---[ configure default servers and folders ]-------------------------------------------------------
+#   Note that remote "folders" are the served rsync folder names, whereas
+#     the local folder names are actual folder paths
+# --- do not include leading or trailing "/" in folder lists ---------
+[ -z MyPackagesROOT ] && MyPackagesROOT="/"
+
+[ -z $MyContentROOT ] && MyContentROOT="/srv/public"
+[ -z ${content_serverlist} ] && \
+    content_serverlist="thuvia oromis persephone spartacus pascal raspberry03"
+[ -z ${content_folderlist} ] && \
+    content_folderlist="Documents Joe_Laptop Music MyArduinoProjects My_Audio_Projects Pictures Software Video"
+
+[ -z ${pull_scripts_serverlist} ] && \
+    pull_scripts_serverlist="thuvia selene slim slim2 oromis spartacus zelda raspberry03 raspberry06 raspberry201 raspberry202"
+[ -z ${push_scripts_serverlist} ] && \
+    push_scripts_serverlist="thuvia selene slim slim2 oromis spartacus zelda raspberry03 raspberry06 raspberry201 raspberry202"
+[ -z ${local_scripts_folder} ] && local_scripts_folder="/usr/local/sbin"
+[ -z ${remote_scripts_folder} ] && remote_scripts_folder="usr-local-sbin"
+
+[ -z ${pull_packages_serverlist} ] && pull_packages_serverlist=""
+[ -z ${push_packages_serverlist} ] && push_packages_serverlist=""
+[ -z ${local_packages_folder} ] && \
+    local_packages_folder=${MyPackagesROOT}"usr/portage/packages"
+[ -z ${remote_packages_folder} ] && \
+    remote_packages_folder="armv6j-hardfloat-linux-gnueabi-packages"
+
+PKGDIR=${local_packages_folder}
+
+}    # end of set_defaults()
+
+normalize_list()
+{
+  # convert the input positional parameter string into an array
+  local list=($@)
+  # output the contents of the array to sdtout
+  echo ${list[@]}
+  # the result should be an orderly list(string) of the parameters
+  # each separated by the IFS field separation character (normally one space)
+}
+
+normalize_lists()
+{
+  # pass the contents of each list to normalize_list as a set of positional parameters
+  content_serverlist=$(normalize_list $content_serverlist)
+  pull_scripts_serverlist=$(normalize_list $pull_scripts_serverlist)
+  push_scripts_serverlist=$(normalize_list $push_scripts_serverlist)
+  pull_packages_serverlist=$(normalize_list $pull_packages_serverlist)
+  push_packages_serverlist=$(normalize_list $push_packages_serverlist)
+  pull_packages_serverlist=$(normalize_list $pull_packages_serverlist)
+  push_packages_serverlist=$(normalize_list $push_packages_serverlist)
+}
+
+process_cmdline()
+{
+  option=(""); arg=("")
+  i=0; j=0    # option and arg arrays are both zero-based
+  FIRST=$TRUE
+  while [[ $# -gt 0 ]]
+  do
+    d_message "Processing cmdline item [$1]" 2
+    if [[ "${1:0:1}" == "-" ]]
+    then
+      d_message "This is an option" 2
+      # the first character is a hyphen, this is an option
+      option[i]=$1
+      d_message "  option[$i]=[${option[i]}]" 3
+      # if we already had option/args in queue, process that
+      [[ $i -gt 0 ]] && FIRST=$FALSE
+      d_message "  FIRST=[$(status_color $FIRST)$(TrueFalse $FIRST)${Boff}]" 3
+      if [[ ! $FIRST ]]
+      then
+        # process the last option with any arguments
+        d_message "  Processing previous option/args:" 2
+        d_message "  option[$((i-1))]=[${option[$((i-1))]}]" 3
+        process_option ${option[$((i-1))]} ${arg[@]}
+        arg=("")     # reset the arg array
+        let "j=0"    # reset the arg counter for next option
+      fi
+      let "i+=1"   # increment the option counter
+    else
+      d_message "  This is NOT an option - treat as arg to option" 2
+      # not an option, may be an argument for an earlier option, or may be invalid
+      arg[j]=$1
+      d_message "  arg[$j]=[${arg[j]}]" 3
+      let "j+=1"
+    fi
+    shift
+  done
+  # process the final option queued up along with any args
+  d_message "  Processing final option/args already queued:" 2
+  d_message "  option[$((i-1))]=[${option[$((i-1))]}]" 3
+  process_option ${option[$((i-1))]} ${arg[@]}
+  let "j=0"    # reset the arg counter for next option
+
+  # almost done; to avoid having to address this in both process_option and process_compound, do it here:
+  [[ $PUT ]] && [[ $PACKAGES ]] && [[ ${#TARGETS[@]} -gt 0 ]] && push_packages_serverlist="${TARGETS[@]}" && \
+    d_message "        Overrode packages push_serverlist with TARGETS" 3
+  [[ $GET ]] && [[ $PACKAGES ]] && [[ ${#TARGETS[@]} -gt 0 ]] && pull_packages_serverlist="${TARGETS[@]}" && \
+    d_message "        Overrode packages pull_serverlist with TARGETS" 3
+  [[ $PUT ]] && [[ $SCRIPTS ]] && [[ ${#TARGETS[@]} -gt 0 ]] && push_scripts_serverlist="${TARGETS[@]}" && \
+    d_message "        Overrode scripts push_serverlist with TARGETS" 3
+  [[ $GET ]] && [[ $SCRIPTS ]] && [[ ${#TARGETS[@]} -gt 0 ]] && pull_scripts_serverlist="${TARGETS[@]}" && \
+    d_message "        Overrode scripts pull_serverlist with TARGETS" 3
+  [[ $PUT || $GET ]] && [[ $CONTENT ]] && [[ ${#TARGETS[@]} -gt 0 ]] && content_serverlist="${TARGETS[@]}" && \
+    d_message "        Overrode content serverlist with TARGETS" 3
+
+}
+
+process_option()
+{
+  local opt=$1; shift
+  local argarray=$@
+  result=999
+  d_message "    ${BYon}Removed opt [${opt}] from argarray, which is now [${argarray[@]}]${Boff}" 4
+  d_message "    ${BYon}Processing opt [${opt}] with args [$argarray]${Boff}" 3
+  # set the appropriate values for the appropriate global flags.  Also flag CMDLINE_OVERRIDE at the first use of
+  #   one of [ CONTENT | SCRIPTS | PACKAGES ] or one of [ PUT | GET ] and default the others in that category
+  #   to $FALSE at that point.  This is because if one of them is specified on the command line,
+  #   we will attend only to those in that category activated by the command line. (e.g. if PUT is specified
+  #   by the command line, then we will set GET to $FALSE unless it too is specified on the command line)
+  case $opt in
+    "-q" | "--quiet" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      QUIET=$TRUE; VERBOSE=$FALSE; verbosity=0
+      d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
+      d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+      d_message "    ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+      ;;
+    "-v" | "--verbose" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      VERBOSE=$TRUE
+      [[ -z "$OPTS2" ]] && OPTS2="-v" || OPTS2+="v"
+      d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+      ;;
+    "-t" | "--targets" )
+      result=1 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which must have ${BGon}at least one${boff} argument" 3
+      TARGETS="${argarray[@]}"
+      d_message "    ${BYon}Set external variable ${LBon}TARGETS=[${BWon}${TARGETS}${LBon}]${Boff}" 2
+      ;;
+    "-p" | "--put" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      PUT=$TRUE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}PUT=[$(status_color $PUT)$(TrueFalse $PUT)${LBon}]${Boff}" 2
+      ;;
+    "-g" | "--get" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      GET=$TRUE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}GET=[$(status_color $GET)$(TrueFalse $PUT)${LBon}]${Boff}" 2
+      ;;
+    "-d" | "--delete" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      DELETE=$TRUE
+      d_message "    ${BYon}Set external variable ${LBon}DELETE=[$(status_color $DELETE)$(TrueFalse $DELETE)${LBon}]${Boff}" 2
+      ;;
+    "-c" | "--contents" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      CONTENTS=$TRUE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}CONTENTS=[$(status_color $CONTENTS)$(TrueFalse $CONTENTS)${LBon}]${Boff}" 2
+      ;;
+    "-s" | "--scripts" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      SCRIPTS=$TRUE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}SCRIPTS=[$(status_color $SCRIPTS)$(TrueFalse $SCRIPTS)${LBon}]${Boff}" 2
+      ;;
+    "-k" | "--packages" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      PACKAGES=$TRUE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}PACKAGES=[$(status_color $PACKAGES)$(TrueFalse $PACKAGES)${LBon}]${Boff}" 2
+      ;;
+    "-x" | "--exclude" )
+      result=1 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which must have ${BGon}at least one${boff} argument" 3
+      EXCLUDE="${argarray[@]}"
+      d_message "    ${BYon}Set external variable ${LBon}EXCLUDE=[${BWon}${EXCLUDE}${LBon}]${Boff}" 2
+      ;;
+    * )
+      # if this starts with "-" followed by a compound of single letter opts, process that
+      if [[ ${#opt} -gt 2 && "${opt:0:1}" == "-" && "${opt:1:1}" != "-" ]]
+      then
+        compound=${opt:1}
+        d_message "      Stripped leading \"-\", processing the rest as a compound of opts [${compound}]" 3
+        process_compound ${compound}    # processing of the compound arg will set result
+      else
+        result=2
+        local msg="    ${BWon}>>>${Boff} ${BRon}Invalid opt [${BWon}${opt}${BRon}]${Boff}"
+        [[ "${opt}" =~ [xt] ]] && msg+=" ${BRon}(options x and t not allowed in compound agrument)${Boff}"
+        E_message "$msg"
+      fi
+      ;;
+  esac
+}
+
+process_compound()
+{
+  local argstr=$1
+  d_message "        ${LBon}Processing compound option set [$argstr]${Boff}" 2
+  result=3  # treat as valid compound argument until proven false
+  # handle each char separately
+  for ((l=0; l<${#argstr}; l++))
+  do
+    d_message "        ${LBon}l=[$l]; argstr[$l]=[${argstr:$l:1}]" 4
+    case ${argstr:$l:1} in
+      "q" )
+        QUIET=$TRUE; VERBOSE=$FALSE; verbosity=0
+        d_message "        ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 3
+        d_message "        ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
+        d_message "        ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+        ;;
+      "v" )
+        VERBOSE=$TRUE
+        d_message "        ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
+        let "verbosity+=1"
+        [[ -z "$OPTS2" ]] && OPTS2="-v" || OPTS2+="v"
+        d_message "        ${BYon}Incremented external variable to ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+        ;;
+      "p" )
+        PUT=$TRUE; check_cmdline_override "-p"
+        d_message "        ${BYon}Set external variable ${LBon}PUT=[$(status_color $PUT)$(TrueFalse $PUT)${LBon}]${Boff}" 3
+        ;;
+      "g" )
+        GET=$TRUE; check_cmdline_override "-g"
+        d_message "        ${BYon}Set external variable ${LBon}GET=[$(status_color $GET)$(TrueFalse $GET)${LBon}]${Boff}" 3
+        ;;
+      "d" )
+        DELETE=$TRUE
+        d_message "        ${BYon}Set external variable ${LBon}DELETE=[$(status_color $DELETE)$(TrueFalse $DELETE)${LBon}]${Boff}" 3
+        ;;
+      "c" )
+        CONTENT=$TRUE; check_cmdline_override "-c"
+        d_message "        ${BYon}Set external variable ${LBon}CONTENT=[$(status_color $CONTENT)$(TrueFalse $CONTENT)${LBon}]${Boff}" 3
+        ;;
+      "s" )
+        SCRIPTS=$TRUE; check_cmdline_override "-s"
+        d_message "        ${BYon}Set external variable ${LBon}SCRIPTS=[$(status_color $SCRIPTS)$(TrueFalse $SCRIPTS)${LBon}]${Boff}" 3
+        ;;
+      "k" )
+        PACKAGES=$TRUE; check_cmdline_override "-k"
+        d_message "        ${BYon}Set external variable ${LBon}PACKAGES=[$(status_color $PACKAGES)$(TrueFalse $PACKAGES)${LBon}]${Boff}" 3
+        ;;
+       *  )
+        # everything else is invalid (incl x or t which cannot be assigned in a compound arg)
+        local msg="        ${BWon}>>>${Boff} ${BRon}Invalid option [${BWon}${argstr:$l:1}${BRon}]${Boff}"
+        [[ "${argstr:$l:1}" =~ [xt] ]] && msg+=" ${BRon}(options x and t not allowed in compound agrument)${Boff}"
+        E_message "$msg"
+        result=2 ;
+        ;;
+    esac
+  done
+}
 
 sanity_check()
 {
   # check for invalid option combinations
-  [ "$QUIET" == "yes" ] && [ "$VERBOSE" == "yes" ] && QUIET="no"  # verbose overrides
-  [ "$QUIET" == "no" ] && [ "$VERBOSE" == "no" ] && VERBOSE="yes"  # default to verbose
-  [ "$PROGRESS" == "yes" ] && VERBOSE="yes" && QUIET="no"  # progress implies verbose and overrides quiet
+  [[ $QUIET ]] && [[ $VERBOSE ]] && QUIET=$FALSE  # verbose overrides
+  [[ ! $QUIET ]] && [[ ! $VERBOSE ]] && VERBOSE=$TRUE  # default to verbose
+  [[ $PROGRESS ]] && VERBOSE=$TRUE && QUIET=$FALSE  # progress implies verbose and overrides quiet
 }
 
-process_command_line()
-{
-# process command line arguments (for now only -x/--exclude option can have an argument)
-last=""
-[ "$DEBUG" == "yes" ] && message "process(ing)_command_line with argument(s): [ ${*} ]"
-for i in $*
-do
-  if [[ "$last" == "--exclude" ]]
-  then     # last was --exclude
-    [ "$DEBUG" == "yes" ] && message "about to process_argument with [ $last $i ]"
-    process_argument $last $i
-    last="arg"
-  else     # last was not --exclude
-    process_argument $i
-    last=$i
-  fi
-done
-sanity_check
-
-[ "$PROGRESS" == "yes" ] && OPTS2=$OPTS2" --progress"
-[ "$QUIET" == "yes" ] && OPTS2=$OPTS2" --quiet"
-[ "$VERBOSE" == "yes" ] && OPTS2=$OPTS2" --verbose"
-[ "$DELETE" == "yes" ] && OPTS2=$OPTS2" --delete --force"
-
-
-}
-
-process_argument()
-{
-EXCLUDE=""
-[ "$DEBUG" == "yes" ] && message "process(ing)_argument: [ $* ] with parts 1: [ $1 ], 2: [ $2 ]"
-# process command line argument (must be one of the following)
-[ ! -z "$1" ] && case "$1" in
-    "-P" | "--progress"      ) PROGRESS="yes" ;;
-    "-q" | "--quiet"         ) QUIET="yes" ;;
-    "-v" | "--verbose"       ) VERBOSE="yes" ;;
-           "--exclude"       ) EXCLUDE="$2" ;;
-    "-c" | "--content"       ) CONTENT="yes"  ; check_cmdline_override $1;;
-    "-s" | "--scripts"       ) SCRIPTS="yes"  ; check_cmdline_override $1;;
-    "-k" | "--packages"      ) PACKAGES="yes" ; check_cmdline_override $1;;
-    "-d" | "--delete"        ) DELETE="yes" ;;
-    "-h" | "--help"          ) useage ; exit 0 ;;
-    *                        ) process_compound_arg $1 ;;
-esac
-
-}
-
-process_compound_arg()
-{
-# must begin with a single dash
-[ ! "${1:0:1}" = "-" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
-# must not begin with two dashes (would have been picked in process_argument)
-[ "${1:0:2}" = "--" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
-# strip leading dash(es)
-myargs=${1##-}
-# handle remaining characters in sequence
-while [ -n "${myargs}" ]
-do
-    #handle first char
-    case ${myargs:0:1} in
-      "P" ) PROGRESS="yes" ;;
-      "q" ) QUIET="yes" ;;
-      "v" ) VERBOSE="yes" ;;
-      "c" ) CONTENT="yes"  ; check_cmdline_override "-${myargs:0:1}";;
-      "s" ) SCRIPTS="yes"  ; check_cmdline_override "-${myargs:0:1}";;
-      "k" ) PACKAGES="yes" ; check_cmdline_override "-${myargs:0:1}";;
-      "d" ) DELETE="yes" ;;
-      "h" ) useage ; exit 0 ;;
-      *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
-    esac
-    #strip first char from myargs
-    myargs=${myargs:1}
-done
-}
 
 check_cmdline_override()
 {
-# if user specifies any one of [content | scripts | packages ] on the command line, then
-#   execute only those specified via the command line (set others to "no" when first
-#   is detected, others may reset above when processed as subsequent arguments
-[ "$DEBUG" == "yes" ] && message "Checking for command line override for [ $1 ]: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
-[ "$DEBUG" == "yes" ] && message "Test of '[[ ! "$CMDLINE_OVERRIDE" == "yes" ]]':" && \
-  [[ ! "$CMDLINE_OVERRIDE" == "yes" ]] && echo true || echo false
+# Set flag CMDLINE_OVERRIDE at the first use of one of [ CONTENT | SCRIPTS | PACKAGES ]
+#   or one of [ PUT | GET ] and default the others in that category to $FALSE at that point.
+#   This is because if one of them is specified on the command line, we will attend only to those
+#   in that category activated by the command line. (e.g. if PUT is specified
+#   by the command line, then we will set GET to $FALSE unless it too is specified on the command line)
+d_message "Checking for command line override for option [${1}]:" 2
+d_message "  ${BBon}CMDLINE_OVERRIDE=[$(status_color $CMDLINE_OVERRIDE)$(TrueFalse $CMDLINE_OVERRIDE)${BBon}]${Boff}"
 
-if [[ ! "$CMDLINE_OVERRIDE" == "yes" ]]
+if [[ ! $CMDLINE_OVERRIDE_PUTGET ]] || [[ ! $CMDLINE_OVERRIDE_CATEGORY ]]
 then
-  CMDLINE_OVERRIDE="yes"
   case "$1" in
-    "-c" | "--content"       ) CONTENT="yes" ; SCRIPTS="no"  ; PACKAGES="no"  ;;
-    "-s" | "--scripts"       ) CONTENT="no"  ; SCRIPTS="yes" ; PACKAGES="no"  ;;
-    "-k" | "--packages"      ) CONTENT="no"  ; SCRIPTS="no"  ; PACKAGES="yes" ;;
+    "-p" | "--put"           )
+      if [[ ! $CMDLINE_OVERRIDE_PUTGET ]]
+      then
+        CMDLINE_OVERRIDE_PUTGET=$TRUE
+        PUT=$TRUE     ; GET=$FALSE
+      fi ;;
+    "-g" | "--get"           )
+      if [[ ! $CMDLINE_OVERRIDE_PUTGET ]]
+      then
+        CMDLINE_OVERRIDE_PUTGET=$TRUE
+        PUT=$FALSE    ; GET=$TRUE
+      fi ;;
+    "-c" | "--content"       )
+      if [[ ! $CMDLINE_OVERRIDE_CATEGORY ]]
+      then
+        CMDLINE_OVERRIDE_CATEGORY=$TRUE
+        CONTENT=$TRUE  ; SCRIPTS=$FALSE  ; PACKAGES=$FALSE
+      fi ;;
+    "-s" | "--scripts"       )
+      if [[ ! $CMDLINE_OVERRIDE_CATEGORY ]]
+      then
+        CMDLINE_OVERRIDE_CATEGORY=$TRUE
+        CONTENT=$FALSE ; SCRIPTS=$TRUE   ; PACKAGES=$FALSE
+      fi ;;
+    "-k" | "--packages"      )
+      if [[ ! $CMDLINE_OVERRIDE_CATEGORY ]]
+      then
+        CMDLINE_OVERRIDE_CATEGORY=$TRUE
+        CONTENT=$FALSE ; SCRIPTS=$FALSE  ; PACKAGES=$TRUE
+      fi ;;
     *                        ) E_message "Error in command line argument override of config/default"; exit 1 ;;
   esac
-  [ "$DEBUG" == "yes" ] && message "Overrode [ $1 ], subsequently: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
+  d_message "${BWon}Overrode [$1]: ${BBon}CMDLINE_OVERRIDE=[$(status_color $CMDLINE_OVERRIDE)$(TrueFalse $CMDLINE_OVERRIDE)${BBon}]${Boff}"
 else
-  [ "$DEBUG" == "yes" ] && message "No additional override necessary: CMDLINE_OVERRIDE=$CMDLINE_OVERRIDE"
+  d_message "${BWon}No additional override necessary: ${BBon}CMDLINE_OVERRIDE is already set${Boff}"
 fi
 }
 
 # ---[ display config ]-------------------------------------------
 display_config()
 {
-[ "$PROGRESS" == "yes" ] && PROGRESS_COLOR=$BGon || PROGRESS_COLOR=$BRon
-[ "$QUIET" == "yes" ] && QUIET_COLOR=$BGon || QUIET_COLOR=$BRon
-[ "$VERBOSE" == "yes" ] && VERBOSE_COLOR=$BGon || VERBOSE_COLOR=$BRon
-[ "$DELETE" == "yes" ] && DELETE_COLOR=$BGon || DELETE_COLOR=$BRon
-[ "$CONTENT" == "yes" ] && CONTENT_COLOR=$BGon || CONTENT_COLOR=$BRon
-[ "$SCRIPTS" == "yes" ] && SCRIPTS_COLOR=$BGon || SCRIPTS_COLOR=$BRon
-[ "$PACKAGES" == "yes" ] && PACKAGES_COLOR=$BGon || PACKAGES_COLOR=$BRon
+/bin/echo
+/bin/echo -e "${LBon}Configuration from [ ${BYon}${config_file} ${LBon}]:${Boff}"
 
-message "Current Configuration from [${config_file}]:"
-/bin/echo -e "${BGon}PROGRESS${BBon}..................: "$PROGRESS_COLOR$PROGRESS${Boff}
-/bin/echo -e "${BGon}QUIET${BBon}.....................: "$QUIET_COLOR$QUIET${Boff}
-/bin/echo -e "${BGon}VERBOSE${BBon}...................: "$VERBOSE_COLOR$VERBOSE${Boff}
-/bin/echo -e "${BGon}EXCLUDE${BBon}...................: ${Boff}"$EXCLUDE
-/bin/echo -e "${BGon}DELETE${BBon}....................: "$DELETE_COLOR$DELETE${Boff}
 /bin/echo
-/bin/echo -e "${BGon}rsync OPTS1${BBon}...............: ${Boff}"$OPTS1
-/bin/echo -e "${BGon}rsync OPTS2${BBon}...............: ${Boff}"$OPTS2
+/bin/echo -e "${BGon}DELETE${BBon}....................: $(status_color $DELETE)$(TrueFalse $DELETE)${Boff}"
+/bin/echo -e "${BGon}PROGRESS${BBon}..................: $(status_color $PROGRESS)$(TrueFalse $PROGRESS)${Boff}"
+/bin/echo -e "${BGon}QUIET${BBon}.....................: $(status_color $QUIET)$(TrueFalse $QUIET)${Boff}"
+/bin/echo -e "${BGon}VERBOSE${BBon}...................: $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}"
+/bin/echo -e "${BGon}verbosity${BBon}.................: ${Boff}${verbosity}"
 /bin/echo
-/bin/echo -e "${BGon}CONTENT${BBon}...................: "$CONTENT_COLOR$CONTENT${Boff}
-/bin/echo -e "${BBon}MyContentROOT.............: ${Boff}"${MyContentROOT}
-/bin/echo -e "${BBon}content_serverlist........: ${Boff}"${content_serverlist}
-/bin/echo -e "${BBon}content_folderlist........: ${Boff}"${content_folderlist}
+/bin/echo -e "${BGon}PUT${BBon}.......................: $(status_color $PUT)$(TrueFalse $PUT)${Boff}"
+/bin/echo -e "${BGon}GET${BBon}.......................: $(status_color $GET)$(TrueFalse $GET)${Boff}"
+/bin/echo -e "${BGon}TARGETS${BBon}...................: ${BYon}${TARGETS[@]}${Boff}"
+/bin/echo -e "${BGon}EXCLUDE${BBon}...................: ${BYon}${EXCLUDE[@]}${Boff}"
 /bin/echo
-/bin/echo -e "${BGon}SCRIPTS${BBon}...................: "$SCRIPTS_COLOR$SCRIPTS${Boff}
-/bin/echo -e "${BBon}pull_scripts_serverlist...: ${Boff}"${pull_scripts_serverlist}
-/bin/echo -e "${BBon}push_scripts_serverlist...: ${Boff}"${push_scripts_serverlist}
-/bin/echo -e "${BBon}local_scripts_folder......: ${Boff}"${local_scripts_folder}
-/bin/echo -e "${BBon}remote_scripts_folder.....: ${Boff}"${remote_scripts_folder}
+/bin/echo -e "${BGon}rsync OPTS1${BBon}...............: ${BWon}$OPTS1${Boff}"
+/bin/echo -e "${BGon}rsync OPTS2${BBon}...............: ${BWon}$OPTS2${Boff}"
 /bin/echo
-/bin/echo -e "${BGon}PACKAGES${BBon}..................: "$PACKAGES_COLOR$PACKAGES${Boff}
-/bin/echo -e "${BBon}PKGDIR....................: ${Boff}"${PKGDIR}
-/bin/echo -e "${BBon}MyPackagesROOT............: ${Boff}"${MyPackagesROOT}
-/bin/echo -e "${BBon}pull_packages_serverlist..: ${Boff}"${pull_packages_serverlist}
-/bin/echo -e "${BBon}push_packages_serverlist..: ${Boff}"${push_packages_serverlist}
-/bin/echo -e "${BBon}local_packages_folder.....: ${Boff}"${local_packages_folder}
-/bin/echo -e "${BBon}remote_packages_folder....: ${Boff}"${remote_packages_folder}
+/bin/echo -e "${BGon}CONTENT${BBon}...................: $(status_color $CONTENT)$(TrueFalse $CONTENT)${Boff}"
+/bin/echo -e "${BBon}MyContentROOT.............: ${BWon}${MyContentROOT}${Boff}"
+/bin/echo -e "${BBon}content_serverlist........: ${BWon}${content_serverlist}${Boff}"
+/bin/echo -e "${BBon}content_folderlist........: ${BWon}${content_folderlist}${Boff}"
 /bin/echo
-/bin/echo -e "${BGon}Pull command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} rsync://${server}/${folder} ${MyContentROOT}/${folder}"
-/bin/echo -e "${BGon}Push command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} ${MyContentROOT}/${folder}/ rsync://${server}/${folder}"
+/bin/echo -e "${BGon}SCRIPTS${BBon}...................: $(status_color $SCRIPTS)$(TrueFalse $SCRIPTS)${Boff}"
+/bin/echo -e "${BBon}pull_scripts_serverlist...: ${BWon}${pull_scripts_serverlist}${Boff}"
+/bin/echo -e "${BBon}push_scripts_serverlist...: ${BWon}${push_scripts_serverlist}${Boff}"
+/bin/echo -e "${BBon}local_scripts_folder......: ${BWon}${local_scripts_folder}${Boff}"
+/bin/echo -e "${BBon}remote_scripts_folder.....: ${BWon}${remote_scripts_folder}${Boff}"
+/bin/echo
+/bin/echo -e "${BGon}PACKAGES${BBon}..................: $(status_color $PACKAGES)$(TrueFalse $PACKAGES)${Boff}"
+/bin/echo -e "${BBon}PKGDIR....................: ${BWon}${PKGDIR}${Boff}"
+/bin/echo -e "${BBon}MyPackagesROOT............: ${BWon}${MyPackagesROOT}${Boff}"
+/bin/echo -e "${BBon}pull_packages_serverlist..: ${BWon}${pull_packages_serverlist}${Boff}"
+/bin/echo -e "${BBon}push_packages_serverlist..: ${BWon}${push_packages_serverlist}${Boff}"
+/bin/echo -e "${BBon}local_packages_folder.....: ${BWon}${local_packages_folder}${Boff}"
+/bin/echo -e "${BBon}remote_packages_folder....: ${BWon}${remote_packages_folder}${Boff}"
+/bin/echo
+/bin/echo -e "FIX ME ${BGon}Pull command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} rsync://${server}/${folder} ${MyContentROOT}/${folder}"
+/bin/echo -e "FIX ME ${BGon}Push command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} ${MyContentROOT}/${folder}/ rsync://${server}/${folder}"
 /bin/echo
 
 }
@@ -255,12 +439,12 @@ message "Current Configuration from [${config_file}]:"
 # ---[ display useage message ]-------------------------------------------
 useage()
 {
-   /bin/echo -e $BGon"Useage: cloudsync [option]"$Boff
+   /bin/echo -e $BGon"(FIX ME) Useage: cloudsync [option]"$Boff
    /bin/echo -e " Command line options:"
    /bin/echo -e "  "$BBon"[-P | --progress]"$Boff".........display progress during transfer"
    /bin/echo -e "  "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
    /bin/echo -e "  "$BBon"[-q | --quiet]"$Boff"............supress non-error messages"
-   /bin/echo -e "  "$BBon"[     --exclude=PATTERN]"$Boff"..exclude <atom> from emerge"
+   /bin/echo -e "  "$BBon"[-x | --exclude=PATTERN]"$Boff"..exclude <atom> from emerge"
    /bin/echo -e "  "$BBon"[-c | --content]"$Boff"..........sync server content directories"
    /bin/echo -e "  "$BBon"[-s | --scripts]"$Boff"..........sync custom scripts"
    /bin/echo -e "  "$BBon"[-k | --packages]"$Boff".........sync binary packages"
@@ -282,20 +466,15 @@ useage()
 
 r_sync()  #args: source destinaton opts
 {
-  message "${BGon}Executing:${Boff} /usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}"
-#  /usr/bin/rsync "$1 $2 $OPTS1 $OPTS2" "${excludestring}"
-  [ "${DEBUG}" == "true" ] && message "writing: \"/usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}\" to \$tmp_cmd_file [ $tmp_cmd_file ]"
-  echo "/usr/bin/rsync $1 $2 $OPTS1 $OPTS2 ${excludestring}" > $tmp_cmd_file
-  [ "${DEBUG}" == "true" ] && message echo "running \$tmp_cmd_file [ $tmp_cmd_file ]"
-  chmod +x $tmp_cmd_file
-  $tmp_cmd_file
-  rm $tmp_cmd_file
+  rsync_args="$1 $2 $OPTS1 $OPTS2${excludestring}"
+  message "${BGon}Executing:${Boff} /usr/bin/rsync ${rsync_args}"
+  /usr/bin/rsync ${rsync_args}
 }
 # ---[ Pull ]-------------------------------------------------------------------------------------------------
 pull_sync()
 {
   message "${BYon}---[ ${BGon}pull${BBon}-synchronizing ${BGon}$1${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
-  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing $1 with ${server}"
+  [[ $DEBUG ]] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing $1 with ${server}"
   r_sync "rsync://${server}/${remote_folder}" "${local_folder}" && \
     message "Done pull sync of $1 with $server" || \
     E_message "Error in pull sync of $1 with $server"
@@ -305,7 +484,7 @@ pull_sync()
 pull_content_sync()
 {
   message "${BYon}---[ ${BGon}pull${BBon}-synchronizing ${BGon}${folder}${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
-  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing ${folder} with ${server}"
+  [[ $DEBUG ]] && /usr/bin/logger -p cron.notice "[cloudsync] pull-synchronizing ${folder} with ${server}"
   r_sync "rsync://${server}/${folder}" "${MyContentROOT}/${folder}" && \
     message "Done pull sync of ${folder} with ${server}" || \
     E_message "Error in pull sync of ${folder} with ${server}"
@@ -316,7 +495,7 @@ pull_content_sync()
 push_sync()
 {
   message "${BYon}---[ ${BGon}push${BBon}-synchronizing ${BGon}$1${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
-  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing $1 with ${server}"
+  [[ $DEBUG ]] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing $1 with ${server}"
   r_sync "${local_folder}/" "rsync://${server}/${remote_folder}" && \
     message "Done push sync of $1 with $server" || \
     E_message "Error in push sync of $1 with $server"
@@ -326,7 +505,7 @@ push_sync()
 push_content_sync()
 {
   message "${BYon}---[ ${BGon}push${BBon}-synchronizing ${BGon}${folder}${BBon} with ${BGon}${server}${BYon} ]-----------------${Boff}"
-  [ "$DEBUG" == "yes" ] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing ${folder} with ${server}"
+  [[ $DEBUG ]] && /usr/bin/logger -p cron.notice "[cloudsync] push-synchronizing ${folder} with ${server}"
   r_sync "${MyContentROOT}/${folder}/" "rsync://${server}/${folder}" && \
     message "Done push sync of  ${folder} with ${server}" || \
     E_message "Error in push sync of ${folder} with ${server}"
@@ -336,83 +515,71 @@ push_content_sync()
 # ---[ Sync script and packages source and destination folders on list of servers ]---------------------------
 sync_loop()
 {
-separator "sync $1"
+separator "$1" "cloudsync"
 case $1 in
   "scripts"  )
-    excludestring="$EXCLUDE"
+    # no additional excludes known
     pull_serverlist="${pull_scripts_serverlist}"
     push_serverlist="${push_scripts_serverlist}"
     local_folder="${local_scripts_folder}"
     remote_folder="${remote_scripts_folder}"
-    [ "$DEBUG" == "yes" ] && message "chose scripts sync case"
+    d_message "chose scripts sync case" 2
     ;;
   "packages" )
-    excludestring="Packages *.html $EXCLUDE"
+    EXCLUDE+=("Packages" "*.html")
     pull_serverlist="${pull_packages_serverlist}"
     push_serverlist="${push_packages_serverlist}"
     local_folder="${PKGDIR}"
     remote_folder="${remote_packages_folder}"
-    [ "$DEBUG" == "yes" ] && message "chose packages sync case"
+    d_message "chose packages sync case" 2
     ;;
   *          )
-    /usr/bin/logger -p cron.notice "Error in $1; job not completed"
+    /usr/bin/logger -p cron.notice "Error in sync_loop for $1; job not completed"
     exit
     ;;
 esac
 
 # finish assembling excludestring
-[ ! -z "${excludestring}" ] && excludestring=" --exclude \"${excludestring}\""
+excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude '$x'"; done
 
-# Normally, we pull first and then push to improve efficiency of distribution across cloud
+# Normally, if both are set, we pull first and then push to improve efficiency of distribution across cloud
 #  However, if delete is selected, then push(delete) first, and then pull
-if [ "$DELETE" == "yes" ]
+if [[ $DELETE ]]
 then
-  [ "$DEBUG" == "yes" ] && message "push_serverlist: ${push_serverlist}"
-  for server in ${push_serverlist}
-  do
-    push_sync $1
-  done
-  [ "$DEBUG" == "yes" ] && message "pull_serverlist: ${pull_serverlist}"
-  for server in ${pull_serverlist}
-  do
-    pull_sync $1
-  done
+  d_message "push_serverlist: ${push_serverlist}" 2
+  [[ $PUT ]] && for server in ${push_serverlist}; do push_sync $1; done
+  d_message "pull_serverlist: ${pull_serverlist}" 2
+  [[ $GET ]] && for server in ${pull_serverlist}; do pull_sync $1; done
 else
-  [ "$DEBUG" == "yes" ] && message "pull_serverlist: ${pull_serverlist}"
-  for server in ${pull_serverlist}
-  do
-    pull_sync $1
-  done
-  [ "$DEBUG" == "yes" ] && message "push_serverlist: ${push_serverlist}"
-  for server in ${push_serverlist}
-  do
-    push_sync $1
-  done
+  d_message "pull_serverlist: ${pull_serverlist}" 2
+  [[ $GET ]] && for server in ${pull_serverlist}; do pull_sync $1; done
+  d_message "push_serverlist: ${push_serverlist}" 2
+  [[ $PUT ]] && for server in ${push_serverlist}; do push_sync $1; done
 fi
 }
 
 # ---[ Sync script and packages source and destination folders on list of servers ]---------------------------
 sync_content_loop()
 {
-separator "sync content"
-excludestring="*~ $EXCLUDE"
+separator "content" "cloudsync"
 # finish assembling excludestring
-[ ! -z "${excludestring}" ] && excludestring=" --exclude \"${excludestring}\""
+EXCLUDE+=("*~")
+excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude '$x'"; done
 
 for server in ${content_serverlist}
 do
   for folder in ${content_folderlist}
-    do
-      # Normally, we pull first and then push to improve efficiency of distribution across cloud
-      #  However, if delete is selected, then push(delete) first, and then pull
-      if [ "$DELETE" == "yes" ]
-      then
-        push_content_sync
-        pull_content_sync
-      else
-        pull_content_sync
-        push_content_sync
-      fi
+  do
+    # Normally, we pull first and then push to improve efficiency of distribution across cloud
+    #  However, if delete is selected, then push(delete) first, and then pull
+    if [[ $DELETE ]]
+    then
+      [[ $PUT ]] && push_content_sync
+      [[ $GET ]] && pull_content_sync
+    else
+      [[ $GET ]] && pull_content_sync
+      [[ $PUT ]] && push_content_sync
+    fi
   done
 done
 }
@@ -421,15 +588,20 @@ done
 separator "Running cloudsync-${BUILD}"
 checkroot
 
-process_command_line $*
+set_defaults
+source ${config_file}
+normalize_lists
+process_cmdline $@
+sanity_check
 display_config
 sleep 5
+
 #exit
 
-[ "$CONTENT" == "yes" ] && sync_content_loop || message "content sync not requested"
-[ "$SCRIPTS" == "yes" ] && sync_loop "scripts" || message "script sync not requested"
+[[ $CONTENT ]] && sync_content_loop || message "content sync not requested"
+[[ $SCRIPTS ]] && sync_loop "scripts" || message "script sync not requested"
 
-if [ "$PACKAGES" == "yes" ]
+if [[ $PACKAGES ]]
 then
   # first, force correct permissions on all my package files
   message "Setting proper ownership and permissions on all my package files"
