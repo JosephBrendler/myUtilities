@@ -1,4 +1,4 @@
-#!/bin/bash
+W#!/bin/bash
 #
 # Joe Brendler
 # 27 Apr 2014
@@ -42,14 +42,15 @@
 source /usr/local/sbin/script_header_brendlefly
 
 # --- Define local variables -----------------------------------
-BUILD="0.1.2 (20170201)"
+BUILD="2.0.0"
 
 OPTS1="-uaz"
 OPTS2=""
-CMDLINE_OVERRIDE=$FALSE
 
 DEBUG=$TRUE     #I'm using this to generate cron output for debugging purposes
 #DEBUG=$FALSE
+
+verbosity=0
 
 # --- function blocks ------------------------------------------
 set_defaults() {
@@ -70,6 +71,8 @@ VERBOSE=$TRUE
 PROGRESS=$TRUE
 CMDLINE_OVERRIDE_PUTGET=$FALSE
 CMDLINE_OVERRIDE_CATEGORY=$FALSE
+CMDLINE_OVERRIDE_QV=$FALSE
+CMDLINE_OVERRIDE_PROGRESS=$FALSE
 
 #---[ configure default servers and folders ]-------------------------------------------------------
 #   Note that remote "folders" are the served rsync folder names, whereas
@@ -164,17 +167,48 @@ process_cmdline()
   d_message "  option[$((i-1))]=[${option[$((i-1))]}]" 3
   process_option ${option[$((i-1))]} ${arg[@]}
   let "j=0"    # reset the arg counter for next option
+  # now that we've processed all cmdline options, use the resultant flag set to set OPTS1 and OPTS2
+  # check for invalid option combinations -- this used to be "sanity_check"
+
+  d_message "  ${BWon}>>> before sanity check: OPTS1=[${OPTS1}]  OPTS2=[$OPTS2]${Boff}" 2
+  d_message "    ${BWon}PROGRESS=[$(status_color $PROGRESS)$(TrueFalse $PROGRESS)${BWon}]${Boff}" 3
+  d_message "    ${BWon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${BWon}]${Boff}" 3
+  d_message "    ${BWon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${BWon}]${Boff}" 3
+  d_message "    ${BWon}DELETE=[$(status_color $DELETE)$(TrueFalse $DELETE)${BWon}]${Boff}" 3
+  d_message "    ${BWon}verbosity=[$verbosity]${Boff}" 2
+  [[ $QUIET ]] && [[ $VERBOSE ]] && QUIET=$FALSE                              # verbose overrides
+  [[ ! $QUIET ]] && [[ ! $VERBOSE ]] && VERBOSE=$TRUE                         # default to verbose
+  [[ $PROGRESS ]] && QUIET=$FALSE && VERBOSE=$TRUE                            # progress implies verbose and overrides quiet
+  # now set options
+  [[ $DELETE ]] && if [[ -z "$OPTS2" ]]; then OPTS2="--delete --force"; else OPTS2+=" --delete --force"; fi
+  [[ $PROGRESS ]] && if [[ -z "$OPTS2" ]]; then OPTS2="--progress"; else OPTS2+=" --progress"; fi
+  [[ $VERBOSE ]] && if [[ -z "$OPTS1" ]]; then  OPTS1="-v"; else OPTS1+="v"; fi
+  [[ $QUIET ]] && if [[ -z "$OPTS1" ]]; then OPTS1="-q"; else OPTS1+="q"; fi
+  d_message "  ${BWon}>>>  after sanity check: OPTS1=[${OPTS1}]  OPTS2=[$OPTS2]${Boff}" 2
+  d_message "    ${BWon}PROGRESS=[$(status_color $PROGRESS)$(TrueFalse $PROGRESS)${BWon}]${Boff}" 3
+  d_message "    ${BWon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${BWon}]${Boff}" 3
+  d_message "    ${BWon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${BWon}]${Boff}" 3
+  d_message "    ${BWon}DELETE=[$(status_color $DELETE)$(TrueFalse $DELETE)${BWon}]${Boff}" 3
+  d_message "    ${BWon}verbosity=[$verbosity]${Boff}" 2
 
   # almost done; to avoid having to address this in both process_option and process_compound, do it here:
-  [[ $PUT ]] && [[ $PACKAGES ]] && [[ ${#TARGETS[@]} -gt 0 ]] && push_packages_serverlist="${TARGETS[@]}" && \
+  d_message "  Almost done; checking overrides for serverlists..." 2
+  d_message "         PUT=[$(TrueFalse $PUT)]" 3
+  d_message "         GET=[$(TrueFalse $GET)]" 3
+  d_message "    PACKAGES=[$(TrueFalse $PACKAGES)]" 3
+  d_message "     SCRIPTS=[$(TrueFalse $SCRIPTS)]" 3
+  d_message "     CONTENT=[$(TrueFalse $CONTENT)]" 3
+  d_message "     TARGETS=[${#TARGETS[@]}]" 3
+  d_message "  Targetlist=[${TARGETS[@]}]" 3
+  [[ $PUT ]] && [[ $PACKAGES ]] && [[ ! -z "${TARGETS[@]}" ]] && push_packages_serverlist="${TARGETS[@]}" && \
     d_message "        Overrode packages push_serverlist with TARGETS" 3
-  [[ $GET ]] && [[ $PACKAGES ]] && [[ ${#TARGETS[@]} -gt 0 ]] && pull_packages_serverlist="${TARGETS[@]}" && \
+  [[ $GET ]] && [[ $PACKAGES ]] && [[ ! -z "${TARGETS[@]}" ]] && pull_packages_serverlist="${TARGETS[@]}" && \
     d_message "        Overrode packages pull_serverlist with TARGETS" 3
-  [[ $PUT ]] && [[ $SCRIPTS ]] && [[ ${#TARGETS[@]} -gt 0 ]] && push_scripts_serverlist="${TARGETS[@]}" && \
+  [[ $PUT ]] && [[ $SCRIPTS ]] && [[ ! -z "${TARGETS[@]}" ]] && push_scripts_serverlist="${TARGETS[@]}" && \
     d_message "        Overrode scripts push_serverlist with TARGETS" 3
-  [[ $GET ]] && [[ $SCRIPTS ]] && [[ ${#TARGETS[@]} -gt 0 ]] && pull_scripts_serverlist="${TARGETS[@]}" && \
+  [[ $GET ]] && [[ $SCRIPTS ]] && [[ ! -z "${TARGETS[@]}" ]] && pull_scripts_serverlist="${TARGETS[@]}" && \
     d_message "        Overrode scripts pull_serverlist with TARGETS" 3
-  [[ $PUT || $GET ]] && [[ $CONTENT ]] && [[ ${#TARGETS[@]} -gt 0 ]] && content_serverlist="${TARGETS[@]}" && \
+  [[ $PUT || $GET ]] && [[ $CONTENT ]] && [[ ! -z "${TARGETS[@]}" ]] && content_serverlist="${TARGETS[@]}" && \
     d_message "        Overrode content serverlist with TARGETS" 3
 
 }
@@ -194,18 +228,37 @@ process_option()
   case $opt in
     "-q" | "--quiet" )
       result=0 ;
-      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
-      QUIET=$TRUE; VERBOSE=$FALSE; verbosity=0
-      d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
-      d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
-      d_message "    ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
+      # unless progress is set, quiet overrides verbose if it is set later on the command line
+      if [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
+      then
+        QUIET=$TRUE
+        VERBOSE=$FALSE
+        check_cmdline_override "$opt"
+        d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 3
+        d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
+        d_message "    ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+        d_message "    ${BYon}Set external variable ${LBon}CMDLINE_OVERRIDE_QV=[$(status_color $CMDLINE_OVERRIDE_QV)$(TrueFalse $CMDLINE_OVERRIDE_QV)${LBon}]${Boff}" 3
+        d_message "    ${BYon}Set external variable ${LBon}CMDLINE_OVERRIDE_PROGRESS=[$(status_color $CMDLINE_OVERRIDE_PROGRESS)$(TrueFalse $CMDLINE_OVERRIDE_PROGRESS)${LBon}]${Boff}" 3
+      fi
       ;;
     "-v" | "--verbose" )
       result=0 ;
       d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
-      VERBOSE=$TRUE
-      [[ -z "$OPTS2" ]] && OPTS2="-v" || OPTS2+="v"
+      # verbose overrides quiet if if falls later in the command line
+      VERBOSE=$TRUE; QUIET=$FALSE; let "verbosity+=1"; check_cmdline_override "$opt"
       d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+      d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
+      d_message "        ${BYon}Incremented external variable to ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+      ;;
+    "-P" | "--progress" )
+      result=0 ;
+      d_message "    ${BWon}>>>${Boff} ${opt} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+      # progress implies verbose and overrides quiet
+      PROGRESS=$TRUE; VERBOSE=$TRUE; QUIET=$FALSE; check_cmdline_override "$opt"
+      d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+      d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
+      d_message "    ${BYon}Set external variable ${LBon}PROGRESS=[$(status_color $PROGRESS)$(TrueFalse $PROGRESS)${LBon}]${Boff}" 2
       ;;
     "-t" | "--targets" )
       result=1 ;
@@ -283,39 +336,63 @@ process_compound()
     d_message "        ${LBon}l=[$l]; argstr[$l]=[${argstr:$l:1}]" 4
     case ${argstr:$l:1} in
       "q" )
-        QUIET=$TRUE; VERBOSE=$FALSE; verbosity=0
-        d_message "        ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 3
-        d_message "        ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
-        d_message "        ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
+        # unless progress is set, quiet overrides verbose if it is set later on the command line
+        if [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
+        then
+          QUIET=$TRUE
+          VERBOSE=$FALSE
+          check_cmdline_override "-q"
+          d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 3
+          d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
+          d_message "    ${BYon}Set external variable ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
+          d_message "    ${BYon}Set external variable ${LBon}CMDLINE_OVERRIDE_QV=[$(status_color $CMDLINE_OVERRIDE_QV)$(TrueFalse $CMDLINE_OVERRIDE_QV)${LBon}]${Boff}" 3
+          d_message "    ${BYon}Set external variable ${LBon}CMDLINE_OVERRIDE_PROGRESS=[$(status_color $CMDLINE_OVERRIDE_PROGRESS)$(TrueFalse $CMDLINE_OVERRIDE_PROGRESS)${LBon}]${Boff}" 3
+        fi
         ;;
       "v" )
-        VERBOSE=$TRUE
-        d_message "        ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 3
-        let "verbosity+=1"
-        [[ -z "$OPTS2" ]] && OPTS2="-v" || OPTS2+="v"
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+        # verbose overrides quiet if if falls later in the command line
+        VERBOSE=$TRUE; QUIET=$FALSE; let "verbosity+=1"; check_cmdline_override "-v"
+        d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+        d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
         d_message "        ${BYon}Incremented external variable to ${LBon}verbosity=[${BMon}${verbosity}${LBon}]${Boff}" 3
         ;;
+      "P" )  # capital P for --progress
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 3
+        # progress implies verbose and overrides quiet
+        PROGRESS=$TRUE; VERBOSE=$TRUE; QUIET=$FALSE; check_cmdline_override "-P"
+        d_message "    ${BYon}Set external variable ${LBon}VERBOSE=[$(status_color $VERBOSE)$(TrueFalse $VERBOSE)${LBon}]${Boff}" 2
+        d_message "    ${BYon}Set external variable ${LBon}QUIET=[$(status_color $QUIET)$(TrueFalse $QUIET)${LBon}]${Boff}" 2
+        d_message "    ${BYon}Set external variable ${LBon}PROGRESS=[$(status_color $PROGRESS)$(TrueFalse $PROGRESS)${LBon}]${Boff}" 2
+        ;;
       "p" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         PUT=$TRUE; check_cmdline_override "-p"
         d_message "        ${BYon}Set external variable ${LBon}PUT=[$(status_color $PUT)$(TrueFalse $PUT)${LBon}]${Boff}" 3
         ;;
       "g" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         GET=$TRUE; check_cmdline_override "-g"
         d_message "        ${BYon}Set external variable ${LBon}GET=[$(status_color $GET)$(TrueFalse $GET)${LBon}]${Boff}" 3
         ;;
       "d" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         DELETE=$TRUE
         d_message "        ${BYon}Set external variable ${LBon}DELETE=[$(status_color $DELETE)$(TrueFalse $DELETE)${LBon}]${Boff}" 3
         ;;
       "c" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         CONTENT=$TRUE; check_cmdline_override "-c"
         d_message "        ${BYon}Set external variable ${LBon}CONTENT=[$(status_color $CONTENT)$(TrueFalse $CONTENT)${LBon}]${Boff}" 3
         ;;
       "s" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         SCRIPTS=$TRUE; check_cmdline_override "-s"
         d_message "        ${BYon}Set external variable ${LBon}SCRIPTS=[$(status_color $SCRIPTS)$(TrueFalse $SCRIPTS)${LBon}]${Boff}" 3
         ;;
       "k" )
+        d_message "    ${BWon}>>>${Boff} ${argstr:$l:1} is a ${BGon}valid${Boff} opt which can have ${BRon}no${Boff} argument" 2
         PACKAGES=$TRUE; check_cmdline_override "-k"
         d_message "        ${BYon}Set external variable ${LBon}PACKAGES=[$(status_color $PACKAGES)$(TrueFalse $PACKAGES)${LBon}]${Boff}" 3
         ;;
@@ -330,28 +407,41 @@ process_compound()
   done
 }
 
-sanity_check()
-{
-  # check for invalid option combinations
-  [[ $QUIET ]] && [[ $VERBOSE ]] && QUIET=$FALSE  # verbose overrides
-  [[ ! $QUIET ]] && [[ ! $VERBOSE ]] && VERBOSE=$TRUE  # default to verbose
-  [[ $PROGRESS ]] && VERBOSE=$TRUE && QUIET=$FALSE  # progress implies verbose and overrides quiet
-}
-
-
 check_cmdline_override()
 {
 # Set flag CMDLINE_OVERRIDE at the first use of one of [ CONTENT | SCRIPTS | PACKAGES ]
-#   or one of [ PUT | GET ] and default the others in that category to $FALSE at that point.
-#   This is because if one of them is specified on the command line, we will attend only to those
-#   in that category activated by the command line. (e.g. if PUT is specified
-#   by the command line, then we will set GET to $FALSE unless it too is specified on the command line)
+#   or one of [ PUT | GET ] or one of [ QUIET | VERBOSE ] and default the others in
+#   that category to $FALSE at that point. This is because if one of them is specified
+#   on the command line, we will attend only to those in that category activated by the
+#   command line. (e.g. if PUT is specified by the command line, then we will set GET
+#   to $FALSE which it will remain unless it too is specified on the command line and
+#   thus set $TRUE outside this function.  Note: PROGRESS, if activated on the command
+#   line further overrides QUIET and implies VERBOSE
 d_message "Checking for command line override for option [${1}]:" 2
-d_message "  ${BBon}CMDLINE_OVERRIDE=[$(status_color $CMDLINE_OVERRIDE)$(TrueFalse $CMDLINE_OVERRIDE)${BBon}]${Boff}"
 
-if [[ ! $CMDLINE_OVERRIDE_PUTGET ]] || [[ ! $CMDLINE_OVERRIDE_CATEGORY ]]
+if [[ ! $CMDLINE_OVERRIDE_PUTGET ]] || [[ ! $CMDLINE_OVERRIDE_CATEGORY ]] || \
+   [[ ! $CMDLINE_OVERRIDE_QV ]] || [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
 then
   case "$1" in
+    "-P" | "--progress"      )
+      if [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
+      then
+        CMDLINE_OVERRIDE_PROGRESS=$TRUE
+        PROGRESS=$TRUE; VERBOSE=$TRUE   ; QUIET=$FALSE
+      fi ;;
+    "-v" | "--verbose"       )
+      if [[ ! $CMDLINE_OVERRIDE_QV ]] && [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
+      then
+        CMDLINE_OVERRIDE_QV=$TRUE
+        VERBOSE=$TRUE   ; QUIET=$FALSE
+      fi ;;
+    "-q" | "--quiet"         )
+      if [[ ! $CMDLINE_OVERRIDE_QV ]] && [[ ! $CMDLINE_OVERRIDE_PROGRESS ]]
+      then
+        CMDLINE_OVERRIDE_QV=$TRUE
+        # quiet can only turn off progress if it alone (of q v P) is set on the command line
+        VERBOSE=$FALSE   ; QUIET=$TRUE;  PROGRESS=$FALSE
+      fi ;;
     "-p" | "--put"           )
       if [[ ! $CMDLINE_OVERRIDE_PUTGET ]]
       then
@@ -384,18 +474,21 @@ then
       fi ;;
     *                        ) E_message "Error in command line argument override of config/default"; exit 1 ;;
   esac
-  d_message "${BWon}Overrode [$1]: ${BBon}CMDLINE_OVERRIDE=[$(status_color $CMDLINE_OVERRIDE)$(TrueFalse $CMDLINE_OVERRIDE)${BBon}]${Boff}"
+  d_message "${BWon}Overrode [$1]:${Boff}" 2
 else
-  d_message "${BWon}No additional override necessary: ${BBon}CMDLINE_OVERRIDE is already set${Boff}"
+  d_message "${BWon}Override necessary not necessary for [$1]:${Boff}" 2
 fi
+d_message "  ${BBon}CMDLINE_OVERRIDE_PUTGET=[$(status_color $CMDLINE_OVERRIDE_PUTGET)$(TrueFalse $CMDLINE_OVERRIDE_PUTGET)${BBon}]${Boff}" 3
+d_message "  ${BBon}CMDLINE_OVERRIDE_CATEGORY=[$(status_color $CMDLINE_OVERRIDE_CATEGORY)$(TrueFalse $CMDLINE_OVERRIDE_CATEGORY)${BBon}]${Boff}" 3
+d_message "  ${BBon}CMDLINE_OVERRIDE_QV=[$(status_color $CMDLINE_OVERRIDE_QV)$(TrueFalse $CMDLINE_OVERRIDE_QV)${BBon}]${Boff}" 3
+d_message "  ${BBon}CMDLINE_OVERRIDE_PROGRESS=[$(status_color $CMDLINE_OVERRIDE_PROGRESS)$(TrueFalse $CMDLINE_OVERRIDE_PROGRESS)${BBon}]${Boff}" 3
 }
 
 # ---[ display config ]-------------------------------------------
 display_config()
 {
 /bin/echo
-/bin/echo -e "${LBon}Configuration from [ ${BYon}${config_file} ${LBon}]:${Boff}"
-
+/bin/echo -e "${LBon}Configuration from [ ${BYon}${config_file} ${LBon}] and command line:${Boff}"
 /bin/echo
 /bin/echo -e "${BGon}DELETE${BBon}....................: $(status_color $DELETE)$(TrueFalse $DELETE)${Boff}"
 /bin/echo -e "${BGon}PROGRESS${BBon}..................: $(status_color $PROGRESS)$(TrueFalse $PROGRESS)${Boff}"
@@ -430,8 +523,9 @@ display_config()
 /bin/echo -e "${BBon}local_packages_folder.....: ${BWon}${local_packages_folder}${Boff}"
 /bin/echo -e "${BBon}remote_packages_folder....: ${BWon}${remote_packages_folder}${Boff}"
 /bin/echo
-/bin/echo -e "FIX ME ${BGon}Pull command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} rsync://${server}/${folder} ${MyContentROOT}/${folder}"
-/bin/echo -e "FIX ME ${BGon}Push command${BBon}..............: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${excludestring} ${MyContentROOT}/${folder}/ rsync://${server}/${folder}"
+/bin/echo -e "${BGon}Generic Pull command${BBon}......: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 rsync://<server>/<remote_folder> ${MyContentROOT}/<local_folder>"
+/bin/echo -e "${BGon}Generic Push command${BBon}......: ${Boff}/usr/bin/rsync $OPTS1 $OPTS2 ${MyContentROOT}/<local_folder>/ rsync://<server>/<remote_folder>"
+/bin/echo -e "${BBon}                            [  --exclude option to be assembled separately for each content, scripts, packages  ]${Boff}"
 /bin/echo
 
 }
@@ -585,6 +679,7 @@ done
 }
 
 #---[ main script ]-----------------------------------------------
+CLR; CUP 1 1; echo
 separator "Running cloudsync-${BUILD}"
 checkroot
 
@@ -592,11 +687,11 @@ set_defaults
 source ${config_file}
 normalize_lists
 process_cmdline $@
-sanity_check
 display_config
-sleep 5
 
 #exit
+
+sh_countdown 5
 
 [[ $CONTENT ]] && sync_content_loop || message "content sync not requested"
 [[ $SCRIPTS ]] && sync_loop "scripts" || message "script sync not requested"
