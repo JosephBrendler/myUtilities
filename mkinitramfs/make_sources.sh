@@ -25,17 +25,23 @@ RESULT_MSG_LEN=$OK_MSG_LEN
 tmpfile="./temporary_file"
 tmpfile2="./temporary_file2"
 
-# define dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
-#bin_dyn_executables="kmod udevadm lsblk"
-#bin_non_dyn_executables="busybox"  # update 16 Dec 16 removed "static" USE, busybox now dynamic
+# /bin: define dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
 bin_dyn_executables="busybox kmod udevadm lsblk"
 bin_non_dyn_executables=""
-  # note: included findfs here explicitly rather than use busybox's own
+# /sbin: note: included findfs here explicitly rather than use busybox's own
 sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm"
 sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
-  # note: for the moment, I'm only getting shred from /usr/bin,
+# /usr/bin: note: for the moment, I'm only getting shred...
 usr_bin_dyn_executables="shred"
 usr_bin_non_dyn_executables=""
+# note: the following required executables are NOT dynamic -- no other libs needed for them:
+#   /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
+#   /sbin/fbcondecor_helper
+#   /sbin/fsadm
+#   /sbin/lvmconf
+#   /sbin/lvmdump
+#   /sbin/vgimportclone
+
 config_files="init.conf README GLOBALS"
 
 DEBUG="false"
@@ -123,19 +129,18 @@ check_for_parts()
 copy_parts()
 {
   calculate_termwidth
-  #copy executable parts
+  #copy /bin executable parts
   message "Copying necessary executable files..."
   for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
   do
     copy_one_part /bin/$i ${SOURCES_DIR}/bin/
   done
-  # note: included findfs here explicitly rather than use busybox's own
+  # /sbin
   for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
   do
     copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/
   done
-  # note: for the moment, I'm only getting shred from /usr/bin,
-  #    but I put the whole block in case that changes in the future
+  # /usr/bin
   for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
   do
     copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/
@@ -370,7 +375,14 @@ create_links()
 build_dir_tree()
 {
 message "Building directory tree in ${SOURCES_DIR} ..."
-for i in $(grep -v "#" ${MAKE_DIR}/initramfs_dir_tree)
+local treelist
+if [ "${init_splash}" == "yes" ]
+then
+    treelist=$(grep -v "#" ${MAKE_DIR}/initramfs_dir_tree)
+else
+    treelist=$(grep -v "#" ${MAKE_DIR}/initramfs_dir_tree | grep -v splash)
+fi
+for i in ${treelist}
 do
   msg="${BGon}*${Boff} $i ..."
   msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
@@ -485,31 +497,21 @@ copy_dependent_libraries()
 
   # Process the dynamic executables in /bin to identify libraries they depend on
   echo "# temporary file to capture list of libraries upon which my initramfs executables depend"
-#  for i in kmod udevadm lsblk
+  # /bin
   for i in $bin_dyn_executables
   do
     ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
-  # Process the dynamic executables in /usr/bin (for now only shred)
-#  for i in shred
+  # /usr/bin
   for i in $usr_bin_dyn_executables
   do
     ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
-  # Process the dynamic executables in /sbin to identify libraries they depend on
-  #  Note: included findfs
-#  for i in blkid cryptsetup findfs e2fsck lvm
+  # /sbin
   for i in $sbin_dyn_executables
   do
     ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
   done
-  # note: the following required executables are NOT dynamic -- no other libs needed for them:
-  #   /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
-  #   /sbin/fbcondecor_helper
-  #   /sbin/fsadm
-  #   /sbin/lvmconf
-  #   /sbin/lvmdump
-  #   /sbin/vgimportclone
 
   # eliminate duplicate entries and sort to a new file
   grep -v "#" $tmpfile | sort -u > $tmpfile2
