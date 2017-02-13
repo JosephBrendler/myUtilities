@@ -487,7 +487,8 @@ copy_dependent_libraries()
 {
   calculate_termwidth
   # so far, I've identified three cases in the output of ldd /sbin/cryptsetup and ldd /sbin/lvm (and /sbin/e2fsck):
-  # (1) doesn't exist            : linux-vdso.so.1 (0x00007ffff5ffe000)
+  # (1) doesn't exist            : linux-vdso.so.1 (0x00007ffff5ffe000) or linux-gate.so.1 (0x52722000)
+  #                                both of which are objects shared directly by the kernel (DSO) at the fixed addresses indicated
   # (2) symlink and target shown : libcryptsetup.so.4 => /usr/lib64/libcryptsetup.so.4 (0x00007f168d7e4000)
   # (3) symlink shown            : /lib64/ld-linux-x86-64.so.2 (0x00007f168da0e000) or /lib/ld-linux.so.2
   # (4) strange look for use-ld  : use-ld=gold => not found
@@ -500,17 +501,17 @@ copy_dependent_libraries()
   # /bin
   for i in $bin_dyn_executables
   do
-    ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
+    ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # /usr/bin
   for i in $usr_bin_dyn_executables
   do
-    ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
+    ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
   done
   # /sbin
   for i in $sbin_dyn_executables
   do
-    ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | cut -d'(' -f1 >> $tmpfile
+    ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
   done
 
   # eliminate duplicate entries and sort to a new file
@@ -554,7 +555,7 @@ copy_dependent_libraries()
         really_real_link_name=$( echo ${real_link_name} | sed -e "s%${real_link_name%/*}/%%" )
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "really_real_link_name: $really_real_link_name"
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $make_directory$real_target $real_link_directory"
-        if [ ! -e $real_link_directory$real_target ] 
+        if [ ! -e $real_link_directory$real_target ]
         then
           copy_one_part "$make_directory$real_target" "$real_link_directory"
         else
@@ -587,10 +588,8 @@ copy_dependent_libraries()
     else  # (3) symlink shown: /lib64/ld-linux-x86-64.so.2 (0x00007f168da0e000) or /lib/ld-linux.so.2
       # parsing strategy: id (3) by leading "/"; ignore (1)
       # also, there is a lot of duplication between cryptsetup and lvm dependencies, so check [ -e ] first
-#      linkname_index=`expr index "$(ls -al /lib64/ld-linux-x86-64.so.2)" "/"`
       linkname_index=`expr index "$(ls -al $(echo $line | cut -d" " -f1))" "/"`
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "Case 3 (symlink shown) linkname_index: $linkname_index"
-#      linkname=$( ls -al /lib64/ld-linux-x86-64.so.2 | cut -c $linkname_index- )
       linkname=$( ls -al $(echo $line | cut -d" " -f1) | cut -c $linkname_index- )
       [ "$DEBUG_LIB_COPY2" == "true" ] && echo "linkname: $linkname"
       real_name_index=`expr index "$linkname" ">"`
@@ -673,6 +672,6 @@ echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 
 message "cleaning up..."
 # don't remove these temporary files if debugging...
-[ ! "$DEBUG" == "true" ] && rm $tmpfile
-[ ! "$DEBUG" == "true" ] && rm $tmpfile2
+[ ! "$DEBUG_LIB_COPY" == "true" ] && rm $tmpfile
+[ ! "$DEBUG_LIB_COPY" == "true" ] && rm $tmpfile2
 message "All Done"
