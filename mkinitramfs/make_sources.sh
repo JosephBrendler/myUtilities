@@ -486,156 +486,90 @@ make_one_device_node()  # args: name type[c|b] MAJOR MINOR
 copy_dependent_libraries()
 {
   calculate_termwidth
-  # so far, I've identified three cases in the output of ldd /sbin/cryptsetup and ldd /sbin/lvm (and /sbin/e2fsck):
+  # prior to version 5.3.1, I used ldd and found four cases:
   # (1) doesn't exist            : linux-vdso.so.1 (0x00007ffff5ffe000) or linux-gate.so.1 (0x52722000)
   #                                both of which are objects shared directly by the kernel (DSO) at the fixed addresses indicated
   # (2) symlink and target shown : libcryptsetup.so.4 => /usr/lib64/libcryptsetup.so.4 (0x00007f168d7e4000)
   # (3) symlink shown            : /lib64/ld-linux-x86-64.so.2 (0x00007f168da0e000) or /lib/ld-linux.so.2
   # (4) strange look for use-ld  : use-ld=gold => not found
-  # parsing strategy: grep -v "use-ld" to elim (4); grep -v "linux-vdso" to elim (1); 
-  #   id (2) by "=>"; id (3) by leading "/"
-  # also, there is a lot of duplication between cryptsetup and lvm dependencies, so check [ -e ] first
+  # Thus, prior to verson 5.3.1, my parsing strategy was to use grep -v "use-ld" to elim (4); grep -v "linux-vdso" to elim (1);
+  #   id (2) by "=>"; id (3) by leading "/".  also, there is a lot of duplication in dependencies, so check [ -e ] first
+  #
+  # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.  This appears to simplify
+  # the situation to three cases:
+  # (1) symlink_name => dir_name/target_name shown
+  # (2) target_name => dir_name/target_name        (where target_name is the executable)
+  # (3) dyn_executable (interpreter => /lib{64}/ld-linux{-x86-64}.so.2) {ignore with grep -v}
+  # Thus, new parsing strategy:
+  # Ignore case (3) - the dyn_executable is already copied, and ld-linux is on the list separately
+  # For case (2) - just make sure the target executable (dependency) gets copied if it hasn't been already
+  # For each case (1), copy the target executable to - and create the symlink in - the ${SOURCES_DIR}
 
   # Process the dynamic executables in /bin to identify libraries they depend on
   echo "# temporary file to capture list of libraries upon which my initramfs executables depend"
-  # /bin
-  for i in $bin_dyn_executables
+  # for each dyn_executable, use which to locate it, and lddtree to accumulate all dependencies.
+  #   ignore case (3) lines with grep -v interpreter; trim leading and trailing whitespace;
+  #   sort and eliminate duplicates; pay attention only to the third field of lddtree output (/target/path/target_name)
+  for x in
+    $( for i in $bin_dyn_executables $usr_bin_dyn_executables $sbin_dyn_executables
+    do
+      lddtree $(which $i)
+    done | grep -v interpreter | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | sort -u | cut -d' ' -f3)
   do
-    ldd /bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
-  done
-  # /usr/bin
-  for i in $usr_bin_dyn_executables
-  do
-    ldd /usr/bin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
-  done
-  # /sbin
-  for i in $sbin_dyn_executables
-  do
-    ldd /sbin/${i} | grep -v "use-ld" | grep -v "linux-vdso.so.1" | grep -v "linux-gate.so.1" | cut -d'(' -f1 >> $tmpfile
-  done
-
-  # eliminate duplicate entries and sort to a new file
-  grep -v "#" $tmpfile | sort -u > $tmpfile2
-  while read line
-  do
-    [ "$DEBUG_LIB_COPY" == "true" ] && message "---[ New line to examine: ( $line ) ]---"
-    link_index=`expr index "$line" "=>"`
-    [ "$DEBUG_LIB_COPY" == "true" ] && echo "link_index: $link_index"
-    if [ $link_index -gt 0 ]   # if true (2), else (1) or (3)
-    then # both shown, but real symlink is on right
-      linkname=$(echo $line | cut -c $(( $link_index + 3 ))- )
-      [ "$DEBUG_LIB_COPY" == "true" ] && echo "Case 2 (symlink and target shown) linkname: $linkname"
-      real_linkname_index=`expr index "$( ls -al $linkname )" "/"`
-      [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_linkname_index: $real_linkname_index"
-      real_link_line=$( echo "$( ls -al $linkname )" | cut -c $(( $real_linkname_index - 1 ))- | sed 's/\ //' )
-      [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_line: $real_link_line"
-      real_link_index=`expr index "$real_link_line" ">"`
-      [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_index: $real_link_index"
-
-      #if real_link_index=0 it's not actually a "link" but rather a hard filename
-      #  in this case, only copy, don't link
-      if [ $real_link_index -eq 0 ]
-      then
-        real_target="$real_link_line"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_target: $real_target"
-        real_link_directory=${SOURCES_DIR}${real_target%/*}/
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_directory: $real_link_directory"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $make_directory$real_target $real_link_directory"
-        copy_one_part "$real_target" "$real_link_directory"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "--------------------------------------------"
-      else
-        real_target=$( echo "$real_link_line" | cut -c $(( $real_link_index + 2 ))- )
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_target: $real_target"
-        real_link_name=$( echo "$real_link_line" | cut -c -$(( $real_link_index - 2 )) )
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_name: $real_link_name"
-        make_directory=${real_link_name%/*}/
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "make_directory: $make_directory"
-        real_link_directory=${SOURCES_DIR}${real_link_name%/*}/
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "real_link_directory: $real_link_directory"
-        really_real_link_name=$( echo ${real_link_name} | sed -e "s%${real_link_name%/*}/%%" )
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "really_real_link_name: $really_real_link_name"
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: [ ! -e $real_link_directory$real_target ] && copy_one_part $make_directory$real_target $real_link_directory"
-        if [ ! -e $real_link_directory$real_target ]
-        then
-          copy_one_part "$make_directory$real_target" "$real_link_directory"
-        else
-          msg=" {file $make_directory$real_target already copied to  $real_link_directory} "
-          msg_len=${#msg}
-          print_pending_op_msg "$msg"
-          result="$NA_MSG"
-          print_result $msg_len "$result"
-        fi
-
+    # for each /target/path/target_name entry, use the "file" command to determine if it is case (1) symlink or (2) ELF
+    line=$(file $x)
+    [ "$DEBUG_LIB_COPY" == "true" ] && message "---[ New line to examine: ( ${line} ) ]---"
+    set ${line}
+    case_type=$2
+    case $case_type in
+      "ELF" )
+        # just copy the target executable (first item in the line)
+        target_name=$(basename $1 | sed 's/:$//')   # drop the trailing colon
+        dir_name=$(dirname $1)
+        [ "$DEBUG_LIB_COPY" == "true" ] && \
+          echo "  Case 2 (ELF). dir_name=[$dir_name], target_name=[$target_name]" && \
+          echo "about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\""
+        [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
+          copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
+        ;;
+      "symbolic" )
+        # copy the target executable (last item in the line) and create the symlink (first item in the line) to it
+        target_name=${!#}    # last positional parameter
+        link_name=$( basename $1 | sed 's/:$//' )  # drop the trailing colon
+        dir_name=$( dirname $1 )
+        # first copy the target
+        [ "$DEBUG_LIB_COPY" == "true" ] && \
+          echo "  Case 1 (symlink). dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name]" && \
+          echo "about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\""
+        [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
+          copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
+        # next, create the link
         old_pwd=$PWD
-        cd $real_link_directory
+        cd ${SOURCES_DIR}${dir_name}
         [ "$DEBUG_LIB_COPY" == "true" ] && echo "just changed from directory [ $old_pwd ] to directory: [ $PWD ]"
-        msg="Linking:   ${LBon}${really_real_link_name}${Boff} --> ${BGon}${real_target}${Boff} ..."
+        msg="Linking:   ${LBon}${link_name}${Boff} --> ${BGon}${dir_name}/${target_name}${Boff} ..."
         msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: ln -s $real_target $really_real_link_name"
+        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: ln -s $target_name $link_name"
         print_pending_op_msg "$msg"
-        if [ ! -e $really_real_link_name ]
+        if [ ! -e ${SOURCES_DIR}${dir_name}/${link_name} ]
         then
-          ln -s $real_target $really_real_link_name && result="$OK_MSG" || result="$FAIL_MSG"
+          ln -s $target_name $link_name && result="$OK_MSG" || result="$FAIL_MSG"
         else
           already_msg=" {link already created} "
-          let "msg_len=$msg_len + ${#already_msg}"
+          let "msg_len+=${#already_msg}"
           echo -en "$already_msg"
           result="$NA_MSG"
         fi
         print_result $msg_len "$result"
         cd $old_pwd
-      fi
-    else  # (3) symlink shown: /lib64/ld-linux-x86-64.so.2 (0x00007f168da0e000) or /lib/ld-linux.so.2
-      # parsing strategy: id (3) by leading "/"; ignore (1)
-      # also, there is a lot of duplication between cryptsetup and lvm dependencies, so check [ -e ] first
-      linkname_index=`expr index "$(ls -al $(echo $line | cut -d" " -f1))" "/"`
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "Case 3 (symlink shown) linkname_index: $linkname_index"
-      linkname=$( ls -al $(echo $line | cut -d" " -f1) | cut -c $linkname_index- )
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "linkname: $linkname"
-      real_name_index=`expr index "$linkname" ">"`
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_name_index: $real_name_index"
-      real_target=$( echo "$linkname" | cut -c $(( $real_name_index + 2 ))- )
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_target: $real_target"
-      real_link_name=$( echo "$linkname" | cut -c -$(( $real_name_index - 2 )) )
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_link_name: $real_link_name"
-      make_directory=${real_link_name%/*}/
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "make_directory: $make_directory"
-      real_link_directory=${SOURCES_DIR}${real_link_name%/*}/
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "real_link_directory: $real_link_directory"
-      really_real_link_name=$( echo ${real_link_name} | sed -e "s%${real_link_name%/*}/%%" )
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "really_real_link_name: $really_real_link_name"
-
-      if [ ! -e $real_link_directory$real_target ]
-      then
-        copy_one_part "$make_directory$real_target" "$real_link_directory"
-      else
-        msg=" {file $make_directory$real_target already copied to  $real_link_directory} "
-        msg_len=${#msg}
-        print_pending_op_msg "$msg"
-        result="$NA_MSG"
-        print_result $msg_len "$result"
-      fi
-
-      old_pwd=$PWD
-      cd $real_link_directory
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "just changed from directory [ $old_pwd ] to directory: [ $PWD ]"
-      msg="Linking:   ${LBon}${really_real_link_name}${Boff} --> ${BGon}${real_target}${Boff} ..."
-      msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-      [ "$DEBUG_LIB_COPY2" == "true" ] && echo "about to execute: ln -s $real_target $really_real_link_name"
-      print_pending_op_msg "$msg"
-      if [ ! -e $really_real_link_name ]
-      then
-        ln -s $real_target $really_real_link_name && result="$OK_MSG" || result="$FAIL_MSG"
-      else
-        already_msg=" {link already created} "
-        let "msg_len=$msg_len + ${#already_msg}"
-        echo -en "$already_msg"
-        result="$NA_MSG"
-      fi
-      print_result $msg_len "$result"
-      cd $old_pwd
-    fi
-  done < $tmpfile2
+        ;;
+      * )
+       E_message "error in copying/linking dependencies"
+       exit 1
+       ;;
+    esac
+    [ "$DEBUG_LIB_COPY" == "true" ] && echo "--------------------------------------------"
+  done
 }
 
 #---[ Main Script ]-------------------------------------------------------
