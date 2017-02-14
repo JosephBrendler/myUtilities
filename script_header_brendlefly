@@ -121,14 +121,14 @@ CPR()  # Report the current position (row, col) of the cursor [tip: hit return a
 # ---[ common function blocks ]------------------------------------------
 
 checkroot()     # Run as root, of course.
-{
-  if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; exit 1; else return 0; fi
-}
+{ if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; exit 1; else return 0; fi; }
 
 checknotroot()  # Run as not root, of course.
-{
-  if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; exit 1; else return 0; fi
-}
+{ if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; exit 1; else return 0; fi; }
+
+checkboot()     # check to see if the /boot partition is properly mounted (look for grub)
+{ if [ -d "/boot/grub" ]; then return 0; else E_message "${BRon}/boot not properly mounted${Boff}";
+    return 1; fi; }
 
 message()       # echo a simply formatted message (arg $1) to the screen
 { echo -e "${BGon}*${Boff} ${1}" && return 0 || return 1; }
@@ -139,6 +139,9 @@ message_n()     # echo -n a simply formatted message (arg $1) to the screen
 E_message()     # echo a simply formatted error message (arg $1) to the screen
 { echo -e "${BRon}*${Boff} ${1}" && return 0 || return 1; }
 
+E_message_n()   # echo -n a simply formatted error message (arg $1) to the screen
+{ echo -en "${BRon}*${Boff} ${1}" && return 0 || return 1; }
+
 d_message()     # pass argument $1 to message() if "external" boolean VERBOSE tests true
 { [[ $VERBOSE && $2 -le $verbosity ]] && message "$1"; }
 
@@ -147,6 +150,9 @@ d_message_n()   # pass argument $1 to message_n() if "external" boolean VERBOSE 
 
 dE_message()    # pass argument $1 to E_message() if "external" boolean VERBOSE tests true
 { [[ $VERBOSE && $2 -le $verbosity ]] && E_message "$1"; }
+
+dE_message_n()  # pass argument $1 to E_message() if "external" boolean VERBOSE tests true
+{ [[ $VERBOSE && $2 -le $verbosity ]] && E_message_n "$1"; }
 
 d_echo()        # echo all arguments if "external" boolean VERBOSE tests true
 { [[ $VERBOSE && $2 -le $verbosity ]] && echo "$@"; }
@@ -215,27 +221,29 @@ separator()     # draw a horizontal line with a simple title (arg $1) and prefac
   return 0 || return 1
 }
 
-right_status()  # output a boolean status ($1) at the right margin
-{
-  # test with:
-  #    echo -n "j" 2>/dev/null ; right_status $?
-  #    ecko -n "j" 2>/dev/null ; right_status $?
+right_status()  # output 8 char [ ok/fail ] status at the right margin
+{ # test message_n "good_test" ; right_status $?
+  #      E_message_n "fail_test" && cat unexistent 2>/dev/null; right_status $?
   local status msg lpad rpad
-  status=$1
-  if [ $status -eq 0 ]; then
-    msg="${BGon}Ok${Boff}"; lpad=2; rpad=2
-  else
-    msg="${BRon}Fail${Boff}"; lpad=1; rpad=1
-  fi
+  if [ $1 -eq 0 ]; then msg="${BGon}Ok${Boff}"; lpad=2; rpad=2
+  else msg="${BRon}Fail${Boff}"; lpad=1; rpad=1; fi
   msg="${BBon}[$(repeat ' ' $lpad)${msg}$(repeat ' ' $rpad)${BBon}]${Boff}"
-  msg_len=$(( ${#msg} - $(( ${#BGon} + $(( ${#BBon} * 2 )) + $(( ${#Boff} * 2 )) )) ))
-  # first find a reference point by returning to the beginning of the line, *then*
-  #   use the cursor forward command defined above to move to the position calculated using
-  #   the terminal width function defined above, and print the message at the right margin
-  echo -en "\r" && \
-  CUF $(( $(termwidth) - $msg_len -1 )) && \
-  echo -e "$msg" && \
-  return 0 || return 1
+  let "msg_len=8"    # it's always 8, I made it that way
+  # go to start of line, *then* move fwd to the right distance (9 chars) from the right margin
+  echo -en "\r" && CUF $(( $(termwidth) - $msg_len -1 )) && echo -e "$msg" && return 0 || return 1
+}
+
+d_right_status()  # output 8 char [ ok/fail ] status at the right margin, if $VERBOSE
+{ # test d_message_n "good_test" 1; d_right_status $? 1
+  #      dE_message_n "fail_test" 1 && cat unexistent 2>/dev/null; d_right_status $? 1
+  local status msg lpad rpad
+  if [ $1 -eq 0 ]; then msg="${BGon}Ok${Boff}"; lpad=2; rpad=2
+  else msg="${BRon}Fail${Boff}"; lpad=1; rpad=1; fi
+  msg="${BBon}[$(repeat ' ' $lpad)${msg}$(repeat ' ' $rpad)${BBon}]${Boff}"
+  let "msg_len=8"    # it's always 8, I made it that way
+  # go to start of line, *then* move fwd to the right distance (9 chars) from the right margin
+  [[ $VERBOSE && $2 -le $verbosity ]] && echo -en "\r" && CUF $(( $(termwidth) - $msg_len -1 )) && \
+    echo -e "$msg" && return 0 || return 1
 }
 
 countdown()     # output text message (arg $2, optional), and count-down seconds (arg $1)
