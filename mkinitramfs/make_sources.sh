@@ -5,221 +5,39 @@
 
 # --- Define local variables -----------------------------------
 
-# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs), and the MAKE_DIR (parent dir of this script)
+# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs),
+#   and the MAKE_DIR (parent dir of this script)
 source GLOBALS
 source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
 # script header will over-ride BUILD, but globals must be sourced 1st to get _DIRs
 BUILD="${KERNEL_VERSION}-${DATE_STAMP}"
 
-# Error messages used by script
-E_NOLVM="You need to install lvm first."
-E_NOCRYPT="You need to install cryptsetup first."
-
-OK_MSG="${BBon}[${BGon} Ok ${BBon}]${Boff}"
-OK_MSG_LEN=$(( ${#OK_MSG} - $(( ${#BBon} + ${#BGon} + ${#BBon} + ${#Boff} )) ))
-FAIL_MSG="${BBon}[${BRon}Fail${BBon}]${Boff}"
-FAIL_MSG_LEN=$(( ${#FAIL_MSG} - $(( ${#BBon} + ${#BGon} + ${#BBon} + ${#Boff} )) ))
-NA_MSG="${BBon}[${BYon} NA ${BBon}]${Boff}"
-RESULT_MSG_LEN=$OK_MSG_LEN
-
-tmpfile="./temporary_file"
-tmpfile2="./temporary_file2"
-
-# /bin: define dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
+# define lists of files that need to be copied
+#   /bin: dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
 bin_dyn_executables="busybox kmod udevadm lsblk"
 bin_non_dyn_executables=""
-# /sbin: note: included findfs here explicitly rather than use busybox's own
+#   /sbin: note: included findfs here explicitly rather than use busybox's own
 sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm"
 sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
-# /usr/bin: note: for the moment, I'm only getting shred...
-usr_bin_dyn_executables="shred"
+#   /usr/bin: note: for the moment, I'm not using any...
+usr_bin_dyn_executables=""
 usr_bin_non_dyn_executables=""
-# note: the following required executables are NOT dynamic -- no other libs needed for them:
-#   /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
-#   /sbin/fbcondecor_helper
-#   /sbin/fsadm
-#   /sbin/lvmconf
-#   /sbin/lvmdump
-#   /sbin/vgimportclone
+#   note: the following required executables are NOT dynamic -- no other libs needed for them:
+#     /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
+#     /sbin/fbcondecor_helper
+#     /sbin/fsadm
+#     /sbin/lvmconf
+#     /sbin/lvmdump
+#     /sbin/vgimportclone
 
-config_files="init.conf README GLOBALS"
+# define lists of links that need to be created in /bin
+#   create links in /bin to executables in /sbin to ensure we do not use busybox "version" --
+#   findfs, blkid, e2fsck (fsck fsck.ext2 fsck.ext3 fsck.ext4)...
+non_busybox_bin_links="findfs blkid e2fsck fsck fsck.ext2 fsck.ext3 fsck.ext4"
 
-DEBUG="false"
-#DEBUG="true"
-DEBUG2="false"
-#DEBUG2="true"
-DEBUG_LIB_COPY="false"
-#DEBUG_LIB_COPY="true"
-DEBUG_LIB_COPY2="false"
-#DEBUG_LIB_COPY2="true"
-
-
-#---[ functions ]-----------------------------------------------
-
-display_config()
-{
-  message "SOURCES_DIR: "${SOURCES_DIR}
-  message "MAKE_DIR: "${MAKE_DIR}
-}
-
-calculate_termwidth()
-{
-  termwidth=$(stty size | sed 's/[0-9]* *//')
-}
-
-check_for_parts()
-{
-  PARTSTRING=""
-  calculate_termwidth
-  #look for lvm and cryptsetup, and if not found, ask if user wants to install them
-  msg="${BGon}*${Boff} Finding lvm..."
-  msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  [ ! -e /sbin/lvm ] && PARTSTRING=${PARTSTRING}" sys-fs/lvm2" && \
-    result="${FAIL_MSG}" || result="${OK_MSG}"
-  print_result $msg_len "$result"
-
-  msg="${BGon}*${Boff} Finding cryptsetup..."
-  msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  [ ! -e /sbin/cryptsetup ] && PARTSTRING=${PARTSTRING}" sys-fs/cryptsetup" && \
-    result="${FAIL_MSG}" || result="${OK_MSG}"
-  print_result $msg_len "$result"
-
-  # if splash is requested, check for it
-  if [ "${init_splash}" == "yes" ]
-  then
-    msg="${BGon}*${Boff} Finding splashutils..."
-    msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    [ ! -e /sbin/fbcondecor_helper ] && PARTSTRING=${PARTSTRING}" media-gfx/splashutils" && \
-      result="${FAIL_MSG}" || result="${OK_MSG}"
-  else
-    msg="${BGon}*${Boff} Skipping check for splashutils... (not requested)"
-    msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  fi
-  print_result $msg_len "$result"
-
-  # if missing parts are identified, confirm user wants to emerge them, the do so
-  ans="z"
-  if [ ! -z "${PARTSTRING}" ]
-  then
-    while [ ! -z "$ans" ] && [ ! $(echo `expr index $ans [YyNn]`) -gt "0" ]
-    do
-      echo -e "${BRon}*${BYon} Necessary components appear to be missing [ ${BRon}${PARTSTRING} ${BYon}].${Boff}"
-      echo -en "${BRon}*${BYon} Do you want to install them? (Y/n) : ${Boff}"
-      read ans
-    done
-    case $ans in
-      ""   ) emerge -av ${PARTSTRING} ;;                 # emerge missing parts
-      [Yy] ) emerge -av ${PARTSTRING} ;;                 #   "      "       "
-      [Nn] ) : message "Done" ; exit ;;                  # do nothing, exit
-      *    ) E_message "failed to get answer"; exit ;;   # error msg and exit
-    esac
-  else
-    :
-  fi
-}
-
-
-  # note: included findfs here explicitly rather than use busybox's own
-  # note: for the moment, I'm only getting shred from /usr/bin,
-
-
-copy_parts()
-{
-  calculate_termwidth
-  #copy /bin executable parts
-  message "Copying necessary executable files..."
-  for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
-  do
-    copy_one_part /bin/$i ${SOURCES_DIR}/bin/
-  done
-  # /sbin
-  for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
-  do
-    copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/
-  done
-  # /usr/bin
-  for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
-  do
-    copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/
-  done
-
-  if [ "${init_splash}" == "yes" ]
-  then
-    copy_one_part /sbin/fbcondecor_helper ${SOURCES_DIR}/sbin/
-  else
-    message "Skipping copy for /sbin/fbcondecor_helper... (splash not requested)"
-  fi
-  copy_one_part ./init ${SOURCES_DIR}/
-
-  # copy config files
-  message "Copying necessary configuration files..."
-  for i in $config_files
-  do
-    copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/
-  done
-
-  # copy other required content from ...
-  message "Copying other required content ..."
-  copy_one_part /usr/local/sbin/script_header_brendlefly ${SOURCES_DIR}/
-  copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
-  copy_one_part ./etc/modules ${SOURCES_DIR}/etc/
-  if [ "${init_splash}" == "yes" ]
-  then
-    copy_one_part ${MAKE_DIR}/etc/initrd.splash ${SOURCES_DIR}/etc/
-    copy_one_part ${MAKE_DIR}/etc/splash ${SOURCES_DIR}/etc/
-  else
-    message "Skipping copy for splash files in /etc/ ... (splash not requested)"
-  fi
-
-}
-
-copy_one_part()
-{
-  msg="${BGon}*${Boff} Copying [ $1 ] to [ $2 ]..."
-  msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  [ "$DEBUG" == "true" ] && echo "copy one part about to execute: cp -a $1 $2"
-  print_pending_op_msg "$msg"
-  if [ "$DEBUG2" == "true" ]
-  then
-    cp -av $1 $2 && result="${OK_MSG}" || result="${FAIL_MSG}"
-  else
-    cp -a $1 $2 && result="${OK_MSG}" || result="${FAIL_MSG}"
-  fi
-  print_result $msg_len "$result"
-}
-
-print_pending_op_msg()   # arg: msg
-{
-  echo -en "${1}"
-}
-
-print_result()  # args: msg_len result
-{
-  spaces_len=$(( $termwidth - $(( $1 + $RESULT_MSG_LEN )) ))
-  spaces=""
-  i=0
-  while [ ! $i -gt $(($spaces_len - 1)) ]
-  do
-    spaces="$spaces "
-    let "i++"
-  done
-  echo -e "${spaces}${2}"
-  [ "$DEBUG2" == "true" ] && echo "#spaces was: ${#spaces}"
-}
-
-create_links()
-{
-  calculate_termwidth
-  old_pwd="$PWD"
-  # create symlinks in bin and sbin
-  message "Creating busybox links in initramfs/bin/ ..."
-  cd ${SOURCES_DIR}/bin/
-  #  let's just link everything that's in busybox... (except commands we explicitly include
-  #    findfs, blkid, e2fsck (fsck)... and of course, our own init
-  for i in \
+#  references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
+#  findfs, blkid, e2fsck, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
+busybox_link_list="\
     [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
     brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt \
     chvt cksum clear cmp comm conspy cp cpio crond cryptpw cttyhack cut date dd deallocvt delgroup \
@@ -242,139 +60,198 @@ create_links()
     timeout top touch tr traceroute true tty ttysize tunctl ubiattach ubidetach ubimkvol ubirmvol \
     ubirsvol ubiupdatevol udhcpc udhcpd umount uname unexpand uniq unix2dos unlink unlzma unlzop unxz \
     unzip uptime users usleep vconfig vi vlock volname wall watch watchdog wc wget which who whoami \
-    whois xargs xz xzcat yes zcat zcip
-  do
-    msg="Linking:   ${LBon}$i${Boff} --> ${BGon}busybox${Boff} ..."
-    msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    ln -s busybox "$i" && result="$OK_MSG" || result="$FAIL_MSG"
-    print_result $msg_len "$result"
-  done
+    whois xargs xz xzcat yes zcat zcip"
 
-  # create links in /bin to executables in /sbin where we want to ensure busybox's own is not executed in
-  # /bin instead of the executable in /sbin that we intend:
-  # (   findfs, blkid, e2fsck (fsck fsck.ext2 fsck.ext3 fsck.ext4)...
-  message "Creating NON-busybox links in initramfs/bin/ ..."
-  for i in findfs blkid e2fsck fsck fsck.ext2 fsck.ext3 fsck.ext4
-  do
-    msg="Linking:   ${LBon}${i}${Boff} --> ${BGon}/sbin/${i}${Boff} ..."
-    msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    ln -s /sbin/$i "$i" && result="$OK_MSG" || result="$FAIL_MSG"
-    print_result $msg_len "$result"
-  done
-  # of course our own init is in /, not busybox's in /bin or the traditional /sbin/init
-  msg="Linking:   ${LBon}init${Boff} --> ${BGon}../init${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../init init && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+# define lists of links that need to be created in /sbin
+#  references to lvm
+lvm_link_list="\
+    lvchange lvconvert lvcreate lvdisplay lvextend lvmchange \
+    lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
+    lvs lvscan pscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
+    pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate \
+    vgdisplay vgexport vgextend vgimport vgmerge vgmknodes vgreduce \
+    vgremove vgrename vgs vgscan vgsplit"
 
-  message "Creating lvm2 links in initramfs/sbin/ ..."
-  cd ${SOURCES_DIR}/sbin/
-  for i in lvchange lvconvert lvcreate lvdisplay lvextend lvmchange \
-           lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
-           lvs lvscan pscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
-           pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate \
-           vgdisplay vgexport vgextend vgimport vgmerge vgmknodes vgreduce \
-           vgremove vgrename vgs vgscan vgsplit
-  do
-    msg="Linking:   ${LBon}$i${Boff} --> ${BGon}lvm${Boff} ..."
-    msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    ln -s lvm "$i" && result="$OK_MSG" || result="$FAIL_MSG"
-    print_result $msg_len "$result"
-  done
+#   references to e2fsck
+e2fsck_link_list="fsck fsck.ext2 fsck.ext3 fsck.ext4"
 
-  for i in fsck fsck.ext2 fsck.ext3 fsck.ext4
-  do
-    msg="Linking:   ${LBon}$i${Boff} --> ${BGon}e2fsck${Boff} ..."
-    msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    ln -s e2fsck "$i" && result="$OK_MSG" || result="$FAIL_MSG"
-    print_result $msg_len "$result"
-  done
+# use this set of arrays to define other links that need to be created in the associated dirs
+#   initialize the arrays with values associated with /
+other_link_dir=(    "/"     "/"      )
+other_link_target=( "lib"   "init"   )
+other_link_name=(   "lib64" "linuxrc")
 
-  msg="Linking:   ${LBon}mdev${Boff} --> ${BGon}../bin/busybox${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../bin/busybox mdev && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+#   add to the arrays values associated with /bin/
+other_link_dir+=(    "/bin/"   )
+other_link_target+=( "../init" )
+other_link_name+=(   "init"    )
 
-  # of course our own init is in /, not busybox's in /bin or the traditional /sbin/init
-  msg="Linking:   ${LBon}init${Boff} --> ${BGon}../init${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../init init && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+#   add to the arrays values associated with /sbin/
+other_link_dir+=(    "/sbin/"         "/sbin/"  "/sbin/"      "/sbin/"         )
+other_link_target+=( "../bin/busybox" "../init" "../bin/kmod" "../bin/udevadm" )
+other_link_name+=(   "mdev"           "init"    "modprobe"    "udevadm"        )
 
-  msg="Linking:   ${LBon}modprobe${Boff} --> ${BGon}../bin/kmod${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../bin/kmod modprobe && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+#   add to the arrays values associated with /usr/
+other_link_dir+=(    "/usr/"  "/usr/")
+other_link_target+=( "../lib" "../lib")
+other_link_name+=(   "lib"    "lib64")
 
-  msg="Linking:   ${LBon}udevadm${Boff} --> ${BGon}../bin/udevadm${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../bin/udevadm udevadm && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+#   add to the arrays values associated with /dev/
+other_link_dir+=(    "/dev/vc/"   )
+other_link_target+=( "../console" )
+other_link_name+=(   "0"          )
 
-#splash_helper -> //sbin/fbcondecor_helper
+VERBOSE=$TRUE
+#VERBOSE=$FALSE
+verbosity=2
+
+#---[ functions ]-----------------------------------------------
+
+display_config()
+{
+  d_message "SOURCES_DIR: "${SOURCES_DIR} 3
+  d_message "MAKE_DIR: "${MAKE_DIR} 3
+}
+
+check_for_parts()
+{
+  PARTSTRING=""
+  #look for lvm and cryptsetup, and if not found, ask if user wants to install them
+  d_message_n "Finding lvm..." 1
+  if [ ! -e /sbin/lvm ]
+  then d_right_status 1 1; PARTSTRING+=" sys-fs/lvm2";
+  else d_right_status 0 1; fi
+
+  d_message_n "Finding cryptsetup..." 1
+  if [ ! -e /sbin/cryptsetup ]
+  then d_right_status 1 1; PARTSTRING+=" sys-fs/cryptsetup";
+  else d_right_status 0 1; fi
+
+  # if splash is requested, check for it
   if [ "${init_splash}" == "yes" ]
   then
-    msg="Linking:   ${LBon}splash_helper${Boff} --> ${BGon}//sbin/fbcondecor_helper${Boff} ..."
-    msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-    print_pending_op_msg "$msg"
-    ln -s //sbin/fbcondecor_helper splash_helper && result="$OK_MSG" || result="$FAIL_MSG"
+    d_message_n "Finding splashutils..." 1
+    if [ ! -e /sbin/fbcondecor_helper ]
+    then d_right_status 1 1; PARTSTRING+=" media-gfx/splashutils";
+    else d_right_status 0 1; fi
   else
-    msg="Skipping linking for splash... (not requested)"
-    msg_len=${#msg}   # adjustment for non-printingchars not needed
+    d_message "Skipping check for splashutils... (not requested)" 1
   fi
-  print_result $msg_len "$result"
 
-  message "Creating links in initramfs/dev/vc/ ..."
-  cd ${SOURCES_DIR}/dev/vc/
-  msg="Linking:   ${LBon}0${Boff} --> ${BGon}../console${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../console 0 && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+  # if missing parts are identified, confirm user wants to emerge them, the do so
+  if [ ! -z "${PARTSTRING}" ]
+  then
+    answer="z"
+    E_message "Necessary components appear to be missing [${BRon}${PARTSTRING} ${BYon}]."
+    prompt "${BRon}*${BYon} Do you want to install them?${Boff}"
+    if [[ "$answer" == "y" ]]
+    then
+      emerge -av ${PARTSTRING}
+    else
+      exit 1
+    fi
+  fi
+}
 
-  message "Creating links in initramfs/usr/ ..."
-  cd ${SOURCES_DIR}/usr/
-  msg="Linking:   ${LBon}lib${Boff} --> ${BGon}../lib${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../lib lib && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+copy_parts()
+{
+  d_message "Copying necessary executable files..." 1
+#  steps=${bin_dyn_executables} ${bin_non_dyn_executables} \
+#        ${sbin_dyn_executables} ${sbin_non_dyn_executables} \
+#        ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
+# Maybe future TODO - use progress meter if not $VERBOSE
+#  set $steps   # this will let us handle and count them as positional parameters
+#  num_steps=$#
+#  step_num=0
 
-  msg="Linking:   ${LBon}lib64${Boff} --> ${BGon}../lib${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s ../lib lib64 && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+  #copy /bin executable parts
+  for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
+  do copy_one_part /bin/$i ${SOURCES_DIR}/bin/; done
+  # /sbin
+  for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
+  do copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/; done
+  # /usr/bin
+  for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
+  do copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/; done
 
-  message "Creating links in initramfs/ ..."
-  cd ${SOURCES_DIR}/
-  msg="Linking:   ${LBon}lib64${Boff} --> ${BGon}lib${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s lib lib64 && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+  if [ "${init_splash}" == "yes" ]
+  then copy_one_part /sbin/fbcondecor_helper ${SOURCES_DIR}/sbin/
+  else d_message "Skipping copy for /sbin/fbcondecor_helper... (splash not requested)" 2
+  fi
+  copy_one_part ./init ${SOURCES_DIR}/
 
-  msg="Linking:   ${LBon}linuxrc${Boff} --> ${BGon}init${Boff} ..."
-  msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  ln -s init linuxrc && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
+  # copy config files
+  d_message "Copying necessary configuration files..." 1
+  for i in $config_files
+  do copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/; done
+
+  # copy other required content from ...
+  d_message "Copying other required content ..." 1
+  copy_one_part ${SCRIPT_HEADER_DIR}/script_header_brendlefly ${SOURCES_DIR}/
+  copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
+  copy_one_part ${MAKE_DIR}/etc/modules ${SOURCES_DIR}/etc/
+  if [ "${init_splash}" == "yes" ]
+  then
+    copy_one_part ${MAKE_DIR}/etc/initrd.splash ${SOURCES_DIR}/etc/
+    copy_one_part ${MAKE_DIR}/etc/splash ${SOURCES_DIR}/etc/
+  else
+    d_message "Skipping copy for splash files in /etc/ ... (splash not requested)" 2
+  fi
+
+}
+
+copy_one_part()
+{
+  d_message_n "Copying [ $1 ] to [ $2 ]..." 2
+  if [[ $verbosity -ge 3 ]]
+  then cp -av $1 $2 ; d_right_status $? 2
+  else cp -a $1 $2 ; d_right_status $? 2
+  fi
+}
+
+create_links()
+{
+  old_pwd="$PWD"
+  # create symlinks in /bin
+  d_message "Creating busybox links in initramfs/bin/ ..." 1
+  cd ${SOURCES_DIR}/bin/
+  for i in $busybox_link_list
+  do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}busybox${Boff} ..." 2;
+  ln -s busybox "$i" ; d_right_status $? 2; done
+
+  d_message "Creating NON-busybox links in initramfs/bin/ ..." 1
+  for i in $non_busybox_bin_links
+  do d_message_n "Linking:   ${LBon}${i}${Boff} --> ${BGon}/sbin/${i}${Boff} ..." 2;
+  ln -s /sbin/$i "$i" ; d_right_status $? 2; done
+
+  # create symlinks in /sbin
+  d_message "Creating lvm2 links in initramfs/sbin/ ..." 1
+  cd ${SOURCES_DIR}/sbin/
+  for i in $lvm_link_list
+  do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}lvm${Boff} ..." 2;
+  ln -s lvm "$i" ; d_right_status $? 2; done
+  for i in $e2fsck_link_list
+  do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}e2fsck${Boff} ..." 2;
+  ln -s e2fsck "$i" ; d_right_status $? 2; done
+  #splash_helper -> //sbin/fbcondecor_helper
+  if [ "${init_splash}" == "yes" ]
+  then d_message_n "Linking:   ${LBon}splash_helper${Boff} --> ${BGon}//sbin/fbcondecor_helper${Boff} ..." 2;
+    ln -s //sbin/fbcondecor_helper splash_helper ; d_right_status $? 2
+  else d_message "Skipping linking for splash... (not requested)" 2;
+  fi
+
+  # create links to other executables in associated dirs, using array set
+  d_message "Creating [${#other_link_name[@]}] additional links..." 1
+  for ((i=0; i<${#other_link_name[@]}; i++))
+  do d_message_n "Linking:   ${BBon}[${other_link_dir[i]}] ${LBon}${other_link_name[i]}${Boff} --> ${BGon}${other_link_target[i]}${Boff} ..." 2;
+  cd ${SOURCES_DIR}${other_link_dir[i]}; ln -s "${other_link_target[i]}"  "${other_link_name[i]}" ; d_right_status $? 2; done
 
   cd $old_pwd
 }
 
 build_dir_tree()
 {
-message "Building directory tree in ${SOURCES_DIR} ..."
+d_message "Building directory tree in ${SOURCES_DIR} ..." 1
 local treelist
 if [ "${init_splash}" == "yes" ]
 then
@@ -384,26 +261,18 @@ else
 fi
 for i in ${treelist}
 do
-  msg="${BGon}*${Boff} $i ..."
-  msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
   if [ ! -e ${SOURCES_DIR}$i ]
   then
-    mkdir ${SOURCES_DIR}$i && result="$OK_MSG" || result="$FAIL_MSG"
+    d_message_n " Creating ${SOURCES_DIR}/$i..." 2; mkdir ${SOURCES_DIR}$i ; d_right_status $? 2
   else
-    already_msg=" directory $i already created in ${SOURCES_DIR} "
-    let "msg_len=$msg_len + ${#already_msg}"
-    echo -en "$already_msg"
-    result="$NA_MSG"
+    d_message_n " Found existing ${SOURCES_DIR}/$i..." 2; d_right_status $? 2
   fi
-  print_result $msg_len "$result"
 done
 }
 
 create_device_nodes()
 {
-  calculate_termwidth
-
+## TODO - test if this is really necessary, now that we have mdev
   # character special device nodes in dev
   make_one_device_node ${SOURCES_DIR}/dev/console c 5 1
   make_one_device_node ${SOURCES_DIR}/dev/null c 1 3
@@ -467,68 +336,45 @@ create_device_nodes()
 make_one_device_node()  # args: name type[c|b] MAJOR MINOR
 {
   # mknod [option] name type [major minor]
-  #  options: {-m|--mode=MODE] [-z|--context=CTX]
-  #  types: p=FIFO, b=block, c=character
-
-  node_name="$1"
-  node_type="$2"
-  node_MAJOR="$3"
-  node_MINOR="$4"
-  msg="${BGon}*${Boff} ${node_name} ${node_type} ${node_MAJOR} ${node_MINOR} ..."
-  msg_len=$(( ${#msg} - $(( ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-  print_pending_op_msg "$msg"
-  mknod "${node_name}" "${node_type}" ${node_MAJOR} ${node_MINOR} \
-     && result="$OK_MSG" || result="$FAIL_MSG"
-  print_result $msg_len "$result"
-
+  #  options: {-m|--mode=MODE] [-z|--context=CTX], types: p=FIFO, b=block, c=character
+  node_name="$1"; node_type="$2"; node_MAJOR="$3"; node_MINOR="$4"
+  d_message_n "${BGon}*${Boff} ${node_name} ${node_type} ${node_MAJOR} ${node_MINOR} ..." 2
+  mknod "${node_name}" "${node_type}" ${node_MAJOR} ${node_MINOR} ; d_right_status $? 2
 }
 
 copy_dependent_libraries()
 {
-  calculate_termwidth
-  # prior to version 5.3.1, I used ldd and found four cases:
-  # (1) doesn't exist            : linux-vdso.so.1 (0x00007ffff5ffe000) or linux-gate.so.1 (0x52722000)
-  #                                both of which are objects shared directly by the kernel (DSO) at the fixed addresses indicated
-  # (2) symlink and target shown : libcryptsetup.so.4 => /usr/lib64/libcryptsetup.so.4 (0x00007f168d7e4000)
-  # (3) symlink shown            : /lib64/ld-linux-x86-64.so.2 (0x00007f168da0e000) or /lib/ld-linux.so.2
-  # (4) strange look for use-ld  : use-ld=gold => not found
-  # Thus, prior to verson 5.3.1, my parsing strategy was to use grep -v "use-ld" to elim (4); grep -v "linux-vdso" to elim (1);
-  #   id (2) by "=>"; id (3) by leading "/".  also, there is a lot of duplication in dependencies, so check [ -e ] first
-  #
-  # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.  This appears to simplify
-  # the situation to three cases:
+  # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.
+  # This appears to simplify the situation to three cases (one of which is trivial):
   # (1) symlink_name => dir_name/target_name shown
   # (2) target_name => dir_name/target_name        (where target_name is the executable)
   # (3) dyn_executable (interpreter => /lib{64}/ld-linux{-x86-64}.so.2) {ignore with grep -v}
-  # Thus, new parsing strategy:
-  # Ignore case (3) - the dyn_executable is already copied, and ld-linux is on the list separately
+  # parsing strategy:
+  # Ignore case (3) - (trivial) the dyn_executable is already copied, and ld-linux is on the list separately
   # For case (2) - just make sure the target executable (dependency) gets copied if it hasn't been already
   # For each case (1), copy the target executable to - and create the symlink in - the ${SOURCES_DIR}
 
-  # Process the dynamic executables in /bin to identify libraries they depend on
-  echo "# temporary file to capture list of libraries upon which my initramfs executables depend"
-  # for each dyn_executable, use which to locate it, and lddtree to accumulate all dependencies.
+  # General algorithm:  process the dynamic executables to identify libraries they depend on --
+  #   for each dyn_executable, use which to locate it, and lddtree to list all dependencies.
   #   ignore case (3) lines with grep -v interpreter; trim leading and trailing whitespace;
-  #   sort and eliminate duplicates; pay attention only to the third field of lddtree output (/target/path/target_name)
-  for x in
-    $( for i in $bin_dyn_executables $usr_bin_dyn_executables $sbin_dyn_executables
-    do
-      lddtree $(which $i)
-    done | grep -v interpreter | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | sort -u | cut -d' ' -f3)
+  #   sort and eliminate duplicates; we need only the third field of lddtree output (/target/path/target_name)
+  d_message "Copying dependent libraries ..." 1
+  for x in $( for i in $bin_dyn_executables $usr_bin_dyn_executables $sbin_dyn_executables; do lddtree $(which $i); done | \
+    grep -v interpreter | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | sort -u | cut -d' ' -f3)
   do
-    # for each /target/path/target_name entry, use the "file" command to determine if it is case (1) symlink or (2) ELF
+    # run the "file" command on each /target/path/target_name listed, the second field of
+    #   this output shows if it is case (1) symlink or (2) ELF
     line=$(file $x)
-    [ "$DEBUG_LIB_COPY" == "true" ] && message "---[ New line to examine: ( ${line} ) ]---"
+    d_message "---[ New line to examine: ( ${line} ) ]---" 3
     set ${line}
-    case_type=$2
-    case $case_type in
+    case $2 in
       "ELF" )
         # just copy the target executable (first item in the line)
         target_name=$(basename $1 | sed 's/:$//')   # drop the trailing colon
         dir_name=$(dirname $1)
-        [ "$DEBUG_LIB_COPY" == "true" ] && \
-          echo "  Case 2 (ELF). dir_name=[$dir_name], target_name=[$target_name]" && \
-          echo "about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\""
+        d_message "  Case 2 (ELF). dir_name=[$dir_name], target_name=[$target_name]" 3
+        d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
+        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
         [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
           copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
         ;;
@@ -538,29 +384,22 @@ copy_dependent_libraries()
         link_name=$( basename $1 | sed 's/:$//' )  # drop the trailing colon
         dir_name=$( dirname $1 )
         # first copy the target
-        [ "$DEBUG_LIB_COPY" == "true" ] && \
-          echo "  Case 1 (symlink). dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name]" && \
-          echo "about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\""
+        d_message "  Case 1 (symlink) dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name]" 3
+        d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
+        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
         [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
           copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
         # next, create the link
         old_pwd=$PWD
         cd ${SOURCES_DIR}${dir_name}
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "just changed from directory [ $old_pwd ] to directory: [ $PWD ]"
-        msg="Linking:   ${LBon}${link_name}${Boff} --> ${BGon}${dir_name}/${target_name}${Boff} ..."
-        msg_len=$(( ${#msg} - $(( ${#LBon} + ${#Boff} + ${#BGon} + ${#Boff} )) ))   # adjusted for non-printingchars
-        [ "$DEBUG_LIB_COPY" == "true" ] && echo "about to execute: ln -s $target_name $link_name"
-        print_pending_op_msg "$msg"
+        d_message "just changed from directory [ $old_pwd ] to directory: [ $PWD ]" 3
+        d_message_n "Linking:   ${LBon}${link_name}${Boff} --> ${BGon}${dir_name}/${target_name}${Boff} ..." 2
         if [ ! -e ${SOURCES_DIR}${dir_name}/${link_name} ]
         then
-          ln -s $target_name $link_name && result="$OK_MSG" || result="$FAIL_MSG"
+          ln -s $target_name $link_name ; d_right_status $? 2
         else
-          already_msg=" {link already created} "
-          let "msg_len+=${#already_msg}"
-          echo -en "$already_msg"
-          result="$NA_MSG"
+          d_message_n " {link already created} " 2; d_right_status $? 2
         fi
-        print_result $msg_len "$result"
         cd $old_pwd
         ;;
       * )
@@ -568,44 +407,42 @@ copy_dependent_libraries()
        exit 1
        ;;
     esac
-    [ "$DEBUG_LIB_COPY" == "true" ] && echo "--------------------------------------------"
+    d_message "--------------------------------------------" 3
   done
 }
 
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
 #   ${MAKE_DIR}/initramfs_dir_tree to tailor this
-separator "make_sources.sh - $BUILD"
+separator "Make Sources"  "mkinitramfs-$BUILD"
 checkroot
 display_config
 # determine if splash is requested in init.conf
 eval $(grep "splash" init.conf | grep -v "#")
-[ "${init_splash}" == "yes" ] && message "splash requested" || message "splash not requested"
-calculate_termwidth
+[ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
 
-separator "Build Directory Tree"
+
+separator "Build Directory Tree"  "mkinitramfs-$BUILD"
 build_dir_tree
 
-separator "Create Device Nodes"
-create_device_nodes
+separator "Create Device Nodes"  "mkinitramfs-$BUILD"
+#create_device_nodes  (is this necessary?)
 
-separator "Check for Parts"
+separator "Check for Parts"  "mkinitramfs-$BUILD"
 check_for_parts
 
-separator "Copy Parts"
+separator "Copy Parts"  "mkinitramfs-$BUILD"
 copy_parts
 
-separator "Create Symlinks"
+separator "Create Symlinks"  "mkinitramfs-$BUILD"
 create_links
 
-separator "Copy Dependent Libraries"
+separator "Copy Dependent Libraries"  "mkinitramfs-$BUILD"
 copy_dependent_libraries
 
-separator "Create the BUILD reference file"
+separator "Create the BUILD reference file"  "mkinitramfs-$BUILD"
 echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 
-message "cleaning up..."
-# don't remove these temporary files if debugging...
-[ ! "$DEBUG_LIB_COPY" == "true" ] && rm $tmpfile
-[ ! "$DEBUG_LIB_COPY" == "true" ] && rm $tmpfile2
-message "All Done"
+d_message "cleaning up..." 1
+# nothing to do here anymore...
+d_message "All Done" 1

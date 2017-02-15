@@ -1,35 +1,27 @@
 #!/bin/bash
 # Joe Brendler  29 Dec 2012
 #   for version history and "credits", see the accompanying "historical_notes" file
+#   as ov version 5.2, this script is provided separately, in case the user does
+#   NOT want to use it, but rather prefers to only make the sources and have the
+#   initramfs compiled into the kernel
 
-myDEBUG="true"
-#myDEBUG="false"
-
-# source my usual functions and formatting "shortcuts" (must be in the MAKE_DIR)
-source script_header_brendlefly
-# the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs),
-#   and the MAKE_DIR (parent dir of this script). This must follow the sourcing of
-#   script_header_brendlefly, so that BUILD will be properly assigned
+# this script must be run from the directory in which these scripts reside (so that
+#   "source GLOBALS" makes sense.  GLOBALS instantiates all the variables needed
+#   for directory-references.  This script must also be run AFTER the make_sources.sh
+#   script is run, because the latter generates the BUILD file in ${SOURCES_DIR} that
+#   will be sourced here to instantiate the BUILD variable
 source GLOBALS
+# source my usual functions and formatting "shortcuts" (must be run from the MAKE_DIR)
+source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
+source ${SOURCES_DIR}/BUILD
 
-[ "${myDEBUG}" == "true" ] && echo "make_image.sh Debug - dump config"
-[ "${myDEBUG}" == "true" ] && echo "BUILD: [ ${BUILD} ]"
-[ "${myDEBUG}" == "true" ] && echo "MAKE_DIR: [ ${MAKE_DIR} ]"
-[ "${myDEBUG}" == "true" ] && echo "SOURCES_DIR: [ ${SOURCES_DIR} ]"
+VERBOSE=$TRUE
+verbosity=1
 
-E_BADBOOT=68
-
-check_boot()
-{
-  # check to see if the /boot partition is properly mounted (look for grub)
-  if [ -d "/boot/grub" ]
-  then
-    return 0
-  else
-    echo -e "${BRon}Boot partition not properly mounted.${Boff}"
-    return $E_BADBOOT
-  fi
-}
+d_message "make_image.sh Debug - dump config" 2
+d_message "BUILD: [ ${BUILD} ]" 2
+d_message "MAKE_DIR: [ ${MAKE_DIR} ]" 2
+d_message "SOURCES_DIR: [ ${SOURCES_DIR} ]" 2
 
 make_initramfs()
 {
@@ -40,8 +32,8 @@ make_initramfs()
 }
 
 #---[ main script ]----------
-separator "makeinitramfs $BUILD"
+separator "Make initramfs Image"  "makeinitramfs-$BUILD"
 
-checkroot && check_boot && \
+checkroot && checkboot && \
 old_pwd=$PWD && cd "${SOURCES_DIR}" && make_initramfs && cd "${old_pwd}"
-message "all done"
+d_message "all done" 1
