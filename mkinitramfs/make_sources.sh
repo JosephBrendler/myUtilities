@@ -12,7 +12,16 @@ source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
 # script header will over-ride BUILD, but globals must be sourced 1st to get _DIRs
 BUILD="${KERNEL_VERSION}-${DATE_STAMP}"
 
+VERBOSE=$TRUE
+#VERBOSE=$FALSE
+verbosity=2
+
+
 # define lists of files that need to be copied
+config_files="init.conf BUILD README LICENSE"
+other_content_src=("/usr/local/sbin/script_header_brendlefly" "/etc/lvm/lvm.conf"        "${MAKE_DIR}/etc/modules")
+other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"  "${SOURCES_DIR}/etc/")
+
 #   /bin: dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
 bin_dyn_executables="busybox kmod udevadm lsblk"
 bin_non_dyn_executables=""
@@ -23,20 +32,15 @@ sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
 usr_bin_dyn_executables=""
 usr_bin_non_dyn_executables=""
 #   note: the following required executables are NOT dynamic -- no other libs needed for them:
-#     /bin/busybox (update 16 Dec 16 -- removed "static" USE flag, busybox is now dynamic
-#     /sbin/fbcondecor_helper
-#     /sbin/fsadm
-#     /sbin/lvmconf
-#     /sbin/lvmdump
-#     /sbin/vgimportclone
+#     /sbin/fsadm, /sbin/lvmconf, /sbin/lvmdump, /sbin/vgimportclone, (if splash-ing) /sbin/fbcondecor_helper
 
 # define lists of links that need to be created in /bin
 #   create links in /bin to executables in /sbin to ensure we do not use busybox "version" --
 #   findfs, blkid, e2fsck (fsck fsck.ext2 fsck.ext3 fsck.ext4)...
 non_busybox_bin_links="findfs blkid e2fsck fsck fsck.ext2 fsck.ext3 fsck.ext4"
 
-#  references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
-#  findfs, blkid, e2fsck, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
+#   references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
+#   findfs, blkid, e2fsck, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
 busybox_link_list="\
     [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
     brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt \
@@ -63,7 +67,7 @@ busybox_link_list="\
     whois xargs xz xzcat yes zcat zcip"
 
 # define lists of links that need to be created in /sbin
-#  references to lvm
+#   references to lvm
 lvm_link_list="\
     lvchange lvconvert lvcreate lvdisplay lvextend lvmchange \
     lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
@@ -100,10 +104,6 @@ other_link_name+=(   "lib"    "lib64")
 other_link_dir+=(    "/dev/vc/"   )
 other_link_target+=( "../console" )
 other_link_name+=(   "0"          )
-
-VERBOSE=$TRUE
-#VERBOSE=$FALSE
-verbosity=2
 
 #---[ functions ]-----------------------------------------------
 
@@ -156,13 +156,12 @@ check_for_parts()
 copy_parts()
 {
   d_message "Copying necessary executable files..." 1
+# Maybe future TODO - use progress meter if not $VERBOSE
 #  steps=${bin_dyn_executables} ${bin_non_dyn_executables} \
 #        ${sbin_dyn_executables} ${sbin_non_dyn_executables} \
 #        ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
-# Maybe future TODO - use progress meter if not $VERBOSE
 #  set $steps   # this will let us handle and count them as positional parameters
-#  num_steps=$#
-#  step_num=0
+#  num_steps=$#; step_num=0
 
   #copy /bin executable parts
   for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
@@ -185,11 +184,10 @@ copy_parts()
   for i in $config_files
   do copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/; done
 
-  # copy other required content from ...
+  # copy other required content
   d_message "Copying other required content ..." 1
-  copy_one_part ${SCRIPT_HEADER_DIR}/script_header_brendlefly ${SOURCES_DIR}/
-  copy_one_part /etc/lvm/lvm.conf ${SOURCES_DIR}/etc/lvm/
-  copy_one_part ${MAKE_DIR}/etc/modules ${SOURCES_DIR}/etc/
+  for ((i=0; i<${#other_content_src[@]}; i++))
+  do copy_one_part ${other_content_src[i]} ${other_content_dest[i]}; done
   if [ "${init_splash}" == "yes" ]
   then
     copy_one_part ${MAKE_DIR}/etc/initrd.splash ${SOURCES_DIR}/etc/
