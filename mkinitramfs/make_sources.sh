@@ -26,7 +26,7 @@ other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/et
 bin_dyn_executables="busybox kmod udevadm lsblk"
 bin_non_dyn_executables=""
 #   /sbin: note: included findfs here explicitly rather than use busybox's own
-sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm"
+sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm lvmetad"
 sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
 #   /usr/bin: note: for the moment, I'm not using any...
 usr_bin_dyn_executables=""
