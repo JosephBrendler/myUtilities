@@ -23,7 +23,7 @@ other_content_src=("/usr/local/sbin/script_header_brendlefly" "/etc/lvm/lvm.conf
 other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"  "${SOURCES_DIR}/etc/")
 
 #   /bin: dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
-bin_dyn_executables="busybox kmod udevadm lsblk"
+bin_dyn_executables="busybox kmod udevadm lsblk shred"
 bin_non_dyn_executables=""
 #   /sbin: note: included findfs here explicitly rather than use busybox's own
 sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm lvmetad"
