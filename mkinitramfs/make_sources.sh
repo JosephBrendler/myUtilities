@@ -18,18 +18,18 @@ verbosity=2
 
 
 # define lists of files that need to be copied
-config_files="init.conf BUILD README LICENSE"
+config_files="init.conf README LICENSE"
 other_content_src=("/usr/local/sbin/script_header_brendlefly" "/etc/lvm/lvm.conf"        "${MAKE_DIR}/etc/modules")
 other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"  "${SOURCES_DIR}/etc/")
 
 #   /bin: dynamic and non-dynamic executables to be included in /bin /sbin and /usr/bin
-bin_dyn_executables="busybox kmod udevadm lsblk shred"
+bin_dyn_executables="busybox kmod udevadm lsblk"
 bin_non_dyn_executables=""
 #   /sbin: note: included findfs here explicitly rather than use busybox's own
 sbin_dyn_executables="blkid cryptsetup findfs e2fsck lvm lvmetad"
 sbin_non_dyn_executables="fsadm lvmconf lvmdump vgimportclone"
-#   /usr/bin: note: for the moment, I'm not using any...
-usr_bin_dyn_executables=""
+#   /usr/bin: note: for the moment, I'm using only shred...
+usr_bin_dyn_executables="shred"
 usr_bin_non_dyn_executables=""
 #   note: the following required executables are NOT dynamic -- no other libs needed for them:
 #     /sbin/fsadm, /sbin/lvmconf, /sbin/lvmdump, /sbin/vgimportclone, (if splash-ing) /sbin/fbcondecor_helper
