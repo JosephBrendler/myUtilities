@@ -6,8 +6,8 @@
 # Source the variable assignments made in gus.conf (/etc/ overrides pwd)
 #   This will supercede/modify the default assignments made below
 CONF_DIR="defaults"
-[[ -e gus.conf ]] && . gus.conf && CONF_DIR=$PWD"/gus.conf"
-[[ -e /etc/gus.conf ]] && . /etc/gus.conf && CONF_DIR="/etc/gus.conf"
+[[ -e gus.conf ]] && source gus.conf && CONF_DIR=$PWD"/gus.conf"
+[[ -e /etc/gus/gus.conf ]] && source /etc/gus/gus.conf && CONF_DIR="/etc/gus/gus.conf"
 
 # User-defined variables - modify according to your system
 # SCRIPT_DIR is the directory in which you have placed
@@ -19,6 +19,15 @@ CONF_DIR="defaults"
 [ -z "$STATUS_FILE" ] && \
     STATUS_FILE="/root/bin/gus-status" || \
     STATUS_FILE=$STATUS_FILE
+
+# EIX indicates whether you use app-portage/eix, which will significantly speed up parts of gus
+[ -z "$EIX" ] && EIX="yes"
+
+# DISTCC indicates whether you use sys-devel/distcc, which can significantly speed up compiling for gus
+[ -z "$DISTCC" ] && DISTCC="yes"
+
+# unfriendlies is a file listing packages known to not be friendly to distcc
+[ -z $unfriendlies ] && unfriendlies="/etc/gus/distcc_unfriendly"
 
 # SYNC_TS is the pathname of the file the timestamp of which will
 #   be checked to determine how long it's been since the portage
@@ -67,10 +76,9 @@ CONF_DIR="defaults"
 source /usr/local/sbin/script_header_brendlefly
 
 # --- Define local variables -----------------------------------
-DEBUG="true"
-#DEBUG="false"
-VERBOSE=$TRUE
-verbosity=1
+VERBOSE=$FALSE
+#VERBOSE=$TRUE
+verbosity=0
 
 BUILD="5.1.0 (20170309)"
 
@@ -89,7 +97,7 @@ GETBINPKGONLY="no"
 KEEPGOING="no"
 WITH_BDEPS_Y="yes"
 
-unfriendlies="/var/lib/portage/distcc_unfriendly"
+updateables=""
 nodistmergelist=()
 candistmergelist=()
 nodistcount=0
@@ -128,29 +136,29 @@ process_command_line()
 {
 # process command line arguments (for now only -x/--exclude option can have argument(s))
 last=""
-[ "$DEBUG" == "true" ] && message "processing command line with argument(s): [ ${*} ]"
+d_message "processing command line with argument(s): [ ${*} ]" 2
 # shift each argument into position $1 and examine it
 #   process the argument or processit with its own arguments
 while [ ! -z "$1" ]
 do
-  [ "$DEBUG" == "true" ] && message "arg1 = [ $1 ]"
+  d_message "arg1 = [ $1 ]" 3
   # if arg begins with a single dash, process it alone
   if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ]
   then
-    [ "$DEBUG" == "true" ] && message "processing [ $1 ] alone as single-dash argument"
+    d_message "processing [ $1 ] alone as single-dash argument" 3
     process_argument $1
     shift
   # if arg begins with a double dash, process it alone if it is not --exclude
   elif [ "${1:0:2}" == "--" ] && [ "$1" != "--exclude" ]
   then
-    [ "$DEBUG" == "true" ] && message "processing [ $1 ] alone as double-dash non-exclude argument"
+    d_message "processing [ $1 ] alone as double-dash non-exclude argument" 3
     process_argument $1
     shift
   # if arg begins with a double dash, and it is --exclude,
   #   then process it with its own agruments (identified by no leading - or --)
   elif [ "${1:0:2}" == "--" ] && [ "$1" == "--exclude" ]
   then
-    [ "$DEBUG" == "true" ] && message "processing [ $1 ] as --exclude, with own args:"
+    d_message "processing [ $1 ] as --exclude, with own args:" 3
     tmp_cmd=$1
     tmp_args=""
     shift
@@ -158,20 +166,20 @@ do
     do
       if [ "${1:0:1}" != "-" ]
       then
-        [ "$DEBUG" == "true" ] && message "adding [ $1 ] to tmp_args:"
+        d_message "adding [ $1 ] to tmp_args:" 3
         # formulate this so as to preserve internal white space between multiple exclude atoms, but to not add extra whitespace
         [ -z "${tmp_args}" ] && tmp_args=${1} || tmp_args="${tmp_args} ${1}"
       else
-        [ "$DEBUG" == "true" ] && message "non-argument [ $1 ], exiting"
+        d_message "non-argument [ $1 ], exiting" 2
         exit
       fi
       shift
     done
-    [ "$DEBUG" == "true" ] && message "processing [ $tmp_cmd \"$tmp_args\" ]"
+    d_message "processing [ $tmp_cmd \"$tmp_args\" ]" 1
     process_argument $tmp_cmd "$tmp_args"
   else
     # bogus argument
-    [ "$DEBUG" == "true" ] && message "bogus argument [ $1 ]"
+    d_message "bogus argument [ $1 ]" 1
     E_message "${E_BAD_ARGS}" && useage && exit 1
   fi
 done
@@ -181,8 +189,8 @@ sanity_check
 process_argument()
 {
 EXCLUDE=""
-[ "$DEBUG" == "true" ] && message "about to process argument(s): [ $* ]"
-[ "$DEBUG" == "true" ] && message "1: [ $1 ], 2: [ $2 ]"
+d_message "about to process argument(s): [ $* ]" 1
+d_message "1: [ $1 ], 2: [ $2 ]" 2
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
     "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
@@ -198,6 +206,7 @@ EXCLUDE=""
     "-s" | "--status"        ) status ; exit 0 ;;
     "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
     "-t" | "--rkhunter"      ) RKHUNTER="yes" ;;
+    "-v" | "--verbose"       ) VERBOSE=$TRUE; let "verbosity+=1" ;;
     "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
     "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
     "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
@@ -239,6 +248,7 @@ do
         "R") REGEN_OVERLAY_METADATA="yes" ;;
         "S") SELINUX_RELABEL="yes" ;;
         "t") RKHUNTER="yes" ;;
+        "v") VERBOSE=$TRUE; let "verbosity+=1" ;;
         "w") WITH_BDEPS_Y="yes" ;;
         "X") X11_MODULE_REBUILD="yes" ;;
         "Y") GO_AHEAD="yes" ;;
@@ -286,6 +296,7 @@ useage()
 
    echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
    echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
+   echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
    echo -e "    "$BBon"[-h | --help]"$Boff".............print this text"
    echo
    echo -e "  "$BYon"Notes: "$Boff
@@ -309,33 +320,38 @@ display_config()
 {
 message "${BWon}Using configuration data below: ${Boff}"
 echo -e ${LBon}"Configuration..........: "${Boff}${CONF_DIR}
+echo -e ${LBon}"Unfriendlies...........: "${Boff}${unfriendlies}
 echo -e ${LBon}"SCRIPT_DIR.............: "${Boff}${SCRIPT_DIR}
 echo -e ${LBon}"STATUS_FILE............: "${Boff}${STATUS_FILE}
 echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
 echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
+echo -e ${LBon}"DISTCC.................: "$(status_color ${DISTCC})${DISTCC}${Boff}
+echo -e ${LBon}"EIX....................: "$(status_color ${EIX})${EIX}${Boff}
+echo -e ${LBon}"VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
+echo -e ${LBon}"verbosity..............: "${Boff}${verbosity}
 echo -e ${BWon}"Options for ${phase_message[1]}${Boff}"   ## phase 1 - Sync and Emerge Updates
-echo -e ${LBon}"USEPKG.................: "${Boff}${USEPKG}
-echo -e ${LBon}"USEPKGONLY.............: "${Boff}${USEPKGONLY}
-echo -e ${LBon}"GETBINPKG..............: "${Boff}${GETBINPKG}
-echo -e ${LBon}"GETBINPKGONLY..........: "${Boff}${GETBINPKGONLY}
-echo -e ${LBon}"WITH_BDEPS_Y...........: "${Boff}${WITH_BDEPS_Y}
-echo -e ${LBon}"SYNC...................: "${Boff}${SYNC}
+echo -e ${LBon}"USEPKG.................: "$(status_color ${USEPKG})${USEPKG}${Boff}
+echo -e ${LBon}"USEPKGONLY.............: "$(status_color ${USEPKGONLY})${USEPKGONLY}${Boff}
+echo -e ${LBon}"GETBINPKG..............: "$(status_color ${GETBINPKG})${GETBINPKG}${Boff}
+echo -e ${LBon}"GETBINPKGONLY..........: "$(status_color ${GETBINPKGONLY})${GETBINPKGONLY}${Boff}
+echo -e ${LBon}"WITH_BDEPS_Y...........: "$(status_color ${WITH_BDEPS_Y})${WITH_BDEPS_Y}${Boff}
+echo -e ${LBon}"SYNC...................: "$(status_color ${SYNC})${SYNC}${Boff}
 echo -e ${LBon}"SYNC_CMD...............: "${Boff}${SYNC_CMD}
-echo -e ${LBon}"GO_AHEAD...............: "${Boff}${GO_AHEAD}
-echo -e ${LBon}"KEEPGOING..............: "${Boff}${KEEPGOING}
+echo -e ${LBon}"GO_AHEAD...............: "$(status_color ${GO_AHEAD})${GO_AHEAD}${Boff}
+echo -e ${LBon}"KEEPGOING..............: "$(status_color ${KEEPGOING})${KEEPGOING}${Boff}
 echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
 echo -e ${BWon}"Options for ${phase_message[5]}${Boff}"   ## phase 5 - Final steps
-echo -e ${LBon}"EIX_UPDATE.............: "${Boff}${EIX_UPDATE}
-echo -e ${LBon}"HASKELL_UPDATER........: "${Boff}${HASKELL_UPDATER}
-echo -e ${LBon}"MODULE_REBUILD.........: "${Boff}${MODULE_REBUILD}
-echo -e ${LBon}"PERL_CLEANER...........: "${Boff}${PERL_CLEANER}
-echo -e ${LBon}"PYTHON_UPDATER.........: "${Boff}${PYTHON_UPDATER}
-echo -e ${LBon}"RESUME.................: "${Boff}${RESUME}
-echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "${Boff}${REGEN_OVERLAY_METADATA}
-echo -e ${LBon}"SELINUX_RELABEL........: "${Boff}${SELINUX_RELABEL}
-echo -e ${LBon}"RKHUNTER...............: "${Boff}${RKHUNTER}
-echo -e ${LBon}"X11_MODULE_REBUILD.....: "${Boff}${X11_MODULE_REBUILD}
-[ "${DEBUG}" == "true" ] && countdown 15 "Debug: pausing so you can review config..."
+echo -e ${LBon}"EIX_UPDATE.............: "$(status_color ${EIX_UPDATE})${EIX_UPDATE}${Boff}
+echo -e ${LBon}"HASKELL_UPDATER........: "$(status_color ${HASKELL_UPDATER})${HASKELL_UPDATER}${Boff}
+echo -e ${LBon}"MODULE_REBUILD.........: "$(status_color ${MODULE_REBUILD})${MODULE_REBUILD}${Boff}
+echo -e ${LBon}"PERL_CLEANER...........: "$(status_color ${PERL_CLEANER})${PERL_CLEANER}${Boff}
+echo -e ${LBon}"PYTHON_UPDATER.........: "$(status_color ${PYTHON_UPDATER})${PYTHON_UPDATER}${Boff}
+echo -e ${LBon}"RESUME.................: "$(status_color ${RESUME})${RESUME}${Boff}
+echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "$(status_color ${REGEN_OVERLAY_METADATA})${REGEN_OVERLAY_METADATA}${Boff}
+echo -e ${LBon}"SELINUX_RELABEL........: "$(status_color ${SELINUX_RELABEL})${SELINUX_RELABEL}${Boff}
+echo -e ${LBon}"RKHUNTER...............: "$(status_color ${RKHUNTER})${RKHUNTER}${Boff}
+echo -e ${LBon}"X11_MODULE_REBUILD.....: "$(status_color ${X11_MODULE_REBUILD})${X11_MODULE_REBUILD}${Boff}
+[[ ${VERBOSE} ]] && sh_countdown 7
 }
 
 check_timestamp()
@@ -401,7 +417,7 @@ bs()
   let "depth+=1"
   if [[ $depth -gt ${#range[@]} ]]
   then
-    d_message "Something is wrong here -- depth [$depth] exceeds range [${limit}]"
+    d_message "Something is wrong here -- depth [$depth] exceeds range [${limit}]" 1
     return 1  # cannot go deeper than the length of the list
   fi
 
@@ -442,7 +458,8 @@ bs()
 iff()
 {
   ## identification of friends and foes (packages that like [or do not like] distcc
-  for package in $(eix -u#)
+  d_message "DISTCC=[$DISTCC]; splitting updatables into nodistmergelist and candistmergelist with iff() and bs()" 1
+  for package in $updateables
   do
     let "depth=1"
     let "result=-1"
@@ -503,18 +520,25 @@ emerge_updates()
     [ ! -z "${EXCLUDE}" ] && OPTS2+=" --exclude ${EXCLUDE}"
 
     message "${MSG}"
-    # first, emerge the packages that do not like distcc
-    MyCMD1='MAKEOPTS="-j2 -l2"'
-    MyCMD1+=' FEATURES=" -getbinpkg -userpriv -distcc -distcc-pump"'
-    MyCMD1+=" emerge -1${OPTS1} ${nodistmergelist[@]}${OPTS2}"
-    # then, emerge the packages that do like distcc
-    MyCMD2="emerge -${OPTS1} ${candistmergelist[@]}${OPTS2}"
-    message "${BWon}Abount to run -${Boff}"
-    message "  [${BRon} ${MyCMD1}${Boff}], and"
-    message "  [${BRon} ${MyCMD2}${Boff}]"
-    eval ${MyCMD1} && eval ${MyCMD2} && return 0
-
-    return 1
+    # first, emerge the packages that do not like distcc (if any need it)
+    # then, emerge the packages that do like distcc (if any need it)
+    if [[ "$DISTCC" == "yes" ]]
+    then
+      [[ ! -z ${nodistmergelist[@]} ]] && MyCMD1='MAKEOPTS="-j2 -l2"' && \
+        MyCMD1+=' FEATURES=" -getbinpkg -userpriv -distcc -distcc-pump"' && \
+        MyCMD1+=" emerge -1${OPTS1} ${nodistmergelist[@]}${OPTS2}" && \
+        message "${BWon}About to run - [${BRon} ${MyCMD1}${BWon} ]${Boff}" && \
+        eval ${MyCMD1} || return 1
+      [[ ! -z ${candistmergelist[@]} ]] && \
+        MyCMD2="emerge -${OPTS1} ${candistmergelist[@]}${OPTS2}" && \
+        message "${BWon}About to run - [${BRon} ${MyCMD2}${BWon} ]${Boff}" && \
+        ${MyCMD2} || return 1
+    else
+        MyCMD2="emerge -${OPTS1} world${OPTS2}" && \
+        message "${BWon}About to run - [${BRon} ${MyCMD2}${BWon} ]${Boff}" && \
+        ${MyCMD2} || return 1
+    fi
+    return 0
 }
 
 show_news()
@@ -556,16 +580,16 @@ handle_dependencies()
 {
     echo && message "Running emerge -av --depclean ..." && emerge -av --depclean
     echo && message "Running emerge @preserved-rebuild ..." && emerge @preserved-rebuild
-    echo && message "Running revdep-rebuild -p ..." && revdep-rebuild -p
+    echo && message "Running revdep-rebuild.sh -p ..." && revdep-rebuild.sh -p
     # recommend you run revdep-rebuild again if it had to
     #   emerge something to fix dependencies
     # TO DO: check if that is the case and ask this only if so
     [ "$GO_AHEAD" == "no" ] && \
-    echo -en $BYon"would you like to run revdep-rebuild again, for action? (y/n) "$Boff && \
+    echo -en $BYon"would you like to run revdep-rebuild.sh again, for action? (y/n) "$Boff && \
     read rerun && echo || \
     rerun="y"
     case $rerun in
-        "y") revdep-rebuild ;;
+        "y") revdep-rebuild.sh ;;
         *) ;; # do nothing
     esac
     echo && message "Double-checking configuration files now ..." && maintain_config_files
@@ -632,7 +656,20 @@ while [ "$continue" == "y" ] && [ "$phase" -le "$lastphase" ]
 do
     separator "${phase_message[$phase]}"
     case $phase in
-        "1") emerge_sync ; iff ;
+        "1") emerge_sync ;
+             # determine what packages may be updatable
+             if [[ "$EIX" == "yes" ]]
+             then
+               [[ "$SYNC_CMD" != "EIX_SYNC" ]] && eix-update ;  ### make sure the index is current unless eix-sync already did so
+               d_message "EIX=[$EIX]; assiging updateables with \"eix -u\"" 1 ;
+               updateables=$(eix -u#) ;
+             else
+               d_message "EIX=[$EIX]; assigning updateables with \"emerge -puDN world | grep ...\" please wait..." 1 ;
+               updateables=$(for x in $(emerge -puDN world | grep '\[ebuild' | cut -c18- | cut -d' ' -f1); do qatom -F %{CATEGORY}/%{PN} $x; done) ;
+             fi ;
+             d_message "These are the updatable packages: $updateables" 3 ;
+             [[ $verbosity -gt 2 ]] && sh_countdown 7 ;
+             [[ "$DISTCC" == "yes" ]] && iff ;
              emerge_updates && echo -e $BGon"OK"$Boff  ;;
         "2") show_news ;
              maintain_config_files && echo -e $BGon"OK"$Boff ;;
