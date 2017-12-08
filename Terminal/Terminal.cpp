@@ -5,9 +5,9 @@
  * easy (linux) terminal functions for my c++ programs
  **************************************************************/
 
-using namespace std;
-
 #include "Terminal.h"
+
+using namespace std;
 
 //constructor
 Terminal::Terminal()
@@ -21,8 +21,8 @@ Terminal::Terminal()
     _cols = _ts.ws_col;
     _lines = _ts.ws_row;
   #endif /* TIOCGSIZE */
-}
 
+}
 
 //public member function(s)
 int Terminal::width()
@@ -38,10 +38,10 @@ int Terminal::height()
 //---[ Basic Utilities ]-------------------------------------------
 
 //*************** repeat ************************//
-string Terminal::repeat( char ch, int limit )  // output a repeated string of character (arg $1) of length (arg $2)
+string Terminal::repeat( char *ch, int limit )  // output a repeated string of character (arg $1) of length (arg $2)
 {
-  int i = 0; string out_str;
-  while ( i < limit ) { out_str.append<int>( 1, ch ); i++; }
+  string out_str;
+  for ( int i=0; i<limit; i++ ) { out_str += ch; }
   return out_str;
 }
 
@@ -56,10 +56,11 @@ void Terminal::E_message ( string msg )  // print out error message after a red 
 //*************** separator ************************//
 void Terminal::separator( string title )     // draw a horizontal line with a simple title
 {
+  char _dash[2] = {'-','\0'};
   string msg( "" );  int msg_len;
   msg = msg + BY_ON + "---[ " + LB_ON + title + BY_ON + " ]";
   msg_len = msg.length() - (3*7);   // 3 x color-on (all 7)
-  cout << msg << this->repeat('-', (this->width() - msg_len)) << B_OFF << endl;
+  cout << msg << this->repeat(_dash, (this->width() - msg_len)) << B_OFF << endl;
 }
 
 //*************** countdown ************************//
@@ -82,12 +83,13 @@ bool Terminal::countdown( int duration )
 //*************** right_status ************************//
 void Terminal::right_status( int status )  // output a boolean status (arg) at the right margin
 {
+  char _space[2] = {' ','\0'};
   int lpad, rpad, msg_len;
   string msg( "" );
   string out_msg( "" );
   if ( status > 0 ) { msg = msg + BG_ON + "Ok" + B_OFF; lpad=2; rpad= 2; }
   else { msg = msg + BR_ON + "Fail" + B_OFF; lpad=1; rpad=1; }
-  out_msg = out_msg + BB_ON + "[" + B_OFF + repeat(' ', lpad) + msg + repeat(' ', rpad) + BB_ON + "]" + B_OFF;
+  out_msg = out_msg + BB_ON + "[" + B_OFF + repeat(_space, lpad) + msg + repeat(_space, rpad) + BB_ON + "]" + B_OFF;
   msg_len= out_msg.length() - ((3*7) + (3*5));  // 3 x color-on and 3 x color-off
   // up one (because of \n in last output); go left margin; right to status position
   this->CUU(1); cout << "\r";  this->CUF( this->width() - msg_len -1 );
@@ -96,33 +98,42 @@ void Terminal::right_status( int status )  // output a boolean status (arg) at t
 
 //*************** progress ***************************//
 void Terminal::progress( int step, int num_steps )     // display an arrow depicting progress (visualize arg[1] of arg[2] steps complete
-{                                                      // assumes the line it writes on has already been blanked/cleared
+{
+   //global variables
+  char _marker[2] = {'-','\0'};
+  char _dash[2] = {'-','\0'};
+  char _bracket[2] = {'|','\0'};
+  char _arrowhead[2] = {'>','\0'};
+  char _space[2] = {' ','\0'};
   // Configurable variables                            //
   int margin = 15; int i=0;
-  std::string marker = "-"; std::string bracket = "|"; std::string arrowhead = ">"; std::string space = " ";
   std::string line = ""; std::string percentcolor = "";
   // Analytically determined variables
   int termwidth = this->width();    int percentstart = termwidth - 9;
-  int range = (termwidth -3 -(margin * 2));           // -3 accounts for the two margin marker brackets "|" and the arrowhead ">"
-  int myprogress = (int)( ( range * step ) / num_steps );   // how many marker to draw to represent a single step of progress
-  int start = ( margin + 1 );    int end = ( termwidth - margin - 1 );  // this is where the brackets go
+  int range = (termwidth -3 -(margin * 2));           // -3 accounts for the two margin _marker _brackets "|" and the _arrowhead ">"
+  int myprogress = (int)( ( range * step ) / num_steps );   // how many _marker to draw to represent a single step of progress
+  int start = ( margin + 1 );    int end = ( termwidth - margin - 1 );  // this is where the _brackets go
   int myrow = this->height();    int startofline = ( start + 1 );
   int endofline = startofline + myprogress;
   if ( endofline >= (end-2) ) { endofline = ( end - 2 ); }  int lengthofline = ( endofline - startofline +1 );
   int percent = ( (100 *  step) / num_steps );
   if ( percent < 70 ) { percentcolor = BR_ON; } else if ( percent >= 90 ) { percentcolor = BG_ON; } else { percentcolor = BY_ON; }
-  // action: move to start, draw bracket, draw line and arrowhead, move to end and draw bracket,
-  //         move middle, show percent, return to original position
-  for (i=0; i<=end; i++) { line.insert(i, space); }   // initialize line with blanks
-  line.replace(margin+1, 1, bracket);
-  for ( i=startofline; i <= endofline; i++) { line.replace(i, 1, marker); }
-  line.replace(endofline+1, 1, arrowhead);
-  line.replace(end, 1, bracket);
-  this->HCU();  this->SCP();
-  cout << line; this->CUF(1);
+  // action: start with null string, and append all necessary parts
+  for ( i=0; i<margin; i++ ) { line.append(_space); }
+  line.append(_bracket);
+  for ( i=startofline; i <= endofline; i++) { line.append(_marker); }
+  line.append(_arrowhead);
+  for ( i=endofline+1; i<end; i++ ) { line.append(_space); }
+  line.append(_bracket);
+  for ( i=end; i<termwidth-1; i++) { line.append(_space); }
+  this->CUP( myrow, 1 );
+  this->SCP();
+//  this->HCU();
+  std::cout << line;
   this->CUP( myrow, percentstart );
   cout << "( " << percentcolor << percent << "%" << B_OFF << " )";
-  this->RCP();  this->SCU();
+  this->RCP();
+//  this->SCU();
 }
 
 //*************** summarize_me ***********************//

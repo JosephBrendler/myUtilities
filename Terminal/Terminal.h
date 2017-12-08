@@ -26,7 +26,7 @@ class Terminal
     Terminal();
     int width();                                 // return terminal width (# columns)
     int height();                                // return terminal height (# rows)
-    string repeat( char ch, int limit );         // return a string of #limit chars (ch)
+    std::string repeat( char *ch, int limit );         // return a string of #limit chars (ch)
     void separator( string title );              // draw a horizontal line with a simple title
     bool countdown( int duration );	         // count down #duration seconds
     void right_status( int status );             // output a boolean status (arg) at the right margin

@@ -23,6 +23,7 @@ Terminal term;
 
 int main ()
 {
+  term.CLR(); term.CUP(1,1);
   printf("Terminal is %s%d %sx %s%d%s\n", BR_ON, term.width(), B_OFF, LB_ON, term.height(), B_OFF );
 /*  term.CUU(5); cout << BY_ON << "Here I am (up)!!!" << B_OFF << endl;
   term.CUF(25); cout << BY_ON << "Here I am (fwd)!!!" << B_OFF << endl;
@@ -77,9 +78,9 @@ int main ()
   term.right_status( term.countdown( 6 ) );
   cout << "\n";
 */
-  cout << endl;
-  cout << endl;
-  for (int i=1; i < 1005; i++ ) { term.progress( i, 1005 ); usleep(1000); }
+  term.HCU();
+  for (int i=1; i < 1005; i++ ) { term.progress( i, 1005 ); usleep(5000); }
+  term.SCU();
   cout << endl;
   cout << endl;
   term.summarize_me();
