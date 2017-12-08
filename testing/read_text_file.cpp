@@ -9,9 +9,10 @@ int main () {
   ifstream myfile ("example.txt");
   if (myfile.is_open())
   {
+    int i=0;
     while ( getline (myfile,line) )
     {
-      cout << line << '\n';
+      cout << i++ << ") " << line << '\n';
     }
     myfile.close();
   }

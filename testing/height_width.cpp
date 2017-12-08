@@ -19,5 +19,5 @@ int main (void)
     lines = ts.ws_row;
 #endif /* TIOCGSIZE */
 
-    printf("Terminal is %dx%d\n", cols, lines);
+    printf("Terminal size is %dx%d\n", cols, lines);
 }

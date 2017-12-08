@@ -36,16 +36,3 @@
   std::string BW_ON;      BW_ON.assign     ( CSI + WHITE  + ";" + BOLD + "m"  );
 
   std::string B_OFF;      B_OFF.assign     ( CSI + "0m" );
-
-  if ( HEADER_DEMO )
-  {
-    std::cout << "unbold" << BR_ON << " bold red    " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << BG_ON << " bold green  " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << BY_ON << " bold yellow " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << BB_ON << " bold blue   " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << BM_ON << " bold mag    " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << LB_ON << " bold lblue  " << B_OFF << "unbold" << '\n';
-    std::cout << "unbold" << BW_ON << " bold white  " << B_OFF << "unbold" << '\n';
-  }
-
-

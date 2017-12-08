@@ -13,7 +13,7 @@ int main()
   printf ("The current local time is: %s", ctime (&rawtime));
 
   cout << "\n\ncountdown:\n";
-  for (int i=10; i>0; --i) {
+  for (int i=12; i>0; --i) {
     cout << i << std::endl;
     usleep( 1000000 );  // microseconds
   }

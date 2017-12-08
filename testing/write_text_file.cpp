@@ -9,6 +9,7 @@ int main () {
   {
     myfile << "This is a line.\n";
     myfile << "This is another line.\n";
+    myfile << "\n\n\nThis is yet another line.\n";
     myfile.close();
   }
   else cout << "Unable to open file";

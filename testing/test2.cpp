@@ -15,6 +15,7 @@ void demo( bool yesno )
     cout << "unbold" << BM_ON << " bold mag    " << B_OFF << "unbold" << '\n';
     cout << "unbold" << LB_ON << " bold lblue  " << B_OFF << "unbold" << '\n';
     cout << "unbold" << BW_ON << " bold white  " << B_OFF << "unbold" << '\n';
+    cout << "unbold" << " un-bold white  " << "unbold" << '\n';
   }
 }
 

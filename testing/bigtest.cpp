@@ -11,7 +11,7 @@ main()
 
    cout << a << " " << b << endl;                        // Output: abcd efg xyz ijk
 
-   cout << "String empty: "    << c.empty()    << endl;  // String empty: 1 
+   cout << "String empty? [1 = true]: "    << c.empty()    << endl;  // String empty: 1 
                                                          // Is string empty? Yes it is empty. (TRUE)
    c = a + b;                                            // concatenation
    cout << c << endl;                                    // abcd efgxyz ijk

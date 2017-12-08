@@ -10,7 +10,7 @@ int main ()
   std::string s1;
   std::string s2 (s0);
   std::string s3 (s0, 8, 3);
-  std::string s4 ("A character sequence", 6);
+  std::string s4 ("A first character sequence", 6);
   std::string s5 ("Another character sequence");
   std::string s6 (10, 'x');
   std::string s7a (10, 42);      // 42 is the ASCII code for '*'
