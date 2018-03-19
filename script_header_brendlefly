@@ -338,7 +338,6 @@ sh_countdown()  # count-down seconds (arg $1)
     message "no argument given, defaulting to 30 seconds"
     rem_time=30
   fi
-
   # execute countdown
   while [[ "${rem_time}" -gt "0" ]]
   do
@@ -350,7 +349,6 @@ sh_countdown()  # count-down seconds (arg $1)
   [[ "$rem_time" -lt "10" ]] && r_time="0"${rem_time} || r_time=${rem_time}
   echo -en "\r${BGon}*${Boff} Pausing. [ ${BGon}${r_time}${Boff} ] seconds remaining..."
   echo
-
   return 0
 }
 
@@ -382,6 +380,51 @@ progress()      # display an arrow depicting progress (visualize $1 of $2 steps 
 
 watchdistcc()   # until interrupted, display the count of distcc compile jobs done for clients
 { CLR; while [ 1 ]; do CUP 1 1; echo | count_distcc_jobs 2>/dev/null; sleep 2; done; }
+
+bs()            # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
+{
+  # return the index number of the entry in the list, or -1 if not found
+  # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
+  target="$1"; shift;  start="$1"; shift;  end="$1"; shift; remainder="$@"
+  search_list=($(alpha_words ${remainder}))   # alphabetize the list so the binary search can work
+  d_message_n "search_list: [" && echo -n "${search_list[@]}" && echo "]" 3; d_message "search_list length is [${#search_list[@]}]"
+  let "result=-1"
+  if [[ $depth -gt ${#search_list[@]} ]]
+  then
+    d_message "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+  diff=$(( $end - $start ))
+  middle=$(( $start + $(( $diff / 2 )) ))
+  ## guarantee to look at both start and end before giving up
+  if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
+  d_message " depth=[$depth]" 3;  d_message " start=[$start]" 3;  d_message "   end=[$end]" 3;  d_message "middle=[$middle]" 3
+  d_message ">> [${search_list[${middle}]}] <<" 3
+  if [[ "${search_list[${middle}]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else  # not yet equal, so search either the upper or lower half of the remaining range
+    [[ $start -eq $end ]] && return 1
+    let "depth+=1"   # increment recursive depth and then recurse
+    if [[ "${search_list[${middle}]}" > "${target}" ]]
+    then   # found element is greater than target (search lower half next)
+      [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 2; return 1; else d_message "DIFF1 flags not yet both true" 2; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next" 3
+      bs $target $start $middle ${search_list[@]}
+    else   # found element is less than target (search upper half next)
+      [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 2; return 1; else d_message "DIFF1 flags not yet both true" 2; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next" 3
+      bs $target $middle $end ${search_list[@]}
+    fi
+  fi
+  d_message "about to return from depth [$depth]" 4
+  [ $depth -eq 0 ] && d_message "result: [$result]" 4
+  let "depth-=1";  return 0
+}
 
 summarize_me()  # list contents of this script header (employ me with "source" or ".")
 {
