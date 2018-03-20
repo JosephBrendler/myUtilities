@@ -201,6 +201,7 @@ d_message "about to process argument(s): [ $* ]" 1
 d_message "1: [ $1 ], 2: [ $2 ]" 2
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
+    "-c" | "--check"         ) UPDATE_CHECK="yes" ;;
     "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
     "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
     "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
@@ -244,6 +245,7 @@ while [ -n "${myargs}" ]
 do
     #handle first char
     case ${myargs:0:1} in
+        "c") UPDATE_CHECK="yes" ;;
         "e") EIX_UPDATE="yes" ;;
         "g") GETBINPKG="yes" ;;
         "G") GETBINPKGONLY="yes" ;;
@@ -301,7 +303,8 @@ useage()
    echo -e "    "$BBon"[-t | --rkhunter]"$Boff".........run rkhunter --propupd"
    echo -e "    "$BBon"[-X | --X11]"$Boff"..............run emerge @x11-module-rebuild"
    echo -e "    "$BBon"[-H | --haskell]"$Boff"..........run haskell-updater"
-
+   echo
+   echo -e "    "$BBon"[-c | --check]"$Boff"............check for and list updateable installed packages"
    echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
    echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
    echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
@@ -414,103 +417,119 @@ emerge_sync()
     return 0
 }
 
+intersect()
+{
+  # Generate an array containing as elements the records in filename $1
+  #   that are also in input array ($@ after shift)
+  #   Store the result in array ${output_yes_list[@]}
+  # Also generate an array containing as elements the records in filename $1
+  #   that are NOT also in input array ($@ after shift)
+  #   Store the result in array ${output_no_list[@]}
+  inputfilename="$1"; shift; remainder="$@"
+  input_list=($(alpha_words ${remainder}))
+  output_yes_list=();  output_yes_list_count=0
+  output_no_list=();  output_no_list_count=0
+  range=($(sort -udb $inputfilename))
+  limit=${#range[@]}
+  for item in ${input_list[@]}
+  do
+    let "depth=0";  let "result=-1";  DIFF1UPPER=$FALSE;  DIFF1LOWER=$FALSE
+    d_message "${BYon}Looking for ${BWon}$item ${BYon}in ${BWon}$inputfilename ${BYon}--${Boff}" 1
+    d_message "  ${BYon}searching among ${BWon}${#range[@]} ${BYon}candidate entries...${Boff}" 1
+    d_echo 2
+    bs $item 0 ${#range[@]} ${range[@]}
+    d_message "just got back from binary search, result is $result" 2
+    if [[ ${result} -gt 0 ]]
+    then
+      d_message "${BGon}Found ${range[result]} at line ${BWon}${result}${BGon} of ${inputfilename}${Boff}" 1
+      output_yes_list[${output_yes_list_count}]="${item}"
+      let "output_yes_list_count+=1"
+    else
+      d_message "${BRon}Did not find ${range[result]} in ${inputfilename}${Boff}" 1
+      output_no_list[${output_no_list_count}]="${item}"
+      let "output_no_list_count+=1"
+      dE_message "${BRon}Not found${Boff}" 1
+    fi
+    d_message "(had to go to depth $depth to figure that out)" 2
+  done
+
+}
+
 iff()
 {
   ## identification of friends and foes (packages that like [or do not like] distcc, etc
   # the "foes" nodistmergelist that are in the worldfile will be used to first emerge these without distcc, etc
   # the other lists are presented for information only
-  d_message "DISTCC=[$DISTCC]; splitting updatables into nodistmergelist and candistmergelist with iff() and bs()" 1
-  for package in $updateables
-  do
-    let "depth=1"
-    let "result=-1"
-    range=($(cat $unfriendlies | sort -udb))
-    limit=${#range[@]}
-    d_message "${BYon}Looking for ${BWon}$package ${BYon}in ${BWon}$unfriendlies ${BYon}--${Boff}" 1
-    d_message "  ${BYon}searching among ${BWon}${#range[@]} ${BYon}candidate entries...${Boff}" 1
-    d_echo 2
-    DIFF1UPPER=$FALSE
-    DIFF1LOWER=$FALSE
-    bs $package 0 ${#range[@]} ${range[@]}
-    d_message "just got back from binary search, result is $result" 2
-    if [[ ${result} -gt 0 ]]
-    then
-      d_message "${BGon}Found ${range[result]} at line ${BWon}${result}${BGon} of ${unfriendlies}${Boff}" 1
-      nodistmergelist[${nodistcount}]="${package}"
-      let "nodistcount+=1"
-    else
-      dE_message "${BRon}Not found${Boff}" 1
-      candistmergelist[${candistcount}]="${package}"
-      let "candistcount+=1"
-    fi
-    d_message "(had to go to depth $depth to figure that out)" 2
-  done
+  intersect $unfriendlies ${updateables[@]}
+  nodistmergelist=(${output_yes_list[@]})    # "yes" because they were found in unfriendlies
+  nodistcount=${#nodistmergelist[@]}
+  candistmergelist=(${output_no_list[@]})    # "no" because they were not found in unfriendlies
+  candistcount=${#candistmergelist[@]}
 
-  for package in ${candistmergelist[@]}
-  do
-    let "depth=1"
-    let "result=-1"
-    range=($(cat $worldfile | sort -udb))
-    limit=${#range[@]}
-    d_message "${BYon}Looking for ${BWon}$package ${BYon}in ${BWon}$worldfile ${BYon}--${Boff}" 1
-    d_message "  ${BYon}searching among ${BWon}${#range[@]} ${BYon}candidate entries...${Boff}" 1
-    d_echo 2
-    DIFF1UPPER=$FALSE
-    DIFF1LOWER=$FALSE
-    bs $package 0 ${#range[@]} ${range[@]}
-    d_message "just got back from binary search, result is $result" 2
-    if [[ ${result} -gt 0 ]]
-    then
-      d_message "${BGon}Found ${range[result]} at line ${BWon}${result}${BGon} of ${worldfile}${Boff}" 1
-      candistworldlist[${candistworldcount}]="${package}"
-      let "candistworldcount+=1"
-    else
-      dE_message "${BRon}Not found${Boff}" 1
-    fi
-    d_message "(had to go to depth $depth to figure that out)" 2
-  done
+  intersect $worldfile ${candistmergelist[@]}
+  candistworldlist=(${output_yes_list[@]})
+  candistworldcount=${#candistworldlist[@]}
 
-  for package in ${nodistmergelist[@]}
-  do
-    let "depth=1"
-    let "result=-1"
-    range=($(cat $worldfile | sort -udb))
-    limit=${#range[@]}
-    d_message "${BYon}Looking for ${BWon}$package ${BYon}in ${BWon}$worldfile ${BYon}--${Boff}" 1
-    d_message "  ${BYon}searching among ${BWon}${#range[@]} ${BYon}candidate entries...${Boff}" 1
-    d_echo 2
-    DIFF1UPPER=$FALSE
-    DIFF1LOWER=$FALSE
-    bs $package 0 ${#range[@]} ${range[@]}
-    d_message "just got back from binary search, result is $result" 2
-    if [[ ${result} -gt 0 ]]
-    then
-      d_message "${BGon}Found ${range[result]} at line ${BWon}${result}${BGon} of ${worldfile}${Boff}" 1
-      nodistworldlist[${nodistworldcount}]="${package}"
-      let "nodistworldcount+=1"
-    else
-      dE_message "${BRon}Not found${Boff}" 1
-    fi
-    d_message "(had to go to depth $depth to figure that out)" 2
-  done
+  intersect $worldfile ${nodistmergelist[@]}
+  nodistworldlist=(${output_yes_list[@]})
+  nodistworldcount=${#nodistworldlist[@]}
 
   d_echo
-  message "${BWon}These are the $nodistcount updateable packages on the nodistmergelist:${BRon}"
-  for ((i=0; i<${#nodistmergelist[@]}; i++)); do echo -e "   ${nodistmergelist[i]}"; done
-  message "${BWon}(This is just presented for your information)"
+  message "${BWon}There are $nodistcount updateable packages on the ${BRon}nodistmergelist${BWon}:${BRon}"
+  for ((i=0; i<${nodistcount}; i++)); do echo -e "   ${nodistmergelist[i]}"; done
+  [ ${nodistcount} -gt 0 ] && message "${BWon}(This is just presented for your information)"
   echo
-  message "${BWon}These are the $nodistworldcount updateable packages in $worldfile and on the nodistmergelist:${BMon}"
-  for ((i=0; i<${#nodistworldlist[@]}; i++)); do echo -e "   ${nodistworldlist[i]}"; done
-  message "${BWon}(These will be emerge without distcc)"
+  message "${BWon}There are $nodistworldcount updateable packages on the ${BRon}nodistmergelist${BWon} and in ${BMon}$worldfile${BWon}:${BMon}"
+  for ((i=0; i<${nodistworldcount}; i++)); do echo -e "   ${nodistworldlist[i]}"; done
+  [ ${nodistworldcount} -gt 0 ] && message "${BWon}(These will be emerge without distcc)"
   echo
-  message "${BWon}These are the $candistcount updateable packages on the candistmergelist:${BGon}"
-  for ((i=0; i<${#candistmergelist[@]}; i++)); do echo -e "   ${candistmergelist[i]}"; done
-  message "${BWon}(This is just presented for your information)"
+  message "${BWon}There are $candistcount updateable packages on the ${BGon}candistmergelist${BWon}:${BGon}"
+  for ((i=0; i<${candistcount}; i++)); do echo -e "   ${candistmergelist[i]}"; done
+  [ ${candistcount} -gt 0 ] && message "${BWon}(This is just presented for your information)"
   echo
-  message "${BWon}These are the $candistworldcount updateable packages in $worldfile and on the candistmergelist:${LBon}"
-  for ((i=0; i<${#candistworldlist[@]}; i++)); do echo -e "   ${candistworldlist[i]}"; done
-  message "${BWon}(Expect these to be then emerged with '[pump] emerge -uavDN world')"
+  message "${BWon}There are $candistworldcount updateable packages on the ${BGon}candistmergelist${BWon} and in ${LBon}$worldfile${BWon}:${LBon}"
+  for ((i=0; i<${candistworldcount}; i++)); do echo -e "   ${candistworldlist[i]}"; done
+  [ ${candistworldcount} -gt 0 ] && message "${BWon}(Expect these to be then emerged with '[pump] emerge -uavDN world' unless masked)"
   echo -e ${Boff}
+}
+
+update_check()
+{
+  # if $DISTCC is FALSE
+  #    then list installed packages that are updateable and the subset that are in the world file
+  # if $DISTCC is TRUE
+  #    then of the updateables, list separately the subset that are in the distcc_unfriendlies file
+  #    and the subset that are not, then for each subset list separately those that are in the world file
+
+  # first populate the updateables list (note, calling script has already run emerge_sync()
+  if [ "$EIX" == "yes" ]
+  then
+    d_message "EIX=[$EIX]; assiging updateables with \"eix -u\"" 1 ;
+    updateables=($(eix -u#)) ;
+  else
+    d_message "EIX=[$EIX]; assigning updateables with \"emerge -puDN world | grep ...\" please wait..." 1 ;
+    updateables=($(for x in $(emerge -puDN world | grep '\[ebuild' | cut -c18- | cut -d' ' -f1); do qatom -F %{CATEGORY}/%{PN} $x; done)) ;
+  fi
+  # now generate lists
+  if [ "$DISTCC" == "yes" ]
+  then
+    iff
+  else
+    updateablecount=${#updateables[@]}
+    intersect $worldfile ${updateables[@]}
+    updateableworldlist=(${output_yes_list[@]})
+    updateableworldcount=${#updateableworldlist[@]}
+
+    message "${BWon}There are $updateablecount ${LBon}updateable installed${BWon} packages:${LBon}"
+    for ((i=0; i<${updateablecount}; i++)); do echo -e "   ${updateables[i]}"; done
+    [ ${updateablecount} -gt 0 ] && message "${BWon}(This is presented just for your information)"
+    echo
+    message "${BWon}There are $updateableworldcount ${LBon}updateable installed${BWon} packages in ${BGon}$worldfile${BWon}:${BGon}"
+    for ((i=0; i<${updateableworldcount}; i++)); do echo -e "   ${updateableworldlist[i]}"; done
+    [ ${updateableworldcount} -gt 0 ] && message "${BWon}(Expect these to be emerged with 'emerge -uavDN world' unless masked)"
+    echo -e ${Boff}
+  fi
+
 }
 
 emerge_updates()
@@ -684,6 +703,9 @@ message "Checking root UID... "&& checkroot
 # display config variables from gus.conf and option flags from command line
 display_config
 
+# if calling for an update check, then sync if necessary and list updateables
+[ "$UPDATE_CHECK" == "yes" ] && emerge_sync && update_check && exit 0
+
 # if resuming, retrieve number of next phase to be performed from status file
 [ "$RESUME" == "yes" ] && read phase < $STATUS_FILE
 
@@ -712,7 +734,9 @@ do
              fi ;
              d_message "These are the updatable packages: $updateables" 3 ;
              [[ $verbosity -gt 2 ]] && sh_countdown 7 ;
-             [[ "$DISTCC" == "yes" ]] && iff ;
+             [[ "$DISTCC" == "yes" ]] && \
+               d_message "DISTCC=[$DISTCC]; splitting updatables into nodistmergelist and candistmergelist with iff() and bs()" 1 && \
+               iff ;
              emerge_updates && echo -e $BGon"OK"$Boff  ;;
         "2") show_news ;
              maintain_config_files && echo -e $BGon"OK"$Boff ;;
