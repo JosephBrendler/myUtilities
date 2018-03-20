@@ -504,6 +504,14 @@ update_check()
   # first populate the updateables list (note, calling script has already run emerge_sync()
   if [ "$EIX" == "yes" ]
   then
+    if [[ "$SYNC_CMD" != "EIX_SYNC" ]]
+    then
+      ### make sure the index is current
+      d_message "${BMon}running eix-update to ensure index is up to date${Boff}" 1 ;
+      eix-update ;
+    else
+      d_message "${BMon}eix-update not needed -- eix-sync should have already done it -- continuing...${Boff}" 1 ;
+    fi
     d_message "EIX=[$EIX]; assiging updateables with \"eix -u\"" 1 ;
     updateables=($(eix -u#)) ;
   else
@@ -566,19 +574,19 @@ emerge_updates()
     then
       if [[ ! -z ${nodistworldlist[@]} ]]
       then
-        MyCMD1='MAKEOPTS="-j2 -l2"' && \
-        MyCMD1+=' FEATURES=" -userpriv -distcc -distcc-pump"' && \
-        MyCMD1+=" emerge ${OPTS1} ${nodistworldlist[@]}${OPTS2}" && \
-        message "${BWon}About to run - [${BRon} ${MyCMD1}${BWon} ]${Boff}" && \
+        MyCMD1='MAKEOPTS="-j2 -l2" ' && \
+        MyCMD1+='FEATURES=" -userpriv -distcc -distcc-pump" ' && \
+        MyCMD1+="emerge ${OPTS1} ${nodistworldlist[@]}${OPTS2}" && \
+        message "${BWon}About to run - [ ${BRon}${MyCMD1}${BWon} ]${Boff}" && \
         eval ${MyCMD1} || return 1
       else
         message "no distcc-unfriendly updates to merge; continuing..."
       fi
       if [[ ! -z ${candistworldlist[@]} ]]
       then
-        [[ "$PUMP" == "yes" ]] && MyCMD2="pump " || MyCMD2=""
+        [[ "$PUMP" == "yes" ]] && MyCMD2='FEATURES=" distcc distcc-pump" ' || MyCMD2=""
         MyCMD2+="emerge -${OPTS1} @world${OPTS2}" && \
-        message "${BWon}About to run - [${BRon} ${MyCMD2}${BWon} ]${Boff}" && \
+        message "${BWon}About to run - [ ${BRon}${MyCMD2}${BWon} ]${Boff}" && \
         eval ${MyCMD2} || return 1
       else
         message "no distcc-friendly updates to merge; continuing..."
@@ -586,8 +594,9 @@ emerge_updates()
     else   # DISTCC is "no"
       if [[ ! -z $updateables ]]
       then
+        MyCMD2='FEATURES=" -userpriv -distcc -distcc-pump" ' && \
         MyCMD2="emerge -${OPTS1} @world${OPTS2}" && \
-        message "${BWon}About to run - [${BRon} ${MyCMD2}${BWon} ]${Boff}" && \
+        message "${BWon}About to run - [ ${BRon}${MyCMD2}${BWon} ]${Boff}" && \
         eval ${MyCMD2} || return 1
       else
         message "no updates to merge; continuing..."
@@ -714,29 +723,8 @@ while [ "$continue" == "y" ] && [ "$phase" -le "$lastphase" ]
 do
     separator "${phase_message[$phase]}"
     case $phase in
-        "1") emerge_sync ;
-             # determine what packages may be updatable
-             if [[ "$EIX" == "yes" ]]
-             then
-               if [[ "$SYNC_CMD" != "EIX_SYNC" ]]
-               then
-                 ### make sure the index is current unless eix-sync already did so
-                 d_message "${BMon}running eix-update to ensure index is up to date${Boff}" 1 ;
-                 eix-update ;
-               else
-                 d_message "${BMon}eix-update not needed -- eix-sync should have already done it -- continuing...${Boff}" 1 ;
-               fi
-               d_message "EIX=[$EIX]; assiging updateables with \"eix -u\"" 1 ;
-               updateables=$(eix -u#) ;
-             else
-               d_message "EIX=[$EIX]; assigning updateables with \"emerge -puDN world | grep ...\" please wait..." 1 ;
-               updateables=$(for x in $(emerge -puDN world | grep '\[ebuild' | cut -c18- | cut -d' ' -f1); do qatom -F %{CATEGORY}/%{PN} $x; done) ;
-             fi ;
-             d_message "These are the updatable packages: $updateables" 3 ;
+        "1") emerge_sync ; update_check ;
              [[ $verbosity -gt 2 ]] && sh_countdown 7 ;
-             [[ "$DISTCC" == "yes" ]] && \
-               d_message "DISTCC=[$DISTCC]; splitting updatables into nodistmergelist and candistmergelist with iff() and bs()" 1 && \
-               iff ;
              emerge_updates && echo -e $BGon"OK"$Boff  ;;
         "2") show_news ;
              maintain_config_files && echo -e $BGon"OK"$Boff ;;
