@@ -203,6 +203,87 @@ done
 
 }
 
+bs()            # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
+{
+  # return the index number of the entry in the list, or -1 if not found
+  # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
+  target="$1"; shift;  start="$1"; shift;  end="$1"; shift; remainder="$@"
+  search_list=($(alpha_words ${remainder}))   # alphabetize the list so the binary search can work
+  d_message_n "search_list: [" && echo -n "${search_list[@]}" && echo "]" 3; d_message "search_list length is [${#search_list[@]}]"
+  let "result=-1"
+  if [[ $depth -gt ${#search_list[@]} ]]
+  then
+    d_message "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+  diff=$(( $end - $start ))
+  middle=$(( $start + $(( $diff / 2 )) ))
+  ## guarantee to look at both start and end before giving up
+  if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
+  d_message " depth=[$depth]" 3;  d_message " start=[$start]" 3;  d_message "   end=[$end]" 3;  d_message "middle=[$middle]" 3
+  d_message ">> [${search_list[${middle}]}] <<" 3
+  if [[ "${search_list[${middle}]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else  # not yet equal, so search either the upper or lower half of the remaining range
+    [[ $start -eq $end ]] && return 1
+    let "depth+=1"   # increment recursive depth and then recurse
+    if [[ "${search_list[${middle}]}" > "${target}" ]]
+    then   # found element is greater than target (search lower half next)
+      [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 2; return 1; else d_message "DIFF1 flags not yet both true" 2; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next" 3
+      bs $target $start $middle ${search_list[@]}
+    else   # found element is less than target (search upper half next)
+      [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 2; return 1; else d_message "DIFF1 flags not yet both true" 2; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next" 3
+      bs $target $middle $end ${search_list[@]}
+    fi
+  fi
+  d_message "about to return from depth [$depth]" 4
+  [ $depth -eq 0 ] && d_message "result: [$result]" 4
+  let "depth-=1";  return 0
+}
+
+countdown()     # output text message (arg $2, optional), and count-down seconds (arg $1)
+{
+  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
+  # store current minutes and seconds
+  min=10#$(date +%M) ; sec=10#$(date +%S)
+  wait_time=10#60  #default = 1 minute
+  [[ ! -z $1 ]] && wait_time="10#${1}"
+  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
+  if [[ "${wait_time}" -ge "60" ]]
+  then
+    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
+  else
+    wait_min=10#0  ;  wait_sec=${wait_time}
+  fi
+  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
+  if [[ "${tgt_sec}" -ge "60" ]]
+  then
+    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
+  fi
+  min="$(date +%M)"  ;  sec="$(date +%S)"
+  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+  # default message is "Pausing, ", else get from arg $2
+  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
+  while [[ "${rem}" -gt "0" ]]
+  do
+    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
+    sleep 0.1
+    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
+    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+    echo -n "    $rem seconds left..."
+  done
+  echo
+
+  return 0
+}
+
 #-----[ script ]------------------------
 #LINE=("")  ## array of lines the message will be converted to
 #modular_message $@
