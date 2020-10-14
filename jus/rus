@@ -4,17 +4,59 @@ source /usr/local/sbin/script_header_brendlefly
 
 PORTDIR="/usr/portage"
 PKGDIR="${PORTDIR}/packages"
+status_file="/root/bin/rus-status"
 
-key_packages1=("")
-key_packages2=("")
-key_packages2+=("sys-kernel/linux-headers")
-key_packages1+=("sys-libs/glibc")
-key_packages1+=("sys-devel/binutils")
-key_packages2+=("sys-devel/gcc-config")
-key_packages1+=("sys-devel/libtool")
-key_packages1+=("sys-devel/gcc")
+key_packages1=(
+'sys-libs/glibc'
+'sys-devel/binutils'
+'sys-devel/libtool'
+'sys-devel/gcc'
+)
 
-answer=""
+key_packages2=(
+'sys-kernel/linux-headers'
+'sys-devel/gcc-config'
+)
+
+# Notes on command sequence:
+#   -b = --buildpkg (i.e. build a new binary package)
+#   -k = --usepkg (i.e. use binary package if available)
+#   -e = --emptytree (i.e. reinstall entire dependency tree)
+#   FEATURES="-getbinpkg" deselects -g (i.e. use local binaries only, if -k is used)
+command_sequence=(
+'rm -rfv ${PKGDIR}'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av ${key_packages1[@]} ${key_packages2[@]}'
+'pick_gcc'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb ${key_packages1[@]}'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke system'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke world'
+)
+
+# declarative future tense
+msg1_sequence=(
+'Remove PKGDIR'
+'Rebuild toolchain'
+'Select gcc'
+'Rebuild toolchain packages with new gcc'
+'Rebuild system packages with new gcc'
+'Rebuild world packages with new gcc'
+)
+
+# active present tense
+msg2_sequence=(
+'Removing PKGDIR'
+'Rebuilding toolchain'
+'Selecting gcc'
+'Rebuilding toolchain packages with new gcc'
+'Rebuilding system packages with new gcc'
+'Rebuilding world packages with new gcc'
+)
+
+answer=""   # response to prompt
+status=0    # what step are we on?
+
+### ToDO - add command line processor
+[[ $1 == "-r" ]] && read status < ${status_file}
 
 #----------[ functions ]-------------------------------------
 get_number()        # set external variable $answer based on reponse to prompt $1
@@ -23,14 +65,29 @@ while ! expr "${answer:0:1}" : [0-9] >/dev/null;  # answer not a regex match
 do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
 RCP; message_n "$ps [0-9]: " && read answer; done; }
 
+get_answer()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [yngYNG]: " && read answer;
+while ! expr "${answer:0:1}" : [yngYNG] >/dev/null;  # answer not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [yngYNG]: " && read answer; done; }
+
+pick_gcc()          # pick the appropriate gcc
+{ gcc-config -l; get_number "Select gcc profile from list above";
+message "setting gcc-config $answer" && gcc-config ${answer};
+message "sourcing /etc/profile" && source /etc/profile; }
+
 #----------[ main script ]-----------------------------------
-message "removing PKGDIR" && rm -rf ${PKGDIR}
-message "rebuilding toolchain" && emerge -av ${key_packages1[@]} ${key_packages2[@]}
-gcc-config -l
-get_number "Select gcc profile from list above"
-message "setting gcc-config $answer" && gcc-config ${answer}
-message "sourcing /etc/profile" && source /etc/profile
-message "rebuilding toolchain packages" && emerge -avb ${key_packages1[@]}  # -b = --buildpkg
-message "rebuilding system packages" && emerge -avbke system   # -k = --usepkg (i.e. use binary pkg if available)
-message "rebuilding world packages" && emerge -avbke world
-message "rebuild complete -- resume normal update sequence (jus)"
+for ((i=status; i<${#command_sequence[@]}; i++))
+do
+  [[ ! $answer == [gG] ]] && answer="" && \
+    get_answer "Are you ready to ${BYon}${msg1_sequence[i]}${Boff}?"
+  if [[ $answer == [YyGg] ]]
+  then
+    message_n "${LBon}Now ${BYon}${msg2_sequence[i]}${LBon}...${Boff}"
+    eval ${command_sequence[i]}; right_status $?
+  else
+    message "User chose NOT to ${BYon}${msg1_sequence[i]}${Boff}. Quitting..."
+    echo $i > ${status_file}
+    exit
+  fi
+done
