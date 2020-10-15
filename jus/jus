@@ -1,18 +1,35 @@
 #!/bin/bash
 # Standardized Joetoo Update Sequence (jus), implemented as interactive
 #   script with "resume" functionality
-# Author: Joe Brendler 9 March 2017; based on author's "update-sequence" and "gus" scripts of 23 Jan 2011 and 9 Mar 2017 respectively
+# Author: Joe Brendler 14 October 2020
+#   based on author's "update-sequence" and "gus" scripts of 23 Jan 2011 and 9 Mar 2017 respectively
+# Build 6 notes:
+#   removed previous functionality atttempting to deal with distcc-friendliness in the script
+#     (now use per-package env to set FEATURES=" -distcc -distcc-pump")
+#   borrowed some ideas from https://serverfault.com/questions/9936/optimal-procedure-to-upgrade-gentoo-linux
+#     -- check for major upgrade to key packages and recommend full rebuild
+#     -- added companion script "rus" to automate that rebuild
+#     -- included "fixpackages" and "eselect python update" as default options in command sequence
+#     -- also included "glsa-check -vp affected" and "emaint --check all"
+#  New idea - nested loops of command sequences within phases
 
 # Source the variable assignments made in jus.conf (/etc/ overrides pwd)
 #   This will supercede/modify the default assignments made below
 CONF_DIR="defaults"
+
+# User-defined variables - modify assignments below, according to your system.
+#   Deviate from defaults in jus.conf
+
+## SCRIPT_DIR is the directory in which you have placed the show-elogs script.
+#   (only needed if it is not in your path. Normally "/usr/local/sbin/"; must end with '/' if specified)
+#   (assigned here, prior to sourcing jus.conf so it will be properly initialized, just in case it is not assigned in jus.conf
+SCRIPT_DIR=""
+
+# source jus.conf in order to load user-configured settings
+#   check each setting below to assign default values if needed
+#   Note: jus.conf in /etc/jus/ will override one in pwd
 [[ -e jus.conf ]] && source jus.conf && CONF_DIR=$PWD"/jus.conf"
 [[ -e /etc/jus/jus.conf ]] && source /etc/jus/jus.conf && CONF_DIR="/etc/jus/jus.conf"
-
-# User-defined variables - modify according to your system
-# SCRIPT_DIR is the directory in which you have placed
-#   this script and the show-elogs script
-[ -z "$SCRIPT_DIR" ] && SCRIPT_DIR="/usr/local/sbin/"    # must end with '/'
 
 # STATUS_FILE is the name of the status file
 #   generated and used by this script.  Provide the complete pathname
@@ -40,7 +57,8 @@ CONF_DIR="defaults"
 
 # SYNC_CMD is the command used to sync the portage tree
 #[ -z "$SYNC_CMD" ] && SYNC_CMD="WEBRSYNC"       # emerge-webrsync
-[ -z "$SYNC_CMD" ] && SYNC_CMD="SYNC"       # emerge --sync
+#[ -z "$SYNC_CMD" ] && SYNC_CMD="SYNC"           # emerge --sync
+[ -z "$SYNC_CMD" ] && SYNC_CMD="EIX_SYNC"        # eix-sync
 
 # MAX_AGE is the maximum time in hours since last sync before this script
 #   will automatically choose to emerge --sync
@@ -76,6 +94,12 @@ CONF_DIR="defaults"
 # RKHUNTER propupd
 [ -z "$RKHUNTER" ] && RKHUNTER="no"
 
+# GLSA_CHECK
+[ -z "$GLSA_CHECK" ] && GLSA_CHECK="yes"
+
+# EMAINT_CHECK
+[ -z "$EMAINT_CHECK" ] && EMAINT_CHECK="yes"
+
 # --- source common functions and variables --------------------
 source /usr/local/sbin/script_header_brendlefly
 source /usr/local/sbin/script_header_brendlefly_extended
@@ -88,19 +112,19 @@ verbosity=0
 
 BUILD="6.0.0 (20201013)"
 
-phase=1
-lastphase=5
 continue="y"
 RESUME="no"
 SYNC="no"
 EXCLUDE=""
-# TODO: move these to .conf and set like those above
+UPDATE_CHECK="no"  # default; command line option only (forces update check only), otherwise part of phase
 GO_AHEAD="no"
+KEEPGOING="yes"
+# Do not move these to .conf and set like those above --
+#  They are only used when set to "yes" (otherwise, global settings in make.conf apply)
 USEPKG="no"
 USEPKGONLY="no"
 GETBINPKG="no"
 GETBINPKGONLY="no"
-KEEPGOING="no"
 WITH_BDEPS_Y="yes"
 
 updateables=""
@@ -108,14 +132,27 @@ updateables=""
 KP_FOUND=${FALSE}
 
 # Array of messages used to announce each phase
-phase_message[1]="phase 1 - Sync"
-phase_message[2]="phase 2 - Update-Check"
-phase_message[3]="phase 3 - Emerge Updates"
-phase_message[4]="phase 4 - Review news and Maintain Config Files"
-phase_message[5]="phase 5 - Review elogs"
-phase_message[6]="phase 6 - Handle Dependencies"
-phase_message[7]="phase 7 - Final steps"
-phase_message[8]="phase 8 - Update Sequence Complete.  Enter \"y\" to exit"
+phase_message=(
+'Sync'
+'Update-Check'
+'Emerge Updates'
+'Review news and Maintain Config Files'
+'Review elogs'
+'Handle Dependencies'
+'Final steps'
+)
+
+phase_function_sequence=(
+'emerge_sync'
+'update_check'
+'emerge_updates'
+'show_news; maintain_config_files'
+'showelogs'
+'handle_dependencies'
+'final_phases'
+)
+
+phase=0
 
 
 # --- function blocks ------------------------------------------
@@ -199,6 +236,7 @@ d_message "about to process argument(s): [ $* ]" 1
 d_message "1: [ $1 ], 2: [ $2 ]" 2
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
+    "-a" | "--glsa"          ) GLSA_CHECK="yes" ;;
     "-c" | "--check"         ) UPDATE_CHECK="yes" ;;
     "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
     "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
@@ -206,6 +244,7 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-k" | "--usepkg"        ) USEPKG="yes" ;;
     "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
     "-m" | "--modules"       ) MODULE_REBUILD="yes" ;;
+    "-M" | "--emaint"        ) EMAINT_CHECK="yes" ;;
     "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
     "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
@@ -222,7 +261,8 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-Z" | "--keep-going"    ) KEEPGOING="yes" ;;
     "-H" | "--haskell"       ) HASKELL_UPDATER="yes" ;;
     "-h" | "--help"          ) useage ; exit 0 ;;
-    "-u" | "--update-all"    ) EIX_UPDATE="yes"; MODULE_REBUILD="yes"; PERL_CLEANER="yes"; \
+    "-u" | "--update-all"    ) GLSA_CHECK="yes"; EIX_UPDATE="yes"; MODULE_REBUILD="yes"; \
+                               EMAINT_CHECK="yes"; PERL_CLEANER="yes"; \
                                PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
                                SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes"; \
                                X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
@@ -243,6 +283,7 @@ while [ -n "${myargs}" ]
 do
     #handle first char
     case ${myargs:0:1} in
+        "a") GLSA_CHECK="yes" ;;
         "c") UPDATE_CHECK="yes" ;;
         "e") EIX_UPDATE="yes" ;;
         "g") GETBINPKG="yes" ;;
@@ -250,6 +291,7 @@ do
         "k") USEPKG="yes" ;;
         "K") USEPKGONLY="yes" ;;
         "m") MODULE_REBUILD="yes" ;;
+        "M") EMAINT_CHECK="yes" ;;
         "p") PERL_CLEANER="yes" ;;
         "P") PYTHON_UPDATER="yes" ;;
         "r") RESUME="yes" ;;
@@ -278,22 +320,35 @@ useage()
 {
    echo -e $BGon"Useage: jus [option]"$Boff
    echo -e " Command line options:"
-   echo -e "   Options for ${phase_message[1]}"   ## phase 1 - Sync and Emerge Updates
+   echo -e "   Options for all phases"
+   echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
+   echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
+   echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
+   echo -e "    "$BBon"[-h | --help]"$Boff".............print this text"
+   echo -e "   Options for ${phase_message[0]}"   ## phase 0 - Sync
+   echo -e "    "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
+   echo -e "   Options for ${phase_message[1]}"   ## phase 1 - Update-Check
+   echo -e "    "$BBon"[-c | --check]"$Boff"............check for and list updateable installed packages"
+   echo -e "   Options for ${phase_message[2]}"   ## phase 2 - Emerge Updates
    echo -e "    "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
    echo -e "    "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
    echo -e "    "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
    echo -e "    "$BBon"[-K | --usepkgonly]"$Boff".......use local binary packages only"
    echo -e "    "$BBon"[-w | --WITH_BDEPS_Y]"$Boff".....emerge with build-time dependencies"
    echo -e "    "$BBon"[-x | --exclude <atom>]"$Boff"...exclude <atom> from emerge"
-   echo -e "    "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
    echo -e "    "$BBon"[-Y | --go-ahead]"$Boff".........automatically continue to next phases"
    echo -e "    "$BBon"[-Z | --keep-going]"$Boff".......on emerge failure, try to keep emerging other packages"
-#   echo -e "   Options for ${phase_message[2]}"   ## phase 2 - Review news and Maintain Config Files
-#   echo -e "   Options for ${phase_message[3]}"   ## phase 3 - Review elogs
-#   echo -e "   Options for ${phase_message[4]}"   ## phase 4 - Handle Dependencies
-   echo -e "   Options for ${phase_message[5]}"   ## phase 5 - Final steps
+   echo -e "   Options for ${phase_message[3]}"   ## phase 3 - Review news and Maintain Config Files
+   echo -e "    "$LBon"[for future development]"$Boff
+   echo -e "   Options for ${phase_message[4]}"   ## phase 4 - Review elogs
+   echo -e "    "$LBon"[for future development]"$Boff
+   echo -e "   Options for ${phase_message[5]}"   ## phase 5 - Handle Dependencies
+   echo -e "    "$LBon"[for future development]"$Boff
+   echo -e "   Options for ${phase_message[6]}"   ## phase 6 - Final steps
+   echo -e "    "$BBon"[-a | --glsa]"$Boff".............run glsa-check -vp affected"
    echo -e "    "$BBon"[-e | --eix]"$Boff"..............run eix-update"
    echo -e "    "$BBon"[-m | --modules]"$Boff"..........run emerge @module-rebuild"
+   echo -e "    "$BBon"[-M | --emaint]"$Boff"...........run emaint --check all"
    echo -e "    "$BBon"[-p | --perl_cleaner]"$Boff".....run perl-cleaner --all"
    echo -e "    "$BBon"[-P | --python]"$Boff"...........run python-updater"
    echo -e "    "$BBon"[-R | --regen]"$Boff"............regenerate portage tree metadata (including overlays) "
@@ -301,12 +356,6 @@ useage()
    echo -e "    "$BBon"[-t | --rkhunter]"$Boff".........run rkhunter --propupd"
    echo -e "    "$BBon"[-X | --X11]"$Boff"..............run emerge @x11-module-rebuild"
    echo -e "    "$BBon"[-H | --haskell]"$Boff"..........run haskell-updater"
-   echo
-   echo -e "    "$BBon"[-c | --check]"$Boff"............check for and list updateable installed packages"
-   echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
-   echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
-   echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
-   echo -e "    "$BBon"[-h | --help]"$Boff".............print this text"
    echo
    echo -e "  "$BYon"Notes: "$Boff
    echo -e "  "$BYon" 1)"$Boff" --status and --resume both identify the next phase"
@@ -328,29 +377,35 @@ status()
 display_config()
 {
 message "${BWon}Using configuration data below: ${Boff}"
+echo -e ${BYon}"Global Congiguration${Boff}"
 echo -e ${LBon}"Configuration..........: "${Boff}${CONF_DIR}
-echo -e ${LBon}"Unfriendlies...........: "${Boff}${unfriendlies}
-echo -en ${LBon}; echo -n "SCRIPT_DIR.............: "; echo -en ${Boff}; echo ${SCRIPT_DIR}
+echo -e ${LBon}"SCRIPT_DIR.............: "${Boff}${SCRIPT_DIR}
 echo -e ${LBon}"STATUS_FILE............: "${Boff}${STATUS_FILE}
-echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
-echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
 echo -e ${LBon}"DISTCC.................: "$(status_color ${DISTCC})${DISTCC}${Boff}
 echo -e ${LBon}"PUMP...................: "$(status_color ${PUMP})${PUMP}${Boff}
 echo -e ${LBon}"EIX....................: "$(status_color ${EIX})${EIX}${Boff}
 echo -e ${LBon}"VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
 echo -e ${LBon}"verbosity..............: "${Boff}${verbosity}
-echo -e ${BWon}"Options for ${phase_message[1]}${Boff}"   ## phase 1 - Sync and Emerge Updates
+echo -e ${BYon}"Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
+echo -e ${LBon}"SYNC...................: "$(status_color ${SYNC})${SYNC}${Boff}
+echo -e ${LBon}"SYNC_CMD...............: "${Boff}${SYNC_CMD}
+echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
+echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
+echo -e ${BYon}"Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update Check
+echo -e ${LBon}"UPDATE_CHECK...........: "$(status_color ${UPDATE_CHECK})${UPDATE_CHECK}${Boff}
+echo -e ${BYon}"Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
 echo -e ${LBon}"USEPKG.................: "$(status_color ${USEPKG})${USEPKG}${Boff}
 echo -e ${LBon}"USEPKGONLY.............: "$(status_color ${USEPKGONLY})${USEPKGONLY}${Boff}
 echo -e ${LBon}"GETBINPKG..............: "$(status_color ${GETBINPKG})${GETBINPKG}${Boff}
 echo -e ${LBon}"GETBINPKGONLY..........: "$(status_color ${GETBINPKGONLY})${GETBINPKGONLY}${Boff}
 echo -e ${LBon}"WITH_BDEPS_Y...........: "$(status_color ${WITH_BDEPS_Y})${WITH_BDEPS_Y}${Boff}
-echo -e ${LBon}"SYNC...................: "$(status_color ${SYNC})${SYNC}${Boff}
-echo -e ${LBon}"SYNC_CMD...............: "${Boff}${SYNC_CMD}
 echo -e ${LBon}"GO_AHEAD...............: "$(status_color ${GO_AHEAD})${GO_AHEAD}${Boff}
 echo -e ${LBon}"KEEPGOING..............: "$(status_color ${KEEPGOING})${KEEPGOING}${Boff}
 echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
-echo -e ${BWon}"Options for ${phase_message[5]}${Boff}"   ## phase 5 - Final steps
+echo -e ${BYon}"Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Configs
+echo -e ${BYon}"Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
+echo -e ${BYon}"Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
+echo -e ${BYon}"Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
 echo -e ${LBon}"EIX_UPDATE.............: "$(status_color ${EIX_UPDATE})${EIX_UPDATE}${Boff}
 echo -e ${LBon}"HASKELL_UPDATER........: "$(status_color ${HASKELL_UPDATER})${HASKELL_UPDATER}${Boff}
 echo -e ${LBon}"MODULE_REBUILD.........: "$(status_color ${MODULE_REBUILD})${MODULE_REBUILD}${Boff}
@@ -361,7 +416,8 @@ echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "$(status_color ${REGEN_OVERLAY_METADAT
 echo -e ${LBon}"SELINUX_RELABEL........: "$(status_color ${SELINUX_RELABEL})${SELINUX_RELABEL}${Boff}
 echo -e ${LBon}"RKHUNTER...............: "$(status_color ${RKHUNTER})${RKHUNTER}${Boff}
 echo -e ${LBon}"X11_MODULE_REBUILD.....: "$(status_color ${X11_MODULE_REBUILD})${X11_MODULE_REBUILD}${Boff}
-[[ ${VERBOSE} ]] && sh_countdown 7
+echo -e ${LBon}"GLSA_CHECK.............: "$(status_color ${GLSA_CHECK})${GLSA_CHECK}${Boff}
+echo -e ${LBon}"EMAINT_CHECK...........: "$(status_color ${EMAINT_CHECK})${EMAINT_CHECK}${Boff}
 }
 
 check_timestamp()
@@ -421,13 +477,14 @@ update_check()
   # with ver 6, just check for major upgrades in key packages
   # (linux-headers, glibc, binutils, libtool, gcc) and branch to full rebuild
 
-  key_packages=("")
-  key_packages+=("sys-kernel/linux-headers")
-  key_packages+=("sys-libs/glibc")
-  key_packages+=("sys-devel/binutils")
-  key_packages+=("sys-devel/gcc-config")
-  key_packages+=("sys-devel/libtool")
-  key_packages+=("sys-devel/gcc")
+  key_packages=(
+    'sys-kernel/linux-headers'
+    'sys-libs/glibc'
+    'sys-devel/binutils'
+    'sys-devel/gcc-config'
+    'sys-devel/libtool'
+    'sys-devel/gcc'
+    )
   KP_FOUND=${FALSE}
 
   # first populate the updateables list (note, calling script has already run emerge_sync()
@@ -455,13 +512,21 @@ update_check()
   do
     pkg_color=${BGon}
     # determine if this is a key package using bs() tool in script_header_brendlefly_extended
-    bs ${updateables[i]} 0 ${#key_packages[@]} ${key_packages[@]}
+    depth=0; bs ${updateables[i]} 0 ${#key_packages[@]} ${key_packages[@]}
+    d_message "$i ${updateables[i]} $result" 1
     [[ ${result} -gt 0 ]] && KP_FOUND=${TRUE} && pkg_color=${BRon}
     echo -e "   ${pkg_color}${updateables[i]}${Boff}"
     [[ ${result} -gt 0 ]] && echo -n "       " && eix -uc ${updateables[i]}
   done
-  [[ ${KP_FOUND} ]] && echo && message "${BRon}  **  ${BYon}There is a key package to update\n  --> ${BRon}if this is a major version upgrade, you should ${BWon}exit ${BRon}and run a ${BWon}rebuild ${BRon}sequence ${BYon}(rus)${Boff}"
-  echo
+  if [[ ${KP_FOUND} ]]
+  then
+    echo
+    message "${BRon}  **  ${BYon}There is a key package to update\n  --> ${BRon}if this is a major version upgrade, you should ${BWon}exit ${BRon}and run a ${BWon}rebuild ${BRon}sequence ${BYon}(rus)${Boff}"
+  else
+    message "${BGon}  **  ${BYon}There are no key pakages to update\n  --> ${BGon}ok to continue update sequence"
+  fi
+  d_message "done with update_check. returning with answer = [ $answer ]" 1
+  return 0
 }
 
 emerge_updates()
@@ -560,7 +625,7 @@ final_phases()
 {
     # as indicated by option flags, perform additional phases
     [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && message "Running emerge --regen ..." && emerge --regen
-    [ "${EIX_UPDATE}" == "yes" ] && [ "${SYNC_CMD}" != "EIX_SYNC" ] &&message "Running eix-update ..." && eix-update
+    [ "${EIX_UPDATE}" == "yes" ] && [ "${SYNC_CMD}" != "EIX_SYNC" ] && message "Running eix-update ..." && eix-update
     [ "${PERL_CLEANER}" == "yes" ] && message "Running perl-cleaner --all ..." && perl-cleaner --all
     [ "${HASKELL_UPDATER}" == "yes" ] && message "Running haskell-updater ..." && haskell-updater
 #    [ "${PYTHON_UPDATER}" == "yes" ] && message "Running python-updater ..." && python-updater
@@ -569,6 +634,8 @@ final_phases()
     [ "${X11_MODULE_REBUILD}" == "yes" ] && message "Running emerge @x11-module-rebuild ..." && emerge @x11-module-rebuild
     [ "${SELINUX_RELABEL}" == "yes" ] && message "Running rlpkg -a -r ..." && rlpkg -a -r
     [ "${RKHUNTER}" == "yes" ] && message "Running rkhunter --propupd" && rkhunter --propupd
+    [ "${GLSA_CHECK}" == "yes" ] && message "Running glsa-check -vp affected" && glsa-check -vp affected
+    [ "${EMAINT_CHECK}" == "yes" ] && message "Running emaint --check all" && emaint --check all
 
     # clean un-needed package and distribution files, run localepurge
     [ -d "/usr/portage/packages" ] && message "Running eclean-pkg ..." && eclean-pkg
@@ -576,23 +643,11 @@ final_phases()
     return 0
 }
 
-ask_continue()
-{
-    # prompt to determine if or how to continue
-    # y = continue to next phase, n = stop now, g = go ahead through all remaining phases non-interactively
-    continue="x"
-    while [[ ! `echo ${continue:0:1} | sed 's/^[yngYNG]*//' | wc -c` -eq 1 ]]
-    do
-        echo -en $BGon"*"$Boff" continue to ${phase_message[${phase}]} (y), stop (n), or go ahead through (g)? [Y/n/g] :" && \
-        read continue && echo
-        # if the response is "g" then set the GO_AHEAD flag and continue; if null apply default (y)
-        case ${continue:0:1} in
-            "g" | "G" ) GO_AHEAD="yes" && continue="y" ;;
-            ""        ) continue="y" ;;
-            "y" | "Y" ) continue="y" ;;
-        esac
-    done
-}
+get_answer()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [yngYNG]: " && read answer;
+while ! expr "${answer:0:1}" : [yngYNG] >/dev/null;  # answer not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [yngYNG]: " && read answer; done; }
 
 # --- start main script ---------------------------------------------------------
 
@@ -614,27 +669,24 @@ display_config
 # if resuming, retrieve number of next phase to be performed from status file
 [ "$RESUME" == "yes" ] && read phase < $STATUS_FILE
 
+[[ "$GO_AHEAD" == "yes" ]] && answer="g" || answer=""
 # proceed thru each phase, as allowed to continue, until complete
-while [ "$continue" == "y" ] && [ "$phase" -le "$lastphase" ]
+for ((l=phase; l<${#phase_function_sequence[@]}; l++))
 do
-    separator "${phase_message[$phase]}"
-    case $phase in
-        "1") emerge_sync  && echo -e $BGon"OK"$Boff  ;;
-        "2") update_check && echo -e $BGon"OK"$Boff  ;;
-        "3") emerge_updates && echo -e $BGon"OK"$Boff  ;;
-        "4") show_news ; maintain_config_files && echo -e $BGon"OK"$Boff ;;
-        "5") showelogs && echo -e $BGon"OK"$Boff ;;
-        "6") handle_dependencies && echo -e $BGon"OK"$Boff ;;
-        "7") final_phases && echo -e $BGon"OK"$Boff ;;
-    esac
-    message "Successfully completed: ${phase_message[${phase}]}"
-    let "phase += 1"
-    echo $phase > $STATUS_FILE
-    # determine whether or how to proceed to next phase
-    case $GO_AHEAD in
-        "yes") continue="y" ;;
-        "no")  ask_continue ;;
-    esac
+  [[ ! $answer == [gG] ]] && answer="" && \
+    separator "${phase_message[l]}" "Now preparing to run" && \
+    get_answer "Are you ready to ${BYon}${phase_message[l]}${Boff}?"
+  if [[ $answer == [YyGg] ]]
+  then
+    [[ $answer == [gG] ]] && GO_AHEAD="yes"
+    message "About to run [ $l of ${#phase_function_sequence[@]} : ${phase_function_sequence[l]} ]"
+    eval ${phase_function_sequence[l]}; right_status $?
+    echo $l > ${STATUS_FILE}
+  else
+    message "User chose NOT to ${BYon}${phase_message[l]}${Boff}. Quitting..."
+    echo $l > ${STATUS_FILE}
+    exit
+  fi
 done
 
 # if go-ahead flag was set, remind user and check for new configs and elogs
