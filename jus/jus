@@ -11,6 +11,8 @@
 #     -- added companion script "rus" to automate that rebuild
 #     -- included "fixpackages" and "eselect python update" as default options in command sequence
 #     -- also included "glsa-check -vp affected" and "emaint --check all"
+# Build 6.1 - read PORTDIR and PORT_LOGDIR from make.conf; incl @golang-rebuild
+#
 #  New idea - nested loops of command sequences within phases
 
 # Source the variable assignments made in jus.conf (/etc/ overrides pwd)
@@ -24,6 +26,12 @@ CONF_DIR="defaults"
 #   (only needed if it is not in your path. Normally "/usr/local/sbin/"; must end with '/' if specified)
 #   (assigned here, prior to sourcing jus.conf so it will be properly initialized, just in case it is not assigned in jus.conf
 SCRIPT_DIR=""
+
+# PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
+eval $( grep ^PORTDIR /etc/portage/make.conf )
+eval $( grep ^PKGDIR /etc/portage/make.conf )
+eval $( grep ^DISTDIR /etc/portage/make.conf )
+eval $( grep ^PORT_LOGDIR /etc/portage/make.conf )
 
 # source jus.conf in order to load user-configured settings
 #   check each setting below to assign default values if needed
@@ -54,7 +62,7 @@ PUMP="no"  ## disabling selection, since global use of pump is ill advised - kno
 # SYNC_TS is the pathname of the file the timestamp of which will
 #   be checked to determine how long it's been since the portage
 #   tree was last sync'd
-[ -z "$SYNC_TS" ] && SYNC_TS="/usr/portage/metadata/timestamp.chk"       # emerge --sync timestamp
+[ -z "$SYNC_TS" ] && SYNC_TS="${PORTDIR}/metadata/timestamp.chk"       # emerge --sync timestamp
 
 # SYNC_CMD is the command used to sync the portage tree
 #[ -z "$SYNC_CMD" ] && SYNC_CMD="WEBRSYNC"       # emerge-webrsync
@@ -66,7 +74,7 @@ PUMP="no"  ## disabling selection, since global use of pump is ill advised - kno
 [ -z "$MAX_AGE" ] && MAX_AGE=24
 
 # ELOG_DIR is the location of elog files
-[ -z "$ELOG_DIR" ] && ELOG_DIR="/var/log/portage/elog/"
+[ -z "$ELOG_DIR" ] && ELOG_DIR="${PORT_LOGDIR}/elog/"
 
 # SELINUX_RELABEL
 [ -z "$SELINUX_RELABEL" ] && SELINUX_RELABEL="no"
@@ -85,6 +93,9 @@ PUMP="no"  ## disabling selection, since global use of pump is ill advised - kno
 
 # PYTHON_UPDATER
 [ -z "$PYTHON_UPDATER" ] && PYTHON_UPDATER="yes"
+
+# GOLANG_REBUILD
+[ -z "$GOLANG_REBUILD" ] && GOLANG_REBUILD="yes"
 
 # MODULE_REBUILD
 [ -z "$MODULE_REBUILD" ] && MODULE_REBUILD="no"
@@ -111,7 +122,7 @@ VERBOSE=$FALSE
 #VERBOSE=$TRUE
 verbosity=0
 
-BUILD="6.0.3 (20201016)"
+BUILD="6.1.0 (20220117)"
 
 continue="y"
 RESUME="no"
@@ -244,6 +255,7 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
     "-k" | "--usepkg"        ) USEPKG="yes" ;;
     "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
+    "-l" | "--golang "       ) GOLANG_REBUILD="yes" ;;
     "-m" | "--modules"       ) MODULE_REBUILD="yes" ;;
     "-M" | "--emaint"        ) EMAINT_CHECK="yes" ;;
     "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
@@ -291,6 +303,7 @@ do
         "G") GETBINPKGONLY="yes" ;;
         "k") USEPKG="yes" ;;
         "K") USEPKGONLY="yes" ;;
+        "l") GOLANG_REBUILD="yes" ;;
         "m") MODULE_REBUILD="yes" ;;
         "M") EMAINT_CHECK="yes" ;;
         "p") PERL_CLEANER="yes" ;;
@@ -350,6 +363,7 @@ useage()
    echo -e "   ${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final steps
    echo -e "    "$BBon"[-a | --glsa]"$Boff".............run glsa-check -vp affected"
    echo -e "    "$BBon"[-e | --eix]"$Boff"..............run eix-update"
+   echo -e "    "$BBon"[-l | --golang]"$Boff"...........run emerge @golang-rebuild"
    echo -e "    "$BBon"[-m | --modules]"$Boff"..........run emerge @module-rebuild"
    echo -e "    "$BBon"[-M | --emaint]"$Boff"...........run emaint --check all"
    echo -e "    "$BBon"[-p | --perl_cleaner]"$Boff".....run perl-cleaner --all"
@@ -410,6 +424,7 @@ echo -e ${BYon}"Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 -
 echo -e ${BYon}"Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
 echo -e ${LBon}"EIX_UPDATE.............: "$(status_color ${EIX_UPDATE})${EIX_UPDATE}${Boff}
 echo -e ${LBon}"HASKELL_UPDATER........: "$(status_color ${HASKELL_UPDATER})${HASKELL_UPDATER}${Boff}
+echo -e ${LBon}"GOLANG_REBUILD.........: "$(status_color ${GOLANG_REBUILD})${GOLANG_REBUILD}${Boff}
 echo -e ${LBon}"MODULE_REBUILD.........: "$(status_color ${MODULE_REBUILD})${MODULE_REBUILD}${Boff}
 echo -e ${LBon}"PERL_CLEANER...........: "$(status_color ${PERL_CLEANER})${PERL_CLEANER}${Boff}
 echo -e ${LBon}"PYTHON_UPDATER.........: "$(status_color ${PYTHON_UPDATER})${PYTHON_UPDATER}${Boff}
@@ -636,6 +651,7 @@ final_phases()
     [ "${PERL_CLEANER}" == "yes" ] && message "Running ${BGon}perl-cleaner --all${Boff} ..." && perl-cleaner --all
     [ "${HASKELL_UPDATER}" == "yes" ] && message "Running ${BGon}haskell-updater${Boff} ..." && haskell-updater
     [ "${PYTHON_UPDATER}" == "yes" ] && message "Running ${BGon}eselect python update${Boff} ..." && eselect python update && eselect python cleanup
+    [ "${GOLANG_REBUILD}" == "yes" ] && message "Running ${BGon}emerge @golang-rebuild${Boff} ..." && emerge @golang-rebuild
     [ "${MODULE_REBUILD}" == "yes" ] && message "Running ${BGon}emerge @module-rebuild${Boff} ..." && emerge @module-rebuild
     [ "${X11_MODULE_REBUILD}" == "yes" ] && message "Running ${BGon}emerge @x11-module-rebuild${Boff} ..." && emerge @x11-module-rebuild
     [ "${SELINUX_RELABEL}" == "yes" ] && message "Running ${BGon}rlpkg -a -r${Boff} ..." && rlpkg -a -r
@@ -644,8 +660,10 @@ final_phases()
     [ "${EMAINT_CHECK}" == "yes" ] && message "Running ${BGon}emaint --check all${Boff} ..." && emaint --check all
 
     # clean un-needed package and distribution files, run localepurge
-    [ -d "/usr/portage/packages" ] && message "Running ${BGon}eclean-pkg${Boff} ..." && eclean-pkg
+    [ -d "${PKGDIR}" ] && message "Running ${BGon}eclean-pkg${Boff} ..." && eclean-pkg
     message "Running ${BGon}eclean-dist -d${Boff} ..." && eclean-dist -d
+    message "Running ${BGon}hash -r${Boff} for current shell ..." && hash -r
+    message "Running ${BGon}source /etc/profile${Boff} for current shell..." && source /etc/profile
     return 0
 }
 
@@ -680,16 +698,17 @@ display_config
 for ((l=phase; l<${#phase_function_sequence[@]}; l++))
 do
   [[ ! $answer == [gG] ]] && answer="" && \
-    separator "${phase_message[l]}" "jus-${BUILD} Now starting" && \
+    separator "($l) ${phase_message[l]}" "$(hostname) jus-${BUILD} Now starting" && \
     get_answer "Are you ready to ${BYon}${phase_message[l]}${Boff}?"
   if [[ $answer == [YyGg] ]]
   then
     [[ $answer == [gG] ]] && GO_AHEAD="yes"
-    message "About to run [ $l of ${#phase_function_sequence[@]} : ${phase_function_sequence[l]} ]"
+    message "About to run step [ $l of ${#phase_function_sequence[@]} : ${phase_function_sequence[l]} ]"
     eval ${phase_function_sequence[l]}; right_status $?
+    message "Completed: ($l) ${phase_message[l]}"
     echo $l > ${STATUS_FILE}
   else
-    message "User chose NOT to ${BYon}${phase_message[l]}${Boff}. Quitting..."
+    message "${BRon}User aborted${Boff} at step ${BYon}($l) ${phase_message[l]}${Boff}. Quitting..."
     echo $l > ${STATUS_FILE}
     exit
   fi
