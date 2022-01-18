@@ -117,6 +117,16 @@ check_for_parts()
   then d_right_status 1 1; PARTSTRING+=" sys-fs/cryptsetup";
   else d_right_status 0 1; fi
 
+  d_message_n "Finding cpio..." 1
+  if [ ! -e /bin/cpio ]
+  then d_right_status 1 1; PARTSTRING+=" app-arch/cpio";
+  else d_right_status 0 1; fi
+
+  d_message_n "Finding grub..." 1
+  if [ ! -e /usr/sbin/grub-install ]
+  then d_right_status 1 1; PARTSTRING+=" sys-boot/grub";
+  else d_right_status 0 1; fi
+
   # if splash is requested, check for it
   if [ "${init_splash}" == "yes" ]
   then
