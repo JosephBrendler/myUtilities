@@ -407,6 +407,22 @@ copy_dependent_libraries()
     esac
     d_message "--------------------------------------------" 3
   done
+
+  # address rare issue with error "libgcc_s.so.1 must be installed for pthread_cancel to work"
+  # occurs when cryptsetup tries to open LUKS volume - see references (similar but different) --
+  #   https://bugs.gentoo.org/760249 (resolved by fix to dracut)
+  #   https://forums.gentoo.org/viewtopic-t-1096804-start-0.html (zfs problem. fix: copy file to initramfs)
+  #   https://forums.gentoo.org/viewtopic-t-1049468-start-0.html (also zfs problem. same fix)
+  # at least for now, I'm using the same fix here.  ( copy missing file /lib64/libgcc_s.so.1 )
+
+  missing_file=/lib64/libgcc_s.so.1
+  target_name=$(basename ${missing_file})
+  dir_name=$(dirname ${missing_file})
+
+  d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name "
+  [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
+     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
+
 }
 
 #---[ Main Script ]-------------------------------------------------------
