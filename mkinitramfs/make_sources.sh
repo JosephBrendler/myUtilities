@@ -16,9 +16,13 @@ VERBOSE=$TRUE
 #VERBOSE=$FALSE
 verbosity=2
 
+# identify config file
+[[ -e ${MAKE_DIR}/init.conf ]] && CONF_DIR=${MAKE_DIR}
+[[ -e /etc/mkinitramfs/init.conf ]] && CONF_DIR="/etc/mkinitramfs"
 
 # define lists of files that need to be copied
-config_files="init.conf README LICENSE"
+config_file="${CONF_DIR}/init.conf"
+admin_files="README LICENSE"
 other_content_src=("/usr/local/sbin/script_header_brendlefly" "${MAKE_DIR}/etc/lvm/lvm.conf"        "${MAKE_DIR}/etc/modules")
 other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"  "${SOURCES_DIR}/etc/")
 
@@ -179,9 +183,12 @@ copy_parts()
   fi
   copy_one_part ./init ${SOURCES_DIR}/
 
-  # copy config files
-  d_message "Copying necessary configuration files..." 1
-  for i in $config_files
+  # copy config file
+  copy_one_part ${config_file} ${SOURCES_DIR}/
+
+  # copy admin files
+  d_message "Copying necessary admin files..." 1
+  for i in $admin_files
   do copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/; done
 
   # copy other required content
@@ -432,15 +439,15 @@ separator "Make Sources"  "mkinitramfs-$BUILD"
 checkroot
 display_config
 # determine if splash is requested in init.conf
-eval $(grep "splash" init.conf | grep -v "#")
+eval $(grep "splash" ${config_file} | grep -v "#")
 [ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
 
 
 separator "Build Directory Tree"  "mkinitramfs-$BUILD"
 build_dir_tree
 
-separator "Create Device Nodes"  "mkinitramfs-$BUILD"
-#create_device_nodes  (is this necessary?)
+#separator "Create Device Nodes"  "mkinitramfs-$BUILD"
+#create_device_nodes  (this is not necessary. function code retained to preserve how-to)
 
 separator "Check for Parts"  "mkinitramfs-$BUILD"
 check_for_parts
