@@ -218,8 +218,14 @@ pur()           # ping ip address $1 until it is ready (0% loss of 3 packets)
   RCP; echo -en "not ready -- try: [${count}], hits: [${hit_color}${hits}${Boff}]"; let "count+=1"; sleep 1;
   done; echo; echo OK - ready now ; }
 
-swr()           # ssh when ready
+sap()           # ssh after pause
 { pur $1 && echo "pausing to allow $1 to start sshd..." && sh_countdown 20 && ssh $1; }
+
+swr()           # ssh when ready (pur(), then ssh after nmap shows port)
+{ pur $1 && \
+  message "pausing to allow $1 to start sshd..." && \
+  while [ ! $(nmap -p ssh $1 | grep 'ssh' | cut -d' ' -f2) == "open" ]; do sleep 1; done && \
+  ssh $1 ; }
 
 vercomp()       # compare two version numbers return [0:equal|1:greaterthan|2:lessthan]
 { if [[ "$1" == "$2" ]]; then return 0; else first=$(echo -en "$1\n$2" | sort -V | head -n1);
@@ -230,37 +236,29 @@ show_result()   # show the result of vercomp comparison, in english
              0) echo "${BGon}=${Boff}";; *) echo "${BYon}*** Error ***${Boff}";; esac }
 
 my_date()       # echo a simply formatted date string (DDD MM dd hh:mm:ss AP TZ yyyy)
-{
-  day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
+{ day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
   timeofday=$(date +%X); timezone=$(date +%Z)
-  echo "$day $month $monthday $timeofday $timezone $year"
-}
+  echo "$day $month $monthday $timeofday $timezone $year" ; }
 
 my_short_date() # echo a short formatted date string (yyyymmdd)
-{
-  month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
-  echo "${monthday}${month}${year}-${timehack}";
-}
+{ month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
+  echo "${monthday}${month}${year}-${timehack}" ; }
 
 loggit()        # send a job completion status message to the cron logger
-{
-[[ $# -gt 2 ]] && E_message "invalid loggit arguments" && exit 1
-[[ -z $2 ]] && EXIT_STATUS=0 || EXIT_STATUS="$2"
-[[ -z $1 ]] && PROGRAM=Unspecified || PROGRAM="$1"
-case $EXIT_STATUS in
-  0 ) PRIORITY="notice" && MESSAGE="succeeded.";;
-  * ) PRIORITY="err" && MESSAGE="failed with exit status ${EXIT_STATUS}";;
-esac
-/usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE"
-}
+{ [[ $# -gt 2 ]] && E_message "invalid loggit arguments" && exit 1
+  [[ -z $2 ]] && EXIT_STATUS=0 || EXIT_STATUS="$2"
+  [[ -z $1 ]] && PROGRAM=Unspecified || PROGRAM="$1"
+  case $EXIT_STATUS in
+    0 ) PRIORITY="notice" && MESSAGE="succeeded.";;
+    * ) PRIORITY="err" && MESSAGE="failed with exit status ${EXIT_STATUS}";;
+  esac
+  /usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE" ; }
 
 repeat()        # output a repeated string of character (arg $1) of length (arg $2)
-{
-  local i thing limit
+{ local i thing limit
   thing="$1"; limit=$2; out_str=""; i=0
   while [ $i -lt $limit ]; do out_str="${out_str}${thing}"; let "i++"; done
-  echo -en "$out_str" && return 0 || return 1
-}
+  echo -en "$out_str" && return 0 || return 1 ; }
 
 termwidth()     # calculate and output the width of the terminal
 { echo -n $(stty size | sed 's/[0-9]* *//') && return 0 || return 1; }
@@ -269,8 +267,7 @@ termheight()    # calculate and output the height of the terminal
 { echo -n $(stty size | cut -d' ' -f1) && return 0 || return 1; }
 
 separator()     # draw a horizontal line with a simple title (arg $1) and preface (arg $2)
-{
-  # to facilitate separation of portions of the output of various scripts
+{ # to facilitate separation of portions of the output of various scripts
   # include a title preface (arg $2 or $(hostname) if $2 is not provided
   local msg preface msg_len
   [ ! -z "$2" ] && preface="$2" || preface=$(hostname)
@@ -278,8 +275,7 @@ separator()     # draw a horizontal line with a simple title (arg $1) and prefac
   msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ))
   echo -en "$msg" && \
   echo -n $(repeat "-" $(( $(termwidth) - $(( $msg_len + ${#Boff} )) )) ) && echo -e ${Boff} && \
-  return 0 || return 1
-}
+  return 0 || return 1 ; }
 
 right_status()  # output 8 char [ ok/fail ] status at the right margin
 { # test message_n "good_test" ; right_status $?
@@ -287,23 +283,19 @@ right_status()  # output 8 char [ ok/fail ] status at the right margin
   local msg status=$1
   [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}"
   # go to start of line, *then* move fwd to 7 chars from the right margin ("[ xx ]" is 6)
-  echo -en "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && return 0 || return 1
-}
+  echo -en "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
 
 d_right_status()  # output 8 char [ ok/fail ] status at the right margin, if $VERBOSE
 { # test with v=((verbosity+1)) and v=(($verbosity-1))
   # d_message_n "good_test" $v; d_right_status $? $v
   #      dE_message_n "fail_test" $v && cat unexistent 2>/dev/null; d_right_status $? $v
   local status=$1
-  [[ $VERBOSE && $2 -le $verbosity ]] && right_status $status && return 0 || return 1
-}
+  [[ $VERBOSE && $2 -le $verbosity ]] && right_status $status && return 0 || return 1 ; }
 
 sh_countdown()  # count-down seconds (arg $1)
-{
-  # special note: bb sh cannot use base#number notation with prefix 10# to ensure interpretation as base 10
+{ # special note: bb sh cannot use base#number notation with prefix 10# to ensure interpretation as base 10
   if [[ ! -z $1 ]]
-  then
-    rem_time="${1}"
+  then rem_time="${1}" ;
   else
     message "no argument given, defaulting to 30 seconds"
     rem_time=30
