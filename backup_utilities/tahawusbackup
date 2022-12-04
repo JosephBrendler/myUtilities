@@ -1,0 +1,74 @@
+#!/bin/bash
+# tahawusbackup - backup everything on my workstation/server
+# joe brendler - 17 Feb 2021 (based on thuviabackup of 23 June 2019)
+
+# Paste from lvs output
+#  LV                VG               Attr       LSize   Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+#  home              vg_tahawus       -wi-ao---- 310.00g                                                    
+#  opt               vg_tahawus       -wi-ao----   1.00g                                                    
+#  root              vg_tahawus       -wi-ao----  10.00g                                                    
+#  srv               vg_tahawus       -wi-ao---- 500.00g                                                    
+#  tmp               vg_tahawus       -wi-ao----  55.00g                                                    
+#  usr               vg_tahawus       -wi-ao----  25.00g                                                    
+#  var               vg_tahawus       -wi-ao----  25.00g                                                    
+#
+#  home              vg_tahawusbackup -wi-a-----  20.00g                                                    
+#  opt               vg_tahawusbackup -wi-a-----   1.00g                                                    
+#  tahawusbackupROOT vg_tahawusbackup -wi-a-----  10.00g                                                    
+#  tahawusbackupUSR  vg_tahawusbackup -wi-a-----  25.00g                                                    
+#  tmp               vg_tahawusbackup -wi-a-----  10.00g                                                    
+#  var               vg_tahawusbackup -wi-a-----  25.00g                                                    
+#
+# Note: current backup device has insufficient space to b/u srv or all of home
+
+source /usr/local/sbin/script_header_brendlefly
+BUILD=0.0
+VERBOSE=$TRUE
+verbosity=2
+
+#---[ variables ]-----------------------------------------------------------
+# sync all content in these directories (restrict each to single LV filesystem)
+dirlist="/ home opt usr var tmp"
+
+
+# Exclude file/dirs matching these patterns
+excludestring="--exclude='/mnt/*'"
+excludestring+=" --exclude='/tmp/*'"
+excludestring+=" --exclude='/var/tmp/*'"
+excludestring+=" --exclude='/var/log/*'"
+excludestring+=" --exclude='/proc/*'"
+excludestring+=" --exclude='/sys/*'"
+excludestring+=" --exclude='/srv/*'"
+
+#---[ functions ]-----------------------------------------------------------
+
+useage() {
+  E_message "Useage: tahawusbackup [TBD]" && exit
+}
+
+#---[ main script ]---------------------------------------------------------
+checkroot
+separator "tahawusbackup-${BUILD}"
+
+tahawusbackup_mount
+
+echo; message "Running backup sync..."
+for dir in ${dirlist}
+do
+  d_message "dirlist: [${dirlist}]" 1
+  # sync only what needs to be updated; stay on one filesystem; delete what was deleted; exclude junk
+  [ "${dir}" == "/" ] && target="" || target="${dir}/"  ## deal with '/' characters
+  cmd="rsync -uavx"
+  cmd+=" ${excludestring}"
+  cmd+=" --delete --delete-excluded"
+  cmd+=" /${target}* /mnt/tahawusbackupROOT/${target}"
+  message "${BYon}About to sync target [${Boff}${target}${BYon}] with the command:\n${BRon}${cmd}${Boff}"
+  sh_countdown 3
+  eval ${cmd}
+done
+
+tahawusbackup_umount
+
+echo; message "un-mounted tahawusbackup. Here's what left..."
+mount | grep tahawusbackupROOT
+message "Done"

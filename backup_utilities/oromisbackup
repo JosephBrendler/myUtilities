@@ -1,0 +1,71 @@
+#!/bin/bash
+# oromisbackup - backup everything on my router/firewall/vpnserver
+# joe brendler - 19 May 2019
+
+source /usr/local/sbin/script_header_brendlefly
+BUILD=0.0
+VERBOSE=$TRUE
+verbosity=2
+
+#---[ variables ]-----------------------------------------------------------
+# sync all content in these directories (restrict each to single LV filesystem)
+dirlist="/ home opt usr var srv tmp"
+
+# Exclude file/dirs matching these patterns
+excludestring='--exclude=/mnt/*'
+excludestring+=' --exclude=/tmp/*'
+excludestring+=' --exclude=/var/tmp/*'
+excludestring+=' --exclude=/proc/*'
+excludestring+=' --exclude=/sys/*'
+excludestring+=' --exclude=/dev/*'
+excludestring+=' --exclude=/root/.ccache/*'
+excludestring+=' --exclude=/root/.distcc/*'
+excludestring+=' --exclude=/home/*/.ccache/*'
+excludestring+=' --exclude=/home/*/.distcc/*'
+excludestring+=' --exclude=/usr/src/linux*'
+excludestring+=' --exclude=/usr/src/initramfs*'
+excludestring+=' --exclude=/usr/portage/*'
+
+#---[ functions ]-----------------------------------------------------------
+
+useage() {
+  E_message "Useage: oromisbackup [TBD]" && exit
+}
+
+#---[ main script ]---------------------------------------------------------
+checkroot
+separator "oromisbackup-${BUILD}"
+
+message_n "mounting LVs on /mnt/oromisbackupROOT..."
+mount /dev/mapper/vg_oromisbackup-ROOT /mnt/oromisbackupROOT && \
+mount /dev/mapper/vg_oromisbackup-USR /mnt/oromisbackupROOT/usr/ && \
+mount /dev/mapper/vg_oromisbackup-home  /mnt/oromisbackupROOT/home && \
+mount /dev/mapper/vg_oromisbackup-var   /mnt/oromisbackupROOT/var && \
+mount /dev/mapper/vg_oromisbackup-tmp   /mnt/oromisbackupROOT/tmp && \
+mount /dev/mapper/vg_oromisbackup-opt   /mnt/oromisbackupROOT/opt && \
+mount /dev/mapper/vg_oromisbackup-srv   /mnt/oromisbackupROOT/srv
+right_status $?; echo
+
+message "mounted LVs on /mnt/oromisbackupROOT as shown below:"
+mount | grep oromisbackupROOT
+
+echo; message "Running backup sync..."
+for dir in ${dirlist}
+do
+  d_message "dirlist: [${dirlist}]" 1
+  # sync only what needs to be updated; stay on one filesystem; delete what was deleted; exclude junk
+  [ "${dir}" == "/" ] && target="" || target="${dir}/"  ## deal with '/' characters
+  cmd="rsync -uavx /${target}* /mnt/oromisbackupROOT/${target} "
+  cmd+="${excludestring}"
+  cmd+=" --delete --delete-excluded"
+  message "about to sync target [${target}] with the command:\n${BRon}${cmd}${Boff}"
+  sh_countdown 3
+  eval ${cmd}
+done
+
+echo; message_n "unmounting ..."
+umount /mnt/oromisbackupROOT{/opt,/tmp,/var,/home/,/srv,/usr,}
+right_status $?; echo
+
+echo; message "un-mounted oromisbackup"
+mount | grep oromisbackupROOT

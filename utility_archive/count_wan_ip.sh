@@ -1,0 +1,1 @@
+source /usr/local/sbin/script_header_brendlefly; count=0; for file in $(ls /home/joe/Dropbox/wan_ip/); do message "${LBon}${file}: ${Boff}$(cat /home/joe/Dropbox/wan_ip/$file)"; let count++; done; echo "count: $count"

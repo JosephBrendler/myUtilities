@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# installU_onServer -- install a domU kernel on my xen server
+#   and pacdevel_dirkage its tarball for distribution via joetoo ebuild
+# Joe Brendler -- 10 Feb 22 based on installU rev 11 Nov 14 -- overhaul
+
+source /usr/local/sbin/script_header_joe_brendler
+
+#---[ local variables ]-------------------------------------------------------
+BUILD="0.0.1 (20220210)"
+devel_dir="/home/joe/myUtilities"
+server_kernel_dir="/root/build/domU_kernel_images"
+kernel_image_name="gentoo_pv_kernel_image"
+kernel_image_dir="/root/build/domU_kernel_images"
+distrib_dir="/root/build/domU/tmp/distrib"
+ebuild_dir="/home/joe/joetoo/sys-kernel/${kernel_image_name}"
+publish_cmd_file="/home/joe/publish_${kernel_image_name}"
+DEBUG="false"
+#DEBUG="true"
+
+eval $( grep ^PORTDIR /etc/portage/make.conf )
+eval $( grep ^PKGDIR /etc/portage/make.conf )
+eval $( grep ^DISTDIR /etc/portage/make.conf )
+
+#---[ main script ]-----------------------------------------------------------
+separator "installU-${BUILD}"
+checkroot
+
+# identify current working version to be installed
+version_number=$(file /usr/src/linux | cut -d'-' -f2)
+
+echo; message "copying package ${distrib_dir}/${kernel_image_name}-${version_number}.tar.bz2 to ${devel_dir}/"
+cp -v ${distrib_dir}/${kernel_image_name}-${version_number}.tar.bz2 ${devel_dir}/
+
+echo; message "copying kernel [ vmlinuz-${version_number} ] files to server at [ ${server_kernel_dir} ]"
+cp -v ${distrib_dir}/boot/* ${server_kernel_dir}/
+
+echo; message "Updating symlink to Vm kernel for xen pv configs"
+
+old_dir=${PWD}
+cd ${server_kernel_dir}
+ln -snf vmlinuz-${version_number}-gentoo vmlinuz
+cd ${old_dir}
+
+message "Listing contents of ${server_kernel_dir}"
+ls -al ${server_kernel_dir}/
+
+echo; message "Use the following commands to upload new package and create/upload new ebuild..."
+echo "cd ${devel_dir}/" > ${publish_cmd_file}
+echo "echo new PWD: \${PWD}" >> ${publish_cmd_file}
+echo "git pull" >> ${publish_cmd_file}
+echo "git status" >> ${publish_cmd_file}
+echo "git add ${kernel_image_name}-${version_number}.tar.bz2" >> ${publish_cmd_file}
+echo "git commit -m \"pv kernel ${version_number}\"" >> ${publish_cmd_file}
+echo "git push origin master" >> ${publish_cmd_file}
+echo  >> ${publish_cmd_file}
+echo "cd ${ebuild_dir}/" >> ${publish_cmd_file}
+echo "echo new PWD: \${PWD}" >> ${publish_cmd_file}
+ebuild_list=()
+for x in $(find ${ebuild_dir} -type f -iname "${kernel_image_name}*" | sort)
+do
+ebuild_list+=("${x}")
+done
+old_version=$(echo ${ebuild_list[$((${#ebuild_list[@]}-1))]} | sed "s|${ebuild_dir}/${kernel_image_name}-||" | sed 's|.ebuild||')
+echo "old version: ${old_version}"
+echo "new version: ${version_number}"
+
+echo "cp ${ebuild_dir}/${kernel_image_name}-${old_version}.ebuild ${ebuild_dir}/${kernel_image_name}-${version_number}.ebuild" >> ${publish_cmd_file}
+#echo "nano ${kernel_image_name}-${version_number}.ebuild" >> ${publish_cmd_file}
+#echo "[ edit version number in both package source and dependency lines ]" >> ${publish_cmd_file}
+#echo "[ or better yet -- ]" >> ${publish_cmd_file}
+echo "sed -i \"s|${old_version}|${version_number}|\" ${ebuild_dir}/${kernel_image_name}-${version_number}.ebuild" >> ${publish_cmd_file}
+echo "rm ${ebuild_dir}/Manifest" >> ${publish_cmd_file}
+## ---repoman is deprecated; now using pkgdev, as recommended
+#echo "repoman manifest" >> ${publish_cmd_file}
+echo "pkgdev manifest -d ${DISTDIR}" >> ${publish_cmd_file}
+echo "git pull" >> ${publish_cmd_file}
+echo "git status" >> ${publish_cmd_file}
+echo "git add Manifest" >> ${publish_cmd_file}
+echo "git add ../../metadata/md5-cache/sys-kernel/${kernel_image_name}-${version_number}" >> ${publish_cmd_file}
+echo "git add ${kernel_image_name}-${version_number}.ebuild" >> ${publish_cmd_file}
+echo "git commit -m \"pv kernel ${version_number}\"" >> ${publish_cmd_file}
+echo "git push origin master" >> ${publish_cmd_file}
+
+cd ${old_dir}
+
+separator "contents of ${publish_cmd_file} " $(hostname)
+cat ${publish_cmd_file}
+separator "running ${publish_cmd_file}" $(hostname)
+chown joe:joe ${publish_cmd_file}
+chmod +x ${publish_cmd_file}
+sudo -u joe ${publish_cmd_file}

@@ -1,0 +1,69 @@
+#!/bin/bash
+# display_foreign_connections
+# Joe Brendler   11 October 2014
+#
+
+source /usr/local/sbin/script_header_brendlefly
+BUILD="0.1.1 20170116"
+tempfile="/home/joe/tempfile"
+#default_logfile="/var/log/firewall.log"
+default_logfile="/var/log/messages"
+#wayback_logfile="/var/log/old_logs/firewall.log*"
+wayback_logfile="/var/log/old_logs/messages*"
+
+separator "display_foreign_connections-${BUILD}"
+
+if [[ -z $1 ]]
+then
+  logfile=$default_logfile
+  grep_cmd="grep"
+else
+  logfile=$wayback_logfile
+  grep_cmd="zgrep"
+fi
+message "Using logfile $logfile"
+
+# only look at records for accepted connections to or from the 'net' zone
+#   otherwise you'll see "false positives" from loc2fw or vpn2fw ACCEPTs of nat
+#   traffic corresponding to REJECTED fw2net traffic, etc
+for ip in $($grep_cmd ACCEPT $logfile | \
+            grep 'net' | \
+            grep -v 'MAC' | \
+            grep -v 'SPT=53' | \
+            awk '{print $11}' | \
+            cut -d'=' -f2 | \
+            sort -h | uniq)
+
+do
+    spaces=""
+#    msg="$spaces$ip"
+#    while [ ${#msg} -lt 18 ]; do spaces="$spaces "; msg="$spaces$ip"; done
+    msg="$(repeat " " $((18 - ${#ip})) ) ${ip}"
+    msg2=$(geoiplookup ${ip} | grep "Country" | cut -d: -f2 | sed 's/^ //g')
+
+#    message "${BWon}${msg}: ${BYon}$(geoiplookup $ip | cut -d' ' -f4-)${Boff}"
+    message "${BWon}${msg}: ${BYon}${msg2}${Boff}"
+done | grep -v 'United States'
+
+/usr/local/sbin/loggit
+
+# backup
+# note: sed makes space-delimited structure predictable (trying awk above)
+#for ip in $($grep_cmd ACCEPT $logfile | \
+#            sed 's/\  / /' | \
+#            cut -d' ' -f8 | \
+#            grep -v MAC | \
+#            cut -d'=' -f2 | \
+#            grep -v 192.168 | \
+#            grep -v 10.17 | \
+#            sort -h | uniq)
+# more recent version:
+#for ip in $($grep_cmd ACCEPT $logfile | \
+#            grep 'net2' | \
+#            grep '2net' | \
+#            grep -v 'MAC' | \
+#            grep -v '192.168' | \
+#            grep -v '10.17' | \
+#            awk '{print $8}' | \
+#            cut -d'=' -f2 | \
+#            sort -h | uniq)

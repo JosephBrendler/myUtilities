@@ -1,0 +1,40 @@
+#! /bin/bash
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+verbosity=3
+
+# (To Do) check and (if necessary) start lagging encrypted storage
+for x in $(blkid | grep -i luks | cut -d: -f1)
+do
+  device="$x"
+  name=$(echo $device | sed 's:/dev/s:e:')
+  message_n "For device [${BYon}${device}${Boff}], crypt-name [${LBon}${name}${Boff}] is:  " 1
+  status=$(cryptsetup status $name | grep active | awk '{print $3}')
+  echo -e "${BWon}${status}${Boff}"
+  if [[ ! "$status" == "active" ]]
+  then
+    d_message "About to mount thumbdrive and run command ${BYon}\"cryptsetup -d /mnt/thumb/crypt/dat luksOpen $device $name\"${Boff}" 1
+    mount /mnt/thumb   ## need to have this in fstab, with no-auto
+    cryptsetup -d /mnt/thumb/crypt/dat luksOpen $device $name
+    vgscan
+    vgchange -ay
+    # mount encrypted storage (should have beebn activated by /etc/conf.d/dmcrypt) using entry in /etc/fstab
+    d_message "About to run command ${BYon}\"mount -a\"${Boff}"
+    mount -a
+    umount /mnt/thumb
+    /usr/bin/logger -p cron.notice "$0 found $device, $name not started, and attempted to correct"
+  else
+    /usr/bin/logger -p cron.notice "$0 found $device, $name already started"
+  fi
+done
+
+d_message "------------------[ Here is what's up ]-------------------"
+echo ">>> running pvs <<<"
+pvs && echo
+echo ">>> running vgs <<<"
+vgs && echo
+echo ">>> running lvs <<<"
+lvs && echo
+echo ">>> running \"mount | grep /dev/mapper\" <<<"
+mount | grep /dev/mapper && echo

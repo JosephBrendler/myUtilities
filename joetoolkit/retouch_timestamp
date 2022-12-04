@@ -1,0 +1,61 @@
+#!/bin/bash
+
+#DEBUG="true"
+DEBUG="false"
+
+source /usr/local/sbin/script_header_brendlefly
+
+# set default
+## SYNC_TS is the pathname of the file the timestamp of which will
+#   be checked to determine how long it's been since the portage
+#   tree was last sync'd
+#SYNC_TS="/usr/portage/metadata/timestamp.x"       # emerge-webrsync timestamp
+#SYNC_TS="/usr/portage/metadata/timestamp.chk"  # emerge --sync timestamp
+SYNC_TS="/var/db/repos/gentoo/metadata/timestamp.chk"  # emerge --sync timestamp
+
+# make sure you're using the right timestamp file - by sourcing the jus.conf file
+[[ -e jus.conf ]] && . jus.conf && CONF_DIR=$PWD"/jus.conf"
+[[ -e /etc/jus/jus.conf ]] && . /etc/jus/jus.conf && CONF_DIR="/etc/jus/jus.conf"
+
+
+[ "$DEBUG" = "true" ] && message "DEBUG -- SYNC_TS: "$SYNC_TS
+
+#---[ new_date() function ]-------------
+new_date() {
+  day=$(date +%a)
+  month=$(date +%b)
+  monthday=$(date +%d)
+  year=$(date +%Y)
+  timeofday=$(date +%X)
+  timezone=$(date +%Z)
+
+  mydate="$day $month $(($monthday - 2)) $timeofday $timezone $year"
+  [ "$DEBUG" = "true" ] && message "DEBUG -- mydate: ${mydate}"
+
+}
+
+ts_status()
+{
+  echo "SYNC_TS status:"
+  echo -ne $BGon"==> "$Boff
+  echo $(ls -al $SYNC_TS)
+  echo "SYNC_TS contents:"
+  cat $SYNC_TS
+}
+
+#-----[ main script ]---------------
+message "Checking root UID... "&& checkroot
+
+new_date
+message "setting new date: [$mydate]"
+message "   for timestamp: [$SYNC_TS]"
+
+echo "pre-retouch --------------"
+ts_status
+echo $mydate > $SYNC_TS
+touch -d "$mydate" $SYNC_TS
+message "retouch result: ["$?"] ---------------------"
+ts_status
+
+/usr/bin/logger -p cron.notice "retouch_timestamp  complete."
+message "Logged and done."

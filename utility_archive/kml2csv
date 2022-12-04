@@ -1,0 +1,99 @@
+#!/bin/bash
+# convert a kml file to csv format
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+verbosity=1
+PLACEMARK=$FALSE
+POINT=$FALSE
+COORD=$FALSE
+TAG=""
+NAME=""
+DESC=""
+LAT=""
+LON=""
+kmlfile=""
+csvfile=""
+
+#-----[ functions ]---------------------------
+useage() {
+  E_message "useage: kml2csv <kmlfilename> [<csvfilename>]"
+  exit 1
+}
+
+toggle() {
+  var="$1"
+  [[ $var ]] && result=$FALSE || result=$TRUE
+  echo $result
+}
+
+getTag() {
+  myLine="$1"
+  TAG="${myLine##*'<'}"   # right of "<"
+  TAG="${TAG%%'>'*}"      # left of ">"
+  TAG="${TAG##*'/'}"      # ignore "/"
+  d_message "TAG: ${TAG}" 3
+}
+
+getName() {
+  myLine="$1"
+  NAME="${myLine##*'<name>'}"   # right of "<name>"
+  NAME="${NAME%%'</name>'*}"      # left of "</name>"
+  d_message "NAME: ${NAME}" 3
+}
+
+getDescription() {
+  myLine="$1"
+  DESC="${myLine##*'<description>'}"   # right of "<description>"
+  DESC="${DESC%%'</description>'*}"      # left of "</description>"
+  d_message "DESC: ${DESC}" 3
+}
+
+getCoordinates() {
+  myLine="$1"
+  IFS=',' read -a arr <<< "$myLine"
+  LON="${arr[0]}"
+  LAT="${arr[1]}"
+  d_message "LAT, LON: ${LAT}, ${LON}" 1
+}
+
+
+#-----[ main script ]-------------------------
+checkroot
+
+[[ $# -lt 1 ]] && useage
+[[ -f $1 ]] && kmlfile="$1" || useage
+[[ $# -eq 2 ]] && csvfile="$2" || csvfile="$kmlfile.csv"
+
+if [[ -f ${csvfile} ]]
+then
+  prompt "${csvfile} already exists, continue"
+  if [[ "${answer}" != "y" ]]
+  then
+    exit 1
+  fi
+fi
+
+echo "name, latitude, longitude, description" > ${csvfile}
+
+# Process each line in kml file
+while read LINE
+do
+  getTag "${LINE}"
+  case $TAG in
+    "Placemark"    ) PLACEMARK=$(toggle $PLACEMARK);  d_message "PLACEMARK=$(status_color $PLACEMARK)$(TrueFalse $PLACEMARK)${Boff}" 2;;
+    "Point"        ) POINT=$(toggle $POINT);  d_message "POINT=$(status_color $POINT)$(TrueFalse $POINT)${Boff}" 2;;
+    "coordinates"  ) COORD=$(toggle $COORD);  d_message "COORD=$(status_color $COORD)$(TrueFalse $COORD)${Boff}" 2;;
+    "name"         ) getName "${LINE}"; d_message "name=${NAME}" 1;;
+#    "description"  ) getDescription "${LINE}"; d_message "description=${DESC}" 1;;
+    "Data name*"|"value"|"ExtendedData"|"styleUrl"|"Folder"|"Document"|"kml" ) d_message "TAG: $TAG ignored" 3;;
+    *              )
+      if [[ $PLACEMARK && $POINT && $COORD ]]
+      then
+        getCoordinates "${LINE}"
+#        echo "${NAME}, ${LAT}, ${LON}, $DESC" >> ${csvfile}
+        echo "${NAME}, ${LAT}, ${LON}" >> ${csvfile}
+      else
+        E_message "Error: unknown case"
+      fi;;
+  esac
+done < ${kmlfile}

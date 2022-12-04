@@ -1,0 +1,46 @@
+#!/bin/bash
+TRUE=0
+cputempfile=/sys/class/thermal/thermal_zone0/temp
+vcgencmdfile=/usr/bin/vcgencmd
+temp_threshold=60  # deg celcius above which to consider cpu to be hot
+TEMP_LED=4         # raspi gpio pin 4 (VPN LED)(red)
+blinkwait=0.05     # s wait during fluttler blink
+blinklongwait=0.5  # s wait during blink between flutters
+
+[[ $# -eq 0 ]] && echo "Missing argument. Please supply threshold temp." && exit
+if [[ $1 -gt 0 ]] && [[ $1 -le 99 ]]
+then
+  temp_threshold=$1  # reassign. deg celcius above which to consider cpu to be hot
+  echo "temp_threshold: ${temp_threshold}"
+else
+  echo "Bad argument. Please supply valid threshold temp. (0-99 C)"
+  exit
+fi
+
+#-----[ functions ]---------------------------
+blink_light() {
+  # blink and then light my LED (on pin designated by arg 1 $1 )
+  LED=$1
+  for ((i=0;i<5;i++))       # blink on-off 5 times, quickly
+  do
+    pigs w ${LED} 1
+    sleep ${blinkwait}
+    pigs w ${LED} 0
+    sleep ${blinkwait}
+  done
+  sleep ${blinklongwait}    # pause
+  pigs w ${LED} 1           # now keep LED on
+}
+
+#-----[ main script ]-----------------------------------
+pigs m ${TEMP_LED} w         # set mode output
+pigs w ${TEMP_LED} 0
+
+while [[ $TRUE ]]
+do
+  cpu_temp=$(cat ${cputempfile} 2>/dev/null)
+  int_temp=${cpu_temp:0:2}
+#  echo "cpu_temp: ${cpu_temp:0:2}.${cpu_temp:2:2}   int_temp: ${int_temp}"
+  [[ ${int_temp} -ge ${temp_threshold} ]] && blink_light ${TEMP_LED} || pigs w ${TEMP_LED} 0
+  sleep 3
+done

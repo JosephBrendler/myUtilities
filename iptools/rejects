@@ -1,0 +1,100 @@
+#!/bin/bash
+echo "start"
+source /usr/local/sbin/script_header_brendlefly
+BUILD=0.0.1
+VERBOSE=$TRUE
+verbosity=2
+
+target=/var/log/messages
+filter=REJECT
+ip_field_num=13
+#ip_field_num=14
+hit_list=()
+
+#-----[ functions ]------------------------------------------------------------------
+useage() {
+  E_message "Useage: rejects [log_file] [filter_string]"
+  E_message "  log_file defaults to /var/log/messages"
+  E_message "  filter_string defaults to \"REJECT\""
+  exit 1
+}
+
+process_arguments() {
+### ToDo - parse target, filter(s), AND ip_field_num
+local arg
+d_message "number of arguments: [ $# ]"
+while [[ $# -gt 0 ]]
+do
+  arg=$1
+  d_message "processing argument [ ${arg} ]" 2
+  # if $arg is a valid filespec, assign as log_file, otherwise assign as filter
+  [[ -f ${arg} ]] && target="${arg}" || filter="${arg}"
+  shift
+done
+}
+
+injest_array() {
+# build an array of results; 2 fields: count, ip_address
+while read line
+do
+  set $line
+  d_message "   Adding ${BGon}\"${line}\"${Boff} to array" 3
+  [ -n $2 ] && hit_list+=("$line")  ## don't add blank line(s)
+done <<<$( grep ${filter} ${target} | \
+          grep -v ACK | cut -d' ' -f${ip_field_num} | \
+          cut -d'=' -f2 | \
+          sort | uniq -c | sort -nr | \
+          sed 's/^ *//' )
+}
+# used to use | sed 's/DST=//' | \
+
+identify_hits() {
+for ((i=0; i<${#hit_list[@]}; i++))
+do
+  set ${hit_list[i]}
+  count=$1;  ip=$2
+  msg="${LBon}${count}${Boff} ${BMon}${filter}${Boff}s on ${BYon}${ip}${Boff}"
+  # concatenate next line with look up the ip in whois database
+  identity="$(whois ${ip} 2>/dev/null | grep Organization | cut -d':' -f2 | sed 's/^ *//' )"
+  # if identity from whois is null, use nslookup
+#  [[ -n "$identity" ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+#  [[ $identity = *[![:space:]]* ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+  [[ "${identity:0:8}" == "Internap" ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+  [[ -z `echo $identity` ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+  msg+=" ${LBon}${identity}${Boff}"
+  # concatenate same line with geolocation of the ip; indent line(s) 6 spaces
+#  msg+=" [ $(geoiplookup ${ip} 2>/dev/null | \
+#        grep -v 'GeoIP Country Edition:' | grep -v 'GeoIP ASNum Edition:' | \
+#        sed 's/GeoIP City Edition, Rev 1: //' | \
+#        sed 's/^ *//' ) ]"
+  # fuck GeoIP, use keycdn with -s silent curl to get geo data
+  result=$(curl -s "https://tools.keycdn.com/geo.json?host=${ip}")
+  city=$(echo $result | jq '.data.geo.city')
+  country=$(echo $result | jq '.data.geo.country_name')
+  msg+=" [ ${BYon}${city}, ${country}${Boff} ]"
+  # output the message
+  message "${msg}"
+done
+
+}
+
+dump_array() {
+for ((i=0; i<${#hit_list[@]}; i++))
+do
+  echo "[${i}]  ${hit_list[i]}"
+done
+}
+
+#-----[ script ]---------------------------------------------------------------------
+separator "rejects-${BUILD}"
+
+[[ $# -gt 2 ]] && useage
+[[ $# -gt 0 ]] && process_arguments $@
+
+d_message "Assigned log_file target: [ ${target} ]" 1
+d_message "Assigned filter: [ ${filter} ]" 1
+d_message "Assigned ip_field_num: [ ${ip_field_num} ]" 1
+
+injest_array
+identify_hits
+#dump_array

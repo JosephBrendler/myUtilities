@@ -1,0 +1,156 @@
+#!/bin/bash
+source /usr/local/sbin/script_header_brendlefly
+width="46%"
+height="85%"
+X1="1%"
+Y1="5%"
+X2="51%"
+BUILD="0.002b 190113"
+logFile="/home/joe/xdotool_open_windows.log"
+terminal_program=/usr/bin/konsole
+#terminal_program=/usr/bin/lxterminal
+#terminal_program=/usr/bin/uxterm
+sleepWait=0.5    # default - set in .conf
+longWait=2       # default - set in .conf
+VERBOSE=$TRUE
+#VERBOSE=$FALSE
+verbosity=3
+
+ssh_session_list=( \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ )
+
+# load custom configuration, if it exists
+[[ -f ./xdotool_open_windows.conf ]] && source ./xdotool_open_windows.conf
+[[ -f /etc/xdotool_open_windows.conf ]] && source /etc/xdotool_open_windows.conf
+
+numdesktops=$((${#ssh_session_list[@]} / 2))
+[[ $(($numdesktops % 2)) -eq 1 ]] && let numdesktops+=1
+
+## TODO -- package for ebuild
+d_message "(DEBUG $(my_short_date)) Top of script. Just set global variables." 3
+
+#-----[ function blocks ]-------------------------------------------------
+print_ssh_session_list() {
+  #used for debugging only
+  for i in $(seq 0 $(($num_desktops - 1)) )
+  do
+    let index=$((2 * $i))
+    cmd_target=${ssh_session_list[$index]}
+    d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
+    let index+=1
+    cmd_target=${ssh_session_list[$index]}
+    d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
+  done
+}
+
+setup_window_for_index() {
+    local index=$1
+    cmd_target=${ssh_session_list[$index]}
+    d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
+    d_message "$(my_short_date) index = [$index] , cmd_target = $cmd_target" 2
+    if [[ "${cmd_target:0:1}" != "x" ]]
+    then
+      cmd="--command=\"ssh $cmd_target\""
+#      d_message "$(my_short_date) about to run \"${terminal_program} --title=\"$(basename ${terminal_program})_${i}.${index} &\"" 1
+      d_message "$(my_short_date) about to run \"${terminal_program} 2\>/dev/null &\"\"" 1
+      ${terminal_program} 2>/dev/null &
+      sleep $longWait
+      newterm=$(xdotool getactivewindow)
+      xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${index}" ${newterm}
+      newtermname=$(xdotool getactivewindow getwindowname)
+      newtermgeometry=$(xdotool getactivewindow getwindowgeometry)
+      d_message "$(my_short_date) openned new terminal_win = [$newterm $newtermname]" 1
+      d_message "$(my_short_date) new terminal_win geometry = [$newtermgeometry]" 2
+      d_message "$(my_short_date) setting focus to window $newtermname on desktop ${i}" 1
+      xdotool windowfocus $newterm
+      sleep $sleepWait
+      d_message "$(my_short_date) launching ssh with command [ssh $cmd_target] in window $newtermname on desktop ${i}" 1
+      xdotool type --window ${newterm} --delay 30 --clearmodifiers "ssh $cmd_target"
+      sleep $sleepWait
+      xdotool key --window ${newterm} --delay 30 --clearmodifiers Return
+      sleep $sleepWait
+      if [[ $((${index}%2)) -eq 0 ]]
+      then # even
+        d_message "$(my_short_date) moving window $newtermname to ${X1} ${Y1}" 2
+        xdotool windowmove --sync $newterm ${X1} ${Y1}
+        sleep $sleepWait
+      else # odd
+        d_message "$(my_short_date) moving window $newtermname to ${X2} ${Y1}" 2
+        xdotool windowmove --sync $newterm ${X2} ${Y1}
+        sleep $sleepWait
+    fi
+      d_message "$(my_short_date) setting size of window $newtermname to ${width} ${height}" 2
+      xdotool windowsize --sync --usehints $newterm ${width} ${height}
+      sleep $sleepWait
+    fi
+}
+
+#-----[ main script ]-----------------------------------------------------
+separator "xdotool_open_windows"
+checknotroot
+
+xdotool set_num_desktops ${numdesktops}
+
+num_desktops=$(xdotool get_num_desktops)
+control_window=$(xdotool getactivewindow)
+
+# TODO -- showconfig ()
+d_message "numdesktops: $numdesktops (calculated)" 1
+d_message "num_desktops: $num_desktops (set)" 1
+d_message "control_window: $control_window" 1
+
+d_message "$(my_short_date) Openning $(basename ${terminal_program}) terminals and starting ssh sessions. Please wait..." 1
+## TODO - rotate logfile
+d_message "$(my_short_date) removing old log file" 1
+rm -v $logFile
+exec 6>&1 2>/dev/null           # Link file descriptor #6 with stdout. Saves stdout.
+exec > $logFile  2>/dev/null    # stdout replaced with file.
+# ----------------------------------------------------------- #
+# All output from commands in this block sent to file $logFile
+
+d_message "$(my_short_date) first closing open windows..." 1
+xdotool_close_windows  ## partner external script
+d_message "$(my_short_date) done closing" 1
+
+d_message "$(my_short_date) now openning new windows" 1
+print_ssh_session_list
+
+for i in $(seq 0 $(($num_desktops - 1)) )
+do   # launch two terminal windows per desktop
+  d_message "setting desktop ${i}" 1
+  xdotool set_desktop ${i}
+  sleep $sleepWait
+  d_message "launching terminals on desktop ${i}" 1
+  let index=$((2 * $i))
+  if [[ $index -eq 0 ]] # this is the control window - don't make a new one
+  then
+    ## TODO - rename control window; move it to desktop 0
+    d_message "moving control_window $control_window to ${X1} ${Y1}" 2
+    xdotool windowmove --sync $control_window ${X1} ${Y1}
+    sleep $sleepWait
+    d_message "setting size of control_window $control_window to ${width} ${height}" 2
+    xdotool windowsize --sync --usehints $control_window ${width} ${height}
+    sleep $sleepWait
+  else
+    setup_window_for_index $index
+    sleep $sleepWait
+  fi
+  let index+=1
+  setup_window_for_index $index
+  sleep $sleepWait
+done
+xdotool set_desktop 0
+sleep $sleepWait
+xdotool windowfocus window=${control_window}
+#xdotool mousemove --window ${control_window} 5% 5% click 1
+#xdotool mousemove --window ${control_window} 20 20 click 1
+
+exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
+
+cat $logFile

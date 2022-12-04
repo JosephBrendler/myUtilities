@@ -1,0 +1,155 @@
+#!/bin/bash
+
+source /usr/local/sbin/script_header_brendlefly
+nslookup_target=""
+nslookup_server=""
+nslookup_names=()
+nslookup_addresses=()
+report_rows_targets=()
+report_rows_servers=()
+report_rows_names=()
+report_rows_addresses=()
+column_nums=()
+column_names=()
+column_widths=()
+column_buffer=3
+VERBOSE=$TRUE
+verbosity=0
+
+#-----[ functions ]-----------------------------------
+useage() {
+  E_message "Useage: nslookuptest <target_name>"
+  exit 1
+}
+
+process_line() {
+  d_message "processing line [${1}]" 3
+  # ignore server address w "#"53; ignore (non-)authoritative "answer" line
+  line=$(echo "$1" | grep -v "#" | grep -v "answer")
+  # ignore blank lines
+  [ -z "${line}" ] && return
+  # capture server address
+  [ "${line:0:6}" == "Server" ] && \
+     nslookup_server="$(echo ${line:7})" && \
+     d_message "Assigned server [${nslookup_server}" 4
+  # capture each name and corresponding address
+  [ "${line:0:4}" == "Name" ] && \
+     myname="$(echo ${line:6})" && \
+     nslookup_names+=("${myname}") && \
+     d_message "Appended name [${myname}]" 4
+  [ "${line:0:7}" == "Address" ] && \
+     myaddress="$(echo ${line:9})" && \
+     nslookup_addresses+=("${myaddress}") && \
+     d_message "Appended address [${myaddress}]" 4
+}
+
+process_target() {
+  nslookup_names=()
+  nslookup_addresses=()
+  nslookup_target="$1"
+  d_message "processing target [${nslookup_target}]" 2
+  while read oneline
+  do
+    process_line "${oneline}"
+  done <<< $(nslookup ${nslookup_target})  # read from nslookup output
+
+
+  # use just the first response; ignore all others
+#  message "${nslookup_target} \t${nslookup_server} \t${nslookup_names[0]} \t${nslookup_addresses[0]}"
+  report_rows_targets+=("${nslookup_target}")
+  report_rows_servers+=("${nslookup_server}")
+  report_rows_names+=("${nslookup_names[0]}")
+  report_rows_addresses+=("${nslookup_addresses[0]}")
+}
+
+size_columns() {
+  for ((i=0; i<4; i++))
+  do
+    column_nums[i]=i
+    case $i in
+      0)
+        column_names[i]="Target" ;
+        column_widths[i]=${#column_names[i]} ;
+        for ((j=0; j<${#report_rows_targets[@]}; j++))
+        do  # set first column width
+          [ ${#report_rows_targets[j]} -gt ${column_widths[i]} ] && \
+            column_widths[i]=${#report_rows_targets[j]}
+        done ;;
+      1)
+        column_names[i]="Nameserver";
+        column_widths[i]=${#column_names[i]} ;
+        for ((j=0; j<${#report_rows_servers[@]}; j++))
+        do  # set second column width
+          [ ${#report_rows_servers[j]} -gt ${column_widths[i]} ] && \
+            column_widths[i]=${#report_rows_servers[j]}
+        done ;;
+      2)
+        column_names[i]="Name";
+        column_widths[i]=${#column_names[i]} ;
+        for ((j=0; j<${#report_rows_names[@]}; j++))
+        do  # set third column width
+          [ ${#report_rows_names[j]} -gt ${column_widths[i]} ] && \
+            column_widths[i]=${#report_rows_names[j]}
+        done ;;
+      3)
+        column_names[i]="Address";
+        column_widths[i]=${#column_names[i]} ;
+        for ((j=0; j<${#report_rows_addresses[@]}; j++))
+        do  # set fourth column width
+          [ ${#report_rows_addresses[j]} -gt ${column_widths[i]} ] && \
+            column_widths[i]=${#report_rows_addresses[j]}
+        done ;;
+      *)
+        E_message "column error"; exit 1;;
+    esac
+  done
+}
+#-----[ main script ]-----------------------------------
+[ $# -lt 1 ] && useage
+
+separator "nslookuptest"
+# build header
+report_rows_targets=("Target")
+report_rows_servers=("Nameserver")
+report_rows_names=("Name")
+report_rows_addresses=("Address")
+
+#message "Target \tNameserver \tName \t\tAddress"
+
+# look up each target
+for tgt in $@
+do
+  d_message "looking up [${tgt}]" 2
+  process_target "$tgt"
+done
+
+size_columns
+for ((i=0; i<4; i++))
+do
+  d_message "column ${column_num[i]} [${column_names[i]}] has width ${column_widths[i]}" 1
+done
+
+# generate report with fixed-width columns
+
+#these arrays should all be the same length, but just in case
+report_length=${#report_rows_targets[@]}
+[ ${#report_rows_servers[@]} -gt ${report_length} ] && report_length=${#report_rows_servers[@]}
+[ ${#report_rows_names[@]} -gt ${report_length} ] && report_length=${#report_rows_names[@]}
+[ ${#report_rows_addresses[@]} -gt ${report_length} ] && report_length=${#report_rows_addresses[@]}
+for ((j=0; j<${report_length}; j++))
+do
+  msg="${report_rows_targets[j]}"
+  pad_length=$((${column_widths[0]}+${column_buffer}-${#report_rows_targets[j]}))
+  d_message "msg: ${msg} || pad_length: ${pad_length}" 4
+  msg+="$(repeat ' ' ${pad_length})"
+  msg+="${report_rows_servers[j]}"
+  pad_length=$((${column_widths[1]}+${column_buffer}-${#report_rows_servers[j]}))
+  msg+="$(repeat ' ' ${pad_length})"
+  msg+="${report_rows_names[j]}"
+  pad_length=$((${column_widths[2]}+${column_buffer}-${#report_rows_names[j]}))
+  msg+="$(repeat ' ' ${pad_length})"
+  msg+="${report_rows_addresses[j]}"
+  pad_length=$((${column_widths[3]}+${column_buffer}-${#report_rows_addresses[j]}))
+  msg+="$(repeat ' ' ${pad_length})"
+  message "${msg}"
+done

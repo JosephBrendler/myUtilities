@@ -1,0 +1,92 @@
+#!/bin/bash
+# nubaldurbackup - backup everything on my workstation/server
+# joe brendler - 17 Feb 2021 (based on thuviabackup of 23 June 2019)
+
+source /usr/local/sbin/script_header_brendlefly
+BUILD=0.0
+VERBOSE=$TRUE
+verbosity=2
+
+#---[ variables ]-----------------------------------------------------------
+# sync all content in these directories (restrict each to single LV filesystem)
+dirlist="/ home opt usr var srv tmp"
+
+
+# Exclude file/dirs matching these patterns
+excludestring="--exclude='/mnt/*'"
+excludestring+=" --exclude='/tmp/*'"
+excludestring+=" --exclude='/var/tmp/*'"
+excludestring+=" --exclude='/var/log/*'"
+excludestring+=" --exclude='/proc/*'"
+excludestring+=" --exclude='/sys/*'"
+# to do - remove this
+#excludestring+=" --exclude='/srv/*'"
+excludestring+=" --exclude='/dev/*'"
+excludestring+=" --exclude='/usr/armv*/*'"
+excludestring+=" --exclude='/root/.ccache/*'"
+excludestring+=" --exclude='/root/.distcc/*'"
+excludestring+=" --exclude='/root/build/*'"
+excludestring+=" --exclude='/home/*/.ccache/*'"
+excludestring+=" --exclude='/home/*/.distcc/*'"
+# to do - remove this
+excludestring+=" --exclude='/home/virtualmachines/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/nextCloud/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/MyRaspberryFiles/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/Dropbox/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/Downloads/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/.*/*'"
+# to do - remove this
+#excludestring+=" --exclude='/home/joe/Desktop/pascalCloud/*'"
+#excludestring+=" --exclude='/usr/src/linux*'"
+#excludestring+=" --exclude='/usr/src/initramfs*'"
+excludestring+=" --exclude='/usr/portage/*'"
+
+#---[ functions ]-----------------------------------------------------------
+
+useage() {
+  E_message "Useage: nubaldurbackup [TBD]" && exit
+}
+
+#---[ main script ]---------------------------------------------------------
+checkroot
+separator "nubaldurbackup-${BUILD}"
+
+message_n "mounting LVs on /mnt/nubaldurbackupROOT..."
+mount /dev/mapper/vg_nubaldurbackup-nubaldurbackupROOT /mnt/nubaldurbackupROOT && \
+mount /dev/mapper/vg_nubaldurbackup-nubaldurbackupUSR /mnt/nubaldurbackupROOT/usr/ && \
+mount /dev/mapper/vg_nubaldurbackup-home  /mnt/nubaldurbackupROOT/home && \
+mount /dev/mapper/vg_nubaldurbackup-var   /mnt/nubaldurbackupROOT/var && \
+mount /dev/mapper/vg_nubaldurbackup-opt   /mnt/nubaldurbackupROOT/opt && \
+mount /dev/mapper/vg_nubaldurbackup-srv   /mnt/nubaldurbackupROOT/srv && \
+mount /dev/mapper/vg_nubaldurbackup-tmp   /mnt/nubaldurbackupROOT/tmp && \
+right_status $?; echo
+
+message "mounted LVs on /mnt/nubaldurbackupROOT as shown below:"
+mount | grep nubaldurbackupROOT
+
+echo; message "Running backup sync..."
+for dir in ${dirlist}
+do
+  d_message "dirlist: [${dirlist}]" 1
+  # sync only what needs to be updated; stay on one filesystem; delete what was deleted; exclude junk
+  [ "${dir}" == "/" ] && target="" || target="${dir}/"  ## deal with '/' characters
+  cmd="rsync -uavx"
+  cmd+=" ${excludestring}"
+  cmd+=" --delete --delete-excluded"
+  cmd+=" /${target}* /mnt/nubaldurbackupROOT/${target}"
+  message "${BYon}About to sync target [${Boff}${target}${BYon}] with the command:\n${BRon}${cmd}${Boff}"
+  sh_countdown 3
+  eval ${cmd}
+done
+
+echo; message_n "unmounting ..."
+umount /mnt/nubaldurbackupROOT{/opt,/var,/home/,/usr,/srv,/tmp,}
+right_status $?; echo
+
+echo; message "un-mounted nubaldurbackup"
+mount | grep nubaldurbackupROOT

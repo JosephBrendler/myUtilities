@@ -1,0 +1,91 @@
+#!/bin/bash
+# count_distcc_jobs - count the number of jobs compiled for remote
+#   clients and recorded in log file
+#   (log file must be in /var/log/ and can have any name with "distcc" in it)
+# You must emerge net-dns/bind-tools for nslookup functionality
+# Joe Brendler - 3 Feb 2014
+#   rev 4 Feb 2014 - generalized for any log file name with "distcc" in the name
+
+source /usr/local/sbin/script_header_brendlefly
+
+# ---[ Define local variables ]-----------------------------------
+BUILD="1.1 (20151030)"
+
+#BOLDon="\033[1m"
+#GREENon="\033[32m"
+#YELLOWon="\033[33m"
+#REDon="\033[31m"
+#BLUEon="\033[36m"
+#BGon=$BOLDon$GREENon
+#BYon=$BOLDon$YELLOWon
+#BRon=$BOLDon$REDon
+#BBon=$BOLDon$BLUEon
+#Boff="\033[0m"
+
+ROOT_UID=0       # Only users with $UID 0 have root privileges
+
+# Error message used by script
+E_NOTROOT="Must be root to run this script."
+E_BAD_ARGS="Improperly formatted command line argument."
+
+tempfile="/home/joe/tempfileforcountdistccjobs"
+
+# ---[ function blocks ]------------------------------------------
+
+filter_log()
+{
+#cat /var/log/${distcc_log} | grep COMPILE_OK | cut -d' ' -f4 | cut -d':' -f1 | sort -h | uniq -c > ${tempfile}
+#cat /var/log/${distcc_log} | grep COMPILE_OK | cut -d')' -f2 | cut -d':' -f2 | sort -h | uniq -c | sed 's/^\ *//g' > ${tempfile}
+cat ${distcc_log} | grep COMPILE_OK | cut -d')' -f2 | cut -d':' -f2 | sort -h | uniq -c | sed 's/^\ *//g' > ${tempfile}
+}
+
+ip_lookup()
+{
+HCU
+while read line
+do
+    var=$( nslookup $( echo $line | cut -d' ' -f2 ) | grep name | cut -d"=" -f2 | cut -d" " -f2 )
+    echo -en "$( echo -e $line | cut -d' ' -f1)\t $( echo -e $line | cut -d' ' -f2)\t$(echo ${var%.})"
+    echo
+done < "${tempfile}"
+SCU
+}
+
+
+get_log_file()
+{
+    # if logging to file, expects the log file to be in /var/log/distcc
+    # TODO - load array to accomodate more than one log file
+    distcc_log=$(echo $( ls /var/log/distcc/ | grep distcc ))
+    # if there is no such file, assume logging to syslog (messages)
+    [ -z "${distcc_log}" ] && distcc_log="/var/log/messages" \
+        || distcc_log="/var/log/distcc/"${distcc_log}
+    message "Starting with this distcc log file: "${distcc_log}
+
+    echo -en "\n"$BGon"* "$BBon"Enter distcc log filename ("$distcc_log") : "$Boff
+    read reply
+    [ ! -z "${reply}" ] && distcc_log="$reply"
+    if [ -e $distcc_log ]
+    then
+        message "counting distcc jobs in ${distcc_log} ..."
+    else
+        E_message "Error: log file ${distcc_log} does not exist."
+        echo && exit 1
+    fi
+
+}
+
+#---[ Main Script ]-----------------------
+separator "Running count_distcc_jobs-${BUILD}"
+checkroot
+
+get_log_file
+filter_log
+
+message "Looking up hostnames for ip addresses found. Please wait..."
+message "(This may take a few minutes to time out if the hosts are not on line)"
+ip_lookup
+
+message "Cleaning up..."
+rm ${tempfile}
+message "Done."
