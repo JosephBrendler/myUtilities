@@ -63,12 +63,12 @@ busybox_link_list="\
 # define lists of links that need to be created in /sbin
 #   references to lvm
 lvm_link_list="\
-    lvchange lvconvert lvcreate lvdisplay lvextend lvmchange \
+    lvchange lvconvert lvcreate lvdisplay lvextend lvmchange lvmconfig \
     lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
     lvs lvscan pscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
     pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate \
-    vgdisplay vgexport vgextend vgimport vgmerge vgmknodes vgreduce \
-    vgremove vgrename vgs vgscan vgsplit"
+    vgdisplay vgexport vgextend vgimport vgimportclone vgmerge vgmknodes \
+    vgreduce vgremove vgrename vgs vgscan vgsplit"
 
 #   references to e2fsck
 e2fsck_link_list="fsck fsck.ext2 fsck.ext3 fsck.ext4"
