@@ -1,8 +1,11 @@
 #!/bin/bash
 # rus - rebuild update sequence - to rebuild system as required when a key package major update occurs
 source /usr/local/sbin/script_header_brendlefly
-#  0.0.7 - adds pick_binutils() function
-BUILD=0.0.7
+#  0.0.7 - adds pick_binutils() function, -s option
+#  0.0.8 - stop/start cloudsync packages/rsyncd before/after
+BUILD=0.0.8
+
+# To Do - assumes cronie; generalize for other cron systems
 
 # To Do -- re-do rebuild w/updated toolchain sequence according to new (2020) best practices
 # see https://forums.gentoo.org/viewtopic-t-1118276-start-0.html
@@ -59,6 +62,7 @@ key_packages2=(
 #   -e = --emptytree (i.e. reinstall entire dependency tree)
 #   FEATURES="-getbinpkg" deselects -g (i.e. use local binaries only, if -k is used)
 command_sequence=(
+'pkgsync stop'
 'rm -rfv ${PKGDIR}'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av ${key_packages1[@]} ${key_packages2[@]} --keep-going'
 'pick_gcc'
@@ -66,10 +70,12 @@ command_sequence=(
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb ${key_packages1[@]} --keep-going'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke system --keep-going'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke world --keep-going'
+'pkgsync start'
 )
 
 # declarative future tense
 msg1_sequence=(
+'Stop syncing packages with other nodes'
 'Remove PKGDIR'
 'Rebuild toolchain'
 'Select gcc'
@@ -77,10 +83,12 @@ msg1_sequence=(
 'Rebuild toolchain packages with new gcc, binutils'
 'Rebuild system packages with new toolchain'
 'Rebuild world packages with new toolchain'
+'Re-start syncing packages with other nodes'
 )
 
 # active present tense
 msg2_sequence=(
+'Stoping package syncing with other nodes'
 'Removing PKGDIR'
 'Rebuilding toolchain'
 'Selecting gcc'
@@ -88,6 +96,7 @@ msg2_sequence=(
 'Rebuilding toolchain packages with new gcc, binutils'
 'Rebuilding system packages with new toolchain'
 'Rebuilding world packages with new toolchain'
+'Re-starting package syncing with other nodes'
 )
 
 answer=""   # response to prompt
@@ -121,6 +130,43 @@ pick_binutils()          # pick the appropriate gcc
 { binutils-config -l; get_number "Select binutils profile from list above";
 message "setting binutils-config $answer" && binutils-config ${answer};
 message "sourcing /etc/profile" && source /etc/profile; }
+
+pkgsync()            # stop/start syncing packages
+{
+action="$1"
+echo "action: ${action}"
+cslinelist=($(grep -n cloudsync /etc/crontab | cut -d':' -f1))
+if [[ "${action}" == "stop" ]]
+then
+  echo "commenting out cloudsync cron job in crontab";
+  for ((i=0; i<${#cslinelist[@]}; i++))
+  do
+    echo "maybe comment line: ${cslinelist[i]}"
+    sed -i "${cslinelist[i]} s|^.|#&|" /etc/crontab;
+  done;
+  echo "stopping cronie"
+  /etc/init.d/cronie stop
+  echo "stopping rsyncd"
+  /etc/init.d/rsyncd stop
+elif [[ "${action}" == "start" ]]
+then
+  echo "un-commenting cloudsync cron job in crontab"
+  # if it is not already commented, then comment it
+  for ((i=0; i<${#cslinelist[@]}; i++))
+  do
+    echo "maybe uncomment line: ${cslinelist[i]}"
+    sed -i "${cslinelist[i]} s|^#||" /etc/crontab
+  done
+  echo "restarting cronie"
+  /etc/init.d/cronie restart
+  echo "restarting rsyncd"
+  /etc/init.d/rsyncd restart
+else
+  echo "Invalid action passed to pkgsync; exiting"
+  exit
+fi
+echo "done pkgsync ${action}"
+}
 
 #----------[ main script ]-----------------------------------
 # display script kick-off separator
