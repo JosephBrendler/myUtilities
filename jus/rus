@@ -1,8 +1,39 @@
 #!/bin/bash
 # rus - rebuild update sequence - to rebuild system as required when a key package major update occurs
 source /usr/local/sbin/script_header_brendlefly
+#  0.0.7 - adds pick_binutils() function
+BUILD=0.0.7
 
-BUILD=0.0.2
+# To Do -- re-do rebuild w/updated toolchain sequence according to new (2020) best practices
+# see https://forums.gentoo.org/viewtopic-t-1118276-start-0.html
+# see https://wiki.gentoo.org/wiki/Upgrading_GCC#Quick_guide_to_GCC_upgrades
+# see https://wiki.gentoo.org/wiki/Project:Toolchain
+#
+# updates ([headers], glibc, binutils, libtool)
+# ( below from wiki gcc-upgrade)
+# rebuild gcc
+# source /etc/profile
+# gcc-config
+# rebuild libtool, binutils
+# binutils-config
+# source /etc/profile
+# rebuild glibc
+# locale-gen
+# source /etc/profile
+# mount /boot
+# emerge @world (rebuild whole tree)
+# source /etc/profile
+# etc-update
+# perl-cleaner --all
+# emerge --sync
+# emerge -auDN @world (update only)
+# revdep-rebuild
+# emerge --depclean --deep
+# other emerge clean-up/maintenance as needed (eclean emaint et al).
+# (end wiki suggestions)
+# reboot
+# rebuild kernel
+# rebuild boot loader w/ rebuilt kernel (grub filo etc)
 
 # PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
 eval $( grep ^PORTDIR /etc/portage/make.conf )
@@ -31,6 +62,7 @@ command_sequence=(
 'rm -rfv ${PKGDIR}'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av ${key_packages1[@]} ${key_packages2[@]} --keep-going'
 'pick_gcc'
+'pick_binutils'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb ${key_packages1[@]} --keep-going'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke system --keep-going'
 'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke world --keep-going'
@@ -41,9 +73,10 @@ msg1_sequence=(
 'Remove PKGDIR'
 'Rebuild toolchain'
 'Select gcc'
-'Rebuild toolchain packages with new gcc'
-'Rebuild system packages with new gcc'
-'Rebuild world packages with new gcc'
+'Select binutils'
+'Rebuild toolchain packages with new gcc, binutils'
+'Rebuild system packages with new toolchain'
+'Rebuild world packages with new toolchain'
 )
 
 # active present tense
@@ -51,9 +84,10 @@ msg2_sequence=(
 'Removing PKGDIR'
 'Rebuilding toolchain'
 'Selecting gcc'
-'Rebuilding toolchain packages with new gcc'
-'Rebuilding system packages with new gcc'
-'Rebuilding world packages with new gcc'
+'Selecting binutils'
+'Rebuilding toolchain packages with new gcc, binutils'
+'Rebuilding system packages with new toolchain'
+'Rebuilding world packages with new toolchain'
 )
 
 answer=""   # response to prompt
@@ -61,6 +95,7 @@ status=0    # what step are we on?
 
 ### ToDO - add command line processor
 [[ $1 == "-r" ]] && read status < ${status_file}
+[[ $1 == "-s" ]] && read status < ${status_file} && message "Next step: ${status} -- ${msg1_sequence[${status}]}" && exit
 
 #----------[ functions ]-------------------------------------
 get_number()        # set external variable $answer based on reponse to prompt $1
@@ -82,6 +117,11 @@ pick_gcc()          # pick the appropriate gcc
 message "setting gcc-config $answer" && gcc-config ${answer};
 message "sourcing /etc/profile" && source /etc/profile; }
 
+pick_binutils()          # pick the appropriate gcc
+{ binutils-config -l; get_number "Select binutils profile from list above";
+message "setting binutils-config $answer" && binutils-config ${answer};
+message "sourcing /etc/profile" && source /etc/profile; }
+
 #----------[ main script ]-----------------------------------
 # display script kick-off separator
 separator "joetoo Rebuild Update Sequence -- rus-${BUILD}"
@@ -97,6 +137,7 @@ do
   then
     message_n "${LBon}Now ${BYon}${msg2_sequence[i]}${LBon}...${Boff}"
     eval ${command_sequence[i]}; right_status $?
+    echo $i > ${status_file}
   else
     message "User chose NOT to ${BYon}${msg1_sequence[i]}${Boff}. Quitting..."
     echo $(($i-1)) > ${status_file}
@@ -106,5 +147,5 @@ done
 
 echo
 message "rus complete.  recommend verification with something line --"
-message 'eix-update && FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 --keep-going $(eix -Ic | grep -v \'07/0[1-9]/2023\'| cut -d\' \' -f2 | grep /)'
+message 'eix-update && FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 --keep-going $(eix -Ic | grep -v "07/0[1-9]/2023" | cut -d" " -f2 | grep /)'
 
