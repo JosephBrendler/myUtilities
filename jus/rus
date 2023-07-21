@@ -116,7 +116,6 @@ RCP; message_n "$ps [0-9]: " && read answer; done; }
 
 get_answer()        # set external variable $answer based on reponse to prompt $1
 { ps=$1; echo; echo; CUU; SCP; message_n "$ps [yngYNG]: " && read answer;
-#while ! expr "${answer:0:1}" : [yngYNG] >/dev/null;  # answer not a regex match
 while ! expr "${answer:0:1}" : \[yngYNG\] >/dev/null;  # answer not a regex match
 do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
 RCP; message_n "$ps [yngYNG]: " && read answer; done; }
@@ -134,38 +133,38 @@ message "sourcing /etc/profile" && source /etc/profile; }
 pkgsync()            # stop/start syncing packages
 {
 action="$1"
-echo "action: ${action}"
+echo; message "action: ${action}"
 cslinelist=($(grep -n cloudsync /etc/crontab | cut -d':' -f1))
 if [[ "${action}" == "stop" ]]
 then
-  echo "commenting out cloudsync cron job in crontab";
+  message "commenting out cloudsync cron job in crontab";
   for ((i=0; i<${#cslinelist[@]}; i++))
   do
-    echo "maybe comment line: ${cslinelist[i]}"
+    message "maybe comment line: ${cslinelist[i]}"
     sed -i "${cslinelist[i]} s|^.|#&|" /etc/crontab;
   done;
-  echo "stopping cronie"
-  /etc/init.d/cronie stop
-  echo "stopping rsyncd"
+  message "stopping rsyncd"
   /etc/init.d/rsyncd stop
+  message "restarting cronie"
+  /etc/init.d/cronie restart
 elif [[ "${action}" == "start" ]]
 then
-  echo "un-commenting cloudsync cron job in crontab"
+  message"un-commenting cloudsync cron job in crontab"
   # if it is not already commented, then comment it
   for ((i=0; i<${#cslinelist[@]}; i++))
   do
-    echo "maybe uncomment line: ${cslinelist[i]}"
+    message "maybe uncomment line: ${cslinelist[i]}"
     sed -i "${cslinelist[i]} s|^#||" /etc/crontab
   done
-  echo "restarting cronie"
-  /etc/init.d/cronie restart
-  echo "restarting rsyncd"
+  message "restarting rsyncd"
   /etc/init.d/rsyncd restart
+  message "restarting cronie"
+  /etc/init.d/cronie restart
 else
-  echo "Invalid action passed to pkgsync; exiting"
+  E_message "Invalid action passed to pkgsync; exiting"
   exit
 fi
-echo "done pkgsync ${action}"
+message "done pkgsync ${action}"
 }
 
 #----------[ main script ]-----------------------------------
@@ -175,32 +174,33 @@ separator "joetoo Rebuild Update Sequence -- rus-${BUILD}"
 message "Checking root UID... "&& checkroot
 message "Setup with PKGDIR = ${PKGDIR}"
 
-for ((i=status; i<${#command_sequence[@]}; i++))
+#for ((i=status; i<${#command_sequence[@]}; i++))
+while [[ status -lt ${#command_sequence[@]} ]]
 do
   [[ ! $answer == [gG] ]] && answer="" && \
-    separator "${msg1_sequence[i]}" "rus-${BUILD} Now starting"
-    get_answer "Are you ready to execute step ${i} -- ${BYon}${msg1_sequence[i]}${Boff}?"
+    separator "${msg1_sequence[status]}" "rus-${BUILD} Now starting"
+    get_answer "Are you ready to execute step ${status} -- ${BYon}${msg1_sequence[status]}${Boff}?"
   if [[ $answer == [YyGg] ]]
   then
-    message_n "${LBon}Now executing step ${i} -- ${BYon}${msg2_sequence[i]}${LBon}...${Boff}"
-    eval ${command_sequence[i]}; result="$?"; right_status "${result}"
+    message_n "${LBon}Now executing step ${status} -- ${BYon}${msg2_sequence[status]}${LBon}...${Boff}"
+    eval ${command_sequence[status]}; result="$?"; right_status "${result}"
     if [[ ${result} ]]
     then
-      message "Step ${i} -- ${BYon}${msg1_sequence[i]}${Boff} -- complete"
-      message "Saving [${i}] to ${status_file}"
-      echo $i > ${status_file}
+      message "Step ${status} -- ${BYon}${msg1_sequence[status]}${Boff} -- complete"
+      message "Saving [${status}] to ${status_file}"
     else
-      message "Step ${i} -- ${BYon}${msg1_sequence[i]}${Boff} -- ${BRon}failed${Boff}"
-      echo $(($i-1)) > ${status_file}
-      message "Quitting..."
+      E_message "Step ${status} -- ${BYon}${msg1_sequence[status]}${Boff} -- ${BRon}failed${Boff}"
+      E_message "Quitting..."
     fi
   else
-    message "User chose ${BRon}NOT${Boff} to execute step ${i} -- ${BYon}${msg1_sequence[i]}${Boff}."
-    message "Saving [((${i}-1))] to ${status_file}"
-    echo $(($i-1)) > ${status_file}
-    message "Quitting..."
+    E_message "User chose ${BRon}NOT${Boff} to execute step ${status} -- ${BYon}${msg1_sequence[status]}${Boff}."
+    E_message "Saving [((${status}-1))] to ${status_file}"
+    E_message "Quitting..."
     exit
   fi
+  # increment number of next step and store in status_file
+  let status++;
+  echo $status > ${status_file}
 done
 
 echo
