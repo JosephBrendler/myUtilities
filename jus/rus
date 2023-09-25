@@ -3,7 +3,7 @@
 source /usr/local/sbin/script_header_brendlefly
 #  0.0.7 - adds pick_binutils() function, -s option
 #  0.0.8 - stop/start cloudsync packages/rsyncd before/after
-BUILD=0.0.8
+BUILD=0.0.9
 
 # To Do - assumes cronie; generalize for other cron systems
 
@@ -64,12 +64,12 @@ key_packages2=(
 command_sequence=(
 'pkgsync stop'
 'rm -rfv ${PKGDIR}'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av ${key_packages1[@]} ${key_packages2[@]} --keep-going'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av1 ${key_packages1[@]} ${key_packages2[@]} --keep-going'
 'pick_gcc'
 'pick_binutils'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb ${key_packages1[@]} --keep-going'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke system --keep-going'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke world --keep-going'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb1 ${key_packages1[@]} --keep-going'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 system --keep-going'
+'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 world --keep-going'
 'pkgsync start'
 )
 
@@ -103,10 +103,33 @@ answer=""   # response to prompt
 status=0    # what step are we on?
 
 ### ToDO - add command line processor
-[[ $1 == "-r" ]] && read status < ${status_file}
-[[ $1 == "-s" ]] && read status < ${status_file} && message "Next step: ${status} -- ${msg1_sequence[${status}]}" && exit
+[[ $# -gt 1 ]] && useage
+args="$1"
+case $args in
+  "-s")        read status < ${status_file} && message "Next step: ${status} -- ${msg1_sequence[${status}]}" && exit ;;
+  "-r")        read status < ${status_file} ;;
+  "-j")        set_j1_makeopts ;;
+  "-jr"|"-rj") set_j1_makeopts && read status < ${status_file} ;;
+esac
 
 #----------[ functions ]-------------------------------------
+useage()
+{
+  echo -e $BGon"Useage: rus [-[s|r|j]]"$Boff
+  echo -e $BYon"Options:"$Boff
+  echo -e $BWon"  -s -- read status; report next step"$Boff
+  echo -e $BWon"  -r -- read status; resume at next step"$Boff
+  echo -e $BWon'  -j -- set MAKEOPTS="j1" (useful if resource constrained)'$Boff
+  exit
+}
+
+set_j1_makeopts() {
+  for (( i=0; i<${#command_sequence[@]}; i++ ))
+  do
+    command_sequence[i]=$(echo ${command_sequence[i]} | sed 's/FEATURES=/MAKEOPTS="-j1 -l1" FEATURES=/')
+  done
+}
+
 get_number()        # set external variable $answer based on reponse to prompt $1
 { ps=$1; echo; echo; CUU; SCP; message_n "$ps [0-9]: " && read answer;
 #while ! expr "${answer:0:1}" : [0-9] >/dev/null;  # answer not a regex match
