@@ -24,14 +24,14 @@
 #
 # Rev 17 Jan 2022 - simplified to get PKGDIR from local make.conf
 #
+# Rev 30 Sep 2023 - fixed bugs in --ecxlude processing
+#
 # For each category of cloud server (content, scripts, packages),
-#   User should configure each instance of this script with:
+#   User should configure (in /etc/cloudsync.conf) each instance of this script with:
 #   + list of servers that this should pull-sync with
 #     -- list of rsync-served folders that should be pull-sync'd
 #   + list of servers that this should push-sync with
 #     -- list of rsync-served folders that should be push-sync'd
-#   This is more clearly explained by the actual assignments, below
-#
 # -----------------------------------------------------------
 # Set default values and then source the variable assignments made in cloudsync.conf.
 #   Look for: ./cloudsync.conf , /usr/local/sbin/cloudsync.conf, /etc/cloudsync.conf
@@ -45,7 +45,7 @@ source /usr/local/sbin/script_header_brendlefly
 checkshell # reset colors if this shell is not interactive
 
 # --- Define local variables -----------------------------------
-BUILD="2.1.0"
+BUILD="2.2.0"
 
 OPTS1="-uaz"
 OPTS2=""
@@ -90,11 +90,11 @@ eval $( grep ^PKGDIR /etc/portage/make.conf )
 
 MyContentROOT="/srv/public"
 
-content_serverlist="thuvia oromis persephone spartacus pascal raspberry03"
-content_folderlist="Documents Joe_Laptop Music MyArduinoProjects My_Audio_Projects Pictures Software Video"
+content_serverlist="thuvia tahawus katahdin oromis zelda slim slim2 euler gauss"
+content_folderlist="Documents Joe_Laptop MyArduinoProjects My_Audio_Projects Pictures Software Video"
 
-pull_scripts_serverlist="thuvia selene slim slim2 oromis spartacus zelda raspberry03 raspberry06 raspberry201 raspberry202"
-push_scripts_serverlist="thuvia selene slim slim2 oromis spartacus zelda raspberry03 raspberry06 raspberry201 raspberry202"
+pull_scripts_serverlist="thuvia tahawus katahdin oromis zelda slim slim2 eulser gauss"
+push_scripts_serverlist="thuvia tahawus katahdin oromis zelda slim slim2 eulser gauss"
 
 local_scripts_folder="/usr/local/sbin"
 remote_scripts_folder="usr-local-sbin"
@@ -595,9 +595,10 @@ useage()
 # ---[ rsync() -- this is the main sync engine ]--------------------------------------------------------------
 r_sync()  #args: source destinaton opts
 {
-  rsync_args="$1 $2 $OPTS1 $OPTS2${excludestring}"
+  source="$1"; destination="$2"
+  rsync_args="${source=}/ ${destination} $OPTS1 $OPTS2 ${excludestring}"
   message "${BGon}Executing:${Boff} /usr/bin/rsync ${rsync_args}"
-  /usr/bin/rsync ${rsync_args}
+  eval /usr/bin/rsync ${rsync_args}
 }
 
 # ---[ Pull ]-------------------------------------------------------------------------------------------------
@@ -678,7 +679,7 @@ case $1 in
 esac
 
 # finish assembling excludestring
-excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude '$x'"; done
+excludestring="--exclude={"; for x in ${EXCLUDE[@]}; do excludestring+="${x},"; done; excludestring+="}"
 
 # Normally, if both are set, we pull first and then push to improve efficiency of distribution across cloud
 #  However, if delete is selected, then push(delete) first, and then pull
@@ -700,9 +701,17 @@ fi
 sync_content_loop()
 {
 separator "content" "cloudsync"
-# finish assembling excludestring
-EXCLUDE+=("*~")
-excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude '$x'"; done
+# finish assembling excludestring (exclude auto-backup versions and nextcloud .sync- files
+EXCLUDE+=(
+      "*~"
+      ".sync*.db"
+      ".sync*.db-shm"
+      ".sync*.db-wal"
+      )
+
+#excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude '$x'"; done
+#excludestring=""; for x in ${EXCLUDE[@]}; do excludestring+=" --exclude \"$x\""; done
+excludestring="--exclude={"; for x in ${EXCLUDE[@]}; do excludestring+="${x},"; done; excludestring+="}"
 
 for server in ${content_serverlist}
 do
