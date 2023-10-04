@@ -58,6 +58,14 @@ key_packages2=(
 'sys-devel/gcc-config'
 )
 
+# Defaults
+RESUME=$FALSE
+DISTCC=$FALSE
+J1_MAKEOPTS=$FALSE
+
+# default setting - my be over-ridden by command line option (n vs d)
+rus_features=" -distcc -distcc-pump -getbinpkg"
+
 # Notes on command sequence:
 #   -b = --buildpkg (i.e. build a new binary package)
 #   -k = --usepkg (i.e. use binary package if available)
@@ -66,39 +74,41 @@ key_packages2=(
 command_sequence=(
 'pkgsync stop'
 'rm -rfv ${PKGDIR}'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -av1 ${key_packages1[@]} ${key_packages2[@]} --keep-going'
+'FEATURES="${FEATURES} ${rus_features}" emerge -av1 ${key_packages1[@]} ${key_packages2[@]} --keep-going'
 'pick_gcc'
 'pick_binutils'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avb1 ${key_packages1[@]} --keep-going'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 system --keep-going'
-'FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 world --keep-going'
+'FEATURES="${FEATURES} ${rus_features}" emerge -avb1 ${key_packages1[@]} --keep-going'
+'FEATURES="${FEATURES} ${rus_features}" emerge -avbke1 system --keep-going'
+'FEATURES="${FEATURES} ${rus_features}" emerge -avbke1 world --keep-going'
 'pkgsync start'
 )
 
-# declarative future tense
+# declarative future tense (one more entry than command list, so status can come back "Already Done")
 msg1_sequence=(
 'Stop syncing packages with other nodes'
 'Remove PKGDIR'
 'Rebuild toolchain'
 'Select gcc'
 'Select binutils'
-'Rebuild toolchain packages with new gcc, binutils'
-'Rebuild system packages with new toolchain'
-'Rebuild world packages with new toolchain'
+'Rebuild toolchain with new gcc, binutils'
+'Rebuild system set with new toolchain'
+'Rebuild world set with new toolchain'
 'Re-start syncing packages with other nodes'
+'Already Done'
 )
 
-# active present tense
+# active present tense (one more entry than command list, so status can come back "Already Done")
 msg2_sequence=(
 'Stoping package syncing with other nodes'
 'Removing PKGDIR'
 'Rebuilding toolchain'
 'Selecting gcc'
 'Selecting binutils'
-'Rebuilding toolchain packages with new gcc, binutils'
-'Rebuilding system packages with new toolchain'
-'Rebuilding world packages with new toolchain'
+'Rebuilding toolchain with new gcc, binutils'
+'Rebuilding system set with new toolchain'
+'Rebuilding world set with new toolchain'
 'Re-starting package syncing with other nodes'
+'Already Done'
 )
 
 answer=""   # response to prompt
@@ -112,6 +122,10 @@ useage()
   echo -e $BWon"  -s  -- read status; report next step"$Boff
   echo -e $BWon"  -r  -- read status; resume at next step"$Boff
   echo -e $BWon'  -j  -- set MAKEOPTS="j1" (useful if resource constrained)'$Boff
+  echo -e $BWon'  -d  -- set FEATURES="distcc"  (useful if resource constrained)'$Boff
+  echo -e $BWon'  -n  -- set FEATURES="-distcc" (default; preferred)'$Boff
+  echo -e $BWon'  -q  -- decrease verbosity'$Boff
+  echo -e $BWon'  -v  -- increase verbosity'$Boff
   echo -e $BWon"  0-$((${#command_sequence[@]}-1)) -- \"resume\" at step number N"$Boff
   echo -e $BYon"Examples:"$Boff
   echo -e $LBon'  "rus -rj3" == "rus jr3" - MAKEOPTS; "3" overrides "r"; next step=3'$Boff
@@ -128,6 +142,14 @@ set_j1_makeopts() {
   do
     command_sequence[i]=$(echo ${command_sequence[i]} | sed 's/FEATURES=/MAKEOPTS="-j1 -l1" FEATURES=/')
   done
+}
+
+set_distcc() {
+  case $1 in
+    $FALSE ) rus_features=" -distcc -distcc-pump -getbinpkg" ;;
+    $TRUE  ) rus_features=" distcc -getbinpkg" ;;
+    *     ) E_message "Internal error - invalid parameter sent to set_distcc [$1]"; exit 1 ;;
+  esac
 }
 
 get_number()        # set external variable $answer based on reponse to prompt $1
@@ -207,9 +229,21 @@ process_argument() {
       "s"  ) read mystatus < ${status_file} && \
              message "Next step: ${mystatus} -- ${msg1_sequence[${mystatus}]}" && \
              exit ;;
-      "r"  ) read mystatus < ${status_file} && d_message "mystatus = [${mystatus}]" 2;;
-      "j"  ) set_j1_makeopts && d_message "Setting MAKEOPTS..." 2 ;;
-      [0-9]) mystatus=${char} && d_message "mystatus = [${mystatus}]" 2 ;;
+      "r"  ) read mystatus < ${status_file} && RESUME=$TRUE && d_message "mystatus = [${mystatus}]" 2;;
+      "j"  ) set_j1_makeopts && J1_MAKEOPTS=$TRUE && d_message "Setting MAKEOPTS..." 2 ;;
+      "d"  ) DISTCC=$TRUE && d_message "Setting distcc 'on'S..." 2  && set_distcc ${DISTCC} ;;
+      "n"  ) DISTCC=$FALSE && d_message "Setting distcc 'off'S..." 2  && set_distcc ${DISTCC} ;;
+      "q"  )
+          [ ${verbosity} -gt 0 ] && let ${verbosity}--
+          [ ${verbosity} -eq 0 ] && VERBOSE=$FALSE
+          d_message "decreased verbosity to [${verbosity}]" 2
+          ;;
+      "v"  )
+          [ ${verbosity} -lt 9 ] && let ${verbosity}++
+          [ ${verbosity} -gt 0 ] && VERBOSE=$TRUE
+          d_message "increased verbosity to [${verbosity}]" 2
+          ;;
+      [0-9]) mystatus=${char} && RESUME=$TRUE && d_message "mystatus = [${mystatus}]" 2 ;;
       *)     useage ;;
     esac
     args=${args:1}
@@ -218,18 +252,32 @@ process_argument() {
   # passes through with status=0 if no arguments on command line
 }
 
+display_config()
+{
+message "${BWon}Using configuration data below: ${Boff}"
+echo -e ${LBon}"   VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
+echo -e ${LBon}"   STATUS_FILE............: "${Boff}${status_file}
+echo -e ${LBon}"   PKGDIR.................: "${Boff}${PKGDIR}
+echo -e ${LBon}"   rus_features...........: "${rus_features}
+echo -e ${LBon}"   DISTCC.................: "$(status_color ${DISTCC})$(TrueFalse ${DISTCC})${Boff}
+echo -e ${LBon}"   RESUME.................: "$(status_color ${RESUME})$(TrueFalse ${RESUME})${Boff}
+echo -e ${LBon}"   J1_MAKEOPTS............: "$(status_color ${J1_MAKEOPTS})$(TrueFalse ${J1_MAKEOPTS})${Boff}
+echo -e ${LBon}"   verbosity..............: "${Boff}${verbosity}
+echo -e ${BYon}"   Status.................: Next step: ${status} -- ${msg1_sequence[${status}]}"
+}
+
 #----------[ main script ]-----------------------------------
 # display script kick-off separator
 separator "joetoo Rebuild Update Sequence -- rus-${BUILD}"
 # must be root
 message "Checking root UID... "&& checkroot
 
-### ToDO - add command line processor
+### ToDO - add full command line processor (this assumes only one argument, containing multiple one-letter options)
 process_argument $*
 
-message "Setup with PKGDIR = ${PKGDIR}"
+# display config variables from jus.conf and option flags from command line
+display_config
 
-#for ((i=status; i<${#command_sequence[@]}; i++))
 while [[ status -lt ${#command_sequence[@]} ]]
 do
   [[ ! $answer == [gG] ]] && answer="" && \
@@ -237,7 +285,7 @@ do
     get_answer "Are you ready to execute step ${status} -- ${BYon}${msg1_sequence[status]}${Boff}?"
   if [[ $answer == [YyGg] ]]
   then
-    message_n "${LBon}Now executing step ${status} -- ${BYon}${msg2_sequence[status]}${LBon}...${Boff}"
+    message "${LBon}Now executing step ${status} -- ${BYon}${msg2_sequence[status]}${LBon}...${Boff}"
     eval ${command_sequence[status]}; result="$?"; right_status "${result}"
     if [[ ${result} ]]
     then
@@ -259,5 +307,5 @@ done
 
 echo
 message "rus complete.  recommend verification with something line --"
-message 'eix-update && FEATURES="$FEATURES -distcc -distcc-pump -getbinpkg" emerge -avbke1 --keep-going $(eix -Ic | grep -v "07/0[1-9]/2023" | cut -d" " -f2 | grep /)'
+message 'eix-update && FEATURES="${FEATURES} ${rus_features}" emerge -avbke1 --keep-going $(eix -Ic | grep -v "07/0[1-9]/2023" | cut -d" " -f2 | grep /)'
 
