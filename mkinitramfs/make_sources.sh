@@ -31,17 +31,18 @@ source ${MAKE_DIR}/dyn_executables_header
 # define lists of links that need to be created in /bin
 #   create links in /bin to executables in /sbin to ensure we do not use busybox "version" --
 #   findfs, blkid, e2fsck (fsck fsck.ext2 fsck.ext3 fsck.ext4)...
+#   note: find is excluded from busybox but is provided by /usr/bin/gfind - linked below
 non_busybox_bin_links="findfs blkid e2fsck fsck fsck.ext2 fsck.ext3 fsck.ext4"
 
 #   references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
-#   findfs, blkid, e2fsck, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
+#   blkid, e2fsck, find, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
 busybox_link_list="\
     [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
     brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt \
     chvt cksum clear cmp comm conspy cp cpio crond cryptpw cttyhack cut date dd deallocvt delgroup \
     deluser depmod devmem df dhcprelay diff dirname dmesg dnsdomainname dos2unix du dumpkmap \
     dumpleases echo ed egrep eject env envdir envuidgid ether-wake expand expr false fatattr fbset \
-    fdflush fdformat fdisk fgconsole fgrep find flock free freeramdisk fstrim fsync ftpd \
+    fdflush fdformat fdisk fgconsole fgrep flock free freeramdisk fstrim fsync ftpd \
     fuser getopt getty ginit grep groups gunzip gzip halt hd hdparm head hexdump hostname httpd \
     hwclock id ifconfig ifdown ifenslave ifplugd ifup insmod install ionice iostat ip ipaddr \
     ipcrm ipcs iplink iproute iprule iptunnel kbd_mode kill killall killall5 last less linux32 \
@@ -93,6 +94,12 @@ other_link_name+=(   "mdev"           "init"    "modprobe"    "udevadm"        )
 other_link_dir+=(    "/usr/"  "/usr/")
 other_link_target+=( "../lib" "../lib")
 other_link_name+=(   "lib"    "lib64")
+
+#   add to the arrays values associated with /usr/bin/
+# find is excluded from busybox and provided by gfind (dyn-executable)
+other_link_dir+=(    "/usr/bin/" )
+other_link_target+=( "gfind" )
+other_link_name+=(   "find" )
 
 #   add to the arrays values associated with /dev/
 other_link_dir+=(    "/dev/vc/"   )
