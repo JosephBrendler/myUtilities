@@ -74,7 +74,9 @@ lvm_link_list="\
 #   references to e2fsck
 e2fsck_link_list="fsck fsck.ext2 fsck.ext3 fsck.ext4"
 
-# use this set of arrays to define other links that need to be created in the associated dirs
+# use this set of arrays to define other links that need to be created
+# in the associated dirs (each "column" is dir, target, link-name)
+
 #   initialize the arrays with values associated with /
 other_link_dir=(    "/"     "/"      )
 other_link_target=( "lib"   "init"   )
@@ -427,8 +429,11 @@ copy_dependent_libraries()
   #   https://bugs.gentoo.org/760249 (resolved by fix to dracut)
   #   https://forums.gentoo.org/viewtopic-t-1096804-start-0.html (zfs problem. fix: copy file to initramfs)
   #   https://forums.gentoo.org/viewtopic-t-1049468-start-0.html (also zfs problem. same fix)
-  # at least for now, I'm using the same fix here.  ( copy missing file /lib64/libgcc_s.so.1 )
+  # at least for now, I'm using the same fix here --
+  # ( if needed, find and copy the missing file to /lib64/libgcc_s.so.1
+  #   - then copy it to ${SOURCES_DIR}. Note: in this initramfs, /lib64 is a symlink to /lib )
 
+  [[ ! -e /lib64/libgcc_s.so.1 ]] && cp -v $(find / -iname libgcc_s.so.1) /lib64/libgcc_s.so.1
   missing_file=/lib64/libgcc_s.so.1
   target_name=$(basename ${missing_file})
   dir_name=$(dirname ${missing_file})
