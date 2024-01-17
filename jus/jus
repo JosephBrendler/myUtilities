@@ -263,6 +263,7 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
     "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
+    "-[0-9]"                 ) RESUME="yes" ; let new_phase=${myargs:1:1};;
     "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
     "-s" | "--status"        ) status ; exit 0 ;;
     "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
@@ -311,6 +312,7 @@ do
         "p") PERL_CLEANER="yes" ;;
         "P") PYTHON_UPDATER="yes" ;;
         "r") RESUME="yes" ;;
+      [0-9]) RESUME="yes" ; let new_phase=${myargs:0:1};;
         "R") REGEN_OVERLAY_METADATA="yes" ;;
         "S") SELINUX_RELABEL="yes" ;;
         "t") RKHUNTER="yes" ;;
@@ -340,6 +342,7 @@ useage()
    echo -e "   ${BYon}Options for all phases${Boff}"
    echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
    echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
+   echo -e "    "$BBon"[-[0-9]]"$Boff"..................resume update sequence at this phase"
    echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
    echo -e "    "$BBon"[-h | --help]"$Boff".............print this text"
    echo -e "   ${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
@@ -431,6 +434,7 @@ echo -e ${LBon}"MODULE_REBUILD.........: "$(status_color ${MODULE_REBUILD})${MOD
 echo -e ${LBon}"PERL_CLEANER...........: "$(status_color ${PERL_CLEANER})${PERL_CLEANER}${Boff}
 echo -e ${LBon}"PYTHON_UPDATER.........: "$(status_color ${PYTHON_UPDATER})${PYTHON_UPDATER}${Boff}
 echo -e ${LBon}"RESUME.................: "$(status_color ${RESUME})${RESUME}${Boff}
+echo -e ${LBon}"NEW_PHASE..............: "$(status_color ${RESUME})${new_phase}${Boff}
 echo -e ${LBon}"SELINUX_RELABEL........: "$(status_color ${SELINUX_RELABEL})${SELINUX_RELABEL}${Boff}
 echo -e ${LBon}"RKHUNTER...............: "$(status_color ${RKHUNTER})${RKHUNTER}${Boff}
 echo -e ${LBon}"X11_MODULE_REBUILD.....: "$(status_color ${X11_MODULE_REBUILD})${X11_MODULE_REBUILD}${Boff}
@@ -497,12 +501,14 @@ update_check()
   # with ver 6, just check for major upgrades in key packages
   # (linux-headers, glibc, binutils, libtool, gcc) and branch to full rebuild
 
+#    'sys-devel/libtool'
+
   key_packages=(
     'sys-kernel/linux-headers'
     'sys-libs/glibc'
     'sys-devel/binutils'
     'sys-devel/gcc-config'
-    'sys-devel/libtool'
+    'dev-build/libtool'
     'sys-devel/gcc'
     )
   KP_FOUND=${FALSE}
@@ -680,6 +686,10 @@ RCP; message_n "$ps [yngYNG]: " && read answer; done; }
 # display script kick-off separator
 separator "joetoo Update Sequence -- jus-${BUILD}"
 
+# default to start with first phase
+let phase=0
+let new_phase=0
+
 # process command line to set and check sanity of option flags
 process_command_line $*
 
@@ -693,15 +703,18 @@ display_config
 [ "$UPDATE_CHECK" == "yes" ] && emerge_sync && update_check && exit 0
 
 # if resuming, retrieve number of next phase to be performed from status file
-[ "$RESUME" == "yes" ] && read phase < $STATUS_FILE
-
+if [ "$RESUME" == "yes" ]
+then
+  # assign current phase from command line or from saved status file
+  [ ${new_phase} -ne 0 ] && let phase=${new_phase} ||read phase < ${STATUS_FILE}
+fi
 [[ "$GO_AHEAD" == "yes" ]] && answer="g" || answer=""
 # proceed thru each phase, as allowed to continue, until complete
 for ((l=phase; l<${#phase_function_sequence[@]}; l++))
 do
   [[ ! $answer == [gG] ]] && answer="" && \
     separator "($l) ${phase_message[l]}" "$(hostname) jus-${BUILD} Now starting" && \
-    get_answer "Are you ready to ${BYon}${phase_message[l]}${Boff}?"
+    get_answer "Are you ready to execute ${BYon}(${l}) ${phase_message[l]}${Boff}?"
   if [[ $answer == [YyGg] ]]
   then
     [[ $answer == [gG] ]] && GO_AHEAD="yes"
