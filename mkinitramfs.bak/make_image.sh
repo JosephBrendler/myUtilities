@@ -34,6 +34,8 @@ make_initramfs()
 #---[ main script ]----------
 separator "Make initramfs Image"  "makeinitramfs-$BUILD"
 
+# must be run by root with boot mounted already
+# go to sources dir, and run function above to create initramfs image file
 checkroot && checkboot && \
 old_pwd=$PWD && cd "${SOURCES_DIR}" && make_initramfs && cd "${old_pwd}"
 d_message "all done" 1

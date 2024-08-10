@@ -34,7 +34,8 @@ identify_new_initramfs() {
     d_message "newinitramfs: [${newinitramfs}]" 1
   done <<< $(find . -iname 'initramfs-*' -type f -printf '%Ts\t%p\n' | sort -n | cut -f2)
 
-  newtimestamp=$(echo ${newinitramfs} | cut -d'-' -f4)
+#  newtimestamp=$(echo ${newinitramfs} | cut -d'-' -f4)
+  newtimestamp="${newinitramfs##*-}"
   d_echo
   d_message "${BYon}newinitramfs: [${Boff}${newinitramfs}${BYon}]${Boff}" 1
   d_message "${BYon}newtimestamp: [${Boff}${newtimestamp}${BYon}]${Boff}" 1
@@ -42,20 +43,22 @@ identify_new_initramfs() {
 }
 
 identify_current_targets() {
-  # identify the current targets of links (latest, working, safe)
-  while read line
-  do
-#    linkname=$(echo $line | cut -d' ' -f1 | sed 's/://')
-    linkname=$(basename $(echo $line | cut -d' ' -f1 | sed 's/://'))
-    target=$(echo $line | cut -d' ' -f5)
-    d_message "linkname: [${LBon}${linkname}${Boff}], target: [${BGon}${target}${Boff}]" 1
-    case $(echo ${linkname} | cut -d'.' -f2) in
-      "latest" ) latest="${target}";;
-      "working" ) working="${target}";;
-      "safe" ) safe="${target}";;
-      * ) echo Error;;
-    esac
-  done <<< $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 | xargs file)
+  # if any exist, identify the current targets of links (latest, working, safe)
+  if [ $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 ) ]
+  then
+    while read line
+    do
+      linkname=$(basename $(echo $line | cut -d' ' -f1 | sed 's/://'))
+      target="${line##*link\ to\ }"
+      d_message "linkname: [${LBon}${linkname}${Boff}], target: [${BGon}${target}${Boff}]" 1
+      case $(echo ${linkname} | cut -d'.' -f2) in
+        "latest" ) latest="${target}";;
+        "working" ) working="${target}";;
+        "safe" ) safe="${target}";;
+        * ) echo Error;;
+      esac
+    done <<< $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 | xargs file)
+  fi
 }
 
 makelink() {
@@ -85,14 +88,14 @@ right_status $?
 # reassign newinitramfs variable to the new name
 newinitramfs="initramfs.working.${newtimestamp}"
 
-# put the newest initramfs in rotation and delete the oldest
+# put the newest initramfs in rotation and rotate older ones if they exist
 makelink ${newinitramfs} "initramfs.latest"
-makelink ${latest} "initramfs.working"
-makelink ${working} "initramfs.safe"
+[ -f "${latest}" ] && makelink ${latest} "initramfs.working"
+[ -f "${working}" ] && makelink ${working} "initramfs.safe"
 
-message_n "removing oldest [${BRon}${safe}${Boff}]"
-rm ${safe}
-right_status $?
+# delete the oldest
+[ -f "${safe}" ] && \message_n "removing oldest [${BRon}${safe}${Boff}]" && \
+  ( rm ${safe} ; right_status $? )
 
 message_n "returning to ${old_dir}..."
 cd ${old_dir}

@@ -366,7 +366,9 @@ copy_dependent_libraries()
   # parsing strategy:
   # Ignore case (3) - (trivial) the dyn_executable is already copied, and ld-linux is on the list separately
   # For case (2) - just make sure the target executable (dependency) gets copied if it hasn't been already
+  #   (and create the target directory [dirname] if it doesn't exist)
   # For each case (1), copy the target executable to - and create the symlink in - the ${SOURCES_DIR}
+  #   (and create the target directory [dirname] if it doesn't exist)
 
   # General algorithm:  process the dynamic executables to identify libraries they depend on --
   #   for each dyn_executable, use which to locate it, and lddtree to list all dependencies.
@@ -388,6 +390,9 @@ copy_dependent_libraries()
         dir_name=$(dirname $1)
         d_message "  Case 2 (ELF). dir_name=[$dir_name], target_name=[$target_name]" 3
         d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
+        # create target directory if it diesn't already exist
+        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}" 3
+        [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}
         d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
         [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
           copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
@@ -400,6 +405,10 @@ copy_dependent_libraries()
         # first copy the target
         d_message "  Case 1 (symlink) dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name]" 3
         d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
+        # create target directory if it diesn't already exist
+        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}" 3
+        [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}
+        # copy target file if it is not already there
         d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
         [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
           copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
@@ -428,34 +437,7 @@ copy_dependent_libraries()
   # occurs when cryptsetup tries to open LUKS volume - see references (similar but different) --
   #   https://bugs.gentoo.org/760249 (resolved by fix to dracut)
   #   https://forums.gentoo.org/viewtopic-t-1096804-start-0.html (zfs problem. fix: copy file to initramfs)
-  #   https://forums.gentoo.org/viewtopic-t-1049468-start-0.html (also zfs problem. same fix)
-  # at least for now, I'm using the same fix here --
-  # ( if needed, find and copy the missing file to /lib64/libgcc_s.so.1
-  #   - then copy it to ${SOURCES_DIR}. Note: in this initramfs, /lib64 is a symlink to /lib )
-
-  [[ ! -e /lib64/libgcc_s.so.1 ]] && cp -v $(find / -iname libgcc_s.so.1) /lib64/libgcc_s.so.1
-  missing_file=/lib64/libgcc_s.so.1
-  target_name=$(basename ${missing_file})
-  dir_name=$(dirname ${missing_file})
-
-  d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name "
-  [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
-
-}
-
-#---[ Main Script ]-------------------------------------------------------
-# Create the required directory structure -- maintain the file
-#   ${MAKE_DIR}/initramfs_dir_tree to tailor this
-separator "Make Sources"  "mkinitramfs-$BUILD"
-checkroot
-display_config
-# determine if splash is requested in init.conf
-eval $(grep "splash" ${config_file} | grep -v "#")
-[ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
-
-
-separator "Build Directory Tree"  "mkinitramfs-$BUILD"
+  #   https://forums.gentoo.org/viewtopic-t-10fs-$BUILD"
 build_dir_tree
 
 #separator "Create Device Nodes"  "mkinitramfs-$BUILD"
@@ -479,3 +461,4 @@ echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 d_message "cleaning up..." 1
 # nothing to do here anymore...
 d_message "All Done" 1
+
