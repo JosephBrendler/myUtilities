@@ -44,7 +44,7 @@ identify_new_initramfs() {
 
 identify_current_targets() {
   # if any exist, identify the current targets of links (latest, working, safe)
-  if [ $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 ) ]
+  if [[ $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 ) ]]
   then
     while read line
     do

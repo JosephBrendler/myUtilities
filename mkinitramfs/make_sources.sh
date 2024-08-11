@@ -284,78 +284,6 @@ do
 done
 }
 
-create_device_nodes()
-{
-## TODO - test if this is really necessary, now that we have mdev
-  # character special device nodes in dev
-  make_one_device_node ${SOURCES_DIR}/dev/console c 5 1
-  make_one_device_node ${SOURCES_DIR}/dev/null c 1 3
-  make_one_device_node ${SOURCES_DIR}/dev/tty1 c 4 1
-  make_one_device_node ${SOURCES_DIR}/dev/urandom c 1 9
-  make_one_device_node ${SOURCES_DIR}/dev/mapper/control c 10 236
-
-  # block device nodes in dev
-  make_one_device_node ${SOURCES_DIR}/dev/sda b 8 0
-  make_one_device_node ${SOURCES_DIR}/dev/sda1 b 8 1
-  make_one_device_node ${SOURCES_DIR}/dev/sda2 b 8 2
-  make_one_device_node ${SOURCES_DIR}/dev/sda3 b 8 3
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdb b 8 16
-  make_one_device_node ${SOURCES_DIR}/dev/sdb1 b 8 17
-  make_one_device_node ${SOURCES_DIR}/dev/sdb2 b 8 18
-  make_one_device_node ${SOURCES_DIR}/dev/sdb3 b 8 19
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdc b 8 32
-  make_one_device_node ${SOURCES_DIR}/dev/sdc1 b 8 33
-  make_one_device_node ${SOURCES_DIR}/dev/sdc2 b 8 34
-  make_one_device_node ${SOURCES_DIR}/dev/sdc3 b 8 35
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdd b 8 48
-  make_one_device_node ${SOURCES_DIR}/dev/sdd1 b 8 49
-  make_one_device_node ${SOURCES_DIR}/dev/sdd2 b 8 50
-  make_one_device_node ${SOURCES_DIR}/dev/sdd3 b 8 51
-
-  make_one_device_node ${SOURCES_DIR}/dev/sde b 8 64
-  make_one_device_node ${SOURCES_DIR}/dev/sde1 b 8 65
-  make_one_device_node ${SOURCES_DIR}/dev/sde2 b 8 66
-  make_one_device_node ${SOURCES_DIR}/dev/sde3 b 8 67
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdf b 8 80
-  make_one_device_node ${SOURCES_DIR}/dev/sdf1 b 8 81
-  make_one_device_node ${SOURCES_DIR}/dev/sdf2 b 8 82
-  make_one_device_node ${SOURCES_DIR}/dev/sdf3 b 8 83
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdg b 8 96
-  make_one_device_node ${SOURCES_DIR}/dev/sdg1 b 8 97
-  make_one_device_node ${SOURCES_DIR}/dev/sdg2 b 8 98
-  make_one_device_node ${SOURCES_DIR}/dev/sdg3 b 8 99
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdh b 8 112
-  make_one_device_node ${SOURCES_DIR}/dev/sdh1 b 8 113
-  make_one_device_node ${SOURCES_DIR}/dev/sdh2 b 8 114
-  make_one_device_node ${SOURCES_DIR}/dev/sdh3 b 8 115
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdi b 8 128
-  make_one_device_node ${SOURCES_DIR}/dev/sdi1 b 8 129
-  make_one_device_node ${SOURCES_DIR}/dev/sdi2 b 8 130
-  make_one_device_node ${SOURCES_DIR}/dev/sdi3 b 8 131
-
-  make_one_device_node ${SOURCES_DIR}/dev/sdj b 8 144
-  make_one_device_node ${SOURCES_DIR}/dev/sdj1 b 8 145
-  make_one_device_node ${SOURCES_DIR}/dev/sdj2 b 8 146
-  make_one_device_node ${SOURCES_DIR}/dev/sdj3 b 8 147
-
-}
-
-make_one_device_node()  # args: name type[c|b] MAJOR MINOR
-{
-  # mknod [option] name type [major minor]
-  #  options: {-m|--mode=MODE] [-z|--context=CTX], types: p=FIFO, b=block, c=character
-  node_name="$1"; node_type="$2"; node_MAJOR="$3"; node_MINOR="$4"
-  d_message_n "${BGon}*${Boff} ${node_name} ${node_type} ${node_MAJOR} ${node_MINOR} ..." 2
-  mknod "${node_name}" "${node_type}" ${node_MAJOR} ${node_MINOR} ; d_right_status $? 2
-}
-
 copy_dependent_libraries()
 {
   # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.
@@ -366,9 +294,7 @@ copy_dependent_libraries()
   # parsing strategy:
   # Ignore case (3) - (trivial) the dyn_executable is already copied, and ld-linux is on the list separately
   # For case (2) - just make sure the target executable (dependency) gets copied if it hasn't been already
-  #   (and create the target directory [dirname] if it doesn't exist)
   # For each case (1), copy the target executable to - and create the symlink in - the ${SOURCES_DIR}
-  #   (and create the target directory [dirname] if it doesn't exist)
 
   # General algorithm:  process the dynamic executables to identify libraries they depend on --
   #   for each dyn_executable, use which to locate it, and lddtree to list all dependencies.
@@ -408,7 +334,6 @@ copy_dependent_libraries()
         # create target directory if it diesn't already exist
         d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}" 3
         [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}
-        # copy target file if it is not already there
         d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
         [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
           copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
@@ -437,11 +362,40 @@ copy_dependent_libraries()
   # occurs when cryptsetup tries to open LUKS volume - see references (similar but different) --
   #   https://bugs.gentoo.org/760249 (resolved by fix to dracut)
   #   https://forums.gentoo.org/viewtopic-t-1096804-start-0.html (zfs problem. fix: copy file to initramfs)
-  #   https://forums.gentoo.org/viewtopic-t-10fs-$BUILD"
-build_dir_tree
+  #   https://forums.gentoo.org/viewtopic-t-1049468-start-0.html (also zfs problem. same fix)
+  # at least for now, I'm using the same fix here --
 
-#separator "Create Device Nodes"  "mkinitramfs-$BUILD"
-#create_device_nodes  (this is not necessary. function code retained to preserve how-to)
+  # ( if needed, find and copy the missing file to /lib64/libgcc_s.so.1
+  #   - then copy it to ${SOURCES_DIR}. Note: in this initramfs, /lib64 is a symlink to /lib )
+  if [[ ! -e /lib64/libgcc_s.so.1 ]]
+  then
+    selector=$(gcc -v 2>&1 | grep Target | cut -d' ' -f2)
+    searched_file="$( find /usr/ -iname libgcc_s.so.1 2>/dev/null | grep -v 32 | grep ${selector})"
+    cp -v "${searched_file}" /lib64/libgcc_s.so.1
+  fi
+  missing_file=/lib64/libgcc_s.so.1
+  target_name=$(basename ${missing_file})
+  dir_name=$(dirname ${missing_file})
+
+  d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name "
+  [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
+     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
+
+}
+
+#---[ Main Script ]-------------------------------------------------------
+# Create the required directory structure -- maintain the file
+#   ${MAKE_DIR}/initramfs_dir_tree to tailor this
+separator "Make Sources"  "mkinitramfs-$BUILD"
+checkroot
+display_config
+# determine if splash is requested in init.conf
+eval $(grep "splash" ${config_file} | grep -v "#")
+[ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
+
+
+separator "Build Directory Tree"  "mkinitramfs-$BUILD"
+build_dir_tree
 
 separator "Check for Parts"  "mkinitramfs-$BUILD"
 check_for_parts
@@ -461,4 +415,3 @@ echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 d_message "cleaning up..." 1
 # nothing to do here anymore...
 d_message "All Done" 1
-
