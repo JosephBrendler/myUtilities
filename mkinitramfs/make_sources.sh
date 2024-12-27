@@ -284,6 +284,31 @@ do
 done
 }
 
+build_merged-usr_dir_tree_links()
+{
+  # get target and links to it
+  local targets=('')
+  local links=('')
+  source ${MAKE_DIR}/initramfs_merged-usr_dir_links
+  old_dir=$(pwd)
+  cd ${SOURCES_DIR}
+  d_message "Changed from ${old_dir} to SOURCES_DIR: $(pwd)" 2
+  for ((i=0; i<${#links[@]}; i++))
+  do
+    # if this link doesn't exist, create it
+    if [ ! -L ${links[$i]} ]
+    then
+      d_message_n " Creating link ${LBon}${links[$i]}${Boff} --> ${BGon}${targets[$i]}${Boff} ..." 2
+      ln -s ${targets[$i]} ${links[$i]}; d_right_status $? 2
+    else
+      found_target="echo $(stat ${links[$i]} | head -n1 | cut -d'>' -f2)"
+      d_message_n " Found existing link ${SOURCES_DIR}${links[$i]} --> ${found_target} ..." 2; d_right_status $? 2
+    fi
+  done
+  cd ${old_dir}
+  d_message "Changed from SOURCES_DIR: ${SOURCES_DIR} tp old_dir: $(pwd)" 2
+}
+
 copy_dependent_libraries()
 {
   # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.
@@ -396,6 +421,7 @@ eval $(grep "splash" ${config_file} | grep -v "#")
 
 separator "Build Directory Tree"  "mkinitramfs-$BUILD"
 build_dir_tree
+build_merged-usr_dir_tree_links
 
 separator "Check for Parts"  "mkinitramfs-$BUILD"
 check_for_parts
