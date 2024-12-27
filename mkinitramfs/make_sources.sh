@@ -60,7 +60,7 @@ busybox_link_list="\
 lvm_link_list="\
     lvchange lvconvert lvcreate lvdisplay lvextend lvmchange lvmconfig \
     lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
-    lvs lvscan pscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
+    lvs lvscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
     pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate \
     vgdisplay vgexport vgextend vgimport vgimportclone vgmerge vgmknodes \
     vgreduce vgremove vgrename vgs vgscan vgsplit"
@@ -275,6 +275,20 @@ do
 done
 }
 
+build_other_devices()
+{
+  # used to also build block device nodes, now just the console character dev
+  old_dir=$(pwd)
+  cd ${SOURCES_DIR}
+  d_message "Changed from ${old_dir} to SOURCES_DIR: $(pwd)" 2
+  
+  # build console character device
+  mknod -m 600 console c 5 1
+
+  cd ${old_dir}
+  d_message "Changed from SOURCES_DIR: ${SOURCES_DIR} tp old_dir: $(pwd)" 2}
+}
+
 build_merged-usr_dir_tree_links()
 {
   # get target and links to it
@@ -409,8 +423,9 @@ display_config
 eval $(grep "splash" ${config_file} | grep -v "#")
 [ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
 
-separator "Build Directory Tree"  "mkinitramfs-$BUILD"
+separator "Build directory tree, device nodes, and links"  "mkinitramfs-$BUILD"
 build_dir_tree
+build_other_devices
 build_merged-usr_dir_tree_links
 
 separator "Check for Parts"  "mkinitramfs-$BUILD"
