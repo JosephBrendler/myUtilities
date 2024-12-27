@@ -286,7 +286,7 @@ build_other_devices()
   mknod -m 600 console c 5 1
 
   cd ${old_dir}
-  d_message "Changed from SOURCES_DIR: ${SOURCES_DIR} tp old_dir: $(pwd)" 2}
+  d_message "Changed from SOURCES_DIR: ${SOURCES_DIR} tp old_dir: $(pwd)" 2
 }
 
 build_merged-usr_dir_tree_links()
