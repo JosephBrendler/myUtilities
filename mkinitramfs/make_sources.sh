@@ -76,15 +76,16 @@ other_link_dir=(    "/"     "/"      )
 other_link_target=( "lib"   "init"   )
 other_link_name=(   "lib64" "linuxrc")
 
-#   add to the arrays values associated with /bin/
+# note 27 Dec 24 - w merged-usr all esecutables are now in /usr/bin
+#   add to the arrays values associated with /bin/ (link relative to target /usr/bin in ../../init)
 other_link_dir+=(    "/bin/"   )
-other_link_target+=( "../init" )
+other_link_target+=( "../../init" )
 other_link_name+=(   "init"    )
 
 #   add to the arrays values associated with /sbin/
-other_link_dir+=(    "/sbin/"         "/sbin/"  "/sbin/"      "/sbin/"         )
-other_link_target+=( "../bin/busybox" "../init" "../bin/kmod" "../bin/udevadm" )
-other_link_name+=(   "mdev"           "init"    "modprobe"    "udevadm"        )
+other_link_dir+=(    "/sbin/"    "/sbin/"   )
+other_link_target+=( "busybox"   "kmod"     )
+other_link_name+=(   "mdev"      "modprobe" )
 
 #   add to the arrays values associated with /usr/
 other_link_dir+=(    "/usr/"  "/usr/")
