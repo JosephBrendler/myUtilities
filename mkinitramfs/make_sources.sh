@@ -29,7 +29,7 @@ other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/et
 source ${MAKE_DIR}/dyn_executables_header
 
 #   link everything in busybox, except commands we do NOT want busybox to run --
-#   blkid, e2fsck, find, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
+#   modprobe-->kmod, blkid, e2fsck, find, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
 busybox_link_list="\
     [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
     brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt \
@@ -42,7 +42,7 @@ busybox_link_list="\
     ipcrm ipcs iplink iproute iprule iptunnel kbd_mode kill killall killall5 last less linux32 \
     linux64 linuxrc ln loadfont loadkmap login losetup lpq lpr ls lsattr lsmod lsof lspci lsusb \
     lzcat lzma lzop lzopcat makedevs man md5sum mdev mesg microcom mkdir mkdosfs mke2fs mkfifo \
-    mkfs.ext2 mkfs.vfat mknod mkpasswd mkswap mktemp modinfo modprobe more mount mountpoint mpstat mt \
+    mkfs.ext2 mkfs.vfat mknod mkpasswd mkswap mktemp modinfo more mount mountpoint mpstat mt \
     mv nameif nanddump nandwrite nbd-client nc netstat nice nmeter nohup nslookup ntpd openvt passwd \
     patch pgrep pidof ping pipe_progress pivot_root pkill pmap popmaildir poweroff powertop printenv \
     printf ps pscan pstree pwd pwdx raidautorun rdate readahead readlink realpath reboot renice reset \
@@ -82,10 +82,10 @@ other_link_dir+=(    "/bin/"   )
 other_link_target+=( "../../init" )
 other_link_name+=(   "init"    )
 
-#   add to the arrays values associated with /sbin/
-other_link_dir+=(    "/sbin/"    "/sbin/"   )
-other_link_target+=( "busybox"   "kmod"     )
-other_link_name+=(   "mdev"      "modprobe" )
+#   add to the arrays values associated with /sbin/ - used to link more from /bin /sbin /usr/ssbin, but w merged-usr; dont need 
+other_link_dir+=(    "/sbin/"   )
+other_link_target+=( "kmod"     )
+other_link_name+=(   "modprobe" )
 
 #   add to the arrays values associated with /usr/
 other_link_dir+=(    "/usr/"  "/usr/")
