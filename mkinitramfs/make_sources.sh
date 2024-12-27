@@ -28,13 +28,7 @@ other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/et
 
 source ${MAKE_DIR}/dyn_executables_header
 
-# define lists of links that need to be created in /bin
-#   create links in /bin to executables in /sbin to ensure we do not use busybox "version" --
-#   findfs, blkid, e2fsck (fsck fsck.ext2 fsck.ext3 fsck.ext4)...
-#   note: find is excluded from busybox but is provided by /usr/bin/gfind - linked below
-non_busybox_bin_links="findfs blkid e2fsck fsck fsck.ext2 fsck.ext3 fsck.ext4"
-
-#   references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
+#   link everything in busybox, except commands we do NOT want busybox to run --
 #   blkid, e2fsck, find, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), and of course our own init
 busybox_link_list="\
     [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
@@ -177,17 +171,18 @@ copy_parts()
 #  num_steps=$#; step_num=0
 
   #copy /bin executable parts
+  # update 27 Dec 24 -- merged-usr layout; everything goes in /usr/bin now
   for i in ${bin_dyn_executables} ${bin_non_dyn_executables}
-  do copy_one_part /bin/$i ${SOURCES_DIR}/bin/; done
+  do copy_one_part /bin/$i ${SOURCES_DIR}/usr/bin/; done
   # /sbin
   for i in ${sbin_dyn_executables} ${sbin_non_dyn_executables}
-  do copy_one_part /sbin/$i ${SOURCES_DIR}/sbin/; done
+  do copy_one_part /sbin/$i ${SOURCES_DIR}/usr/bin/; done
   # /usr/bin
   for i in ${usr_bin_dyn_executables} ${usr_bin_non_dyn_executables}
   do copy_one_part /usr/bin/$i ${SOURCES_DIR}/usr/bin/; done
 
   if [ "${init_splash}" == "yes" ]
-  then copy_one_part /sbin/fbcondecor_helper ${SOURCES_DIR}/sbin/
+  then copy_one_part /sbin/fbcondecor_helper ${SOURCES_DIR}/usr/bin/
   else d_message "Skipping copy for /sbin/fbcondecor_helper... (splash not requested)" 2
   fi
   copy_one_part ./init ${SOURCES_DIR}/
@@ -226,31 +221,26 @@ copy_one_part()
 create_links()
 {
   old_pwd="$PWD"
-  # create symlinks in /bin
+  # create symlinks - updated 27 Dec 24 with merged-usr layout; everything goes in /usr/bin
   d_message "Creating busybox links in initramfs/bin/ ..." 1
-  cd ${SOURCES_DIR}/bin/
+  cd ${SOURCES_DIR}/usr/bin/
   for i in $busybox_link_list
   do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}busybox${Boff} ..." 2;
   ln -s busybox "$i" ; d_right_status $? 2; done
 
-  d_message "Creating NON-busybox links in initramfs/bin/ ..." 1
-  for i in $non_busybox_bin_links
-  do d_message_n "Linking:   ${LBon}${i}${Boff} --> ${BGon}/sbin/${i}${Boff} ..." 2;
-  ln -s /sbin/$i "$i" ; d_right_status $? 2; done
-
-  # create symlinks in /sbin
+  # create symlinks in /sbin - updated 27 Dec 24 with merged-usr layout; everything goes in /usr/bin
   d_message "Creating lvm2 links in initramfs/sbin/ ..." 1
-  cd ${SOURCES_DIR}/sbin/
+  cd ${SOURCES_DIR}/usr/bin/
   for i in $lvm_link_list
   do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}lvm${Boff} ..." 2;
   ln -s lvm "$i" ; d_right_status $? 2; done
   for i in $e2fsck_link_list
   do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}e2fsck${Boff} ..." 2;
   ln -s e2fsck "$i" ; d_right_status $? 2; done
-  #splash_helper -> //sbin/fbcondecor_helper
+  #splash_helper -> //sbin/fbcondecor_helper - updated 27 Dec 24 with merged-usr layout; everything goes in /usr/bin
   if [ "${init_splash}" == "yes" ]
   then d_message_n "Linking:   ${LBon}splash_helper${Boff} --> ${BGon}//sbin/fbcondecor_helper${Boff} ..." 2;
-    ln -s //sbin/fbcondecor_helper splash_helper ; d_right_status $? 2
+    ln -s //usr/bin/fbcondecor_helper splash_helper ; d_right_status $? 2
   else d_message "Skipping linking for splash... (not requested)" 2;
   fi
 
