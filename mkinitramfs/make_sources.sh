@@ -408,11 +408,9 @@ display_config
 eval $(grep "splash" ${config_file} | grep -v "#")
 [ "${init_splash}" == "yes" ] && d_message "splash requested" 1 || d_message "splash not requested" 1
 
-
 separator "Build Directory Tree"  "mkinitramfs-$BUILD"
 build_dir_tree
 build_merged-usr_dir_tree_links
-exit
 
 separator "Check for Parts"  "mkinitramfs-$BUILD"
 check_for_parts
