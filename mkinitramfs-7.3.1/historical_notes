@@ -1,0 +1,136 @@
+Joe Brendler's "mkinitramfs" project
+
+Credits:
+# based on concepts and techniques in:
+#   http://en.gentoo-wiki.com/wiki/Root_filesystem_over_LVM2,_DM-Crypt_and_RAID
+#   http://www.gentoo.org/doc/en/lvm2.xml
+#   http://en.gentoo-wiki.com/wiki/Initramfs
+#   http://en.gentoo-wiki.com/wiki/Booting_encrypted_system_from_USB_stick
+#   http://jkroon.blogs.uls.co.za/it/security/encrypted-harddrive-gentoo
+#   http://blog.infion.de/archives/2007/05/15/Full-disk-encryption-with-LUKS-on-new-notebook/
+#
+#   http://en.gentoo-wiki.com/wiki/Custom_Initramfs  *** new tips as of 31 Dec 14 ***
+
+Historical Notes:
+
+----[ History of the init script ]-----------------------
+rev 1 Jan 2009 adding  mini_udev and separator functions
+rev 5 Jan 2009 adding cryptsetup of multiple volumes opened w/ key-file
+rev 12 Feb 2011 bugfix for new busybox shell compatibility
+rev 20 Feb 2011 further bugfix for busybox-v1.17.4 shell compatibility
+    (bb sh chokes on or ignores parameter substitution like ${init_passdevice##*" "} or ${line:0:4}
+rev 18 Sep 2012 - modified text output format of separator, using "-[ ... ]-" instead of "-| ... |-"
+    also fixed attempts to umount passdevice when method is "prompt" (passdevice not mounted)
+rev 22 Jan 2013 - mod to mount /usr volume (as reqd by udev >181
+rev 26 Jan 2013 - generalized filesystem for / and /usr as init.conf variables
+rev 31 Mar 2013 - revised mdev section consequent to new udev and busybox publication
+rev 21 Aug 2013 - revised to launch systemd as alt init system
+rev 18 Jan 2014 - lvm2-2.02.103 broke the automatic creation of device nodes for lvs,
+    so the script fixes with vgscan --mknodes (looped until successful)
+                - also removed use of  gentoo's systemd (not yet ready for prime time)
+                - added optional use of splashutils
+rev 21/22 Jan 2014 - bugfixes and improved progress messaging
+                - added support for UUID device specification for passdevice and encrypted drives
+rev 14 Sep 2014 - updated as part of auto-initramfs-building process with mkinitramfs.sh and makeinitramfs.sh
+                - tried bugfix for init_passdevice with UUID specification [still having issues with
+                   findfs command in busybox shell...
+rev 2-7 Jan 15  - bugfixes for blank lines in cryptab, simplified with script_header
+                - bugfix for findfs (included binary and needed libraries)
+                - bugfix for "mycmd" and added shred
+rev 09 Nov 2016 - began major version upgrade to 4.0.0.1:
+  1 - uses a *list* of key containing pass-devices (list of UUIDs, labels, or dev names)
+    provided by init.conf
+  2 - eliminated the cryptab file and introduced new code that scans for "LUKS" partitions,
+    tries available keys, or asks for password to unlock them
+rev 1-24 Jan 2017 - completed todos for work begun in Nov 16, published as version 5, 
+    now maintained on github and deployed as remote overlay managed by layman, 
+    dev-utils/mkinitramfs is part of the "joetoo" overlay which will source myUtilities
+    as they are developed
+rev Feb 2017 - began work on another major version upgrade. This one to implement (in
+  the make_sources.sh script) the use of lddtree (USE="python" emerge app-misc/pax-utils)
+  to significantly simplify loading dependencies.  Also a significant rewrite to debug/verbosity.
+rev 2019 - some bugfixes
+rev Jan 2022 - added cpio and grub to check/install in make_sources.sh; added dependencies in ebuild
+rev Dec 2022 - changed install location for ckinitramfs from /usr/local/bin to /usr/bin
+rev Nov 2023 - moved 'find' from busybox to non-busybox executable, since updated script_header uses it
+rev Jan 2024 - adaptations to support raspberry pi 5 and other SBCs --
+  1 - new checkboot (in script_header_brendlefly)
+  2 - (find if necessary, and) copy missing file libgcc_s.so.1 to ${SOURCES_DIR}
+  3 - fail with error if kernel sources are not found -- needed for getting version name/number
+rev Aug 2024 - bugfixes (create target directory for copy if needed, and rotate properly)
+
+----[ History of init.conf ]-------------
+rev 8 Jan 10  - (o/a) initial build
+rev 26 Jan 13 - (ver 2.x) added filesystem support for / and /usr, now that
+                   udev >181 requires /usr mounted in intiramfs
+rev 18 Jan 14 - (ver 3.x) added support for identification of devces by UUID; added optional use of splashutils
+rev 22 Jan 14 - added timeout for mdev, drop to passphrase
+rev 09 Nov 2016 - began major version upgrade to 4.0.0.1:
+  1 - accept a *list* of key containing pass-devices (list of UUIDs)
+  2 - possibly replace cryptab with code that scans for "LUKS" partitions,
+      tries available keys, or asks for password to unlock them
+  3 - default init.conf to no splash
+Also note:
+  Earlier versions (1.x) of this initramfs builder expecte the user to manually
+    identify "/dev/sda1" style device names and to manually create the corresponding
+    device nodes in the initramfs with a command like "cp -a /dev /usr/src/initramfs".
+  Later versions (2.x) mitigated the uncertainty in how the kernel would assign such
+    device names by adding this mdev functionality to enable dynamic device node
+    creation.  (however, the user still needed to supply the init script with a list
+    of device names to unlock...)
+  Starting with version 3.x, the user was encouraged to use UUIDs to identify
+    the block devices to unlock, eliminating that remaining uncertainty.
+  Bottom line: in version 4.x, we eliminate the config variable init_mdev_support,
+  and just incorporate mdev use
+
+Further note:
+  In update to ver 4.x, we changed to a *list* of devices that are
+    authorized to be used to unlock the system's encrypted luks-formatted devices.
+  Format note: use '\' character to use multiple lines. In the example below, the user
+    identifies the following four authorized devices:
+    UUID="ABCD-EA85" (xD card)
+    UUID="1234-3072" (MS/MSpro card)
+    UUID="9876-C3EC" (usb thumb drive)
+    UUID="EFCB-C4A3" (usb thumb drive)
+
+      Example:
+      init_passdevice_list=" \
+      ABCD-EA85 \
+      1234-3072 \
+      9876-C3EC \
+      EFCB-C4A3"
+
+----[ History of the make_sources.sh and make_image.sh scripts ]-------------------
+rev 0 of what was formerly mkinitramfs.sh (now make_sources.sh), was only an
+  initial effort to automate the generation of initramfs which incorporates
+  the init/init.conf and other structures into a deployable initramfs source.
+rev 15 September 2014 - bugfixes, added e2fsck along w its libs and links
+rev 31 December 2014 -- incorporated splashutils option
+rev 02 January 2015   - bugfix for missing libraries needed by executables
+rev 09 Nov 2016 - began major version upgrade to 4.0.0.1:
+  The former mkinitramfs.sh was replaced by the make_sources script. This was also a
+  major rewrite of the init and init.conf etc. as described above.
+rev c Dec 2016 - really beginning with late 4.0.0.1 work, but continuing with
+  version 5.2, makeinitramfs wrapper and the make_image.sh script was separated,
+  in case the user might NOT want to use it, but rather only make the sources
+  and have the initramfs compiled into the kernel.  For such a user, it is
+  sufficient to run the make_sources.sh script before compiling the kernel.
+  And for those who want a separate initramfs external to the kernel, we're now
+  also providing the wrapper script which now has inherited the "mkinitramfs" name.
+  (see below).
+rev Feb 2017 - began work on another major version upgrade. This one to implement the 
+  use of lddtree (USE="python" emerge app-misc/pax-utils) to significantly simplify
+  loading dependencies.  Also a significant rewrite to debug/verbosity. Also,
+  as of 5.3, there are separate SOURCES_BUILD and IMAGE_BUILD variables, both derived analytically 
+  at build-time, and both indipendent of GLOBALS (the script_header-sourced BUILD variable is ignored)
+
+----[ History of the wrapper script mkinitramfs ]---------------------------------
+rev c Jan 2017 -- introduced with the major version upgrade to 4.0.0.1; concept: provide a "wrapper"
+  to automate the process of (re-)building the initramfs source, and from it the compressed
+  archive image, and to deploy that to an installation location, in a format that will be recognized 
+  as an initrd/initramfs by the grub2 bootloader configuration scripts (grub2-mkconfig).
+  As of 5.3, there are separate SOURCES_BUILD and IMAGE_BUILD variables, both derived analytically 
+  at build-time, and both indipendent of GLOBALS (the script_header-sourced BUILD variable is ignored)
+
+----[ Still on the POSSIBLE to do list ]-------------------------------------------
+ 1 - modify mkinitramfs to be run from anywhere and install link to it in /usr/bin (in path)
