@@ -23,8 +23,10 @@ verbosity=2
 # define lists of files that need to be copied
 config_file="${CONF_DIR}/init.conf"
 admin_files="README LICENSE"
+functon_headers_src=("${MAKE_DIR}validated_functions_header"  "${MAKE_DIR}testing_functions_header")
+functon_headers_dest=("${SOURCES_DIR}/"                       "${SOURCES_DIR}/" )
 other_content_src=("/usr/local/sbin/script_header_brendlefly" "${MAKE_DIR}/etc/lvm/lvm.conf"        "${MAKE_DIR}/etc/modules")
-other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"  "${SOURCES_DIR}/etc/")
+other_content_dest=("${SOURCES_DIR}/"                         "${SOURCES_DIR}/etc/lvm/"             "${SOURCES_DIR}/etc/")
 
 source ${MAKE_DIR}/dyn_executables_header
 
@@ -200,17 +202,15 @@ copy_parts()
   for i in $admin_files
   do copy_one_part ${MAKE_DIR}/$i ${SOURCES_DIR}/; done
 
+  # copy function_header content
+  d_message "Copying functon headers content ..." 1
+  for ((i=0; i<${#functon_headers_src[@]}; i++))
+  do copy_one_part ${functon_headers_src[i]} ${functon_headers_dest[i]}; done
+
   # copy other required content
   d_message "Copying other required content ..." 1
   for ((i=0; i<${#other_content_src[@]}; i++))
   do copy_one_part ${other_content_src[i]} ${other_content_dest[i]}; done
-  if [ "${init_splash}" == "yes" ]
-  then
-    copy_one_part ${MAKE_DIR}/etc/initrd.splash ${SOURCES_DIR}/etc/
-    copy_one_part ${MAKE_DIR}/etc/splash ${SOURCES_DIR}/etc/
-  else
-    d_message "Skipping copy for splash files in /etc/ ... (splash not requested)" 2
-  fi
 
 }
 
