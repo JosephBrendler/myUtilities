@@ -1,0 +1,173 @@
+#!/bin/ash
+
+test() {
+        verbosity=2
+        d_echo "testing d_echo" 2
+        d_echo "testing d_echo" 3
+        message "should have printed only ${BGon}one${Boff} \"testing d_echo\" line"
+}
+
+teststringlength() {
+    str="$1"
+    echo "str: ${str}"
+    echo -n "1: "; [ ! -z $str ] && echo "non-zero" || echo "zero"
+    echo -n "2: "; [ ${#str} -gt 0 ] && echo "-gt zero" || echo "zero"
+    echo -n "3: "; [[ ! -z $str ]] && echo "non-zero" || echo "zero"
+    echo -n "4: "; [[ ${#str} -gt 0 ]] && echo "-gt zero" || echo "zero"
+    echo -n "5: "; [[ ${#str} -ne 0 ]] && echo "-ne zero" || echo "zero"
+    echo -n "6: "; [[ ${#str} -eq 0 ]]  && echo "-eq zero" || echo "not -eq zero"
+    echo -n "7: "; [[ ! ${#str} -eq 0 ]]  && echo "not -eq zero" || echo "-eq zero"
+    echo -n "8: "; [[ -n ${str} ]]  && echo "-n zero" || echo "zero"
+}
+
+mount_new_root_and_prepare_to_switch_root() {
+    separator "Attempting to mount new root lvm..." "initramfs-$BUILD"
+    # if not yet available after above scan, keep scanning to make device nodes untill you succeed
+    d_message "Re-scanning, if needed ..." 1
+    while [[ ! -b $(echo "$root_volume") ]]
+    do
+        d_message "re-verifying the existence of block device $root_volume" 3
+        /sbin/vgscan --mknodes --ignorelockingfailure
+    done
+    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${root_fs} on $root_volume${Boff}" 1 && fsck.${root_fs} -p $root_volume
+    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${usr_fs} on $usr_volume${Boff}" 1 && fsck.${usr_fs} -p $usr_volume
+    sh_countdown $init_wait
+    # mount root - drop to shell if not locked down
+    d_message_n "Mounting new root volume ..." 1
+    mount -r -t ${root_fs} ${root_volume} /newroot ; result=$?
+    right_status $result
+    if  [[ ! $result ]]; then
+        E_message "failed to mount root volume"
+        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount root volume"
+    fi
+    d_message_n "Mounting new usr volume ..." 1
+    mount -t ${usr_fs} -o defaults,noatime $usr_volume /newroot/usr ; result=$?
+    right_status $result
+    if  [[ ! $result ]]; then
+        E_message "failed to mount usr volume"
+        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount usr volume"
+    fi
+
+    separator "Mounts" "initramfs-$BUILD"
+    mount
+    sh_countdown $init_wait
+
+    # clean up in preparation to swithc root
+    umount /proc
+    umount /dev/pts
+    umount /dev
+    umount /sys
+}
+
+
+access_logical_volumes() {
+    separator "Accessing logical volumes" "initramfs-$BUILD"
+    # make lvm logical volumes available
+    /sbin/vgscan
+    /sbin/vgchange -a y
+    message_n "accessing root_volume: ${root_volume} ..."
+    if [[ ${#root_volume} -gt 0 &&  -b ${root_volume} ]]
+    then
+        right_status $TRUE
+    else
+        right_status $FALSE
+        message "looking in unlocked vg(s) ..."
+        root_volume="/dev/mapper/$(lvs | awk '$1~/root/ {print $2"-"$1}')"
+        message_n "accessing root_volume: ${root_volume} ..."
+        [ -b ${root_volume} ] && right_status $?
+    fi
+    message_n "accessing usr_volume: ${usr_volume} ..."
+    if [[ ${#usr_volume} -gt 0 &&  -b ${usr_volume} ]]
+    then
+        right_status $TRUE
+    else
+        right_status $FALSE
+        message "looking in unlocked vg(s) ..."
+        usr_volume="/dev/mapper/$(lvs | awk '$1~/usr/ {print $2"-"$1}')"
+        message_n "accessing usr_volume: ${usr_volume} ..."
+        [ -b ${usr_volume} ] && right_status $?
+    fi
+
+    # show what we've found...
+    separator "The following volume groups are available" "initramfs-$BUILD"
+    /sbin/vgs
+    separator "The following volumes are available" "initramfs-$BUILD"
+    /sbin/lvs
+    sh_countdown $(($init_wait))
+
+}
+
+### keep this copy of unlock devices here, for testing (avoids messing with) the active root luks device
+### in the testing script, source ./testing_functions_header *after* sourcing validated_functions_header
+### sp that this version below will override the other
+unlock_devices() {
+    # for version 4.x and beyond, this is a complete re-write of the unlocking procedure.
+    # The unlock method has already been determined, and the script will now "scan" for LUKS
+    # devices and automatically use the selected method (key vs prompt) to unlock all of them
+    local method=$1;
+    local device="";
+    local line="";
+
+    [[ "$method" = "prompt" ]] && read -s -p "Enter your LUKS passphrase: " pass && echo;
+
+### substitute for testing only
+    for device in $(blkid | grep -i luks | grep -v 'UUID="ef4195f0-6c4a-4116-86dd-fc469ddb6e21"' |cut -d':' -f1 )
+###    for device in $(blkid | grep -i luks | cut -d':' -f1)
+    do
+        # use cryptsetup luksOpen to open each device /dev/sdxn with corresponding name edxn
+        # 27 Oct 23 - generalize to scsi or nvme devices (sdXX or nvmeXnXpX)
+        bn=$(basename ${device})
+        case ${bn:0:2} in
+          "sd" ) # scsi device
+            edev=$(echo ${bn} | sed 's/^s/e/')
+            ;;
+          "nv" ) # nvme device
+            edev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
+            ;;
+          "mm" ) # mmc device
+            edev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
+            ;;
+          *    ) # tbd
+            echo "Error: bad luks device name [$device]"
+            ;;
+        esac
+        line="${device} ${edev}"
+        case "$method" in
+            "prompt")
+                mycmd="echo $pass | /sbin/cryptsetup luksOpen $line"
+                d_message 'about to execute [eval "${mycmd}"]' 3
+                [ $verbosity -gt 3 ] && message "[ ${mycmd} ]" && sh_countdown $(( $init_wait * 3 ))
+                eval "${mycmd}"
+                if [ $? -eq 0 ]
+                then
+                    message "Unlocked $line with passphrase provided"
+                else
+                    E_message "${BRon}mycmd failed. Dropping to a shell. ${Boff}"
+                    sh_countdown $(( $init_wait * 5 ))
+                    [[ "$init_lock_down" = "no" ]] && rescue_shell
+                fi;
+                [ $verbosity -gt 2 ] && sh_countdown $(( $init_wait * 3 ))
+                ;;
+            "key")
+                # passdevice already mounted,
+                # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
+                # unmount the passdevice when we are done with it
+                message "About to execute command [ cryptsetup -d ${init_passdevice_mount_point}${init_keyfile} -S 1 luksOpen $line ]"
+                cryptsetup -d $(echo "${init_passdevice_mount_point%/}${init_keyfile}") -S 1 luksOpen $line
+                if [ $? -eq 0 ]
+                then  # cryptsetup luksOpen with key worked
+                    message "Unlocked $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
+                    message_n "Un-mounting keying device ..."
+                    umount ${init_passdevice_mount_point}; right_status $?
+                else  # cryptsetup luksOpen with key failed
+                    E_message $BRon"Error: Could not unlock ${BYon}$line ${BRon}with key found at ${BMon}$(echo ${init_passdevice_mount_point}${init_keyfile})"$Boff
+                    E_message $BRon"Dropping to a shell"$Boff
+                    sh_countdown $(( $init_wait * 5 ))
+                    [[ "$init_lock_down" = "no" ]] && rescue_shell
+                fi;
+                [ $verbosity -gt 2 ] && sh_countdown $(( $init_wait * 3 ))
+                ;;
+        esac
+    done
+}
+
