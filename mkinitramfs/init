@@ -47,8 +47,8 @@ source /init.conf
 right_status $? || echo "sourcing failed"
 sleep .5
 [ $verbosity -gt 0 ] && VERBOSE=$TRUE || VERBOSE=$FALSE
-root_volume="${init_root_volume}"
-usr_volume="${init_usr_volume}"
+[ ${#init_root_volume} -ne 0 ] && root_volume="${init_root_volume}"
+[ ${#init_usr_volume} -ne 0 ]  && ]usr_volume="${init_usr_volume}"
 echo
 
 #----[ display separator to mark start of script ]-----------------------------------------------
@@ -136,15 +136,6 @@ CMDLINE="$(cat /proc/cmdline)"
 process_cmdline
 [ $verbosity -gt 0 ] && VERBOSE=$TRUE || VERBOSE=$FALSE
 
-# validate root device
-validate_volume root_volume
-# validate usr device
-validate_volume usr_volume
-
-display_config
-sh_countdown $(($init_wait * 3))
-[ $verbosity -gt 3 ] && sh_countdown $(( $init_wait * 3 ))
-
 # if init.conf indicates there is a non-zero-lenght keyfile name to be looked for on a non-empty list of
 # devices, then see if we can select one that will work, otherwise use passphrase method
 
@@ -155,24 +146,34 @@ separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
 # call function to unlock HD(s)
 unlock_devices ${unlock_method}
 
-[ $verbosity -gt 3 ] && sh_countdown $(($init_wait * 3))
+# validate root device - cannot do this until after the volume is unlocked
+validate_volume root_volume
+# validate usr device - cannot do this until after the volume is unlocked
+validate_volume usr_volume
+
+# display config - after volumes uinlocked and root/usr fs obtained
+display_config
+sh_countdown $(($init_wait * 3))
+[ $verbosity -gt 3 ] && sh_countdown $(( $init_wait * 3 ))
 
 # access the root and usr logical volumes (among others), and show what we unlocke
 access_logical_volumes
 
-d_message "-  Will continue with /sbin/init" 1
-separator "Switching to /newroot, mounted on encrypted volume [${root_volume}]" "initramfs-$BUILD"
-[[ ${#CMDLINE} -ne 0 ]] && d_message " -  using cmdline: ${CMDLINE}" 1
-
-d_messge "display config again prior to actual switch_root" 1
-display_config
-echo
-
 # clean up in preparation to actually switch root
-umount /proc
-umount /dev/pts
-umount /dev
-umount /sys
+message "Cleaning up initramfs mounts prior to actual switch_root"
+d_message_n "umount /proc ..." 1
+umount /proc ; right_status $?
+d_message_n "umount /dev/pts ..." 1
+umount /dev/pts ; right_status $
+d_message_n "umount /dev ..." 1
+umount /dev ; right_status $
+d_message_n "umount /sys ..." 1
+umount /sys ; right_status $
+
+separator "Switching to /newroot, mounted on encrypted volume [${root_volume}]" "initramfs-$BUILD"
+d_message "  -  Will continue with /sbin/init" 1
+[[ ${#CMDLINE} -ne 0 ]] && d_message "  -  using cmdline: ${CMDLINE}" 1
+echo
 
 # boot the real thing or exit to rescue shell if not locked down
 exec /bin/busybox switch_root /newroot /sbin/init ${CMDLINE} || \
