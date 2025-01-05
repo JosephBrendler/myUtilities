@@ -19,7 +19,29 @@ echo_long_string() {
   echo "${newline}"
 }
 
-validate_volume() {
+assign_volume() {
+    # given string volume name (root_ usr_volume), scan lvs and make volume pathname assignment
+    volume_name=$1
+    prefix="${volume_name/_volume}"
+    my_volume="$(eval echo \$${volume_name})"
+    if [[ ${#my_volume} -eq 0 ]] ; then
+        d_message "about to evaluate ${prefix}_volume=/dev/mapper/$(lvs | grep ${prefix} | awk '{print $2"-"$1}')" 3
+        d_message_n "${prefix} volume_name not assigned, scanning ..." 1
+        my_volume="/dev/mapper/$(lvs | grep ${prefix} | awk '{print $2"-"$1}')"
+# substitute for testing only -
+#        d_message "about to evaluate ${prefix}_volume=/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${prefix} | awk '{print $2"-"$1}')" 3
+#        d_message_n "${prefix} volume_name not assigned, scanning ..." 1
+#        my_volume="/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${prefix} | awk '{print $2"-"$1}')"
+        eval "${prefix}_volume=${my_volume}"
+        result=$?
+        [[ $verbosity -ge 1 ]] && right_status $result
+        d_message "result: my_volume: ${my_volume}" 3
+    else
+        message "No action. ${prefix} volume already assigned [ ${my_volume} ]"
+    fi
+}
+
+validate_volume_and_assign_fs() {
     # given the string name of the volume, validate its existence and assign fs type
     volume_name=$1
     my_volume="$(eval echo \$${volume_name})"
@@ -147,11 +169,11 @@ validate_passdevice() {
         VALID=$TRUE
         d_message "  fn validate_passdevice result: init_passdevice_volume = ${BMon}[ $init_passdevice_volume ]${Boff}" 2
         d_message "  ${Gon}fn validate_passdevice is about to return OK = [ $OK ]${Boff}" 3
-        [[ $verbosity -gt 3 ]] && sh_countdown ${init_wait}
     else
         ## return false
         VALID=$FALSE
         d_message "  ${Ron}fn validate_passdevice result: found no device for [ $my_candidate ] with findfs${Boff}" 3
+        [[ $verbosity -gt 3 ]] && sh_countdown ${init_wait}
     fi
 }
 
@@ -188,10 +210,9 @@ select_keying_device() {
             then
                 message "  ${BYon}fn select_keying_device result: validate_passdevice/findfs returned device name: ${LBon}${init_passdevice_volume}${Boff}";
             fi
-            # validate_volume() will set EXISTS=$TRUE and assign init_passdevice_fs if this device acutally exists and is a block device
-            validate_volume "init_passdevice_volume"
-            d_message "  fn validate_volume set init_passdevice_fs = ${BMon}[ $init_passdevice_fs ]${Boff}" 3
-            [[ $verbosity -gt 3 ]] && sh_countdown $init_wait
+            # validate_volume_and_assign_fs() will set EXISTS=$TRUE and assign init_passdevice_fs if this device acutally exists and is a block device
+            validate_volume_and_assign_fs "init_passdevice_volume"
+            d_message "  fn validate_volume_and_assign_fs set init_passdevice_fs = ${BMon}[ $init_passdevice_fs ]${Boff}" 3
 
             if [[ ${EXISTS} ]]
             then
@@ -226,8 +247,6 @@ select_keying_device() {
             d_message "    init_passdevice_mount_point = [ ${init_passdevice_mount_point%/}/ ]" 3
             # escape the loop if we found one that met all the criteria
             break
-        else
-            [[ $verbosity -gt 3 ]] && sh_countdown $init_wait
         fi
         let count++
     done
@@ -243,16 +262,15 @@ select_keying_device() {
         unlock_method="prompt"
         E_message $BRon"Keystore $(echo ${init_passdevice_mount_point%/}/${init_keyfile}) does not exist - reverting to prompt method..."$Boff;
     fi
-    [[ $verbosity -gt 3 ]] && sh_countdown $(( $init_wait * 3 ))
 }
 
 select_keying_device_and_unlock_method() {
-    d_message_n "Checking if keyfile was specified ] ..." 2
+    d_message_n "Checking if keyfile was specified ..." 2
     [[ ! -z "$init_keyfile" ]] && KF=$TRUE || KF=$FALSE
 #    de_echo " $(status_color ${KF})$(TrueFalse ${KF})${Boff}" 2
-    [[ $KF]] ; right_status $?
+    [[ $KF ]] ; right_status $?
 
-    d_message_n "Checking if passdevice list was specified ] ..." 2
+    d_message_n "Checking if passdevice list was specified ..." 2
     [[ ! -z "${init_passdevice_list}" ]] && PDL=$TRUE || PDL=$FALSE
     [[ $PDL ]] ; right_status $?
 
@@ -270,7 +288,6 @@ select_keying_device_and_unlock_method() {
         fi
         d_message "${BWon}Result: ${LBon}init_passdevice_volume = ${Mon}[ $init_passdevice_volume ]${Boff}" 2
         d_message "${BWon}Result: ${LBon}unlock_method = ${Mon}[ $unlock_method ]${Boff}" 2
-        [ $verbosity -gt 3 ] && sh_countdown $(( $init_wait * 3 ))
 }
 
 unlock_devices() {
@@ -309,7 +326,6 @@ unlock_devices() {
             "prompt")
                 mycmd="echo $pass | /sbin/cryptsetup luksOpen $line"
                 d_message 'about to execute [eval "${mycmd}"]' 3
-                [[ $verbosity -gt 3 ]] && message "[ ${mycmd} ]" && sh_countdown $(( $init_wait * 3 ))
                 eval "${mycmd}"
                 if [[ $? -eq 0 ]]
                 then
@@ -319,7 +335,6 @@ unlock_devices() {
                     sh_countdown $(( $init_wait * 5 ))
                     [[ ${init_lock_down} ]] && rescue_shell
                 fi;
-                [[ $verbosity -gt 2 ]] && sh_countdown $(( $init_wait * 3 ))
                 ;;
             "key")
                 # passdevice already mounted,
@@ -327,7 +342,7 @@ unlock_devices() {
                 # unmount the passdevice when we are done with it
                 message "About to execute command [ cryptsetup -d ${init_passdevice_mount_point}${init_keyfile} -S 1 luksOpen $line ]"
                 cryptsetup -d $(echo "${init_passdevice_mount_point%/}${init_keyfile}") -S 1 luksOpen $line
-                if [ $? -eq 0 ]
+                if [[ $? -eq 0 ]]
                 then  # cryptsetup luksOpen with key worked
                     message "Unlocked $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
                 else  # cryptsetup luksOpen with key failed
@@ -337,7 +352,6 @@ unlock_devices() {
                     [[ ${init_lock_down} ]] && rescue_shell
                 fi
                 # since we are done with it, we will now un-mount the keying device
-                [[ $verbosity -gt 3 ]] && sh_countdown $(( $init_wait * 3 ))
                 ;;
         esac
     done

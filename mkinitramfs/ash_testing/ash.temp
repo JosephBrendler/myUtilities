@@ -4,18 +4,37 @@ source /usr/local/sbin/script_header_brendlefly
 
 #----[ initialize additional global variables ]--------------------------------------------------
 separator "initializing" "initramfs-$BUILD"
-my_variables="unlock_method CMDLINE \
-  init_passdevice init_passdevice_fs root_volume root_fs usr_volume usr_fs \
-  VERBOSE verbosity unlock_method\
+# initialize these variables to '' to establish them as globals
+#   remember '' evaluates as $FALSE in logical test
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_keyfile \
+unlock_method\
+init_passdevice_list \
+init_passdevice_mount_point \
+init_passdevice_volume \
+init_passdevice_fs \
+init_lock_down \
+unlock_method \
+root_volume \
+root_fs \
+usr_volume \
+usr_fs \
+CMDLINE \
+VERBOSE \
+verbosity \
+init_config_title \
 "
-
-for x in ${my_variables}
+# PATH -- display, don't initialize
+for x in ${var_list}
 do
-  	echo -n "initializing $x ..."
-        cmd="$x=''"
-        eval $cmd
-        right_status $? || echo "$x initialization failed"
+	echo -n "initializing $x ..."
+	cmd="$x=''"
+	eval $cmd
+	right_status $? || echo "$x initialization failed"
 done
+echo
 echo
 
 separator "ash.temp" "testing script"
@@ -63,16 +82,35 @@ echo
 # test overriding init.conf with cmdline
 #CMDLINE="root=/dev/mapper/vg_gmki91-root verbosity=2 usr=/dev/mapper/vg_gmki91-usr"
 # test minimal unmodified cmdline
-CMDLINE="root=/dev/mapper/vg_gmki91-root"
+#CMDLINE="root=/dev/mapper/vg_gmki91-root"
+CMDLINE="root=/dev/mapper/vg_tinker2s-root"
 
 process_cmdline
 echo
-# validate root device
-validate_volume "root_volume"
-# validate usr device
-validate_volume "usr_volume"
 
-display_config
+# display initial config of variables available)
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_keyfile \
+init_passdevice_mount_point \
+init_lock_down \
+root_volume \
+usr_volume \
+VERBOSE \
+verbosity \
+init_passdevice_list \
+CMDLINE \
+PATH \
+"
+#unlock_method \
+#init_passdevice_volume \
+#init_passdevice_fs \
+#root_fs \
+#usr_fs \
+# PATH -- display, don't initialize
+init_config_title="preliminary configuration"
+display_config ${var_list}
 echo
 
 separator "ash.temp" "selecting keying device and unlock method..."
@@ -85,8 +123,60 @@ separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
 unlock_devices ${unlock_method}
 echo
 
+# umount init_passdevice
+message_n "un-mounting init_passdevice ..."
+umount ${init_passdevice_mount_point} ; right_status $?
+echo
+
+# make lvm logical volumes available
+/sbin/vgscan
+/sbin/vgchange -a y
+# re-scan, if needed, until we actually do have devices available
+d_message "Re-scanning, if needed ..." 1
+while [[ ! -b $(echo "$root_volume") ]]
+do
+    d_message "re-verifying the existence of block device $root_volume" 3
+    /sbin/vgscan --mknodes --ignorelockingfailure
+done
+
+# assign root and usr volume names (if not already done)
+separator "assigning and validating root and usr volumes" "initramfs-$BUILD"
+assign_volume "root_volume"
+assign_volume "usr_volume"
+
+# validate root and usr device and assign fs
+#  cannot do this until after the volume is unlocked and the volume is assigned
+#  need to pass string name arg so function can make fs assignment
+validate_volume_and_assign_fs "root_volume"
+validate_volume_and_assign_fs "usr_volume"
+
+# display config - after volumes uinlocked and root/usr fs obtained
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_passdevice_volume \
+init_passdevice_fs \
+unlock_method \
+init_keyfile \
+init_passdevice_mount_point \
+init_lock_down \
+root_volume \
+root_fs \
+usr_volume \
+usr_fs \
+VERBOSE \
+verbosity \
+init_passdevice_list \
+CMDLINE \
+PATH \
+"
+# PATH -- display, don't initialize
+init_config_title="mature configuration"
+display_config ${var_list}
+
+
 # access the root and usr logical volumes (among others), and show what we unlocked
-access_logical_volumes
+display_logical_volumes
 
 echo
 message "cleaning up"

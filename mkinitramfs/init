@@ -39,6 +39,7 @@ usr_fs \
 CMDLINE \
 VERBOSE \
 verbosity \
+init_config_title \
 "
 # PATH -- display, don't initialize
 for x in ${var_list}
@@ -94,6 +95,7 @@ PATH \
 #root_fs \
 #usr_fs \
 # PATH -- display, don't initialize
+init_config_title="preliminary configuration"
 display_config ${var_list}
 
 #----[ Define functions local to initramfs ]-----------------------------------------------------
@@ -187,10 +189,31 @@ separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
 # call function to unlock HD(s)
 unlock_devices ${unlock_method}
 
-# validate root device - cannot do this until after the volume is unlocked
-validate_volume root_volume
-# validate usr device - cannot do this until after the volume is unlocked
-validate_volume usr_volume
+# umount init_passdevice
+message_n "un-mounting init_passdevice ..."
+umount ${init_passdevice_mount_point} ; right_status $?
+
+# make lvm logical volumes available
+/sbin/vgscan
+/sbin/vgchange -a y
+# re-scan, if needed, until we actually do have devices available
+d_message "Re-scanning, if needed ..." 1
+while [[ ! -b $(echo "$root_volume") ]]
+do
+    d_message "re-verifying the existence of block device $root_volume" 3
+    /sbin/vgscan --mknodes --ignorelockingfailure
+done
+
+# assign root and usr volume names (if not already done)
+separator "assigning and validating root and usr volumes" "initramfs-$BUILD"
+assign_volume "root_volume"
+assign_volume "usr_volume"
+
+# validate root and usr device and assign fs
+#  cannot do this until after the volume is unlocked and the volume is assigned
+#  need to pass string name arg so function can make fs assignment
+validate_volume_and_assign_fs "root_volume"
+validate_volume_and_assign_fs "usr_volume"
 
 # display config - after volumes uinlocked and root/usr fs obtained
 var_list="BUILD \
@@ -213,13 +236,13 @@ CMDLINE \
 PATH \
 "
 # PATH -- display, don't initialize
+init_config_title="mature configuration"
 display_config ${var_list}
 
-sh_countdown $(($init_wait * 3))
-[[ $verbosity -gt 3 ]] && sh_countdown $(( $init_wait * 3 ))
+[[ $verbosity -gt 4 ]] && sh_countdown $(( $init_wait * 3 ))
 
 # access the root and usr logical volumes (among others), and show what we unlocke
-access_logical_volumes
+display_logical_volumes
 
 # clean up in preparation to actually switch root
 message "Cleaning up initramfs mounts prior to actual switch_root"
