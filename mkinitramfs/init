@@ -74,7 +74,21 @@ echo
 #----[ display separator to mark start of script ]-----------------------------------------------
 separator "Running /init" "initramfs-$BUILD"
 
-# display initial config of variables available)
+#----[ source functions local to initramfs ]-----------------------------------------------------
+### *** for testing, when ready, move still-testing functions to validated_functions_header **---
+d_message_n "sourcing /testing_functions_header ..." 1
+source /testing_functions_header
+right_status $? || echo "sourcing failed"
+
+# note: in the real init script, we MUST source validated_functions_header second, in order to
+#   override testing-only-modified functions also present in testing_functions_header
+#   (in the testing init script (ash.temp) it is the other way around)
+d_message_n "sourcing /validated_functions_header ..." 1
+source /validated_functions_header
+right_status $? || echo "sourcing failed"
+
+# display initial config of variables available
+# (must source display_config function first)
 var_list="BUILD \
 init_mdev_wait \
 init_wait \
@@ -99,14 +113,6 @@ init_config_title="preliminary configuration"
 display_config ${var_list}
 
 #----[ Define functions local to initramfs ]-----------------------------------------------------
-d_message_n "sourcing /validated_functions_header ..." 1
-source /validated_functions_header
-right_status $? || echo "sourcing failed"
-
-#### ***** for testing, when ready, move still-testing functions to validated_functions_header ***** ---------
-d_message_n "sourcing /testing_functions_header ..." 1
-source /testing_functions_header
-right_status $? || echo "sourcing failed"
 
 rescue_shell() {
     # echo a simply formatted message explaining the source of our problem
@@ -189,26 +195,21 @@ separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
 # call function to unlock HD(s)
 unlock_devices ${unlock_method}
 
-# umount init_passdevice
-message_n "un-mounting init_passdevice ..."
-umount ${init_passdevice_mount_point} ; right_status $?
+# done with all luks devices; ok to un-mount keying device now
+if [[ -b ${init_passdevice_mount_point} ]]; then
+    message_n "Un-mounting keying device ..."
+    umount ${init_passdevice_mount_point}; right_status $?
+fi
 
 # make lvm logical volumes available
 /sbin/vgscan
 /sbin/vgchange -a y
+sh_countdown $(( $init_wait * 3 ))
 
 # assign root and usr volume names (if not already done)
 separator "assigning and validating root and usr volumes" "initramfs-$BUILD"
 assign_volume "root_volume"
 assign_volume "usr_volume"
-
-# re-scan, if needed, until we actually do have usr device available
-d_message "Re-scanning, if needed ..." 1
-while [[ ! -b $(echo "$usr_volume") ]]
-do
-    d_message "re-verifying the existence of block device $root_volume" 3
-    /sbin/vgscan --mknodes --ignorelockingfailure
-done
 
 # validate root and usr device and assign fs
 #  cannot do this until after the volume is unlocked and the volume is assigned
@@ -245,16 +246,8 @@ display_config ${var_list}
 # access the root and usr logical volumes (among others), and show what we unlocke
 display_logical_volumes
 
-# clean up in preparation to actually switch root
-message "Cleaning up initramfs mounts prior to actual switch_root"
-d_message_n "umount /proc ..." 1
-umount /proc ; right_status $?
-d_message_n "umount /dev/pts ..." 1
-umount /dev/pts ; right_status $?
-d_message_n "umount /dev ..." 1
-umount /dev ; right_status $?
-d_message_n "umount /sys ..." 1
-umount /sys ; right_status $?
+# mount_new_root_and_prepare_to_switch_root
+mount_new_root_and_prepare_to_switch_root
 
 separator "Switching to /newroot, mounted on encrypted volume [${root_volume}]" "initramfs-$BUILD"
 d_message "  -  Will continue with /sbin/init" 1
