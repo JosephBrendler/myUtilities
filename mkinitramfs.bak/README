@@ -1,0 +1,229 @@
+Basic instructions for setting up a system with encrypted storage and my custom initramfs
+# Joe Brendler - 9 Nov 2008
+References:
+#   http://en.gentoo-wiki.com/wiki/Custom_Initramfs
+#   http://en.gentoo-wiki.com/wiki/Root_filesystem_over_LVM2,_DM-Crypt_and_RAID
+#   http://www.gentoo.org/doc/en/lvm2.xml
+#   http://en.gentoo-wiki.com/wiki/Booting_encrypted_system_from_USB_stick
+#   http://jkroon.blogs.uls.co.za/it/security/encrypted-harddrive-gentoo
+#   http://blog.infion.de/archives/2007/05/15/Full-disk-encryption-with-LUKS-on-new-notebook/
+
+# SYSTEM BUILD
+
+# 0.  boot from live or minimal CD, and (as root) use e.g. fdisk, to create your layout
+(at least two partitions on your to-be-encrypted drive.  If you want an efi system
+intend to use gpt rather than dos disk formattind, then make at least three partitions
+(follow the gentoo handbook for efi, boot, and "root" partitions, but adapt the rootfs
+(eg /dev/nvme0n1p3) as the encrypted block device to be used by LUKS (below).
+(minimal requirements - a few 100M for /boot and the rest for your encrypted LVM.)
+
+# As of 01/03/2024, my latest buuild layout (fdisk -l) looks like this -
+   Disk /dev/nvme0n1: 1.86 TiB, 2048408248320 bytes, 4000797360 sectors
+   Disk model: Lexar SSD NM620 2TB                     
+   Units: sectors of 1 * 512 = 512 bytes
+   Sector size (logical/physical): 512 bytes / 512 bytes
+   I/O size (minimum/optimal): 512 bytes / 512 bytes
+   Disklabel type: gpt
+   Disk identifier: 4693C850-DF23-CF42-A8FF-2C0A9C1D91BE
+
+   Device           Start        End    Sectors  Size Type
+   /dev/nvme0n1p1    2048      10239       8192    4M BIOS boot
+   /dev/nvme0n1p2   10240     522239     512000  250M EFI System
+   /dev/nvme0n1p3  522240    2099199    1576960  770M Linux filesystem
+   /dev/nvme0n1p4 2099200 4000796671 3998697472  1.9T Linux LVM
+
+   - Initialize the to-be-encrypted block device random data to increase security
+     (makes it harder to identify the presence of the encrypted structure)
+   - "# dd if=/dev/urandom of=/dev/nvme0n1p3"  
+   - Then format and encrypt /dev/nvme0n1p3 with "cryptsetup luksFormat /dev/nvme0n1p3"
+   - This will prompt you for a passphrase to secure the key (don't lose it)
+   - open your encrypted partition with "cryptsetup luksOpen /dev/nvme0n1p3 evp2"
+     (or cryptsetup luksOpen  /dev/sda2 eda2" as may fit your layout)
+     (where /dev/nvme0n1p3 is <device> and evp2 is <name> cryptsetup assigns to it 
+      for devicemapper - produces /dev/mapper/<name> device node, but you
+      won't need to refer to that much)
+   - with lvm, create your volume group and logical volume structure
+      -- "# pvcreate /dev/mapper/<name> " (creates the physical volume (pv) "name")
+      -- "# vgcreate vg_myname /dev/mapper/<name>" (creates volume group (vg) "vg_myname")
+      -- "# lvcreate -L3G -nswap vg_myname" (creates 3G lv for swap in vg "vg_myname"
+         (repeat with appropriate size and name for e.g.  root, usr, var, home, opt, tmp, srv)
+   - create filesystems in these volumes with standard fs tools, e.g.
+       "# yes | for x in /dev/lvm/*; do mkfs.ext4 -L "$(basename $x)_fs" $x; done
+        # mkswap -v1 /dev/lvm/swap
+        # swapon /dev/lvm/swap"
+   - create filesystem in your boot partition, too
+        "# mkfs.ext2 /dev/sda1"
+
+# As of 01/03/2024, my latest buuild layout (lvs) looks like this -
+  LV    VG        Attr       LSize   
+  extra vg_gmki91 -wi-a----- 168.71g                                                    
+  home  vg_gmki91 -wi-ao---- 500.00g                                                    
+  opt   vg_gmki91 -wi-ao----   4.00g                                                    
+  root  vg_gmki91 -wi-ao----  10.00g                                                    
+  srv   vg_gmki91 -wi-ao----   1.00t                                                    
+  swap  vg_gmki91 -wi-ao----   5.00g                                                    
+  tmp   vg_gmki91 -wi-ao----  55.00g                                                    
+  usr   vg_gmki91 -wi-ao----  40.00g                                                    
+  var   vg_gmki91 -wi-ao---- 100.00g                                                    
+
+   - Now mount your root volume with "mount /dev/mapper/vg_myname-root /mnt/gentoo"
+   - and proceed with installation per the gentoo handbook for your 
+     architecture
+
+# As of 01/03/2024, my latest buuild layout includes this script for easily mounting the system's parts and chrooting
+   #!/bin/bash
+   # mount-the-rest  (chmod +x)
+   # Joe Brendler    rev 30 Dec 2023
+   root_vg=vg_myname
+   mountpoint=/mnt/gentoo
+   efi_uuid=CCCC-CCCC
+   boot_partuuid=01234567-890a-bcde-ffed-cba987654321
+   for x in $(lvs | grep ${root_vg} | grep -v 'root\|swap\|extra' | awk '{print $1}')
+   do
+     [ ! -d ${mountpoint}/$x ] && echo "mkdir ${mountpoint}/$x..." && mkdir ${mountpoint}/$x
+     mount /dev/mapper/${root_vg}-$x ${mountpoint}/$x
+   done
+   echo "here is what I mounted..."
+   mount | grep ${mountpoint}
+   echo
+   [ ! -d ${mountpoint}/efi ] && echo "mkdir ${mountpoint}/efi ..." && mkdir ${mountpoint}/efi
+   [ ! -d ${mountpoint}/boot ] && echo "mkdir ${mountpoint}/boot ..." && mkdir ${mountpoint}/boot
+   echo "mount /efi and /boot as below now, or at / AFTER chroot (see fstab)"
+   echo "   # mount UUID=${efi_uuid} ${mountpoint}/efi"
+   echo "   # mount PARTUUID=${boot_partuuid} ${mountpoint}/boot"
+
+
+   # /chroot-commands (ascii text)
+   # cat /chroot-commands 
+   #   to output this text to stdout (screen), then copy and paste it to the commandline
+   #   (it won't run as a script, sicnce it chroots...)
+   #   Recommendation:  copy the three sections below and paste each, in three copy/paste actions
+   [ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run
+   mount --types proc proc /mnt/gentoo/proc
+   mount --rbind /sys /mnt/gentoo/sys
+   mount --make-rslave /mnt/gentoo/sys
+   mount --rbind /dev /mnt/gentoo/dev
+   mount --make-rslave /mnt/gentoo/dev
+   mount --bind /run /mnt/gentoo/run
+   mount --make-rslave /mnt/gentoo/run
+
+   test -L /dev/shm && rm /dev/shm && mkdir /dev/shm
+   mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm
+   chmod 1777 /dev/shm
+
+   chroot /mnt/gentoo /bin/bash
+   env-update
+   source /etc/profile
+   export PS1="(chroot) $PS1"
+
+# Note: if (and it's likely) you need to access your encrypted drive before 
+  your initramfs is fully functional, you can boot from the CD again and access
+  as follows:
+  "# cryptsetup luksOpen /dev/sda2 eda2
+   # vgscan
+   # vgchange -a y
+   # mount /dev/mapper/lvm-root /mnt/gentoo
+   (then run ./mount-the-rest and copy/paste chroot-commands, 
+    then continue as normal and complete or modify installation/configuration)
+
+# Note: if you plan to use a key-file (say, on a usb drive) to access your 
+  system w/o having to supply a passphrase, you can add this key to your system 
+  as follows (just one way to make akey):
+   # cryptsetup luksDump /dev/sda2
+   (copy and paste the "salt" string from the output
+   # salt="<paste-here-text-from-both-lines>"
+   this is an initialization vector for the following, using app-crypt/hashalot )
+   # hashalot -s "$salt" -x -n32 "ripemd160" > mykeyfilepath
+   (copy this file to usb device and specify the location in init.conf
+   - see below)
+   # cryptsetup luksAddKey /dev/sda2 mykeyfilepath
+   (this adds your key to the next open key slot for your device)
+   (Note: the current init script assumes this is slot 1 and that you still 
+    have your passphrase key in slot 0 - recommend you keep the passphrase there as 
+    a fall-back so you can access the system even if you've lost/destroyed your usb 
+    device.  The current init script can use either prompt or keyfile unlock methods)
+
+# Next, build your initramfs - you can either build it into your kernel, or as a 
+#  separate cpio.gz compressed archive.
+
+#1.  configure your kernel -- the basic principle is that you need to compile
+into the kernel anything that it will need at boot time 
+(before modules are loaded).  It is possible to extend the work on this 
+initramfs instruction to build your own module loader, but I'm not doing that
+here.  (see http://en.gentoo-wiki.com/wiki/Custom_Initramfs if you're interested)
+Here are the basic kernel requirements for initramfs supporting LUKS and LVM:
+# make menuconfig
+CONFIG_BLK_DEV_INITRD=y
+
+(optional) CONFIG_INITRAMFS_SOURCE="/usr/src/initramfs"
+
+[*] Initial RAM fs & RAM disk
+(0) Userid
+(0) Groupid
+
+CONFIG_BLK_DEV_RAM=y
+CONFIG_CRAMFS=y
+
+<*> Device Mapper Support
+[ ] Device Mapper Debugging
+<*> Crypt Target Support
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_CRYPT=y
+
+<*> SHA1
+<*> SHA224 & 256
+<*> XTS
+<*> AES
+
+CONFIG_CRYPTO_SHA1=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_XTS=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_x86=y    (etc - to match your arch)
+
+#2. build your initramfs
+Start by copying this directory (mkinitramfs) to /usr/src/.  Then cd to that
+location and edit the init.conf files to match your configuraton.
+Note: installing dev-util/mkinitramfs from the joetoo overlay does the same thing -
+
+# cat /etc/portage/repos.conf/eselect-repo.conf
+
+   # created by eselect-repo
+
+[local]
+location = /var/db/repos/local
+
+[joetoo]
+location = /var/db/repos/joetoo
+sync-type = git
+sync-uri = https://github.com/JosephBrendler/joetoo.git
+
+
+Copy both config files (init.conf and mkinitramfs.conf) to /etc/mkinitramfs/ 
+to have a more persistent configuration.  Again, merging dev-util/mkinitramfs
+will do this (and offer config-protected updates). Detailed instructions are in 
+each config file regarding each of the possible configuration settings.  
+
+Then build the initramfs by executing the mkinitramfs
+wrapper script, which will call make_sources.sh to build and populate the initramfs
+source tree and then call make_image.sh to create the actual initramfs image 
+(cpio.gz compressed archive image) of the source tree.
+
+# Other Notes:
+*** You no longer have to install busybox with USE=static ***
+*** You also must have cryptsetup and lvm2, but you do NOT need to install 
+cryptsetup or lvm2 as static binaries.  dev-util/mkinitramfs will pull in the
+required packages, and the mkinitramfs scripts will install the required binary
+and shell script executables and automatically discover and install all of the 
+necessary dynamically linked libraries upon which your basic programs
+will depend
+
+Note: alternatively, you can build the initramfs into your kernel by setting:
+CONFIG_INITRAMFS_SOURCE="/usr/src/initramfs"
+and compiling your kernel
+Note: *** if you will compile the initramfs into the kernel, then you do not
+need to run the wrapper script mkinitramfs; the make_sources script will suffice!
+
+# 3. reboot - good luck
+
+# Final note: the previously supported fbcondecor initramfs boot splash is deprecated

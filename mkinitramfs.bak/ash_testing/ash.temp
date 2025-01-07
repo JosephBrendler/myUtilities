@@ -1,0 +1,193 @@
+#!/bin/ash
+
+source /usr/local/sbin/script_header_brendlefly
+
+#----[ initialize additional global variables ]--------------------------------------------------
+separator "initializing" "initramfs-$BUILD"
+# initialize these variables to '' to establish them as globals
+#   remember '' evaluates as $FALSE in logical test
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_keyfile \
+unlock_method\
+init_passdevice_list \
+init_passdevice_mount_point \
+init_passdevice_volume \
+init_passdevice_fs \
+init_lock_down \
+unlock_method \
+root_volume \
+root_fs \
+usr_volume \
+usr_fs \
+CMDLINE \
+VERBOSE \
+verbosity \
+init_config_title \
+"
+# PATH -- display, don't initialize
+for x in ${var_list}
+do
+	echo -n "initializing $x ..."
+	cmd="$x=''"
+	eval $cmd
+	right_status $? || echo "$x initialization failed"
+done
+echo
+echo
+
+separator "ash.temp" "testing script"
+# this script assumes you are in the ash_testing/ directory so build relative
+message_n "Sourcing ../GLOBALS ..."
+source ../GLOBALS ; right_status $?
+message_n "Sourcing ${SOURCES_DIR}/BUILD ..."
+source ${SOURCES_DIR}/BUILD ; right_status $?
+message_n "Sourcing ${SOURCES_DIR}/init.conf ..."
+source ${SOURCES_DIR}/init.conf ; right_status $?
+[ $verbosity -gt 0 ] && VERBOSE=$TRUE || VERBOSE=$FALSE
+root_volume="${init_root_volume}"
+usr_volume="${init_usr_volume}"
+root_fs="${init_root_fs}"
+usr_fs="${init_usr_fs}"
+longest=0
+# set defai;t verbosity - b/c we must have these assigned,
+#  just in case neither in init.conf nor cmdline does it
+VERBOSE=$TRUE; verbosity=4
+
+
+var_list="DATE_STAMP SCRIPT_HEADER_DIR SOURCES_DIR MAKE_DIR"
+for x in ${var_list}
+do [ ${#x} -gt $longest ] && longest=${#x}; done
+
+for x in ${var_list}
+do
+  key="${x}"
+  eval "val=$(echo \$$x | cut -d'=' -f2)"
+  dotpad="$(repeat "." $(($longest-${#key}+2)))"
+  message "${LBon}${key}${dotpad}: ${Boff}${val}"
+done
+echo
+
+# Note:  GLOBALS sets MAKE_DIR=$(pwd), so build relative
+message_n "Sourcing ${MAKE_DIR}/../validated_functions_header ..."
+source ${MAKE_DIR}/../validated_functions_header ; right_status $?
+message_n "Sourcing ${MAKE_DIR}/../testing_functions_header ..."
+source ${MAKE_DIR}/../testing_functions_header ; right_status $?
+echo
+
+### actual init script should call mini_udev() here, to mount proc, devtmpfs, devpts, sysfs, etc
+### then it should wait for several seconds for normal trailing kernel output and device recognition
+
+# test overriding init.conf with cmdline
+#CMDLINE="root=/dev/mapper/vg_gmki91-root verbosity=2 usr=/dev/mapper/vg_gmki91-usr"
+# test minimal unmodified cmdline
+#CMDLINE="root=/dev/mapper/vg_gmki91-root"
+CMDLINE="root=/dev/mapper/vg_tinker2s-root"
+
+process_cmdline
+echo
+
+# display initial config of variables available)
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_keyfile \
+init_passdevice_mount_point \
+init_lock_down \
+root_volume \
+usr_volume \
+VERBOSE \
+verbosity \
+init_passdevice_list \
+CMDLINE \
+PATH \
+"
+#unlock_method \
+#init_passdevice_volume \
+#init_passdevice_fs \
+#root_fs \
+#usr_fs \
+# PATH -- display, don't initialize
+init_config_title="preliminary configuration"
+display_config ${var_list}
+echo
+
+separator "ash.temp" "selecting keying device and unlock method..."
+select_keying_device_and_unlock_method
+echo
+
+# echo to console to confirm attempt to unlock HDs
+separator "Unlocking encrypted Drive(s)" "initramfs-$BUILD"
+# call function to unlock HD(s)
+unlock_devices ${unlock_method}
+echo
+
+# umount init_passdevice
+message_n "un-mounting init_passdevice ..."
+umount ${init_passdevice_mount_point} ; right_status $?
+echo
+
+# make lvm logical volumes available
+/sbin/vgscan
+/sbin/vgchange -a y
+# re-scan, if needed, until we actually do have devices available
+d_message "Re-scanning, if needed ..." 1
+while [[ ! -b $(echo "$root_volume") ]]
+do
+    d_message "re-verifying the existence of block device $root_volume" 3
+    /sbin/vgscan --mknodes --ignorelockingfailure
+done
+
+# assign root and usr volume names (if not already done)
+separator "assigning and validating root and usr volumes" "initramfs-$BUILD"
+assign_volume "root_volume"
+assign_volume "usr_volume"
+
+# validate root and usr device and assign fs
+#  cannot do this until after the volume is unlocked and the volume is assigned
+#  need to pass string name arg so function can make fs assignment
+validate_volume_and_assign_fs "root_volume"
+validate_volume_and_assign_fs "usr_volume"
+
+# display config - after volumes uinlocked and root/usr fs obtained
+var_list="BUILD \
+init_mdev_wait \
+init_wait \
+init_passdevice_volume \
+init_passdevice_fs \
+unlock_method \
+init_keyfile \
+init_passdevice_mount_point \
+init_lock_down \
+root_volume \
+root_fs \
+usr_volume \
+usr_fs \
+VERBOSE \
+verbosity \
+init_passdevice_list \
+CMDLINE \
+PATH \
+"
+# PATH -- display, don't initialize
+init_config_title="mature configuration"
+display_config ${var_list}
+
+
+# access the root and usr logical volumes (among others), and show what we unlocked
+display_logical_volumes
+
+echo
+message "cleaning up"
+vgchange -an vg_tinker2s
+cryptsetup luksClose edb2
+echo
+message "validating cleanup w vgs; mount | grep sda"
+vgs
+mount | grep sda
+
+echo ; echo
+# call a function in the sourced file
+test
+
