@@ -23,14 +23,12 @@ verbosity=2
 [[ -e /etc/mkinitramfs/mkinitramfs.conf ]] && MAKE_CONF_DIR="/etc/mkinitramfs"
 
 # override (ROTATE and verbosity) variables with mkinitramfs.conf file
-source ${MAKE_CONF_DIR}/mkinitramfs.conf
-
-# source functions in make_sources_functions_header
-message_n "Sourcing functions in make_sources_functions_header ..."
-source ${MAKE_DIR%/}/make_sources_functions_header ; right_status $?
+message_n "Sourcing mkinitramfs.conf ..."
+source ${MAKE_CONF_DIR}/mkinitramfs.conf ; right_status $?
 
 # source the init_structure list
-source ${MAKE_DIR%/}/init_structure
+message_n "Sourcing init_structure variables ..."
+source ${MAKE_DIR%/}/init_structure ; right_status $?
 
 #source ${MAKE_DIR}/dyn_executables_header
 # initialize list of executables
@@ -40,104 +38,9 @@ dependencies=()
 
 #---[ functions ]-----------------------------------------------
 
-copy_dependent_libraries()
-{
-  # Beginning with version 5.3.1, I'm using lddtree (from app-misc/pax-utils) instead of ldd.
-  # This appears to simplify the situation to three cases (one of which is trivial):
-  # (1) symlink_name => dir_name/target_name shown
-  # (2) target_name => dir_name/target_name        (where target_name is the executable)
-  # (3) dyn_executable (interpreter => /lib{64}/ld-linux{-x86-64}.so.2) {ignore with grep -v}
-  # parsing strategy:
-  # Ignore case (3) - (trivial) the dyn_executable is already copied, and ld-linux is on the list separately
-  # For case (2) - just make sure the target executable (dependency) gets copied if it hasn't been already
-  # For each case (1), copy the target executable to - and create the symlink in - the ${SOURCES_DIR}
-
-  # General algorithm:  process the dynamic executables to identify libraries they depend on --
-  #   for each dyn_executable, use which to locate it, and lddtree to list all dependencies.
-  #   ignore case (3) lines with grep -v interpreter; trim leading and trailing whitespace;
-  #   sort and eliminate duplicates; we need only the third field of lddtree output (/target/path/target_name)
-  d_message "Copying dependent libraries ..." 1
-  for x in $( for i in $bin_dyn_executables $usr_bin_dyn_executables $sbin_dyn_executables; do lddtree $(which $i); done | \
-    grep -v interpreter | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | sort -u | cut -d' ' -f3)
-  do
-    # run the "file" command on each /target/path/target_name listed, the second field of
-    #   this output shows if it is case (1) symlink or (2) ELF
-    line=$(file $x)
-    d_message "---[ New line to examine: ( ${line} ) ]---" 3
-    set ${line}
-    case $2 in
-      "ELF" )
-        # just copy the target executable (first item in the line)
-        target_name=$(basename $1 | sed 's/:$//')   # drop the trailing colon
-        dir_name=$(dirname $1)
-        d_message "  Case 2 (ELF). dir_name=[$dir_name], target_name=[$target_name]" 3
-        d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
-        # create target directory if it diesn't already exist
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}" 3
-        [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
-        [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-          copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
-        ;;
-      "symbolic" )
-        # copy the target executable (last item in the line) and create the symlink (first item in the line) to it
-        target_name=${!#}    # last positional parameter
-        link_name=$( basename $1 | sed 's/:$//' )  # drop the trailing colon
-        dir_name=$( dirname $1 )
-        # first copy the target
-        d_message "  Case 1 (symlink) dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name]" 3
-        d_message "  Copy/Link ${SOURCES_DIR}${dir_name}/$target_name..." 2
-        # create target directory if it diesn't already exist
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}" 3
-        [[ ! -e ${SOURCES_DIR}${dir_name} ]] && mkdir -p ${SOURCES_DIR}${dir_name}
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
-        [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-          copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
-        # next, create the link
-        old_pwd=$PWD
-        cd ${SOURCES_DIR}${dir_name}
-        d_message "just changed from directory [ $old_pwd ] to directory: [ $PWD ]" 3
-        d_message_n "Linking:   ${LBon}${link_name}${Boff} --> ${BGon}${dir_name}/${target_name}${Boff} ..." 2
-        if [ ! -e ${SOURCES_DIR}${dir_name}/${link_name} ]
-        then
-          ln -s $target_name $link_name ; d_right_status $? 2
-        else
-          d_message_n " {link already created} " 2; d_right_status $? 2
-        fi
-        cd $old_pwd
-        ;;
-      * )
-       E_message "error in copying/linking dependencies"
-       exit 1
-       ;;
-    esac
-    d_message "--------------------------------------------" 3
-  done
-
-  # address rare issue with error "libgcc_s.so.1 must be installed for pthread_cancel to work"
-  # occurs when cryptsetup tries to open LUKS volume - see references (similar but different) --
-  #   https://bugs.gentoo.org/760249 (resolved by fix to dracut)
-  #   https://forums.gentoo.org/viewtopic-t-1096804-start-0.html (zfs problem. fix: copy file to initramfs)
-  #   https://forums.gentoo.org/viewtopic-t-1049468-start-0.html (also zfs problem. same fix)
-  # at least for now, I'm using the same fix here --
-
-  # ( if needed, find and copy the missing file to /lib64/libgcc_s.so.1
-  #   - then copy it to ${SOURCES_DIR}. Note: in this initramfs, /lib64 is a symlink to /lib )
-  if [[ ! -e /lib64/libgcc_s.so.1 ]]
-  then
-    selector=$(gcc -v 2>&1 | grep Target | cut -d' ' -f2)
-    searched_file="$( find /usr/ -iname libgcc_s.so.1 2>/dev/null | grep -v 32 | grep ${selector})"
-    cp -v "${searched_file}" /lib64/libgcc_s.so.1
-  fi
-  missing_file=/lib64/libgcc_s.so.1
-  target_name=$(basename ${missing_file})
-  dir_name=$(dirname ${missing_file})
-
-  d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name "
-  [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
-
-}
+# source functions in make_sources_functions_header
+message_n "Sourcing functions in make_sources_functions_header ..."
+source ${MAKE_DIR%/}/make_sources_functions_header ; right_status $?
 
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
@@ -145,34 +48,44 @@ copy_dependent_libraries()
 separator "Make Sources"  "mkinitramfs-$BUILD"
 checkroot
 
-varlist="SOURCES_DIR MAKE_DIR"
+# display configuration
+varlist="SOURCES_DIR MAKE_DIR MAKE_CONF_DIR VERBOSE verbosity \
+bins libs admin_files init_executables"
+init_config_title="make_sources.sh configuration"
 display_config $varlist
 
+# build the initramfs directory sturcture
 separator "Build Directory Structure"  "mkinitramfs-$BUILD"
 build_structure $structure
 build_other_devices
 
+# initialize and load array of executables' full path names on this system
+executables=()
 separator "Load list of executables" "mkinitramfs-$BUILD"
 load_executables
 
+# copy executables to the initramfs directory structure
 separator "Copy Executables"  "mkinitramfs-$BUILD"
 copy_executables
 
+# copy other components to the initramfs directory structure
 separator "Copy Other Necessary Parts"  "mkinitramfs-$BUILD"
 copy_other_parts
 
-separator "Copy Dependencies" "mkinitramfs-$BUILD"
-
-
+# create symlinks in initramfs directory structure (for busybox, lvm, and others)
 separator "Create Symlinks"  "mkinitramfs-$BUILD"
 create_links
 
+# copy dependencies to the initramfs directory structure (for executables)
 separator "Copy Dependent Libraries"  "mkinitramfs-$BUILD"
-copy_dependent_libraries
+copy_dependencies
 
+# create the BUILD reference file to be used by the init script
 separator "Create the BUILD reference file"  "mkinitramfs-$BUILD"
 echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
 
-d_message "cleaning up..." 1
-# nothing to do here anymore...
-d_message "All Done" 1
+# optionally display the resulting initramfs directory tree
+if [[ $verbosity -gt 2 ]] ; then
+  separator "initramfs directory tree" "mkinitramfs-$BUILD"
+  tree ${SOURCES_DIR}
+fi
