@@ -22,6 +22,9 @@ verbosity=2
 [[ -e ${MAKE_DIR}/mkinitramfs.conf ]] && MAKE_CONF_DIR=${MAKE_DIR}
 [[ -e /etc/mkinitramfs/mkinitramfs.conf ]] && MAKE_CONF_DIR="/etc/mkinitramfs"
 
+# draw separator to indicate beginning of run
+separator "make_sources.sh setup"  "mkinitramfs-$BUILD"
+
 # override (ROTATE and verbosity) variables with mkinitramfs.conf file
 message_n "Sourcing mkinitramfs.conf ..."
 source ${MAKE_CONF_DIR}/mkinitramfs.conf ; right_status $?
@@ -45,7 +48,6 @@ source ${MAKE_DIR%/}/make_sources_functions_header ; right_status $?
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
 #   ${MAKE_DIR}/initramfs_dir_tree to tailor this
-separator "Make Sources"  "mkinitramfs-$BUILD"
 checkroot
 
 # display configuration
@@ -82,7 +84,8 @@ copy_dependencies
 
 # create the BUILD reference file to be used by the init script
 separator "Create the BUILD reference file"  "mkinitramfs-$BUILD"
-echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD
+message_n "writing [BUILD=\"${BUILD}\"] to ${SOURCES_DIR}/BUILD ..."
+echo "BUILD=\"${BUILD}\"" > ${SOURCES_DIR}/BUILD ; right_status $?
 
 # optionally display the resulting initramfs directory tree
 if [[ $verbosity -gt 2 ]] ; then
