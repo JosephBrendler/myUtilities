@@ -80,9 +80,9 @@ copy_other_parts()
   do copy_one_part ${MAKE_DIR%/}/$i ${SOURCES_DIR%/}/; done
 
   # copy function_header content
-  d_message "Copying functon headers content ..." 1
-  for ((i=0; i<${#functon_headers_src[@]}; i++))
-  do copy_one_part ${functon_headers_src[i]} ${functon_headers_dest[i]}; done
+  d_message "Copying function headers content ..." 1
+  for ((i=0; i<${#function_headers_src[@]}; i++))
+  do copy_one_part ${function_headers_src[i]} ${function_headers_dest[i]}; done
 
   # copy other required content
   d_message "Copying other required content ..." 1
@@ -93,185 +93,10 @@ copy_other_parts()
 
 new_handle_dependencies()
 {
+  # use the --copy-to-tree feature of lddtree to copy all dependent files to ${SOURCES_DIR%/}/
   for x in $( list_executables )
   do
     lddtree -v ${x} --copy-to-tree ${SOURCES_DIR%/}/
-  done
-
-}
-identify_initial_depencies_with_lddtree()
-{
-  # use lddtree to identify dependent libraries needed by the executables, filtering for case (3a) [see below]
-  for x in $( list_executables )
-  do
-    lddtree ${x} | grep -v $x | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//'
-  done | sort -u
-}
-
-parse_initial_dependencies()
-{
-  # Read each line of initial dependency output from lddtree and add the item to array
-  # If it has an "interpreter" add that too
-  while read item
-  do
-    echo $item
-  done  <<< $( identify_initial_depencies_with_lddtree )
-#   | cut -d' ' -f3
-
-}
-
-identify_all_dependencies()
-{
-  dependencies=()
-  while read library
-  do
-    type="$(file ${library} | cut -d' ' -f2)"
-    case $type in
-      "ELF"          ) casecolor="${BMon}" ;;
-      "symbolic"     ) casecolor="${LBon}" ;;
-      "Bourne-Again" ) casecolor="${BYon}" ;;
-      *              ) casecolor="${BRon}" ;;
-    esac
-    d_message "${BYon}---->${Boff} identified dependent library: ${library}   case: ${casecolor}${type}${Boff}  " 3
-    [[ $verbosity -gt 2 ]] && ls -al ${library}
-    d_message "     file: $(file ${library})  " 4
-    dependencies+=("$(echo ${library})")
-  done <<< $( parse_initial_depencies )
-}
-
-list_dependencies()
-{
-  for ((i=0; i<${#dependencies[@]}; i++))
-  do
-    [ ! -z ${dependencies[$i]} ] && echo "${dependencies[$i]}"
-  done
-}
-
-dump_dependencies()
-{
-  count=0
-  for ((i=0; i<${#dependencies[@]}; i++))
-  do
-    [ ! -z ${dependencies[$i]} ] && message "$i: ${dependencies[$i]}" && let count++
-  done
-  message "dumped ${count} dependencies"
-}
-
-copy_dependent_libraries()
-{
-  # Beginning with version 5.3.1, make_sources.sh switched to lddtree (app-misc/pax-utils) instead of ldd.
-  # Beginning with version 8.0.2, make_sources.sh updated the algorithm to accomodate varying host system layouts
-  # General algorithm:  process the new list of ecutables in the init_executables variable to identify libraries they depend on --
-  #   Step 1) use the lddtree command (from app-misc/pax-utils) to identify dependencies for each executable
-  #   Step 2) use the file command (from sys-apps/file) to determine how to handle each
-  #   There appear to be three cases identified by the second field in the output of the file command
-  #     where dir_name is the location of this dependency - target_name or link_name (the executable/link) on the host system
-  #     case 1 (shell script) format: "dir_name/target_name"
-  #         Action 3:  if not already there, copy dir_name/target_name to ${SOURCES_DIR}/${dir_name}
-  #     case 2 (symlink) format: "dir_name/link_name: symbolic link to dir_name/target_name"
-  #         Action 2: if not already there, copy target to dest dir (/lib or /usr/bin) amd/or make linkt to it
-  #     case 3 (ELF) format: "dir_name/target_name"
-  #       case 3a ELF is a pie executable normally identified by "interpreter" (a library; normally ld-linux-x86-64.so.2)
-  #         Action 3a: if not already there, copy dir_name/target_name to /usr/bin and/or interpreter to /lib
-  #       case 3b ELF is a shared object library
-  #         Action 3b: if not already there, copy dir_name/target_name to /lib
-  #       case 3c (subset of 1b) ELF is a shared object library that is also identified by
-  #         Action 3c: if not already there, copy dir_name/target_name to /lib and/or interpreter to /lib
-
-  d_message "Identifying dependent libraries ..." 1
-
-  identify_all_dependencies
-
-  d_message "Copying dependent libraries ..." 1
-  for ((x=0; x<${#dependencies[@]}; x++))
-  do
-    # run the "file" command on each /target/path/target_name in ${dependencies[@]}
-    #   the second field of this output shows if it is case (1) symlink or (2) ELF
-    #   also filter vor case (3b) [see above]
-    line=$(file ${dependencies[$x]})
-    thiscase=$( echo $line | cut -d' ' -f2)
-    d_message "  $x: ${dependencies[$x]}" 4
-    d_message "    case: ${thiscase}" 4
-    d_message "    examining line: ( ${line} )" 4
-    case $thiscase in
-      "Bourne-Again" )
-        thistarget=$( echo $line | cut -d' ' -f1)
-        target_name=$(basename $thistarget | sed 's/:$//')   # drop the trailing colon
-        dir_name=$(dirname $thistarget)
-        d_message "  Case 3 (Bourne-Again). dir_name=[$dir_name], target_name=[$target_name]" 3
-        d_message "  Copy shell script $target_name to ${SOURCES_DIR}${dir_name}/ ..." 2
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR%/}${dir_name}/$target_name ]] && copy_one_part \"${dir_name}/${target_name}\" \"${SOURCES_DIR}${dir_name}/\"" 3
-        [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-          copy_one_part "${thistarget}" "${SOURCES_DIR%/}${dir_name}/"
-      ;;
-      "symbolic" )
-        # copy the target executable (last item in the line) and create the symlink (first item in the line) to it
-        thistarget=$( echo $line | cut -d' ' -f1)
-        link_name=$(basename $thistarget | sed 's/:$//')   # drop the trailing colon
-        dir_name=$(dirname $thistarget)
-        target=$( echo $line | awk '{print $(NF)}' )   # $(NF) is the number of fields in awk input
-        target_name=$(basename $target)
-        target_dir_name=$(dirname $target)
-        [[ "${target_dir_name}" == "." ]] && target_dir_name=${dir_name}
-        # ignore the special case of host system links in /lib to ../lib64 ../usr/lib or ../usr/lib64
-        #   since all libs are linked to /lib in the current merged layout of this initramfs
-        #   e.g.  /lib/ld-linux-aarch64.so.1: symbolic link to ../lib64/ld-linux-aarch64.so.1
-        d_message "  Case 2 (symlink) dir_name=[$dir_name], link_name=[$link_name], target_name=[$target_name] target_dir_name=[$target_dir_name]" 3
-        # first copy the target of the link if it doesn't already exist
-        d_message "  Copy symlink target ${target_dir_name}/$target_name to ${SOURCES_DIR%/}${target_dir_name} ..." 2
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR%/}${target_dir_name}/${target_name} ]] && copy_one_part \"${target_dir_name}/${target_name}\" \"${SOURCES_DIR%/}${target_dir_name}/\"" 3
-        [[ ! -e ${SOURCES_DIR%/}${target_name} ]] && \
-          copy_one_part "${target_dir_name}/${target_name}" "${SOURCES_DIR%/}${target_dir_name}/"
-        # next, create the link - be careful to not overwrite an executable with a link to itself
-        old_pwd=$(pwd)
-        cd ${SOURCES_DIR}${dir_name}
-        d_message "just changed from directory [ $old_pwd ] to directory: [ $(pwd) ]" 3
-        d_message_n "Linking:   ${LBon}${link_name}${Boff} --> ${BGon}${target_dir_name}/${target_name}${Boff} ..." 2
-        if [[ ! -e ${SOURCES_DIR}${dir_name}/${link_name} ]]
-        then
-          if [[ "${target_dir_name}" == "${dir_name}" ]] ; then
-            ln -s $target_name $link_name; d_right_status $? 2
-          else
-            ln -s ${target_dir_name}/$target_name $link_name; d_right_status $? 2
-          fi
-        else
-          d_message_n " {link already exists} " 2
-          d_right_status $? 2
-        fi    ## [ ! -L ${SOURCES_DIR}${dir_name}/${link_name} ]
-        cd $old_pwd
-        d_message "just changed back to directory: [ $(pwd) ]" 3
-      ;;
-      "ELF" )
-        # simplify for cases 1a, 1b, 1c - if they are not already there - if source dir_name is a "bin" copy target to /usr/bin
-        #   if source dir is a "lib" copy target to /lib; if there is an "interpreter" copy it to /lib or /usr/bin
-        thistarget=$( echo $line | cut -d' ' -f1)
-        target_name=$(basename $thistarget | sed 's/:$//')   # drop the trailing colon
-        dir_name=$(dirname $thistarget)
-        d_message "  Case 3 (ELF). dir_name=[$dir_name], target_name=[$target_name] dest_dir=[$dest_dir]" 3
-        d_message "  about to execute: [[ ! -e ${SOURCES_DIR%/}${thistarget} ]] && copy_one_part \"${thistarget}\" \"${SOURCES_DIR%/}${dir_name}/\"" 3
-        d_message "  Copy ELF ${thistarget} to ${SOURCES_DIR%/}${dir_name} ..." 2
-        # copy the executable target if it diesn't already exist
-        [[ ! -e ${SOURCES_DIR%/}${thistarget} ]] && \
-          copy_one_part "${thistarget}" "${SOURCES_DIR%/}${dir_name}/"
-        # if this executable also has an interpreter, ensure it is also loaded
-        if [[ "$line" == *"interpreter"* ]]; then
-          interpreter=$(basename $(echo ${line#*"interpreter"} | cut -d',' -f1))
-          sourcefile=$(find / -type f -name ${interpreter} 2>/dev/null | grep -v ${SOURCES_DIR})
-          dir_name=$(dirname ${sourcefile})
-          d_message "  about to execute: [[ ! -e ${SOURCES_DIR%/}${sourcefile} ]] && copy_one_part \"${sourcefile}\" \"${SOURCES_DIR}${dir_name}/\"" 3
-
-          d_message "  maybe Copy ELF interpreter $interpreter to ${SOURCES_DIR%/}${dir_name} ..." 2
-          [[ ! -e ${SOURCES_DIR}${dest_dir}/${interpreter} ]] && \
-            copy_one_part "${sourcefile}" "${SOURCES_DIR%/}${dir_name}/"
-        fi
-      ;;
-
-      * )
-        E_message "error in copying/linking dependencies"
-        exit 1
-      ;;
-    esac
-    d_message "--------------------------------------------" 3
   done
 
   # address rare issue with error "libgcc_s.so.1 must be installed for pthread_cancel to work"
@@ -295,7 +120,8 @@ copy_dependent_libraries()
 
   d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name " 2
   [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR}${dir_name}/"
+     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR%/}${dir_name}/"
+  chmod 755 ${SOURCES_DIR%/}${dir_name}/${target_name}
 }
 
 copy_executables() {
