@@ -45,9 +45,13 @@ dependencies=()
 message_n "Sourcing functions in make_sources_functions_header ..."
 source ${MAKE_DIR%/}/make_sources_functions_header ; right_status $?
 
-# source functions in common_functions_header
-message_n "Sourcing functions in common_functions_header ..."
-source ${MAKE_DIR%/}/common_functions_header ; right_status $?
+# source functions in common_bash_functions_header (load_list_ dump_executables)
+message_n "Sourcing functions in common_bash_functions_header ..."
+source ${MAKE_DIR%/}/common_bash_functions_header ; right_status $?
+
+# source functions in common_ash_functions_header (display_config, echo_long_string)
+message_n "Sourcing functions in common_ash_functions_header ..."
+source ${MAKE_DIR%/}/common_ash_functions_header ; right_status $?
 
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
