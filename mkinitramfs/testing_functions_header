@@ -1,25 +1,11 @@
 #!/bin/ash
 
-test() {
-        verbosity=2
-        d_echo "testing d_echo" 2
-        d_echo "testing d_echo" 3
-        message "should have printed only ${BGon}one${Boff} \"testing d_echo\" line"
-}
-
-teststringlength() {
-    str="$1"
-    echo "str: ${str}"
-    echo -n "1: "; [ ! -z $str ] && echo "non-zero" || echo "zero"
-    echo -n "2: "; [ ${#str} -gt 0 ] && echo "-gt zero" || echo "zero"
-    echo -n "3: "; [[ ! -z $str ]] && echo "non-zero" || echo "zero"
-    echo -n "4: "; [[ ${#str} -gt 0 ]] && echo "-gt zero" || echo "zero"
-    echo -n "5: "; [[ ${#str} -ne 0 ]] && echo "-ne zero" || echo "zero"
-    echo -n "6: "; [[ ${#str} -eq 0 ]]  && echo "-eq zero" || echo "not -eq zero"
-    echo -n "7: "; [[ ! ${#str} -eq 0 ]]  && echo "not -eq zero" || echo "-eq zero"
-    echo -n "8: "; [[ -n ${str} ]]  && echo "-n zero" || echo "zero"
-}
-
+### -----[ duplicated functions ]--------------------------------------------------------------
+### These scripts exist in both "validated_" and "testing_" headers but have been modified in each
+### In the live init script, source the "testing_" header first and "validated_" header second
+### In the testing script, source "validated_" header first and the "testing_" header second
+### The later-sourced will override, and this avoid having the "testing" script mess with
+###    non-testing luks devices on a testing host system
 assign_volume() {
     # given string volume name (root_ usr_volume), scan lvs and make volume pathname assignment
     volume_name=$1
@@ -42,98 +28,6 @@ assign_volume() {
     fi
 }
 
-display_config() {
-    # display the current value of a space-delimitted list of variables provided as input $@
-     # provide appropriately formatting for values of variables of special type, including
-    # known boolean variables and values with string-length too long for a single line
-    # also offer user an option to inssert blank lines in the output by providing an
-    # input variable name "<BREAK>"
-    my_varlist=$@
-    echo; separator "${init_config_title}" "initramfs=${BUILD}"
-    longest=0
-
-    for line in ${my_varlist}
-    do
-        key="$(echo $(echo $line) | cut -d'=' -f1)"
-        [[ ${#key} -gt ${longest} ]] && longest=${#key}
-    done
-
-    d_echo "longest: ${longest}" 4
-    for key in ${my_varlist}
-    do
-        eval "val=\$${key}"
-        # always pad variable name with at least two dots before colon
-        dotpad="$(repeat '.' $(( ${longest} - ${#key} + 2 )))"
-        case $key in
-            "VERBOSE"|"init_lock_down"|"VALID"|"EXISTS"|"HAS_KEY" )  # boolean
-                message "${LBon}${key}${dotpad}:${Boff} $(status_color ${val})$(TrueFalse ${val})${Boff}"
-                ;;
-            "init_passdevice_list"|"CMDLINE"|"PATH" )  # probably long string values
-                message_n "${LBon}${key}${dotpad}:${Boff}"; echo_long_string ${val}
-                ;;
-            "BREAK" )  # blank line to funciotn as separator in output
-                echo
-                ;;
-            * )
-                message "${LBon}${key}${dotpad}:${Boff} ${val}"
-                ;;
-        esac
-    done
-    echo
-}
-
-mount_new_root_and_prepare_to_switch_root() {
-    separator "Attempting to mount new root ..." "initramfs-$BUILD"
-    # previous version re-scanned here, but that now occurs after unlock
-    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${root_fs} on $root_volume${Boff}" 1 && fsck.${root_fs} -p $root_volume
-    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${usr_fs} on $usr_volume${Boff}" 1 && fsck.${usr_fs} -p $usr_volume
-    [[ $verbosity -gt 4 ]] && sh_countdown $init_wait
-    # mount root - drop to shell if not locked down
-    d_message_n "Mounting new root volume ..." 1
-    mount -r -t ${root_fs} ${root_volume} /newroot ; result=$?
-    right_status $result
-    if  [[ ! $result ]]; then
-        E_message "failed to mount root volume"
-        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount root volume"
-    fi
-    d_message_n "Mounting new usr volume ..." 1
-    mount -t ${usr_fs} -o defaults,noatime $usr_volume /newroot/usr ; result=$?
-    right_status $result
-    if  [[ ! $result ]]; then
-        E_message "failed to mount usr volume"
-        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount usr volume"
-    fi
-
-    separator "Mounts" "initramfs-$BUILD"
-    mount
-
-    # clean up in preparation to actually switch root
-    message "Cleaning up initramfs mounts prior to actual switch_root"
-    d_message_n "umount /proc ..." 1
-    umount /proc ; right_status $?
-    d_message_n "umount /dev/pts ..." 1
-    umount /dev/pts ; right_status $?
-    d_message_n "umount /dev ..." 1
-    umount /dev ; right_status $?
-    d_message_n "umount /sys ..." 1
-    umount /sys ; right_status $?
-
-    [[ $verbosity -gt 4 ]] && ssh_countdown $init_wait
-}
-
-
-display_logical_volumes() {
-    # show what we've found...
-    separator "The following volume groups are available" "initramfs-$BUILD"
-    vgs
-    separator "The following volumes are available" "initramfs-$BUILD"
-    lvs
-    [[ $verbosity -gt 4 ]] && sh_countdown $init_wait
-}
-
-### keep this copy of unlock devices here, for testing (avoids messing with) the active root luks device
-### in the testing script, source ./testing_functions_header *after* sourcing validated_functions_header
-### sp that this version below will override the other
 unlock_devices() {
     # for version 4.x and beyond, this is a complete re-write of the unlocking procedure.
     # The unlock method has already been determined, and the script will now "scan" for LUKS
@@ -201,5 +95,26 @@ unlock_devices() {
                 ;;
         esac
     done
+}
+### ----[ end duplicated functions ]--------------------------------------------------------------------------------------------------------------
+
+test() {
+        verbosity=2
+        d_echo "testing d_echo" 2
+        d_echo "testing d_echo" 3
+        message "should have printed only ${BGon}one${Boff} \"testing d_echo\" line"
+}
+
+teststringlength() {
+    str="$1"
+    echo "str: ${str}"
+    echo -n "1: "; [ ! -z $str ] && echo "non-zero" || echo "zero"
+    echo -n "2: "; [ ${#str} -gt 0 ] && echo "-gt zero" || echo "zero"
+    echo -n "3: "; [[ ! -z $str ]] && echo "non-zero" || echo "zero"
+    echo -n "4: "; [[ ${#str} -gt 0 ]] && echo "-gt zero" || echo "zero"
+    echo -n "5: "; [[ ${#str} -ne 0 ]] && echo "-ne zero" || echo "zero"
+    echo -n "6: "; [[ ${#str} -eq 0 ]]  && echo "-eq zero" || echo "not -eq zero"
+    echo -n "7: "; [[ ! ${#str} -eq 0 ]]  && echo "not -eq zero" || echo "-eq zero"
+    echo -n "8: "; [[ -n ${str} ]]  && echo "-n zero" || echo "zero"
 }
 

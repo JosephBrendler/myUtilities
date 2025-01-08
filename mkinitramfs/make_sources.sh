@@ -45,6 +45,10 @@ dependencies=()
 message_n "Sourcing functions in make_sources_functions_header ..."
 source ${MAKE_DIR%/}/make_sources_functions_header ; right_status $?
 
+# source functions in common_functions_header
+message_n "Sourcing functions in common_functions_header ..."
+source ${MAKE_DIR%/}/common_functions_header ; right_status $?
+
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
 #   ${MAKE_DIR}/initramfs_dir_tree to tailor this
