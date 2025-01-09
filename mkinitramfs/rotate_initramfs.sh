@@ -40,7 +40,7 @@ identify_new_initramfs() {
     d_message "newinitramfs: [${newinitramfs}]" 1
   done <<< $(find . -iname 'initramfs-*' -type f -printf '%Ts\t%p\n' | sort -n | awk '{print $2}')
 
-#  newtimestamp=$(echo ${newinitramfs} | cut -d'-' -f4)
+  # new timestamp is at the end of the initraamfs filename, after the "-" character
   newtimestamp="${newinitramfs##*-}"
   d_echo 1
   d_message "${BYon}newinitramfs: [${Boff}${newinitramfs}${BYon}]${Boff}" 1
@@ -54,10 +54,10 @@ identify_current_targets() {
   then
     while read line
     do
-      linkname=$(basename $(echo $line | cut -d' ' -f1 | sed 's/://'))
+      linkname=$(basename $(echo $line | cut -d ' ' -f 1 | sed 's/://'))
       target="${line##*link\ to\ }"
       d_message "linkname: [${LBon}${linkname}${Boff}], target: [${BGon}${target}${Boff}]" 1
-      case $(echo ${linkname} | cut -d'.' -f2) in
+      case $(echo ${linkname} | cut -d '.' -f 2) in
         "latest" ) latest="${target}";;
         "working" ) working="${target}";;
         "safe" ) safe="${target}";;
