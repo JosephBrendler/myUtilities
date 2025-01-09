@@ -54,10 +54,10 @@ identify_current_targets() {
   then
     while read line
     do
-      linkname=$(basename $(echo $line | cut -d ' ' -f 1 | sed 's/://'))
+      linkname=$(basename $(echo $line | awk '{print $1}' | sed 's/://'))
       target="${line##*link\ to\ }"
       d_message "linkname: [${LBon}${linkname}${Boff}], target: [${BGon}${target}${Boff}]" 1
-      case $(echo ${linkname} | cut -d '.' -f 2) in
+      case $(echo ${linkname} | awk -F '.' '{print $2}' ) in
         "latest" ) latest="${target}";;
         "working" ) working="${target}";;
         "safe" ) safe="${target}";;
