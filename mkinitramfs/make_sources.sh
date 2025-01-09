@@ -61,7 +61,7 @@ checkroot
 # display configuration
 varlist="SOURCES_DIR MAKE_DIR MAKE_CONF_DIR VERBOSE verbosity \
 bins libs admin_files init_executables"
-init_config_title="make_sources.sh configuration"
+init_config_title="configuration"
 display_config $varlist
 
 # build the initramfs directory sturcture

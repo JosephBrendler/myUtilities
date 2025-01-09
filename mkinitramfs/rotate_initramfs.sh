@@ -38,7 +38,7 @@ identify_new_initramfs() {
   do
     newinitramfs="${line}"
     d_message "newinitramfs: [${newinitramfs}]" 1
-  done <<< $(find . -iname 'initramfs-*' -type f -printf '%Ts\t%p\n' | sort -n | cut -f2)
+  done <<< $(find . -iname 'initramfs-*' -type f -printf '%Ts\t%p\n' | sort -n | awk '{print $2}')
 
 #  newtimestamp=$(echo ${newinitramfs} | cut -d'-' -f4)
   newtimestamp="${newinitramfs##*-}"
@@ -50,7 +50,7 @@ identify_new_initramfs() {
 
 identify_current_targets() {
   # if any exist, identify the current targets of links (latest, working, safe)
-  if [[ $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 ) ]]
+  if [[ $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | awk '{print $2}' ) ]]
   then
     while read line
     do
@@ -63,7 +63,7 @@ identify_current_targets() {
         "safe" ) safe="${target}";;
         * ) echo Error;;
       esac
-    done <<< $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | cut -f2 | xargs file)
+    done <<< $(find . -iname 'initramfs*' -type l -printf '%Ts\t%p\n' | sort -n | awk '{print $2}' | xargs file)
   fi
 }
 
