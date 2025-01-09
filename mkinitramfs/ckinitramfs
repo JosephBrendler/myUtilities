@@ -5,33 +5,48 @@
 #  (i.e. if normally included components have changed since last build)
 
 source /usr/local/sbin/script_header_brendlefly
-BUILD="0.0.2"
 
 checkroot
 
 SOURCES_DIR="/usr/src/initramfs"
 MAKE_DIR="/usr/src/mkinitramfs"
 
-#source the list of executables used by the init script, using the
-#  which command to locate each on the host system
+# set ckinitramfs BUILD; not the kernel's BUILD used by mkinitramfs for init
+BUILD="$(cat ${MAKE_DIR%/}/PKG_PVR)"
+
+# source the list of executables used by the init script (from init_structure)
 executables=()
-message_n "sourcing ${MAKE_DIR}/init_structure ..."
-source ${MAKE_DIR}/init_structure; right_status $?
+message_n "sourcing ${MAKE_DIR%/}/init_structure ..."
+source ${MAKE_DIR%/}/init_structure; right_status $?
 # source header for load_ list_ dump_executables
 message_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
 source ${MAKE_DIR%/}/common_bash_functions_header; right_status $?
+
 # source header for display_config, echo_long_string
 message_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
 source ${MAKE_DIR%/}/common_ash_functions_header; right_status $?
 load_executables
-init_config_title="ckinitramfs"
-varlist="SOURCES_DIR MAKE_DIR VERBOSE verbosity executables"
+
+# initialize VERBOSE and verbosity by sourcing mkinitramfs.conf
+if [[ -e ${MAKE_DIR%/}/mkinitramfs.conf ]] ; then
+  config_file=${MAKE_DIR%/}/mkinitramfs.conf
+elif [[ -e /etc/mkinitramfs/mkinitramfs.conf ]] ; then
+  config_file="/etc/mkinitramfs/mkinitramfs.conf"
+else
+  E_message "${BRon}Error: no mkinitramfs.conf found"
+  exit
+fi
+message_n "sourcing config file ${config_file} ..."
+source ${config_file}; right_status $?
+
+init_config_title="configuration"
+varlist="SOURCES_DIR MAKE_DIR VERBOSE verbosity init_executables"
 display_config $varlist
-echo
+
 # compare current system executables (identified by the whioch command) with those installed in intramfs
 for x in ${executables[@]}
 do
-  y=$(find ${SOURCES_DIR} -name $(basename $x))
+  y=$(find ${SOURCES_DIR%/} -name $(basename $x))
   message_n "Component: ${LBon}$(basename $x)"
   if [[ $(diff $y $x >/dev/null 2>/dev/null) ]]
   then
