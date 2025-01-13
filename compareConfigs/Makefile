@@ -5,17 +5,17 @@ CXX=g++
 all: libKernelConfig.so compareConfigs kernelConfigLibTest
 
 compareConfigs: libKernelConfig.so compareConfigs.o compareConfigs.cpp
-	$(CXX) $(DEBUG) compareConfigs.cpp -o compareConfigs -L. -lKernelConfig -L /usr/lib64/ -lTerminal
+	$(CXX) $(DEBUG) compareConfigs.cpp -o compareConfigs -L. -lKernelConfig -L /usr/lib/ -lTerminal
 
 kernelConfigLibTest: libKernelConfig.so kernelConfigLibTest.o kernelConfigLibTest.cpp
-	$(CXX) $(DEBUG) kernelConfigLibTest.cpp -o kernelConfigLibTest -L. -lKernelConfig -L /usr/lib64/ -lTerminal
+	$(CXX) $(DEBUG) kernelConfigLibTest.cpp -o kernelConfigLibTest -L. -lKernelConfig -L /usr/lib/ -lTerminal
 
 libKernelConfig.so: KernelConfig.cpp
 	$(CXX) $(DEBUG) -fPIC -c KernelConfig.cpp -o KernelConfig.o
 	$(CXX) $(DEBUG) -shared -Wl,-soname,libKernelConfig.so -o libKernelConfig.so KernelConfig.o
 
 install:
-	cp -v libKernelConfig.so /usr/lib64/
+	cp -v libKernelConfig.so /usr/lib/
 	cp -v compareConfigs /usr/bin/
 	cp -v kernelConfigLibTest /usr/bin/
 	cp -v comparam.sh /usr/bin/
@@ -23,7 +23,7 @@ install:
 	cp -v KernelConfig.h /usr/include/
 
 clean:
-	rm -fv /usr/lib64/libKernelConfig.so
+	rm -fv /usr/lib/libKernelConfig.so
 	rm -fv /usr/bin/compareConfigs
 	rm -fv /usr/bin/kernelConfigLibTest
 	rm -fv /usr/bin/comparam.sh
