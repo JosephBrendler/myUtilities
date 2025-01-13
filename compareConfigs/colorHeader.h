@@ -16,11 +16,11 @@
 
 //---[ colors, foreground ]----------------------------------------------------
 #define BLACK		"30"
-#define RED		"31"
+#define RED 		"31"
 #define GREEN		"32"
 #define YELLOW		"33"
 #define BLUE		"34"
-#define MAG		"35"
+#define MAG	    	"35"
 #define LBLUE		"36"
 #define WHITE		"37" );
 

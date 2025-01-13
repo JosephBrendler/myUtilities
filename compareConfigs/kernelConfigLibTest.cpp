@@ -57,6 +57,14 @@ int main ( int argc, char* argv[] )
     term.message( msg );
   }
   // process command line arguments -----------------------------------------------------
+  // if no arguments are given, explain usage
+  if (argc <= 1)
+  {
+    // error - there is no input filename
+    msg.assign("Error: you must specify an input config file name") ;
+    term.message( msg ) ;
+    exit(EXIT_FAILURE);
+  }
   for (x=1; x<argc; x++ )  // start with one to skip argv[0] which is the command name
   {
     if ( DEBUGME ) { cout << "argv[" << x << "] = " << argv[x] << endl; }
