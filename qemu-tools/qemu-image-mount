@@ -16,6 +16,7 @@ command=""
 for i in seq 1 9; do mountpoint[$i]=""; done
 
 #-----[ default local variables ]----------------------------------------------
+DEFAULT_CMD=mount
 IMAGE_DIR=/home/joe/My_bcm2711-rpi-4-b_project/image
 KERNEL=kernel8-raspiOS.img
 INITRD=initramfs-rpi4b-6.11.1-202410050915
@@ -37,7 +38,9 @@ CMDLINE="console=tty1 console=ttyAMA0,115200 rw earlyprintk \
   root=${ROOT} rootfstype=ext4 elevator=deadline fsck.repair=yes \
   rootdelay=1 net.ifnames=0"
 
-varlist="DEFAULT_CMD CONFIG IMAGE_DIR KERNEL DTB TARGET INITRD KEYDEV ROOT MACHINE CPU MEM SMP KEYBOARD_ID KEYBOARD NETWORK BREAK lv.CMDLINE BREAK lv.command BREAK bool.VERBOSE verbosity launch_wait bool.PRETEND"
+mountpoint=()
+
+varlist="DEFAULT_CMD CONFIG IMAGE_DIR TARGET KEYDEV ROOT BREAK command BREAK bool.VERBOSE verbosity launch_wait bool.PRETEND"
 
 #-----[ functions ]----------------------------------------------
 
@@ -56,7 +59,7 @@ source $(dirname ${CONFIG})/BUILD ; right_status $?
 
 usage() {
 echo
-E_message "${BRon}Usage:${Gon} ${PN} [-v|q|p|x...]${Boff}"
+E_message "${BRon}Usage:${Gon} ${PN} [-v|q|m|u|x|p...]${Boff}"
 echo -e "  ${BYon}No arguments allowed. Specify configuration -${Boff}"
 echo -e "  ${BYon}in confg file /etc/${PN}.conf${Boff}"
 echo
@@ -64,9 +67,10 @@ echo -e "  ${BYon}options:${Boff}"
 echo -e "    -v - increase verbosity (override config)"
 echo -e "    -q - decrease verbosity (override config)"
 echo -e "    ( e.g. -verbosityvq = increase verbosity by 2 )"
-echo -e "    -p - pretend (do NOT mount vm image)(default)"
-echo -e "    -m - execute   (mount vm image)"
-echo -e "    -u - execute   (un- mount vm image)"
+echo -e "    -m - command   (mount vm image)"
+echo -e "    -u - command   (un-mount vm image)"
+echo -e "    -x - execute (do mount/umount vm image)(default)"
+echo -e "    -p - pretend (do NOT mount/umount vm image)(default)"
 echo
 # sanity check explanations
   [ $# -gt 1 ] && E_message "too many arguments [$#]"
@@ -113,13 +117,17 @@ process_commandline() {
         d_message "setting PRETEND TRUE" 1
         PRETEND=$TRUE
         ;;
+      [xX] )
+        d_message "setting PRETEND FALSE" 1
+        PRETEND=$FALSE
+        ;;
       [mM] )
         d_message "setting command = mount (PRETEND FALSE)" 1
-        PRETEND=$FALSE ; command="mount"
+        command="mount"
         ;;
       [uU] )
         d_message "setting command = umount (PRETEND FALSE)" 1
-        PRETEND=$FALSE ; command="umount"
+        command="umount"
         ;;
       *    )
         E_message "invalid option [${opt}] in argument"
@@ -131,6 +139,70 @@ process_commandline() {
   done
 }
 
+mount_image() {
+  # if a qemu-nbd device is already using /dev/nbd0, then exit(error)
+  [[ -b /dev/nbd0p1 ]] && E_message "Error: /dev/nbd0 already busy" && exit 1
+  d_message "working case mount command: [ $command ]" 1
+  modprobe nbd max_part=8
+  sleep 0.1
+  d_message "building connect_cmd" 1
+  connect_cmd="qemu-nbd --connect /dev/nbd0 -n ${TARGET}"
+  type="${TARGET##*.}"
+  if [[ "${type}" == "img" ]] ; then
+    d_message "assuming ${TARGET} image format is raw ..." 1
+    connect_cmd+=" -f raw"
+  elif [[ "${type}" == "qcow2" ]] ; then
+    d_message "assuming ${TARGET} image format is qcow2 ..." 1
+    connect_cmd+=" -f qcow2"
+  else
+    # format is unknown. qemu will assume raw but warn
+    d_message "assuming ${TARGET} image format is unknown ..." 1
+    FORMAT="unknown"
+  fi
+
+  message_n "running connect_cmd: [ ${connect_cmd} ] ..."
+  eval "${connect_cmd}" ; right_status $?
+  sleep 0.1
+
+  if [ $verbosity -ge 1 ] ; then
+    display_connections
+  fi
+  # mount root first
+  d_message "mounting according to config, root first ..."
+  ROOT_MOUNTED=$FALSE
+  for ((i=1; i<=${#mountpoint[@]}; i++)); do
+    d_message "i: $i   dev: /dev/nbd0p${i}   mountpoint[$i]: /mnt/image/" 3
+    if [[ "${mountpoint[$i]}" == "/" ]] ; then
+      message_n "mounting dev/nbd0p${i} on /mnt/image/ ..." && \
+        eval "mount /dev/nbd0p${i} /mnt/image/" && ROOT_MOUNTED=$TRUE ; right_status $?
+    else
+      d_message "skipping ${mountpoint[$i]}" 3
+    fi
+  done
+  [ ! $ROOT_MOUNTED ] && E_message "root not mounted; fix configuration" && exit
+
+  # now mount other partitions
+  d_message "mounting according to config, now the rest ..."
+  for ((i=1; i<=${#mountpoint[@]}; i++)); do
+    d_message "i: $i   dev: /dev/nbd0p${i}   mountpoint[$i]: /mnt/image${mountpoint[$i]}" 3
+    if [[ "${mountpoint[$i]}" == "/" ]] ; then
+      d_message "skipping ${mountpoint[$i]}" 3
+    else
+      message_n "mounting dev/nbd0p${i} on /mnt/image${mountpoint[$i]} ..." && \
+        eval "mount /dev/nbd0p${i} /mnt/image${mountpoint[$i]}" ; right_status $?
+    fi
+  done
+  sleep 0.1
+}
+
+umount_image() {
+  d_message "working case mount command: [ $command ]" 1
+  for x in /dev/nbd0p*; do umount $x; sleep 0.1; done
+  qemu-nbd --disconnect /dev/nbd0
+  message "Your image has been unmounted:"
+  mount | grep "nbd0p"
+}
+
 action() {
   old_dir=$(pwd)
   cd ${IMAGE_DIR}
@@ -138,57 +210,31 @@ action() {
   separator "${PN} ${Mon}${command}${Boff}" $(hostname)
   sh_countdown ${launch_wait}
 
-  case $command in
+  case ${command} in
     "mount"  )
-      # if a qemu-nbd device is already using /dev/nbd0, then exit(error)
-      [[ -b /dev/nbd0p1 ]] && E_message "Error: /dev/nbd0 already busy" && exit 1
-      modprobe nbd max_part=8
-      sleep 0.1
-      d_message "building connect connect_cmd" 1
-      connect_cmd="qemu-nbd --connect /dev/nbd0 -n ${TARGET}"
-      type="${TARGET##*.}"
-      if [[ "${type}" == "img" ]] ; then
-        d_message "assuming ${TARGET} image format is raw ..." 1
-        connect_cmd+=" -F raw"
-      elif [[ "${type}" == "qcow2" ]] ; then
-        d_message "assuming ${TARGET} image format is qcow2 ..." 1
-        connect_cmd+=" -F qcow2"
-      else
-        # format is unknown. qemu will assume raw but warn
-        d_message "assuming ${TARGET} image format is unknown ..." 1
-        FORMAT="unknown"
-      fi
-      message_n "running [ ${connect_cmd} ] ..."
-      eval "${connect_cmd}" ; right_status $?
-      sleep 0.1
-      if [ $verbosity -ge 2 ] ; then
-        message "qemu-nbd connected the following ..."
-        ls -al | grep /dev/nbd0
-      fi
-      d_message "mounting accordint to config"
-      for x in /dev/nbd0p*; do mount $x /mnt/image${mountpoint[${x#*p}}]}
-      mount /dev/nbd0p1 /mnt/image_file_p1
-      mount /dev/nbd0p2 /mnt/image_file_p2
-      sleep 0.1
-      message "Your image has been mounted:"
-      mount | grep "nbd0p"
-      ::
+      mount_image
+      ;;
     "umount" )
-      for x in /dev/nbd0p*; do umount $x; sleep 0.1; done
-      qemu-nbd --disconnect /dev/nbd0
-      message "Your image has been unmounted:"
-      mount | grep "nbd0p"
+      umount_image
       ;;
     *        )
         E_message "Invalid command selection [ ${command} ]" && exit
       ;;
   esac
 
-
-  eval "${command}" || message "(only pretending)"
-  echo
   cd ${old_dir}
   message "now working in $(pwd)"
+}
+
+display_mounts() {
+  separator "$0 ${Mon}results${Boff}" $(hostname)
+  message "here is what is mounted on /dev/nbd devices ..."
+  mount | grep '/dev/nbd'
+}
+
+display_connections() {
+    message "qemu-nbd has connected the following /dev/nbd devices ..."
+    ls -al /dev/ | grep -i 'nbd0p*'
 }
 
 #-----[ main script ]--------------------------------------------
@@ -196,7 +242,10 @@ action() {
 separator "${PN} - ${Mon}initializing${Boff}" $(hostname)
 checkroot
 read_config
+command="${DEFAULT_CMD}"
 process_commandline $@  # to override config
 separator "${PN}-$BUILD" $(hostname)
 display_config
-[ ! $PRETEND ] && action
+[ ! $PRETEND ] && action  || message "(only pretending)"
+display_mounts
+display_connections
