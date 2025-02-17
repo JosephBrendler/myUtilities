@@ -14,16 +14,17 @@ CONFIG=""
 launch_cmd=""
 
 #-----[ default local variables ]----------------------------------------------
-IMAGE_DIR=/home/joe/My_bcm2708-rpi-b_project/image
-KERNEL=kernel.img
-INITRD=''
-DTB=bcm2708-rpi-b.dtb
-CPU=arm1176
-MACHINE=virt
-MEM=512M
-SMP=1
-TARGET=raspi132q1.img
-KEYDEV=''
+ARCH=arm64
+IMAGE_DIR=/home/joe/My_bcm2711-rpi-4-b_project/image
+KERNEL=kernel8-raspiOS.img
+INITRD=initramfs-rpi4b-6.11.1-202410050915
+DTB=bcm2711-rpi-4-b.dtb
+CPU=cortex-a72
+MACHINE=raspi4b
+MEM=2G
+SMP=4
+TARGET=raspi5640x_gpt.img
+KEYDEV=keydev.img
 ROOT=/dev/mmcblk0p2
 KEYBOARD=""
 KEYBOARD_ID="046d:c534"
@@ -35,7 +36,7 @@ CMDLINE="console=tty1 console=ttyAMA0,115200 rw earlyprintk \
   root=${ROOT} rootfstype=ext4 elevator=deadline fsck.repair=yes \
   rootdelay=1 net.ifnames=0"
 
-varlist="DEFAULT_CMD CONFIG IMAGE_DIR KERNEL DTB TARGET INITRD KEYDEV ROOT MACHINE CPU MEM SMP KEYBOARD_ID KEYBOARD NETWORK BREAK lv.CMDLINE BREAK lv.launch_cmd BREAK bool.VERBOSE verbosity launch_wait bool.PRETEND"
+varlist="ARCH MACHINE CPU MEM SMP CONFIG IMAGE_DIR KERNEL DTB TARGET INITRD KEYDEV ROOT KEYBOARD_ID KEYBOARD NETWORK BREAK lv.CMDLINE BREAK lv.launch_cmd BREAK bool.VERBOSE verbosity launch_wait bool.PRETEND"
 
 #-----[ functions ]----------------------------------------------
 
@@ -85,34 +86,64 @@ configure_keyboard()
   # get keyboard bus and device nuber from lsusb; convert base 10 num with $(( 10#xxx ))
   HOSTBUS=$(( 10#$(lsusb | grep ${KEYBOARD_ID} | cut -d' ' -f2) ))
   HOSTADDR=$(( 10#$(lsusb | grep ${KEYBOARD_ID} | cut -d' ' -f4 | sed 's|:$||' ) ))
-  KEYBOARD="usb-host,hostbus=${HOSTBUS},hostaddr=${HOSTADDR}"
+  KEYBOARD="-device \"usb-host,hostbus=${HOSTBUS},hostaddr=${HOSTADDR}\""
 }
 
-build_command()
+build_launch_command()
 {
-d_message "running build_command ..." 3
-launch_cmd="qemu-system-arm"
-[ -n "${MACHINE}" ] && launch_cmd+=" -M ${MACHINE}"
-[ -n "${CMDLINE}" ] && launch_cmd+=" -append \"${CMDLINE}\""
-[ -n "${DTB}" ] && launch_cmd+=" -dtb ${DTB}"
-[ -n "${TARGET}" ] && launch_cmd+=" -drive if=sd,file=${TARGET},format=raw"
-[ -n "${KERNEL}" ] && launch_cmd+=" -kernel ${KERNEL}"
-[ -n "${INITRD}" ] && launch_cmd+=" -initrd ${INITRD}"
-[ -n "${MEM}" ] && launch_cmd+=" -m ${MEM}"
-[ -n "${SMP}" ] && launch_cmd+=" -smp ${SMP}"
-launch_cmd+=" -serial stdio"
-[ -n "${NETWORK}" ] && launch_cmd+=" -device ${NETWORK}"
-if [ -n "${KEYBOARD_ID}" ] ; then
-  # keyboard bus and device nuber change every time the usb device is inserted
-  # so use the persistent nnnn:nnnn device id to look up bus and device
-  configure_keyboard
-  launch_cmd+=" -device ${KEYBOARD}"
-fi
-if [ -n "${KEYDEV}" ] ; then
-  launch_cmd+=" -device usb-storage,drive=keydev,removable=true"
-  launch_cmd+=" -drive file=${IMAGE_DIR%/}/${KEYDEV},if=none,format=raw,id=keydev"
-fi
-launch_cmd+=" &"
+  d_message "running build_launch_command ..." 3
+  case $ARCH in
+    "arm"   ) launch_cmd="qemu-system-arm" ;;
+    "arm64" ) launch_cmd="qemu-system-aarch64" ;;
+    "x86_64" ) E_message "$ARCH launch not implmented yet" ; exit ;;
+    *        ) E_message "Invalid ARCH: [ $ARCH ]" ; exit ;;
+  esac
+  [ -n "${MACHINE}" ] && launch_cmd+=" -M ${MACHINE}"
+  [ -n "${CPU}" ] && launch_cmd+=" -cpu ${CPU}"
+  [ -n "${MEM}" ] && launch_cmd+=" -m ${MEM}"
+  [ -n "${SMP}" ] && launch_cmd+=" -smp ${SMP}"
+  [ -n "${CMDLINE}" ] && launch_cmd+=" -append \"${CMDLINE}\""
+  [ -n "${DTB}" ] && launch_cmd+=" -dtb ${DTB}"
+
+  [ ${EFI} ] && launch_cmd+=" -bios /usr/share/qemu/edk2-aarch64-code.fd"
+
+  [ -z "${TARGET}" ] && E_message "no target image specified" && exit
+
+  case $MACHINE in
+    "raspi"* ) launch_cmd+=" -drive if=sd,file=${TARGET},format=raw" ;;
+    "versatilepb" )
+        launch_cmd+=" -drive \"if=none,file=raspi132q1.img,index=0,media=disk,format=raw,id=disk0\""
+        launch_cmd+=" -device \"virtio-blk-pci,drive=disk0,disable-modern=on,disable-legacy=off\""
+        ;;
+    *"virt"*      )  # probably 'type=virt,iommu=smmuv3'
+        launch_cmd+=" -accel tcg"
+        launch_cmd+=" -rtc base=utc"
+        launch_cmd+=" -drive file="${TARGET}",if=virtio,format=qcow2"
+        launch_cmd+=" -drive file="install-arm64-minimal-20250126T230320Z.iso",if=virtio,format=raw,readonly=on"
+        launch_cmd+=" -boot menu=on"
+        ## note:  need new ${TARGET2} or ${LIVECDZ} or ${ISO_FILE} variable in config
+        ;;
+
+    *             ) E_message "invalid machine type [ $MACHINE ]" ; exit ;;
+  esac
+
+  [ -n "${KERNEL}" ] && launch_cmd+=" -kernel ${KERNEL}"
+  [ -n "${INITRD}" ] && launch_cmd+=" -initrd ${INITRD}"
+  launch_cmd+=" -serial stdio -usb"
+##  launch_cmd+=" -serial stdio"
+  [ -n "${NETWORK}" ] && launch_cmd+=" ${NETWORK}"
+  if [ -n "${KEYBOARD_ID}" ] ; then
+    # keyboard bus and device nuber change every time the usb device is inserted
+    # so use the persistent nnnn:nnnn device id to look up bus and device
+    configure_keyboard
+    launch_cmd+=" ${KEYBOARD}"
+  fi
+  if [ -n "${KEYDEV}" ] ; then
+    launch_cmd+=" -device usb-storage,drive=keydev,removable=true"
+    launch_cmd+=" -drive file=${IMAGE_DIR%/}/${KEYDEV},if=none,format=raw,id=keydev"
+  fi
+  launch_cmd+=" -audio none"
+  launch_cmd+=" &"
 }
 
 process_commandline() {
@@ -174,11 +205,34 @@ launch_vm() {
 
 #-----[ main script ]--------------------------------------------
 [ $# -gt 1 ] && usage $@
-separator "qemu-command - ${Mon}initializing${Boff}" $(hostname)
+separator "$(basename $0) - ${Mon}initializing${Boff}" $(hostname)
 checkroot
 read_config
 process_commandline $@  # to override config
-separator "qemu-command-$BUILD" $(hostname)
-build_command
+separator "$(basename $0)-$BUILD" $(hostname)
+build_launch_command
 display_config
-[ ! $PRETEND ] && launch_vm
+echo
+[ $PRETEND ] && message "To launch, run ${Gon}$0 x${Boff}\n" || launch_vm
+
+# this kinda worked ... for M raspi4b, cpu cortex-a72, m 2G, smp 4
+#qemu-system-aarch64 \
+#  -M ${MACHINE} \
+#  -cpu ${CPU} \
+#  -m ${MEM} \
+#  -dtb ${IMAGE_DIR%/}/${DTB} \
+#  -kernel ${IMAGE_DIR%/}/${KERNEL} \
+#  -drive file=${IMAGE_DIR%/}/${TARGET},if=sd,format=raw \
+#  -smp ${SMP} \
+#  -serial stdio -usb \
+#  -append "${CMDLINE}" \
+#  &
+
+#  -sd ${IMAGE_DIR%/}/${TARGET} \
+#  -initrd "${INITRD}" \
+#  -device usb-mouse -device usb-kbd \
+#  -drive if=pflash,format=raw,file="${KEYDEV}" \
+
+# old cmdline -------------------
+#CMDLINE_OPTS="rw earlyprintk loglevel=8 console=ttyAMA0,115200 \
+#    dwc_otg.lpm_enable=0 root=${ROOT} rootdelay=1"
