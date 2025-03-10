@@ -1,0 +1,214 @@
+#! /bin/bash
+# re-flash RP2 microcontroller on Radxa X4
+#
+# jc) joe brendler  2025-2055
+#
+# To Do:
+#    process commandline to take argument PROGRAM and reflash that
+#    add cmdline options for v/q/s (incr/decrease verbosity and silent)
+#
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE; verbosity=2
+
+#-----[ variables ]------------------------
+
+varlist="PN BUILD RP2_LABEL RP2_MOUNTPOINT BREAK command bool.PRETEND \
+         IMAGE_TREE PROGRAM BREAK wait_time toggle_wait_time premount_wait_time \
+         BREAK bool.VERBOSE verbosity"
+
+#-----[ functions ]------------------------
+
+initialize_variables() {
+  initialize_vars ${varlist}
+  VERBOSE=$TRUE; verbosity=2   # restore these after initialization
+  PRETEND=$TRUE                # (default) override with cmdline option f|F (flash)
+  BUILD=0.0.1
+  wait_time=0.3
+  toggle_wait_time=1
+  premount_wait_time=2
+  RP2_LABEL="RPI-RP2"          # press boot-sel button and examine blkid to see this
+                               # Note: cannot use UUID because it changes every reboot
+  RP2_MOUNTPOINT=/mnt/rp2040   # create this with mkdir
+
+  IMAGE_TREE=/home/joe/pico-examples/build/pwm/
+  PROGRAM=/home/joe/pico-examples/build/blink/blink.uf2
+
+  PN=$(basename $0)
+
+  command="list"    # cmdline can override with option f|F (flash)
+}
+
+read_config() {
+  d_message "running read_config ..." 3
+  # if a local or /etc/ reflash_rp2.conf exists, use it to override the above
+  [[ -f "/usr/local/sbin/reflash_rp2.conf" ]] && CONFIG="/usr/local/sbin/reflash_rp2.conf"
+  [[ -f "./reflash_rp2.conf" ]] && CONFIG="./reflash_rp2.conf"
+  [[ -f "/etc/reflash_rp2/reflash_rp2.conf" ]] && CONFIG="/etc/reflash_rp2/reflash_rp2.conf"
+  message_n "sourcing config [ ${CONFIG} ] ..."
+  source ${CONFIG}; right_status $?
+}
+
+display_config()
+{
+#separator "Configuration" $(hostname)
+message "${BYon}Current Configuration --${Boff}"
+longest=$(get_longest ${varlist})
+display_vars ${longest} ${varlist}
+}
+
+usage() {
+echo
+E_message "${BRon}Usage:${Gon} ${PN} [-v|q|s|u|x|p...]${Boff}"
+echo -e "  ${BMon}One (possibly compound) option string required${Boff}"
+echo -e "  ${BYon}No other arguments allowed. Specify configuration -${Boff}"
+echo -e "  ${BYon}in confg file /etc/${PN}.conf${Boff}"
+echo
+echo -e "  ${BYon}options:${Boff}"
+echo -e "    -v - increase verbosity (override config)"
+echo -e "    -q - decrease verbosity (override config)"
+echo -e "    ( e.g. -verbosityvq = increase verbosity by 2 )"
+echo -e "    -s - silent  (set verbosity=0)"
+echo -e "    -l - list    (list images)"
+echo -e "    -f - flash   (do flash image)"
+echo -e "    -p - pretend (do NOT flash image)${Mon}(default)${Boff}"
+echo
+# sanity check explanations
+  [ $# -gt 1 ] && E_message "too many arguments [$#]"
+exit
+}
+
+process_commandline() {
+  [ $# -gt 1 ] && usage
+  arg=$1
+  d_message "processing cmdline with arg [ ${arg} ]" 2
+  # process argument one character at a time
+  while [ ${#arg} -gt 0 ]; do
+    opt=${arg:0:1}
+    d_message "examining arg opt [ $opt ]" 2
+    case $opt in
+      "-"  )
+        d_message "ignoring dash [${opt}]" 2
+        ;;
+      [qQ] )
+        if [ $verbosity -gt 0 ] ; then
+          let verbosity--
+          d_message "decreased verbosity to [ $verbosity ]" 1
+        else
+            d_message "verbosity already at min [ $verbosity ]" 1
+        fi
+        ;;
+      [vV] )
+        if [ $verbosity -lt 6 ] ; then
+          let verbosity++
+          d_message "increased verbosity to [ $verbosity ]" 1
+        else
+            d_message "verbosity already at max [ $verbosity ]" 1
+        fi
+        ;;
+      [sS] )
+        verbosity=0
+        d_message "setting silent ( verbosity = [ $verbosity ] )" 1
+        ;;
+      [pP] )
+        d_message "setting PRETEND TRUE" 1
+        PRETEND=$TRUE
+        ;;
+      [fF] )
+        command="flash"
+        d_message "setting PRETEND FALSE" 1
+        PRETEND=$FALSE
+        ;;
+      [lL] )
+        command="list"
+        d_message "listing images (and setting PRETEND FALSE)" 1
+        PRETEND=$FALSE
+        ;;
+      *    )
+        E_message "invalid option [${opt}] in argument"
+        usage $1
+        ;;
+    esac
+    # drop this character and move on
+    arg=${arg:1}
+  done
+}
+
+rp2_usb() {        # put rp2040 in usb-storage mode
+  d_message_n "putting rp2 in usb-storage mode ..." 2
+  sudo gpioset gpiochip0 17=1 && \
+  sudo gpioset gpiochip0 7=1 && \
+  sleep ${toggle_wait_time} && \
+  sudo gpioset gpiochip0 17=0 && \
+  sudo gpioset gpiochip0 7=0 && \
+  sleep ${toggle_wait_time}
+  d_right_status $? 2
+}
+
+rp2_mount() {      # mount the microcontroller as usb-storage
+  if [ $verbosity -ge 3 ] ; then
+    message "candidate devices ..."
+    blkid | grep /dev/sd
+  fi
+  d_message_n "mounting rp2 by UUID=${RP2_UUID} on mountpoint: ${RP2_MOUNTPOINT} ..." 2
+  mount LABEL=${RP2_LABEL} ${RP2_MOUNTPOINT}
+  d_right_status $? 2
+}
+
+flash_program() {  # copy the requested .uf2 file to the microcontroller
+  d_message_n "flashing program [ $(basename ${PROGRAM}) ] to ${RP2_MOUNTPOINT%/}/ ..." 2
+  if [ $verbosity -ge 3 ] ; then
+    cp -v ${PROGRAM} ${RP2_MOUNTPOINT%/}/
+  else
+    cp ${PROGRAM} ${RP2_MOUNTPOINT%/}/
+  fi
+  d_right_status $? 2
+}
+
+rp2_umount() {     # un-mount the microcontroller
+  # this is a "don't forget to do" step - the block device will "disappear"
+  # automatically after the uf2 file is copied to usb-storage, as the
+  # microcontroller reboots and starts running it's program
+  d_message_n "un-mounting ${RP2_MOUNTPOINT} ..." 2
+  umount ${RP2_MOUNTPOINT}
+  d_right_status $? 2
+}
+
+list_images() {
+  d_message "listing elligible images in ${IMAGE_TREE} ..."
+  find ${IMAGE_TREE} -type f -iname '*.uf2'
+}
+
+flash() {
+  d_message "flashing image ${PROGRAM} to RP2040 ..." 1
+  rp2_usb
+  sleep ${premount_wait_time}
+  rp2_mount
+  sleep ${wait_time}
+  flash_program
+  sleep ${wait_time}
+  rp2_umount
+  d_message "observe target platform; program should be running now ..." 1
+}
+
+#-----[ main script ]----------------------
+separator "$(basename $0)-${BUILD}" $(hostname)
+checkroot
+
+initialize_variables
+read_config                # override scripted defaults
+
+process_commandline $@     # override config
+
+separator "$(basename $0)-${BUILD} (configuration)" $(hostname)
+display_config
+
+separator "$(basename $0)-${BUILD} (output)" $(hostname)
+if [ ! $PRETEND ] ; then
+  case $command in
+    "list" ) list_images ;;
+    "flash" ) flash ;;
+    * ) E_message "Error: invalid command [ $command ]"; usage ;;
+  esac
+else
+  message "PRETEND: would have run [ $command ]"
+fi
