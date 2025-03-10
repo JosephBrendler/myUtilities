@@ -12,6 +12,8 @@ verbosity=3
 
 CONFIG=""
 launch_cmd=""
+cmdline_array=()
+launch_cmd_file=""
 
 #-----[ default local variables ]----------------------------------------------
 ARCH=arm64
@@ -36,7 +38,18 @@ CMDLINE="console=tty1 console=ttyAMA0,115200 rw earlyprintk \
   root=${ROOT} rootfstype=ext4 elevator=deadline fsck.repair=yes \
   rootdelay=1 net.ifnames=0"
 
-varlist="ARCH MACHINE CPU MEM SMP CONFIG IMAGE_DIR KERNEL DTB TARGET INITRD KEYDEV ROOT KEYBOARD_ID KEYBOARD NETWORK BREAK lv.CMDLINE BREAK lv.launch_cmd BREAK bool.VERBOSE verbosity launch_wait bool.PRETEND"
+varlist="NAME ARCH MACHINE CPU MEM SMP \
+CONFIG IMAGE_DIR KERNEL INITRD DTB \
+bool.EFI TARGET KEYDEV BREAK \
+lv.CONSOLE BREAK \
+ROOT BREAK \
+lv.BASIC_CMDLINE BREAK \
+lv.CMDLINE_EXTRA_OPTS BREAK \
+DISPLAY KEYBOARD_ID KEYBOARD NETWORK BREAK \
+USB USB_DRIVE USB_DRIVE_TARGET SERIAL AUDIO BREAK \
+bool.VERBOSE verbosity DEFAULT_CMD launch_cmd launch_wait bool.PRETEND BREAK \
+root_vg MAC BREAK \
+"
 
 #-----[ functions ]----------------------------------------------
 
@@ -47,7 +60,9 @@ d_message "running read_config ..." 3
 [[ -f "./qemu-tools.conf" ]] && CONFIG="./qemu-tools.conf"
 [[ -f "/etc/qemu-tools/qemu-tools.conf" ]] && CONFIG="/etc/qemu-tools/qemu-tools.conf"
 message_n "sourcing config [ ${CONFIG} ] ..."
-source ${CONFIG}; right_status $?
+source ${CONFIG} ; result=$?
+right_status $result
+[ $result -ne 0 ] && E_message "failed to source ${CONFIG}" && exit
 
 message_n "sourcing BUILD [ $(dirname ${CONFIG})/BUILD ] ..."
 source $(dirname ${CONFIG})/BUILD ; right_status $?
@@ -71,13 +86,16 @@ echo
 exit
 }
 
-
 display_config()
 {
-#separator "Configuration" $(hostname)
+separator "$(basename $0)-$BUILD (Configuration)" $(hostname)
 message "${BYon}Current Configuration --${Boff}"
 longest=$(get_longest ${varlist})
 display_vars ${longest} ${varlist}
+echo
+separator "$(basename $0)-$BUILD (launch_cmd_file contents)" $(hostname)
+cat ${launch_cmd_file}
+echo
 }
 
 configure_keyboard()
@@ -89,61 +107,216 @@ configure_keyboard()
   KEYBOARD="-device \"usb-host,hostbus=${HOSTBUS},hostaddr=${HOSTADDR}\""
 }
 
-build_launch_command()
+add_to_cmdline_array() {
+  for x in $@; do
+    d_message_n "adding [ $x ] to cmdline_array ..." 3
+    cmdline_array+=("$x")
+    d_right_status $? 3
+  done
+}
+
+dump_cmdline_array() {
+  message "dumping [${#cmdline_array[@]}] elements of cmdline_array ..."
+  for ((i=0; i<${#cmdline_array[@]}; i++)) ; do
+    message "cmdline_array[$i]: ${cmdline_array[$i]}"
+  done
+}
+
+append_array_to_cmdline() {
+  for ((i=0; i<${#cmdline_array[@]}; i++)) ; do
+    message_n "appending element [$i] [ ${cmdline_array[$i]} ]"
+    DONE=$FALSE
+    case $i in
+      "0"  )   ## dont left-pad the first item; dont newline if only entry
+        if [ ${#cmdline_array[@]} -gt 1 ] ; then
+          d_message_n "  first element ..." 4
+          echo "${cmdline_array[$i]} \\" >> ${launch_cmd_file}
+          d_right_status $? 4
+        else
+          d_message_n "  first and only element ..." 4
+          echo -n "${cmdline_array[$i]}" >> ${launch_cmd_file}
+          d_right_status $? 4
+        fi
+        ;;
+      "$((${#cmdline_array[@]}-1))" )  ## don't newline the last one
+          d_message_n "  last element ..." 4
+          echo -n "    ${cmdline_array[$i]}" >> ${launch_cmd_file}
+          d_right_status $? 4
+          DONE=$TRUE
+          ;;
+      * )   ## for any other entry, pad left and end newline
+          d_message_n "  ${i}th element ..." 4
+          echo "    ${cmdline_array[$i]} \\" >> ${launch_cmd_file}
+          d_right_status $? 4
+          ;;
+    esac
+    right_status $DONE
+    [ $verbosity -ge 5 ] && \
+      separator "dumping launch_cmd_file (so far)" && \
+      cat ${launch_cmd_file}
+  done
+}
+
+build_launch_command_file()
 {
-  d_message "running build_launch_command ..." 3
+  separator "$(basename $0)-$BUILD (Build launch_cmd file)" $(hostname)
+
+  # use '>' to create/replace empty launch_cmd file
+  # (-n so it doesn't start with a blank line)
+  launch_cmd_file="${IMAGE_DIR%/}/launch_cmd"
+  message_n "(re)creating launch_cmd_file: ${launch_cmd_file} ..."
+  echo -n "" > ${launch_cmd_file} ; right_status $?
+#  message_n "generating launch_cmd assignment ..."
+#  echo -n "launch_cmd=\"" >> ${launch_cmd_file} ; right_status $?
+
+  # configure machine, cpu, memory, and smp and append to launch_cmd file
+  message_n "choosing launch_cmd for ARCH: $ARCH ..."
   case $ARCH in
-    "arm"   ) launch_cmd="qemu-system-arm" ;;
-    "arm64" ) launch_cmd="qemu-system-aarch64" ;;
-    "x86_64" ) E_message "$ARCH launch not implmented yet" ; exit ;;
-    *        ) E_message "Invalid ARCH: [ $ARCH ]" ; exit ;;
-  esac
-  [ -n "${MACHINE}" ] && launch_cmd+=" -M ${MACHINE}"
-  [ -n "${CPU}" ] && launch_cmd+=" -cpu ${CPU}"
-  [ -n "${MEM}" ] && launch_cmd+=" -m ${MEM}"
-  [ -n "${SMP}" ] && launch_cmd+=" -smp ${SMP}"
-  [ -n "${CMDLINE}" ] && launch_cmd+=" -append \"${CMDLINE}\""
-  [ -n "${DTB}" ] && launch_cmd+=" -dtb ${DTB}"
+    "arm"     ) launch_cmd="qemu-system-arm" ;;
+    "arm64"   ) launch_cmd="qemu-system-aarch64" ;;
+    "aarch64" ) launch_cmd="qemu-system-aarch64" ;;
+    "x86_64"  ) E_message "$ARCH launch not implmented yet" ; exit ;;
+    *         ) E_message "Invalid ARCH: [ $ARCH ]" ; exit ;;
+  esac && \
+    ( echo "${launch_cmd} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped launch_cmd"
 
-  [ ${EFI} ] && launch_cmd+=" -bios /usr/share/qemu/edk2-aarch64-code.fd"
+  [ -n "${NAME}" ] && message_n "adding name ..." && \
+    ( echo " -name ${NAME} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped name"
+  [ -n "${MACHINE}" ] && message_n "adding machine ..." && \
+    ( echo " -M ${MACHINE} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped machine"
+  [ -n "${CPU}" ] && message_n "adding cpu ..." && \
+    ( echo " -cpu ${CPU} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped cpu"
+  [ -n "${MEM}" ] && message_n "adding memory ..." && \
+    ( echo " -m ${MEM} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped memory"
+  [ -n "${SMP}" ] && message_n "adding smp ..." && \
+    ( echo " -smp ${SMP} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped smp"
 
+  # configure rootfs target, depending on machine
   [ -z "${TARGET}" ] && E_message "no target image specified" && exit
-
+  message_n "adding rootfs [ ${TARGET} ] for machine [ ${MACHINE} ] ..."
+  VALID=$FALSE
   case $MACHINE in
-    "raspi"* ) launch_cmd+=" -drive if=sd,file=${TARGET},format=raw" ;;
+    "raspi"* )
+        VALID=$TRUE
+        echo " -drive if=sd,file=${TARGET},format=raw \\" >> ${launch_cmd_file}
+        ;;
     "versatilepb" )
-        launch_cmd+=" -drive \"if=none,file=raspi132q1.img,index=0,media=disk,format=raw,id=disk0\""
-        launch_cmd+=" -device \"virtio-blk-pci,drive=disk0,disable-modern=on,disable-legacy=off\""
+        VALID=$TRUE
+        echo " -drive \"if=none,file=raspi132q1.img,index=0,media=disk,format=raw,id=disk0\" \\" >> ${launch_cmd_file}
+        echo " -device \"virtio-blk-pci,drive=disk0,disable-modern=on,disable-legacy=off\" \\" >> ${launch_cmd_file}
         ;;
     *"virt"*      )  # probably 'type=virt,iommu=smmuv3'
-        launch_cmd+=" -accel tcg"
-        launch_cmd+=" -rtc base=utc"
-        launch_cmd+=" -drive file="${TARGET}",if=virtio,format=qcow2"
-        launch_cmd+=" -drive file="install-arm64-minimal-20250126T230320Z.iso",if=virtio,format=raw,readonly=on"
-        launch_cmd+=" -boot menu=on"
+        VALID=$TRUE
+        echo " -accel tcg \\" >> ${launch_cmd_file}
+        echo " -rtc base=utc \\" >> ${launch_cmd_file}
+        echo " -drive file="${TARGET}",if=virtio,format=qcow2 \\" >> ${launch_cmd_file}
+        echo " -drive file="install-arm64-minimal-20250126T230320Z.iso",if=virtio,format=raw,readonly=on \\" >> ${launch_cmd_file}
+        echo " -boot menu=on \\" >> ${launch_cmd_file}
         ## note:  need new ${TARGET2} or ${LIVECDZ} or ${ISO_FILE} variable in config
         ;;
 
-    *             ) E_message "invalid machine type [ $MACHINE ]" ; exit ;;
+    *             )
+        VALID=$FALSE
+        E_message "invalid machine type [ $MACHINE ]" ; exit ;;
   esac
+  right_status $VALID
 
-  [ -n "${KERNEL}" ] && launch_cmd+=" -kernel ${KERNEL}"
-  [ -n "${INITRD}" ] && launch_cmd+=" -initrd ${INITRD}"
-  launch_cmd+=" -serial stdio -usb"
-##  launch_cmd+=" -serial stdio"
-  [ -n "${NETWORK}" ] && launch_cmd+=" ${NETWORK}"
+  # configure dtb, initrd, kernel
+  [ -n "${DTB}" ] && message_n "adding dtb ..." && \
+    ( echo " -dtb ${DTB} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped dtb"
+  [ -n "${INITRD}" ] && message_n "adding initrd ..." && \
+    ( echo " -initrd ${INITRD} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped initrd"
+  [ -n "${KERNEL}" ] && message_n "adding kernel ..." && \
+    ( echo " -kernel ${KERNEL} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped kernel"
+
+  # assign assembled commandline
+  echo -n " -append \"" >> ${launch_cmd_file}
+  [ -n "${CONSOLE}" ] && add_to_cmdline_array ${CONSOLE}
+  [ -n "${ROOT}" ] && add_to_cmdline_array "root=${ROOT}"
+  [ -n "${BASIC_CMDLINE}" ] && add_to_cmdline_array ${BASIC_CMDLINE}
+  [ -n "${CMDLINE_EXTRA_OPTS}" ] && add_to_cmdline_array ${CMDLINE_EXTRA_OPTS}
+  [ $verbosity -ge 3 ] && dump_cmdline_array
+  append_array_to_cmdline
+  # close cmdline with quote and then newline for remainder of launch_cmd
+  echo "\" \\" >> ${launch_cmd_file}
+
+  # configure efi, if used (one way to do it)
+  [ ${EFI} ] && message_n "adding dtb ..." && \
+    ( echo " -bios /usr/share/qemu/edk2-aarch64-code.fd \\" >> ${launch_cmd_file}
+    right_status $? ) \
+    || E_message "skipped EFI"
+
+  # configure display
+  [ -n "${DISPLAY}" ] && message_n "adding display ..." && \
+    ( echo " ${DISPLAY} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped display"
+
+  # configure vga
+  [ -n "${VGA}" ] && message_n "adding vga ..." && \
+    ( echo " ${VGA} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped vga"
+
+  # configure serial io
+  [ -n "${SERIAL}" ] && message_n "adding serial ..." && \
+    ( echo " ${SERIAL} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped serial"
+
+  # configure network
+  [ -n "${NETWORK}" ] && message_n "adding network ..." && \
+    ( echo " ${NETWORK} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped network"
+
+  # configure usb (and maybe devices)
+  [ -n "${USB}" ] && message_n "adding usb ..." && \
+    ( echo " ${USB} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped usb"
+
+  [ -n "${USB_DRIVE}" ] && [ -n "${USB_DRIVE_TARGET}" ] && message_n "adding usb-drive ..." && \
+    ( echo " ${USB_DRIVE} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped usb-drive"
+
+  if [ -n "${KEYDEV}" ] ; then
+    message_n "adding dtb ..." && \
+    echo " -device usb-storage,drive=keydev,removable=true \\" >> ${launch_cmd_file} && \
+    echo " -drive file=${IMAGE_DIR%/}/${KEYDEV},if=none,format=raw,id=keydev \\" >> ${launch_cmd_file}
+    right_status $?
+  else
+    E_message "skipped keyboard"
+  fi
+
+
+  # configure keyboard/mouse pass-through
   if [ -n "${KEYBOARD_ID}" ] ; then
     # keyboard bus and device nuber change every time the usb device is inserted
     # so use the persistent nnnn:nnnn device id to look up bus and device
-    configure_keyboard
-    launch_cmd+=" ${KEYBOARD}"
+    configure_keyboard && message_n "adding keyboard ..." && \
+    ( echo " ${KEYBOARD} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped keyboard"
+
   fi
-  if [ -n "${KEYDEV}" ] ; then
-    launch_cmd+=" -device usb-storage,drive=keydev,removable=true"
-    launch_cmd+=" -drive file=${IMAGE_DIR%/}/${KEYDEV},if=none,format=raw,id=keydev"
-  fi
-  launch_cmd+=" -audio none"
-  launch_cmd+=" &"
+
+  # configure audio
+  [ -n "${AUDIO}" ] && message_n "adding audio ..." && \
+    ( echo " ${AUDIO} \\" >> ${launch_cmd_file} ; right_status $? ) \
+    || E_message "skipped audio"
+
+  # daemonize (run in background)
+  message_n "setting to run in background ..."
+  echo " &" >> ${launch_cmd_file} ; right_status $?
+
+  # make it executable
+  message_n "making launch_cmd file root-owned and executable ..."
+  chown root:root ${launch_cmd_file} && \
+  chmod +x ${launch_cmd_file} ; right_status $?
 }
 
 process_commandline() {
@@ -191,48 +364,43 @@ process_commandline() {
   done
 }
 
-launch_vm() {
-  old_dir=$(pwd)
-  cd ${IMAGE_DIR}
-  message "now working in $(pwd)"
-  separator "launch" $(hostname)
-  sh_countdown ${launch_wait}
-  eval "${launch_cmd}" || message "(only pretending)"
-  echo
-  cd ${old_dir}
-  message "now working in $(pwd)"
-}
-
 #-----[ main script ]--------------------------------------------
 [ $# -gt 1 ] && usage $@
-separator "$(basename $0) - ${Mon}initializing${Boff}" $(hostname)
+separator "$(basename $0) (initializing)" $(hostname)
 checkroot
 read_config
 process_commandline $@  # to override config
-separator "$(basename $0)-$BUILD" $(hostname)
-build_launch_command
+build_launch_command_file
 display_config
 echo
-[ $PRETEND ] && message "To launch, run ${Gon}$0 x${Boff}\n" || launch_vm
-
-# this kinda worked ... for M raspi4b, cpu cortex-a72, m 2G, smp 4
-#qemu-system-aarch64 \
-#  -M ${MACHINE} \
-#  -cpu ${CPU} \
-#  -m ${MEM} \
-#  -dtb ${IMAGE_DIR%/}/${DTB} \
-#  -kernel ${IMAGE_DIR%/}/${KERNEL} \
-#  -drive file=${IMAGE_DIR%/}/${TARGET},if=sd,format=raw \
-#  -smp ${SMP} \
-#  -serial stdio -usb \
-#  -append "${CMDLINE}" \
-#  &
-
-#  -sd ${IMAGE_DIR%/}/${TARGET} \
-#  -initrd "${INITRD}" \
-#  -device usb-mouse -device usb-kbd \
-#  -drive if=pflash,format=raw,file="${KEYDEV}" \
-
-# old cmdline -------------------
-#CMDLINE_OPTS="rw earlyprintk loglevel=8 console=ttyAMA0,115200 \
-#    dwc_otg.lpm_enable=0 root=${ROOT} rootdelay=1"
+if [ $PRETEND ] ; then
+  msg="$(basename $0)-$BUILD (pretend)"
+  separator "${msg}" $(hostname)
+  msg="(pretending) To actually launch, run ${Gon}$(basename $0) x${Boff}\n"
+  message "${msg}"
+  exit
+else
+  old_dir=$(pwd)
+  cd ${IMAGE_DIR}
+  msg="$(basename $0)-$BUILD (launch)"
+  separator "${msg}" $(hostname)
+  message "$(basename $0) now working in $(pwd)"
+  message_n "reading launch_cmd file to set launch_cmd ..."
+  read launch_cmd < ${launch_cmd_file} ; right_status $?
+  d_message "launch_cmd: ${launch_cmd}" 3
+  message_n "editing launch_cmd ..."
+  launch_cmd="$(echo ${launch_cmd} | sed 's| \\||g')" ; right_status $?
+  d_message "launch_cmd: ${launch_cmd}" 3
+  message_n "launching ..."
+#  eval ${launch_cmd} 2>/dev/null ; right_status $?
+#  eval "${launch_cmd}" ; right_status $?
+#  ${launch_cmd} ; right_status $?
+  ${launch_cmd_file} ; right_status $?
+  # pause to allow launcher to exit
+  sleep 0.5
+  message "qemu has been launched"
+  cd ${old_dir}
+  message "$(basename $0) now exiting in $(pwd)"
+  message "Hit ENTER"
+  read throwaway
+fi
