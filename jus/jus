@@ -3,165 +3,130 @@
 #   script with "resume" functionality
 # Author: Joe Brendler 14 October 2020
 # see version_history in ebuild's filesdir
-# Source the variable assignments made in jus.conf (/etc/ overrides pwd)
-#   This will supercede/modify the default assignments made below
-CONF_DIR="defaults"
 
-# User-defined variables - modify assignments below, according to your system.
-#   Deviate from defaults in jus.conf
+source /usr/local/sbin/script_header_brendlefly
+source /usr/local/sbin/script_header_brendlefly_extended
 
-NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc -distcc-pump"'
-
-## SCRIPT_DIR is the directory in which you have placed the show-elogs script.
-#   (only needed if it is not in your path. Normally "/usr/local/sbin/"; must end with '/' if specified)
-#   (assigned here, prior to sourcing jus.conf so it will be properly initialized, just in case it is not assigned in jus.conf
-SCRIPT_DIR=""
+# source BUILD PVR
+PN=$(basename $0)
+source /etc/${PN}/BUILD
 
 # if /usr/share/config/ doesn't exist, fix that
 [ ! -d /usr/share/config ] && mkdir -p /usr/share/config/ && message "created /usr/share/config/"
 
-# PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
-eval $( grep ^PORTDIR /etc/portage/make.conf )
-eval $( grep ^PKGDIR /etc/portage/make.conf )
-eval $( grep ^DISTDIR /etc/portage/make.conf )
-eval $( grep ^PORT_LOGDIR /etc/portage/make.conf )
-
-# source jus.conf in order to load user-configured settings
-#   check each setting below to assign default values if needed
-#   Note: jus.conf in /etc/jus/ will override one in pwd
-[[ -e jus.conf ]] && source jus.conf && CONF_DIR=$PWD"/jus.conf"
-[[ -e /etc/jus/jus.conf ]] && source /etc/jus/jus.conf && CONF_DIR="/etc/jus/jus.conf"
-
-# STATUS_FILE is the name of the status file
-#   generated and used by this script.  Provide the complete pathname
-[ -z "$STATUS_FILE" ] && \
-    STATUS_FILE="/root/bin/jus-status" || \
-    STATUS_FILE=$STATUS_FILE
-
-# EIX indicates whether you use app-portage/eix, which will significantly speed up parts of jus
-[ -z "$EIX" ] && EIX="yes"
-
-# DISTCC indicates whether you use sys-devel/distcc, which can significantly speed up compiling for jus
-[ -z "$DISTCC" ] && DISTCC="yes"
-
-# PUMP indicates whether you use cpp capable distcc hosts, and you want to pump emerge
-#[ "$DISTCC" == "yes" ] && [ -z "$PUMP" ] && PUMP="no"
-PUMP="no"  ## disabling selection, since global use of pump is ill advised - known to break many pkgs
-
-# unfriendlies is a file listing packages known to not be friendly to distcc
-### this gus functionality removed in jus
-### (use per-package environment to set FEATURES instead)
-
-# SYNC_TS is the pathname of the file the timestamp of which will
-#   be checked to determine how long it's been since the portage
-#   tree was last sync'd
-[ -z "$SYNC_TS" ] && SYNC_TS="${PORTDIR}/metadata/timestamp.chk"       # emerge --sync timestamp
-
-# SYNC_CMD is the command used to sync the portage tree
-#[ -z "$SYNC_CMD" ] && SYNC_CMD="WEBRSYNC"       # emerge-webrsync
-#[ -z "$SYNC_CMD" ] && SYNC_CMD="SYNC"           # emerge --sync
-[ -z "$SYNC_CMD" ] && SYNC_CMD="EIX_SYNC"        # eix-sync
-
-# MAX_AGE is the maximum time in hours since last sync before this script
-#   will automatically choose to emerge --sync
-[ -z "$MAX_AGE" ] && MAX_AGE=24
-
-# ELOG_DIR is the location of elog files
-[ -z "$ELOG_DIR" ] && ELOG_DIR="${PORT_LOGDIR}/elog/"
-
-# SELINUX_RELABEL
-[ -z "$SELINUX_RELABEL" ] && SELINUX_RELABEL="no"
-
-# PERL_CLEANER
-[ -z "$PERL_CLEANER" ] && PERL_CLEANER="no"
-
-# HASKELL_UPDATER
-[ -z "$HASKELL_UPDATER" ] && HASKELL_UPDATER="no"
-
-# REGEN_OVERLAY_METADATA
-[ -z "$REGEN_OVERLAY_METADATA" ] && REGEN_OVERLAY_METADATA="yes"
-
-# EIX_UPDATE
-[ -z "$EIX_UPDATE" ] && EIX_UPDATE="no"
-
-# PYTHON_UPDATER
-[ -z "$PYTHON_UPDATER" ] && PYTHON_UPDATER="yes"
-
-# GOLANG_REBUILD
-[ -z "$GOLANG_REBUILD" ] && GOLANG_REBUILD="yes"
-
-# MODULE_REBUILD
-[ -z "$MODULE_REBUILD" ] && MODULE_REBUILD="no"
-
-# X11_MODULE_REBUILD
-[ -z "$X11_MODULE_REBUILD" ] && X11_MODULE_REBUILD="no"
-
-# RKHUNTER propupd
-[ -z "$RKHUNTER" ] && RKHUNTER="no"
-
-# GLSA_CHECK
-[ -z "$GLSA_CHECK" ] && GLSA_CHECK="yes"
-
-# EMAINT_CHECK
-[ -z "$EMAINT_CHECK" ] && EMAINT_CHECK="yes"
-
-# --- source common functions and variables --------------------
-source /usr/local/sbin/script_header_brendlefly
-source /usr/local/sbin/script_header_brendlefly_extended
-
-# --- Define local variables -----------------------------------
-worldfile="/var/lib/portage/world"
-VERBOSE=$FALSE
-#VERBOSE=$TRUE
-verbosity=0
-
-BUILD="6.2.5 (20230803)"
-
-continue="y"
-RESUME="no"
-SYNC="no"
-EXCLUDE=""
-UPDATE_CHECK="no"  # default; command line option only (forces update check only), otherwise part of phase
-GO_AHEAD="no"
-KEEPGOING="yes"
-# Do not move these to .conf and set like those above --
-#  They are only used when set to "yes" (otherwise, global settings in make.conf apply)
-USEPKG="no"
-USEPKGONLY="no"
-GETBINPKG="no"
-GETBINPKGONLY="no"
-WITH_BDEPS_Y="yes"
-
-updateables=""
-
-KP_FOUND=${FALSE}
-
-# Array of messages used to announce each phase
-phase_message=(
-'Sync'
-'Update-Check'
-'Emerge Updates'
-'Review news and Maintain Config Files'
-'Review elogs'
-'Handle Dependencies'
-'Final steps'
-)
-
-phase_function_sequence=(
-'emerge_sync'
-'update_check'
-'emerge_updates'
-'show_news; maintain_config_files'
-'showelogs'
-'handle_dependencies'
-'final_phases'
-)
-
-phase=0
-
+# basic configuration variables and internals
+conf_varlist="CONF_DIR ELOG_DIR \
+  PORTDIR PKGDIR DISTDIR PORT_LOGDIR \
+  STATUS_FILE yn.EIX yn.DISTCC \
+  worldfile bool.VERBOSE verbosity BUILD"
+# phase 0
+p0_varlist="phase yn.RESUME \
+  yn.UPDATE_CHECK lv.EXCLUDE \
+  yn.SYNC SYNC_TS SYNC_CMD MAX_AGE \
+  yn.REGEN_OVERLAY_METADATA \
+  lv.NOBINFEATURES"
+# phase 1
+p1_varlist="UPDATE_CHECK"
+# phase 2
+p2_varlist="yn.USEPKG yn.USEPKGONLY yn.GETBINPKG yn.GETBINPKGONLY yn.WITH_BDEPS_Y \
+  yn.GO_AHEAD yn.KEEPGOING lv.EXCLUDE"
+# phase 6
+p6_varlist="yn.EIX_UPDATE yn.HASKELL_UPDATER yn.GOLANG_REBUILD yn.MODULE_REBUILD yn.PERL_CLEANER \
+  yn.PYTHON_UPDATER yn.SELINUX_RELABEL yn.RKHUNTER yn.X11_MODULE_REBUILD yn.GLSA_CHECK \
+  yn.EMAINT_CHECK"
 
 # --- function blocks ------------------------------------------
 
+source_config() {
+  # source jus.conf in order to load user-configured settings (over-ride initilized defaults)
+  if [[ -e /etc/jus/jus.conf ]] ; then
+    CONF_DIR="/etc/jus/jus.conf"
+  elif [[ -e /usr/local/sbin/jus.conf ]] ; then
+    CONF_DIR="/usr/local/sbin/jus.conf"
+  elif [[ -e jus.conf ]] ; then
+    CONF_DIR="$(pwd)/jus.conf"
+  else
+    E_message "Error: no jus.conf config file found"
+    exit 1
+  fi
+  d_message_n "Sourcing configuration file [ ${CONF_DIR} ] ..." 1
+  source ${CONF_DIR} ; d_right_status $? 1
+}
+
+initialize_variables() {
+  VERBOSE=$TRUE
+  verbosity=3
+  initialize_vars ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist}
+
+  # restore VERBOSE and verbosity to defaults (initialization would clear them)
+  d_message_n "Restoring PN, BUILD, and verbosity ..." 1
+  PN=$(basename $0) && source /etc/${PN}/BUILD && \
+  VERBOSE=$TRUE && verbosity=3
+  d_right_status $? 1
+
+  # PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
+  d_message_n "Setting default PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR per make.conf ..." 1
+  eval $( grep ^PORTDIR /etc/portage/make.conf ) && \
+  eval $( grep ^PKGDIR /etc/portage/make.conf ) && \
+  eval $( grep ^DISTDIR /etc/portage/make.conf ) && \
+  eval $( grep ^PORT_LOGDIR /etc/portage/make.conf ) && \
+  ELOG_DIR="${PORT_LOGDIR}/elog/"
+  d_right_status $? 1
+
+  # Set these to defaults, override later with config file
+  d_message_n "Setting default phase, new_phase(0)  ..." 1
+  phase=0 && new_phase=0 ; d_right_status $? 1
+
+  d_message_n "Setting default NOBINFEATURES ..." 1
+  NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc"'
+  d_right_status $? 1
+
+  d_message_n "Setting default STATUS_FILE ..." 1
+  STATUS_FILE="/root/bin/jus-status" ; d_right_status $? 1
+
+  d_message_n "Setting default yes/no variables ..." 1
+  EIX="yes" && DISTCC="yes" && SELINUX_RELABEL="no" && PERL_CLEANER="no" && \
+  HASKELL_UPDATER="no" && REGEN_OVERLAY_METADATA="yes" && EIX_UPDATE="no" && \
+  PYTHON_UPDATER="yes" && GOLANG_REBUILD="yes" && MODULE_REBUILD="no" && \
+  X11_MODULE_REBUILD="no" && RKHUNTER="no" && GLSA_CHECK="yes" && EMAINT_CHECK="yes" && \
+  continue="y" && RESUME="no" && SYNC="no" && EXCLUDE="" && UPDATE_CHECK="no" && GO_AHEAD="no" && \
+  KEEPGOING="yes" && USEPKG="no" && USEPKGONLY="no" && GETBINPKG="no" && GETBINPKGONLY="no" && \
+  WITH_BDEPS_Y="yes"
+  d_right_status $? 1
+
+  d_message_n "Setting default sync data ..." 1
+  SYNC_TS="${PORTDIR}/metadata/timestamp.chk" && SYNC_CMD="EIX_SYNC" && MAX_AGE=24
+  d_right_status $? 1
+
+  # --- Define local variables -----------------------------------
+  d_message_n "Setting default world file ..." 1
+  worldfile="/var/lib/portage/world" ; d_right_status $? 1
+
+  d_message_n "Setting defaults for non-displayed variables ..." 1
+  KP_FOUND=$FALSE && continue="y" && new_phase=0 && updateables=""
+  d_right_status $? 1
+
+  # Array of messages used to announce each phase
+  phase_message=(
+  'Sync'
+  'Update-Check'
+  'Emerge Updates'
+  'Review news and Maintain Config Files'
+  'Review elogs'
+  'Handle Dependencies'
+  'Final steps'
+  )
+
+  phase_function_sequence=(
+  'emerge_sync'
+  'update_check'
+  'emerge_updates'
+  'show_news; maintain_config_files'
+  'showelogs'
+  'handle_dependencies'
+  'final_phases'
+  )
+}
 
 sanity_check()
 {
@@ -253,13 +218,14 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-M" | "--emaint"        ) EMAINT_CHECK="yes" ;;
     "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
     "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
+    "-q" | "--quiet"         ) VERBOSE=$TRUE; [ ! $verbosity -le 0 ] && let "verbosity-=1" ; [ $verbosity -eq 0 ] && VERBOSE=$FALSE ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
     "-[0-9]"                 ) RESUME="yes" ; let new_phase=${myargs:1:1};;
     "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
     "-s" | "--status"        ) status ; exit 0 ;;
     "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
     "-t" | "--rkhunter"      ) RKHUNTER="yes" ;;
-    "-v" | "--verbose"       ) VERBOSE=$TRUE; let "verbosity+=1" ;;
+    "-v" | "--verbose"       ) VERBOSE=$TRUE; [ ! $verbosity -ge 6 ] && let "verbosity+=1" ;;
     "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
     "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
     "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
@@ -289,6 +255,7 @@ myargs=${1##-}
 while [ -n "${myargs}" ]
 do
     #handle first char
+    d_message "handling compound arg [ ${myargs} ], char [ ${myargs:0:1} ]" 3
     case ${myargs:0:1} in
         "a") GLSA_CHECK="yes" ;;
         "c") UPDATE_CHECK="yes" ;;
@@ -302,12 +269,14 @@ do
         "M") EMAINT_CHECK="yes" ;;
         "p") PERL_CLEANER="yes" ;;
         "P") PYTHON_UPDATER="yes" ;;
+        "q") VERBOSE=$TRUE; [ ! $verbosity -le 0 ] && let "verbosity-=1" ; [ $verbosity -eq 0 ] && VERBOSE=$FALSE ;;
         "r") RESUME="yes" ;;
       [0-9]) RESUME="yes" ; let new_phase=${myargs:0:1};;
         "R") REGEN_OVERLAY_METADATA="yes" ;;
+        "s") status ; exit 0 ;;
         "S") SELINUX_RELABEL="yes" ;;
         "t") RKHUNTER="yes" ;;
-        "v") VERBOSE=$TRUE; let "verbosity+=1" ;;
+        "v") VERBOSE=$TRUE;  [ ! $verbosity -ge 6 ] && let "verbosity+=1" ;;
         "w") WITH_BDEPS_Y="yes" ;;
         "X") X11_MODULE_REBUILD="yes" ;;
         "Y") GO_AHEAD="yes" ;;
@@ -335,6 +304,7 @@ useage()
    echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
    echo -e "    "$BBon"[-[0-9]]"$Boff"..................resume update sequence at this phase"
    echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
+   echo -e "    "$BBon"[-q | --quiet]"$Boff"............decrease verbosity"
    echo -e "    "$BBon"[-h | --help]"$Boff".............print this message"
    echo -e "   ${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
    echo -e "    "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
@@ -389,48 +359,20 @@ status()
 display_config()
 {
 message "${BWon}Using configuration data below: ${Boff}"
+longest=$(get_longest ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist})
 echo -e ${BYon}"Global Congiguration${Boff}"
-echo -e ${LBon}"Configuration..........: "${Boff}${CONF_DIR}
-echo -e ${LBon}"SCRIPT_DIR.............: "${Boff}${SCRIPT_DIR}
-echo -e ${LBon}"STATUS_FILE............: "${Boff}${STATUS_FILE}
-echo -e ${LBon}"DISTCC.................: "$(status_color ${DISTCC})${DISTCC}${Boff}
-echo -e ${LBon}"EIX....................: "$(status_color ${EIX})${EIX}${Boff}
-echo -e ${LBon}"VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
-echo -e ${LBon}"verbosity..............: "${Boff}${verbosity}
+display_vars ${longest} ${conf_varlist}
 echo -e ${BYon}"Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
-echo -e ${LBon}"SYNC...................: "$(status_color ${SYNC})${SYNC}${Boff}
-echo -e ${LBon}"REGEN_OVERLAY_METADATA.: "$(status_color ${REGEN_OVERLAY_METADATA})${REGEN_OVERLAY_METADATA}${Boff}
-echo -e ${LBon}"SYNC_CMD...............: "${Boff}${SYNC_CMD}
-echo -e ${LBon}"SYNC_TS................: "${Boff}${SYNC_TS}
-echo -e ${LBon}"MAX_AGE................: "${Boff}${MAX_AGE}
+display_vars ${longest} ${p0_varlist}
 echo -e ${BYon}"Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update Check
-echo -e ${LBon}"UPDATE_CHECK...........: "$(status_color ${UPDATE_CHECK})${UPDATE_CHECK}${Boff}
+display_vars ${longest} ${p1_varlist}
 echo -e ${BYon}"Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
-echo -e ${LBon}"USEPKG.................: "$(status_color ${USEPKG})${USEPKG}${Boff}
-echo -e ${LBon}"USEPKGONLY.............: "$(status_color ${USEPKGONLY})${USEPKGONLY}${Boff}
-echo -e ${LBon}"GETBINPKG..............: "$(status_color ${GETBINPKG})${GETBINPKG}${Boff}
-echo -e ${LBon}"GETBINPKGONLY..........: "$(status_color ${GETBINPKGONLY})${GETBINPKGONLY}${Boff}
-echo -e ${LBon}"WITH_BDEPS_Y...........: "$(status_color ${WITH_BDEPS_Y})${WITH_BDEPS_Y}${Boff}
-echo -e ${LBon}"GO_AHEAD...............: "$(status_color ${GO_AHEAD})${GO_AHEAD}${Boff}
-echo -e ${LBon}"KEEPGOING..............: "$(status_color ${KEEPGOING})${KEEPGOING}${Boff}
-echo -e ${LBon}"EXCLUDE................: "${Boff}${EXCLUDE}
+display_vars ${longest} ${p2_varlist}
 echo -e ${BYon}"Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Configs
 echo -e ${BYon}"Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
 echo -e ${BYon}"Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
 echo -e ${BYon}"Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
-echo -e ${LBon}"EIX_UPDATE.............: "$(status_color ${EIX_UPDATE})${EIX_UPDATE}${Boff}
-echo -e ${LBon}"HASKELL_UPDATER........: "$(status_color ${HASKELL_UPDATER})${HASKELL_UPDATER}${Boff}
-echo -e ${LBon}"GOLANG_REBUILD.........: "$(status_color ${GOLANG_REBUILD})${GOLANG_REBUILD}${Boff}
-echo -e ${LBon}"MODULE_REBUILD.........: "$(status_color ${MODULE_REBUILD})${MODULE_REBUILD}${Boff}
-echo -e ${LBon}"PERL_CLEANER...........: "$(status_color ${PERL_CLEANER})${PERL_CLEANER}${Boff}
-echo -e ${LBon}"PYTHON_UPDATER.........: "$(status_color ${PYTHON_UPDATER})${PYTHON_UPDATER}${Boff}
-echo -e ${LBon}"RESUME.................: "$(status_color ${RESUME})${RESUME}${Boff}
-echo -e ${LBon}"NEW_PHASE..............: "$(status_color ${RESUME})${new_phase}${Boff}
-echo -e ${LBon}"SELINUX_RELABEL........: "$(status_color ${SELINUX_RELABEL})${SELINUX_RELABEL}${Boff}
-echo -e ${LBon}"RKHUNTER...............: "$(status_color ${RKHUNTER})${RKHUNTER}${Boff}
-echo -e ${LBon}"X11_MODULE_REBUILD.....: "$(status_color ${X11_MODULE_REBUILD})${X11_MODULE_REBUILD}${Boff}
-echo -e ${LBon}"GLSA_CHECK.............: "$(status_color ${GLSA_CHECK})${GLSA_CHECK}${Boff}
-echo -e ${LBon}"EMAINT_CHECK...........: "$(status_color ${EMAINT_CHECK})${EMAINT_CHECK}${Boff}
+display_vars ${longest} ${p6_varlist}
 }
 
 check_timestamp()
@@ -575,6 +517,9 @@ emerge_updates()
     # add --binpkg-respect-use=y and --binpkg-changed-deps=y universally (for now anyway)
     OPTS2+=" --binpkg-respect-use=y --binpkg-changed-deps=y"
 
+    # if verbose, use --verbose-conflicts
+    [ $verbosity -ge 3 ] && OPTS2+=" --verbose-conflicts"
+
     # if we have an exclude, put it on the end of the command line
     [ ! -z "${EXCLUDE}" ] && OPTS2+=" --exclude ${EXCLUDE}"
 
@@ -620,7 +565,7 @@ showelogs()
 {
     # run show-elogs script to apply important phases from emerge notes
     # if the optional go-ahead flag is set, skip this (remind user later)
-    message "Running show-elogs -l | less ..." && [ "$GO_AHEAD" == "no" ] && ${SCRIPT_DIR}show-elogs -l | less && return 0 || return 1
+    message "Running show-elogs -l | less ..." && [ "$GO_AHEAD" == "no" ] && show-elogs -l | less && return 0 || return 1
 }
 
 handle_dependencies()
@@ -674,20 +619,22 @@ RCP; message_n "$ps [yngYNG]: " && read answer; done; }
 
 # --- start main script ---------------------------------------------------------
 
+checkroot
+
 # display script kick-off separator
-separator "joetoo Update Sequence -- jus-${BUILD}"
+separator "$(basename $0)-${BUILD}" $(hostname)
 
-# default to start with first phase
-let phase=0
-let new_phase=0
+# initialize and set default values
+initialize_variables
 
-# process command line to set and check sanity of option flags
+# override default values with config file
+source_config
+
+# process command line to set and check sanity of option flags; override config file and defaults
 process_command_line $*
 
-# must be root
-message "Checking root UID... "&& checkroot
-
 # display config variables from jus.conf and option flags from command line
+separator "$(basename $0)-${BUILD} (Configuration)" $(hostname)
 display_config
 
 # if calling for an update check, then sync if necessary and list updateables
@@ -697,25 +644,25 @@ display_config
 if [ "$RESUME" == "yes" ]
 then
   # assign current phase from command line or from saved status file
-  [ ${new_phase} -ne 0 ] && let phase=${new_phase} ||read phase < ${STATUS_FILE}
+  [ ${new_phase} -ne 0 ] && let phase=${new_phase} || read phase < ${STATUS_FILE}
 fi
 [[ "$GO_AHEAD" == "yes" ]] && answer="g" || answer=""
 # proceed thru each phase, as allowed to continue, until complete
-for ((l=phase; l<${#phase_function_sequence[@]}; l++))
+for ((ph=phase; ph<${#phase_function_sequence[@]}; ph++))
 do
   [[ ! $answer == [gG] ]] && answer="" && \
-    separator "($l) ${phase_message[l]}" "$(hostname) jus-${BUILD} Now starting" && \
-    get_answer "Are you ready to execute ${BYon}(${l}) ${phase_message[l]}${Boff}?"
+    separator "($ph) ${phase_message[$ph]}" "$(hostname) jus-${BUILD} Now starting" && \
+    get_answer "Are you ready to execute ${BYon}(${ph}) ${phase_message[$ph]}${Boff}?"
   if [[ $answer == [YyGg] ]]
   then
     [[ $answer == [gG] ]] && GO_AHEAD="yes"
-    message "About to run step [ $l of ${#phase_function_sequence[@]} : ${phase_function_sequence[l]} ]"
-    eval ${phase_function_sequence[l]}; right_status $?
-    message "Completed: ($l) ${phase_message[l]}"
-    echo $l > ${STATUS_FILE}
+    message "About to run step [ $ph of ${#phase_function_sequence[@]} : ${phase_function_sequence[$ph]} ]"
+    eval ${phase_function_sequence[$ph]}; right_status $?
+    message "Completed: ($ph) ${phase_message[$ph]}"
+    echo $ph > ${STATUS_FILE}
   else
-    message "${BRon}User aborted${Boff} at step ${BYon}($l) ${phase_message[l]}${Boff}. Quitting..."
-    echo $l > ${STATUS_FILE}
+    message "${BRon}User aborted${Boff} at step ${BYon}($ph) ${phase_message[$ph]}${Boff}. Quitting..."
+    echo $ph > ${STATUS_FILE}
     exit
   fi
 done
