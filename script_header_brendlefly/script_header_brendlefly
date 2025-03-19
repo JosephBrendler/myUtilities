@@ -310,39 +310,49 @@ display_vars()   # show aligned values for vars in $@; incl bool. lv. ; $1=longe
 {
   if ! isnumber $1 ; then E_message "Error: arg \$1 must be numeric longest expected input var name"; exit; fi
   if [ $# -le 1 ] ; then set $@ "<empty>"; fi  # insert placeholder "<empty>" as $2
-  maxlen=$(($1 + 2)); shift; for var_name in $@;
+  maxlen=$(($1 + 2))
+  shift
+  for var_name in $parmlist
   do
-    type="$(echo $var_name | awk  -F \. '{print $1}')"
-    case ${type} in
-      "bool" )  # boolean convention: parameter is "bool.${var}" where ${var} is e.g. "VERBOSE"
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        eval "key=\$${var}"
-        pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
-        message "${LBon}${var}${pad}: [ $(status_color ${key})$(TrueFalse ${key}) ${LBon}]${Boff}"
-      ;;
-      "yn" )  # yes/no convention: parameter is "yn.${var}" where ${var} is e.g. "EIX" (in jus)
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        eval "key=\$${var}"
-        pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
-        message "${LBon}${var}${pad}: [ $(status_color ${key})${key} ${LBon}]${Boff}"
-      ;;
-      "lv"   )  # lonstring convention: parameter is "lv.${var}" where ${var} is e.g. "CMDLINE"
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        eval "key=\$${var}"
-        pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
-        message_n "${LBon}${var}${pad}: [ ${Boff}"
-        echo_n_long ${maxlen} ${key}; echo -e " ${LBon}]${Boff}"
-      ;;
-      "BREAK"   )  # lonstring convention
-        echo
-      ;;
-      *      )  # all other variable types
-        var="${type}"
-        eval "key=\$${var}"
-        pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
-        message "${LBon}${var}${pad}: [ ${Boff}${key} ${LBon}]${Boff}"
-      ;;
-    esac
+    if echo $var_name | grep -q "\."; then
+      # initialize by type
+      type="$(echo $var_name | awk -F \. '{print $1}')"
+      var="$(echo $var_name | awk -F \. '{print $2}')"
+      case ${type:0:1} in
+        [bB] )
+          eval "key=\$${var}"
+          pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
+          message "${LBon}${var}${pad}: [ $(status_color ${key})$(TrueFalse ${key}) ${LBon}]${Boff}"
+        ;;
+        [yY]   )
+          eval "key=\$${var}"
+          pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
+          message_n "${LBon}${var}${pad}: [ ${Boff}"
+          echo_n_long ${maxlen} ${key}; echo -e " ${LBon}]${Boff}"
+        ;;
+        [lL]   )
+          eval "key=\$${var}"
+          pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
+          message_n "${LBon}${var}${pad}: [ ${Boff}"
+          echo_n_long ${maxlen} ${key}; echo -e " ${LBon}]${Boff}"
+        ;;
+        *      )
+          # invalid variable type
+          E_message "  (${type}) invalid variable type [${type}] for variable [${var_name}]"
+          exit
+        ;;
+      esac
+    elif [[ "$var_name" == "BREAK" ]] ; then
+      echo
+    else
+      # untyped
+      type=""
+      var="$var_name"
+      eval "key=\$${var}"
+      pad="$(repeat '.' $(( ${maxlen} - ${#var})) )"
+      message "${LBon}${var}${pad}: [ ${Boff}${key} ${LBon}]${Boff}"
+    fi
+    d_message "about to initialize $var_name of type: [ $type ]" 4
   done
 }
 
@@ -353,37 +363,47 @@ initialize_vars()   # initialize values for vars in $@; incl bool. lv.
   d_message "initializing vars: $parmlist" 5
   for var_name in $parmlist
   do
-    type="$(echo $var_name | awk  -F \. '{print $1}')"
+    if echo $var_name | grep -q "\."; then
+      # initialize by type
+      type="$(echo $var_name | awk -F \. '{print $1}')"
+      var="$(echo $var_name | awk -F \. '{print $2}')"
+      case ${type:0:1} in
+        [bB] )
+          # boolean convention: parameter is "bool.${var}" where ${var} is e.g. "VERBOSE"
+          # initialize booleans $FALSE
+          d_message_n "  (${type}) initializing boolean ${var} FALSE ..." 2
+          eval "${var}=\$FALSE" ; d_right_status $? 2
+        ;;
+        [yY]   )
+          # yes/no convention: parameter is "yn.${var}" where ${var} is e.g. "EIX"
+          # initialize yes/no to "no"
+          d_message_n "  (${type}) initializing yb ${var} (no) ..." 2
+          eval "${var}=''" ; d_right_status $? 2
+        ;;
+        [lL]   )
+          # lonstring convention: parameter is "lv.${var}" where ${var} is e.g. "CMDLINE"
+          # initialize longstring to null string
+          d_message_n "  (${type}) initializing lv ${var} NULL ..." 2
+          eval "${var}=''" ; d_right_status $? 2
+        ;;
+        *      )
+          # invalid variable type
+          E_message "  (${type}) invalid variable type [${type}] for variable [${var_name}]"
+          exit
+        ;;
+      esac
+    elif [[ "$var_name" == "BREAK" ]] ; then
+      # ignore BREAK
+      d_message_n "  ignoring BREAK ..." 2
+      d_right_status $TRUE 2
+    else
+      # untyped - initialize null
+      type=""
+      var="$var_name"
+      d_message_n "  (${type}) initializing ${var} NULL ..." 2
+      eval "${var}=''" ; d_right_status $? 2
+    fi
     d_message "about to initialize $var_name of type: [ $type ]" 4
-    case ${type} in
-      "bool" )  # boolean convention: parameter is "bool_${var}" where ${var} is e.g. "VERBOSE"
-        # initialize booleans $FALSE
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        d_message_n "  initializing boolean ${var} FALSE ..." 2
-        eval "${var}=\$FALSE" ; d_right_status $? 2
-      ;;
-      "yn" )  # yes/no convention: parameter is "yn.${var}" where ${var} is e.g. "EIX" (in jus)
-        # initialize yes/nos "no"
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        d_message_n "  initializing yes/no ${var} no ..." 2
-        eval "${var}='no'" ; d_right_status $? 2
-      ;;
-      "lv"   )  # lonstring convention: parameter is "lv_${var}" where ${var} is e.g. "CMDLINE"
-        # initialize longstring to null string
-        var="$(echo $var_name | awk  -F \. '{print $2}')"
-        d_message_n "  initializing lv ${var} NULL ..." 2
-        eval "${var}=''" ; d_right_status $? 2
-      ;;
-      "BREAK"   )  # lonstring convention
-        d_message_n "  ignoring BREAK ..." 2
-        d_right_status $TRUE 2
-      ;;
-      *      )  # all other variable types
-        var="${type}"
-        d_message_n "  initializing ${var} NULL ..." 2
-        eval "${var}=''" ; d_right_status $? 2
-      ;;
-    esac
   done
 }
 
