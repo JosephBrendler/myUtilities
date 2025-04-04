@@ -6,53 +6,116 @@
 
 source /usr/local/sbin/script_header_brendlefly
 
+#-----[ functions ]------------------------------------------
+
+usage() {
+  E_message "usage: ckinitramfs [-][v|q]"
+  message   "  v - increase verbosity"
+  message   "  q - decrease verbosity"
+  exit 1
+}
+
+configure() {
+  message "configuring ..."
+  SOURCES_DIR="/usr/src/initramfs"
+  MAKE_DIR="/usr/src/mkinitramfs"
+
+  # set ckinitramfs BUILD; not the kernel's BUILD used by mkinitramfs for init
+  BUILD="$(cat ${MAKE_DIR%/}/PKG_PVR)"
+
+  # source the list of executables used by the init script (from init_structure)
+  executables=()
+  message_n "sourcing ${MAKE_DIR%/}/init_structure ..."
+  source ${MAKE_DIR%/}/init_structure; right_status $?
+  # source header for load_ list_ dump_executables
+  message_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
+  source ${MAKE_DIR%/}/common_bash_functions_header; right_status $?
+
+  # source header for display_config, echo_long_string
+  message_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
+  source ${MAKE_DIR%/}/common_ash_functions_header; right_status $?
+  load_executables
+
+  # initialize VERBOSE and verbosity by sourcing mkinitramfs.conf
+  if [[ -e ${MAKE_DIR%/}/mkinitramfs.conf ]] ; then
+    config_file=${MAKE_DIR%/}/mkinitramfs.conf
+  elif [[ -e /etc/mkinitramfs/mkinitramfs.conf ]] ; then
+    config_file="/etc/mkinitramfs/mkinitramfs.conf"
+  else
+    E_message "${BRon}Error: no mkinitramfs.conf found"
+    exit
+  fi
+  message_n "sourcing config file ${config_file} ..."
+  source ${config_file}; right_status $?
+}
+
+process_cmdline() {
+  d_message "processsing commandline ..."
+  cmdline=$@
+  if [ $# -gt 1 ] ; then
+    E_message "invalid arguments: ${cmdline}"
+    usage
+  elif [ $# -eq 1 ] ; then
+    arg="$1"
+    while [ ${#arg} -gt 0 ] ; do
+      case ${arg:0:1} in
+        "-" ) echo "ignoring \"-\"";;
+        "v" ) [ $verbosity -lt 6 ] && let "verbosity++" ; echo "increasing verbosity to $verbosity";;
+        "q" ) [ $verbosity -gt 0 ] && let "verbosity--" ; echo "decreasing verbosity to $verbosity";;
+         *  ) E_message "invalid argument [ ${arg:0:1} ]"; usage;;
+      esac
+      arg="${arg:1}"   # drop first char (left shift)
+    done
+  fi
+}
+
+display_configuration() {
+  init_config_title="configuration"
+  varlist="SOURCES_DIR MAKE_DIR VERBOSE verbosity init_executables"
+  display_config $varlist
+}
+
+check_executables() {
+  message "checking initramfs executables ..."
+  # compare current system executables (identified by the which command) with those installed in intramfs
+  for w in ${executables[@]}
+  do
+    # this will evaluate null (false) for files; and non-null (true) for links
+    if [[ $(file $w | grep symbolic) ]] ; then
+      # this is a link; skip it
+      
+d_message "$w is a symbolic link; skipping ..." 3
+    else
+      d_message "$w is a file; checking ..." 3
+      d_message "w: $w" 4
+      x="$(basename $w)"
+      d_message "  x = basename w: $x" 4
+      # find the one running on the host system
+      y="$(which $w)"
+      d_message "  y = which w: $y" 4
+      if [ $verbosity -ge 5 ] ; then ysize=$(ls -al $y | awk '{print $5}'); echo "  y size: $ysize"; fi
+      # find the one in a *bin folder in initramfs
+      z="$(find ${SOURCES_DIR%/}/ -type f -name $x | grep 'bin' )"
+      d_message "  z = find ${SOURCES_DIR%/}/ -type f -name x | grep bin: $z" 4
+      if [ $verbosity -ge 5 ] ; then zsize=$(ls -al $z | awk '{print $5}'); echo "  z size: $zsize"; fi
+      d_message "  abount to run cmp" 4
+
+      message_n "Component: ${LBon}$x"
+      cmp --silent $z $y \
+        && echo -e "${BGon} has not changed${Boff}" \
+        || echo -e "${BRon} has changed${Boff} --> ${BMon}Rebuild your initramfs${Boff}"
+    fi  # if link or file
+  done
+}
+
+#-----[ main script]---------------------------------------------
 checkroot
 
-SOURCES_DIR="/usr/src/initramfs"
-MAKE_DIR="/usr/src/mkinitramfs"
+configure
 
-# set ckinitramfs BUILD; not the kernel's BUILD used by mkinitramfs for init
-BUILD="$(cat ${MAKE_DIR%/}/PKG_PVR)"
+# command line overrides config files
+process_cmdline "$@"
 
-# source the list of executables used by the init script (from init_structure)
-executables=()
-message_n "sourcing ${MAKE_DIR%/}/init_structure ..."
-source ${MAKE_DIR%/}/init_structure; right_status $?
-# source header for load_ list_ dump_executables
-message_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
-source ${MAKE_DIR%/}/common_bash_functions_header; right_status $?
+display_configuration
 
-# source header for display_config, echo_long_string
-message_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
-source ${MAKE_DIR%/}/common_ash_functions_header; right_status $?
-load_executables
-
-# initialize VERBOSE and verbosity by sourcing mkinitramfs.conf
-if [[ -e ${MAKE_DIR%/}/mkinitramfs.conf ]] ; then
-  config_file=${MAKE_DIR%/}/mkinitramfs.conf
-elif [[ -e /etc/mkinitramfs/mkinitramfs.conf ]] ; then
-  config_file="/etc/mkinitramfs/mkinitramfs.conf"
-else
-  E_message "${BRon}Error: no mkinitramfs.conf found"
-  exit
-fi
-message_n "sourcing config file ${config_file} ..."
-source ${config_file}; right_status $?
-
-init_config_title="configuration"
-varlist="SOURCES_DIR MAKE_DIR VERBOSE verbosity init_executables"
-display_config $varlist
-
-# compare current system executables (identified by the whioch command) with those installed in intramfs
-for x in ${executables[@]}
-do
-  y=$(find ${SOURCES_DIR%/} -name $(basename $x))
-  message_n "Component: ${LBon}$(basename $x)"
-  if [[ $(diff $y $x >/dev/null 2>/dev/null) ]]
-  then
-    echo -e "${BRon} has changed${Boff} --> ${BMon}Rebuild your initramfs${Boff}"
-  else
-    echo -e "${BGon} has not changed${Boff}"
-  fi
-done
-
+check_executables
