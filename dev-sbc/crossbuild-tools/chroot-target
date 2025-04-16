@@ -1,0 +1,117 @@
+#!/bin/bash
+#
+# chroot-target   (c) joe.brendler  2025-2072
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+verbosity=3
+
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}chroot-target <TARGET>${Boff}"
+    message "${BYon}  Note: exactly one argument <TARGET> is required. Examples:${Boff}"
+    message "    aarch64-unknown-linux-gnu"
+    message "    armv6j-unknown-linux-gnueabihf"
+    message "    armv7a-unknown-linux-gnueabihf"
+    exit
+}
+
+validate_target() {
+    case $TARGET in
+        "aarch64-unknown-linux-gnu" )
+            d_message "valid target: [${TARGET}]" 2 ;
+            ;;
+        "armv6j-unknown-linux-gnueabihf" )
+            d_message "valid target: [${TARGET}]" 2 ;
+            ;;
+        "armv7a-unknown-linux-gnueabihf" )
+            d_message "valid target: [${TARGET}]" 2 ;
+            ;;
+        * )
+            E_message "invalid target: [${TARGET}]" ;
+            usage ;;
+    esac
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator $(basename $0) $(hostname)
+[ $# -ne 1 ] && usage
+TARGET=$1
+validate_target
+
+old_dir="$(pwd)"
+cd /usr/${TARGET}
+message "now working in target sysroot directory: [${Mon}$(pwd)${Boff}]"
+
+message_n "restarting qemu-binfmt ..."
+/etc/init.d/qemu-binfmt restart ; right_status $?
+
+# Next two lines are optional.
+# (Activate if the qemu-wrapper is used. Check that the wrapper location corresponds with the call at the end of line 2!)
+#echo '-1' > /proc/sys/fs/binfmt_misc/arm #deregister wrong arm
+#echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\x00\xff\xfe\xff\xff\xff:/usr/local/bin/qemu-wrapper:' > /proc/sys/fs/binfmt_misc/register
+
+dirlist="proc dev var/db/repos/gentoo var/db/repos/joetoo \
+  var/db/repos/crossdev usr/src/linux lib/modules sys tmp dev/pts"
+
+for x in ${dirlist}
+do
+  if [ ! -d $x ] ; then
+    E_message_n "directory $x does not exist; creating it ..."
+    mkdir -pv $x ; right_status $?
+  else
+    echo "directory $x already exists"
+    echo "skipping mkdir"
+  fi
+done
+
+message_n "mounting proc for chroot target ..."
+mount -t proc none proc ; right_status $?
+message_n "mounting dev for chroot target ..."
+mount -o bind /dev dev ; right_status $?
+message_n "mounting var/db/repos/joetoo for chroot target ..."
+mount -o bind /var/db/repos/joetoo var/db/repos/joetoo ; right_status $?
+message_n "mounting var/db/repos/gentoo for chroot target ..."
+mount -o bind /var/db/repos/gentoo var/db/repos/gentoo ; right_status $?
+message_n "mounting var/db/repos/crossdev for chroot target ..."
+mount -o bind /var/db/repos/crossdev var/db/repos/crossdev ; right_status $?
+message_n "mounting usr/src/linux for chroot target ..."
+mount -o bind /home/joe/raspi-sources/linux usr/src/linux ; right_status $?
+message_n "mounting lib/modules for chroot target ..."
+mount -o bind /lib/modules lib/modules ; right_status $?
+message_n "mounting sys for chroot target ..."
+mount -o bind /sys sys ; right_status $?
+message_n "copying /etc/resolv.conf for chroot target ..."
+cp /etc/resolv.conf etc/resolv.conf ; right_status $?
+#mount -o bind /tmp tmp
+#mount -o bind /dev/pts dev/pts #only for X
+ 
+chroot . /bin/bash --login
+ 
+#umount dev/pts
+#umount tmp
+message_n "un-mounting sys from chroot target ..."
+umount sys ; right_status $?
+message_n "un-mounting lib/modules from chroot target ..."
+umount lib/modules ; right_status $?
+message_n "un-mounting usr/src/linux from chroot target ..."
+umount usr/src/linux ; right_status $?
+message_n "un-mounting var/db/repos/crossdev from chroot target ..."
+umount var/db/repos/crossdev ; right_status $?
+message_n "un-mounting var/db/repos/gentoo from chroot target ..."
+umount var/db/repos/gentoo ; right_status $?
+message_n "un-mounting var/db/repos/joetoo from chroot target ..."
+umount var/db/repos/joetoo ; right_status $?
+message_n "un-mounting dev from chroot target ..."
+umount dev ; right_status $?
+message_n "un-mounting proc from chroot target ..."
+umount proc ; right_status $?
+
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+
