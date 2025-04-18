@@ -36,3 +36,4 @@ export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
 export PS1="(aarch64 chroot) $PS1"
 [ -e /root/firstlogin ] && /usr/local/sbin/finalize-chroot || echo 'chroot already configured'
+install_my_local_ca_certificates
