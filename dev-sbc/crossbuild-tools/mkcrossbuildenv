@@ -8,15 +8,12 @@
 source /usr/local/sbin/script_header_brendlefly
 VERBOSE=$TRUE
 verbosity=3
+PN=$(basename $0)
 
-
-TARGET=""
-TARGET_ARCH=""
-STAGE3=""
-old_dir=$(pwd)
-answer=""
-status=0
-status_file="/root/bin/mkcrossbuildenv_status"
+varlist="TARGET TARGET_ARCH STAGE3 old_dir"
+varlist+=" profile_number response starting_step status_file"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" BREAK bool.VERBOSE verbosity"
 
 command_sequence=(
 'cleanup-crossdev-environment'
@@ -71,68 +68,279 @@ msg2_sequence=(
 
 #-----[ functions ]-----------------------------------------------------
 
-get_answer()        # set external variable $answer based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [yngYNG]: " && read answer;
-while ! expr "${answer:0:1}" : \[yngYNG\] >/dev/null;  # answer not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [yngYNG]: " && read answer; done; }
-
-number_prompt()
-{
-    ps=$1;
-    echo;
-    echo;
-    CUU;
-    SCP;
-    message_n "$ps [0-999]: " && read answer;
-    isnumber $answer
-    result=$?
-    while [ $result -ne 0 ] || [ $answer -lt 0 ] || [ $answer -gt 999 ]; do
-        RCP;
-        echo -en "$(repeat ' ' $(termwidth))";
-        RCP;
-        message_n "$ps [0-999]: " && read answer;
-        isnumber $answer
-        result=$?
-    done
+usage() {
+  N=${#command_sequence[@]}
+  separator ${PN} $(hostname)
+  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -t|--target <TARGET>${Boff}"
+  message "${BYon}Valid Options --${Boff}"
+  message "  -i | --interactive .....: run interactively; confirm execution of each step"
+  message "  -n | --noninteractive ..: run non-interactively; proceed automatically with each step"
+  message "  -r | --resume ..........: resume proccessing (with next step, from statusfile)"
+  message "  -s | --status ..........: return status (next step, step_number)"
+  message "  -t | --target <TARGET> .: specify crossbuild environment target"
+  message "  -v | --verbose .........: increase verbosity"
+  message "  -q | --quiet ...........: decrease verbosity"
+  message "  -[0-${N}] ..............: save ${N} to status file and resume at step ${N}"
+  echo
+  message "${BMon}Note: single-character options (except t) may be combined. For example -${Boff}"
+  message "  ${BGon}${PN} --verbose -nqr11${Boff}"
+  message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
+  echo
+  message "${BMon}Note: exactly one <TARGET> is required. Examples:${Boff}"
+  message "  aarch64-unknown-linux-gnu"
+  message "  armv6j-unknown-linux-gnueabihf"
+  message "  armv7a-unknown-linux-gnueabihf"
+  echo
+  message "${BYon}Command sequence steps:${Boff}"
+  for ((s=0; s<${#command_sequence[@]}; s++))
+  do
+    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
+  done
+  exit
 }
+
+initialize_variables() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+
+    # set default values
+    VERBOSE=$TRUE && \
+    verbosity=3 && \
+    old_dir=$(pwd) && \
+    starting_step=0 && \
+    status_file="/root/bin/mkcrossbuildenv_status" && \
+    PN=$(basename $0) && \
+    INTERACTIVE=$TRUE
+    result=$?
+    right_status $result
+    return $result
+}
+
+display_configuration()  {
+    separator "configuration" "${PN}-${BUILD}"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+    return 0
+}
+
+process_cmdline() {
+  # process command line arguments (for now only -x/--exclude option can have argument(s))
+  arglist="$@"
+
+  last=""
+  d_message "processing command line with [ ${arglist} ]" 2
+  # shift each argument into position $1 and examine it
+  #   process the argument or processit with its own arguments
+  while [ ! -z "$1" ]
+  do
+    d_message "arg1 = [ $1 ]" 3
+    # if arg begins with a single dash, process it alone
+    if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
+      d_message "processing [ $1 ] alone as single-dash argument" 3
+      process_argument $1 $2   # incl $2 in case $1 is -t
+      [[ "$1" == "-t" ]] && shift  # extra shift to clear target
+      shift
+    # if arg begins with a double dash, process it alone
+    elif [ "${1:0:2}" == "--" ] ; then
+      d_message "processing [ $1 ] alone as double-dash argument" 3
+      process_argument $1 $2   # incl $2 in case $1 is --target
+      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
+      shift
+    else
+      d_message "does not start with - or --" 3
+      usage; exit
+    fi
+  done
+  d_message "done with process_command_line" 2
+  return 0
+}
+
+process_argument() {
+  d_message "about to process [ $* ]" 2
+  d_message "1: [ $1 ], 2: [ $2 ]" 2
+  # process command line argument (must be one of the following)
+  [ ! -z "$1" ] && case "$1" in
+    "-"[sS] | "--status"         )
+      # display status
+      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
+      read starting_step < ${status_file};
+      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${command_sequence[${step}]}${BWon} ]${Boff}"
+      message "${msg}"
+      exit;
+      ;;
+    "-"[rR] | "--resume"         )
+      # resume at stored step unless that is overridden by a new start # (below)
+      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
+      RESUME=${TRUE}
+      read starting_step < ${status_file};
+      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+      d_message "${msg}" 2
+      ;;
+    "-"[iI] | "--interactive"    )
+      # interactive
+      INTERACTIVE=${TRUE};
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[nN] | "--noninteractive" )
+      # non-interactive
+      INTERACTIVE=${FALSE}
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[qQ] | "--quiet"          )
+      # decrease verbosity
+      [[ ${verbosity} -gt 0 ]] && let verbosity--
+      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      ;;
+    "-"[vV] | "--verbose"          )
+      # increase verbosity
+      [[ ${verbosity} -lt 6 ]] && let verbosity++
+      VERBOSE=${TRUE}
+      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    "-"[tT] | "--target"         )
+      # specify TARGET (next arg in $@ set)
+      TARGET=$2
+      d_message "${BYon}set TARGET = ${TARGET}" 2
+      ;;
+    *                            )
+    process_compound_arg $1
+      ;;
+  esac
+  d_message "done with process_argument" 3
+}
+
+process_compound_arg()  {
+d_message "about to process compound [ $* ]" 2
+# must begin with a single dash
+[ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+# must not begin with two dashes (would have been picked in process_argument)
+[ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+# strip leading dash(es)
+myargs=${1##-}
+# handle remaining characters in sequence
+while [ -n "${myargs}" ]
+do
+  #handle one character at at time, from the left
+  case ${myargs:0:1} in
+    [sS] )
+      # display status
+      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
+      read starting_step < ${status_file};
+      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+      msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
+      d_message "${msg}" 2
+      exit;
+      ;;
+    [rR] )
+      # resume at stored step unless that is overridden by a new start # (below)
+      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
+      RESUME=${TRUE}
+      read starting_step < ${status_file};
+      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+      d_message "${msg}" 2
+      ;;
+    [0-9] )
+      # currently there are double-digin steps; if the next char is also numeric, append it and "shift"
+      RESUME=${TRUE}
+      starting_step="${myargs:0:1}";
+      if [[ "${myargs:1:1}" == [0-9] ]] ; then
+        starting_step="${myargs:0:2}";
+        myargs=${myargs:1}
+      fi
+      if [ $starting_step -gt ${#command_sequence[@]} ] ; then
+        E_message "invalid starting_step [${starting_step}]"
+        usage
+      else
+        msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
+        msg+=" to status file [${Boff}${status_file}${BYon}]${Boff}"
+        d_message "${msg}" 2
+        echo ${starting_step} > ${status_file};
+        msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
+        msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+        d_message "${msg}" 2
+      fi
+      ;;
+    [iI] )
+      # interactive
+      INTERACTIVE=${TRUE};
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    [nN] )
+      # non-interactive
+      INTERACTIVE=${FALSE}
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    [qQ] )
+      # decrease verbosity
+      [[ ${verbosity} -gt 0 ]] && let verbosity--
+      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      ;;
+    [vV] )
+      # increase verbosity
+      [[ ${verbosity} -lt 6 ]] && let verbosity++
+      VERBOSE=${TRUE}
+      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
+  esac
+  #strip first char from myargs (i.e. "shift" one character)
+  myargs=${myargs:1}
+done
+d_message "done with process_compount_arg" 3
+}
+
+
 
 emerge-cross-rust-std() {
     # this doesn't work yet
 #    emerge -av cross-${TARGET}/rust-std
     E_message "emerge -av cross-${TARGET}/rust-std doesn't work... skip for now"
+    return 0
 }
 
 select-profile() {
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
     number_prompt "Select profile: "
-    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${answer}
+    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
+    return $?
 }
 
 create-new-cross-compiler() {
     message "creating new crossdev cross compiler. Done after stage3"
     message "because crossdev defaults to split-usr layout, and I"
     message_n "prefer the merged-usr layout that modern stage3 provides ..."
-    crossdev -S -t ${TARGET} ; right_status $?
+    crossdev -S -t ${TARGET}
+    result=$?
+    right_status $result
+    return $result
 }
 
 untar-stage3() {
     message_n "extracting stage3 from tar.xz archive ..."
     tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /usr/${TARGET}/
-    right_status $?
+    result=$?
+    right_status $result
+    return $result
 }
 
 verify-stage3-hashes() {
     selector='SHA512'
-    SHA512_DIGEST="$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
-                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')"
-    SHA512_HASH="$(openssl dgst -r -sha512 stage3-*.tar.xz)"
+    SHA512_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
+                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
+    SHA512_HASH="$(openssl dgst -r -sha512 stage3-*.tar.xz | awk '{print $1}')"
 
     selector='BLAKE2B'
-    BLAKE2B_DIGEST="$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
-                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')"
-    BLAKE2B_HASH="$(openssl dgst -r -blake2b512 stage3-*.tar.xz)"
+    BLAKE2B_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
+                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
+    BLAKE2B_HASH="$(openssl dgst -r -blake2b512 stage3-*.tar.xz | awk '{print $1}')"
     d_message "SHA512_DIGEST..: ${SHA512_DIGEST}" 3
     d_message "SHA512_HASH....: ${SHA512_HASH}" 3
     d_message "BLAKE2B_DIGEST.: ${BLAKE2B_DIGEST}" 3
@@ -143,21 +351,22 @@ verify-stage3-hashes() {
         exit
     elif [[ "${BLAKE2B_DIGEST}" != "${BLAKE2B_HASH}" ]] ; then
         E_message "openssl blake2b512 hash has does not match digest"
+        exit
     else
-        message "openssl sha512 and blake2b512 hashes both match digest" 
+        message_n "openssl sha512 and blake2b512 hashes both ${BGon}match${Boff} digest"
+        right_status $TRUE
     fi
     # to do: verify hashes automatically
 #    E_message "automatic hash verification would occur here. not implemented yet ..."
 #    message "compare output of commands above to verify manually"
+    return 0
 }
 
 wget-stage3() {
 
-    eval "$(grep ${STAGE3} \
-          <<< $(curl -s https://www.gentoo.org/downloads/#arm) \
-          | awk '{print $2}')"
-    wget ${href}
-    wget ${href}.DIGESTS
+    eval "$(grep ${STAGE3} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')"
+    wget ${href} && wget ${href}.DIGESTS
+    return $?
 }
 
 make-target-dir() {
@@ -165,24 +374,22 @@ make-target-dir() {
     mkdir /usr/${TARGET} ; right_status $?
     old_dir="$(pwd)"
     cd /usr/${TARGET}
+    result=$?
+    right_status $result
     message "now working in target sysroot directory: [${Mon}$(pwd)${Boff}]"
+    return $result
 }
 
 cleanup-crossdev-environment() {
     message "cleaning up old crossdev environment ..."
-    crossdev -C -t ${TARGET} ; right_status $?
-}
-
-usage() {
-    message "${BRon}usage: ${BGon}mkcrossbuildenv <TARGET>${Boff}"
-    message "${BYon}  Note: exactly one argument <TARGET> is required. Examples:${Boff}"
-    message "    aarch64-unknown-linux-gnu"
-    message "    armv6j-unknown-linux-gnueabihf"
-    message "    armv7a-unknown-linux-gnueabihf"
-    exit
+    crossdev -C -t ${TARGET}
+    result=$?
+    right_status $result
+    return $result
 }
 
 validate_target() {
+    d_message "in validate_target()" 4
     case $TARGET in
         "aarch64-unknown-linux-gnu" )
             d_message "valid target: [${TARGET}]" 2 ;
@@ -203,6 +410,7 @@ validate_target() {
             E_message "invalid target: [${TARGET}]" ;
             usage ;;
     esac
+    return 0
 }
 
 validate_status_file() {
@@ -210,53 +418,97 @@ validate_status_file() {
     [ ! -d ${status_dir} ] && mkdir -p ${status_dir}
     message_n "validating status_dir [${status_file}] ..."
     [ ! -f ${status_file} ] && touch ${status_file}
-    [ -f ${status_file} ] && right_status $TRUE || right_status 1
+    [ -f ${status_file} ] && result=$TRUE || result=1
+    right_status $result
+    return $result
 }
 
-run_sequence() {
-
-    while [[ ${status} -lt ${#command_sequence[@]} ]]
-    do
-      [[ ! $answer == [gG] ]] && answer="" && \
-        separator "${msg1_sequence[${status}]}" "$(basename $0) now starting"
-        get_answer "Are you ready to execute step ${status} -- ${BYon}${msg1_sequence[${status}]}${Boff}?"
-      if [[ $answer == [YyGg] ]]
-      then
-        message "${LBon}Now executing step ${status} -- ${BYon}${msg2_sequence[${status}]}${LBon}...${Boff}"
-        eval ${command_sequence[${status}]}; result="$?"; right_status "${result}"
-        if [[ ${result} ]]
-        then
-          message "Step ${status} -- ${BYon}${msg1_sequence[${status}]}${Boff} -- complete"
-        else
-          E_message "Step ${status} -- ${BYon}${msg1_sequence[${status}]}${Boff} -- ${BRon}failed${Boff}"
-          E_message "Quitting..."
-        fi
-      else
-        E_message "User chose ${BRon}NOT${Boff} to execute step ${status} -- ${BYon}${msg1_sequence[${status}]}${Boff}."
-        E_message "Quitting..."
-        exit
-      fi
-      # increment number of next step and store in status_file
-      let status++;
-      message "Saving [${status}] to ${status_file}"
-      echo $status > ${status_file}
+number_prompt()  {
+    ps=$1;
+    echo;
+    echo;
+    CUU;
+    SCP;
+    message_n "$ps [0-999]: " && read profile_number;
+    isnumber $profile_number
+    result=$?
+    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt 999 ]; do
+        RCP;
+        echo -en "$( repeat ' ' $( termwidth ) )";
+        RCP;
+        message_n "$ps [0-999]: " && read profile_number;
+        isnumber $profile_number
+        result=$?
     done
+}
 
+new_prompt()        # set external variable $response based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
+while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+
+run_sequence() {
     echo
-    message "$(basename $0) complete."
+    separator "Running command sequence" "${PN}-${BUILD}"
+    echo
+    for ((step_number=${starting_step}; step_number<${#command_sequence[@]}; step_number++))
+    do
+        d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
+        echo $step_number > ${status_file}
+        if [[ ${INTERACTIVE} ]] ; then
+          d_message "INTERACTIVE is true, will prompt before executing this step [ $step_number ]" 2
+          response=""
+          # confirm user is ready/wants to run the next command
+          new_prompt "${BMon}Are you ready to run ${BGon}${command_sequence[step_number]}${BMon}?${Boff}"
+        else  # automatically execute other steps for non-interactive
+          d_message "INTERACTIVE is false; will automatically execute this step [ $step_number ]" 2
+          message "${BMon}Beginning ${BGon}${command_sequence[step_number]}${BMon} as instructed ...${Boff}"
+          response="y"
+       fi  ## interactive
+        case $response in
+          [Yy] )  # execute this command and continue
+            message "${LBon}About to run ${BYon}${command_sequence[step_number]}${LBon}...${Boff}" ; \
+            eval ${command_sequence[step_number]}; right_status $? ;;
+          [Ss] ) ;; # skip this command and continue
+          *    )  # abort due to negative response
+            message "${BRon}As instructed, not running ${BGon}${command_sequence[step_number]}${BRon}. Quitting...${Boff}" ; \
+            exit ;;
+        esac
+
+    done
+    echo
 }
 
 #-----[ main script ]---------------------------------------------
 checkroot
-separator $(basename $0) $(hostname)
-[ $# -ne 1 ] && usage
-TARGET=$1
+separator ${PN} $(hostname)
+  if [ $# -eq 1 ] ; then
+    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] && \
+       [[ "$1" != "-"*"r"* ]] && [[ "$1" != "--resume" ]] ; then
+      E_message "invalid argument [${arglist}]"
+      usage
+    fi
+  fi
+
+initialize_variables     # set defaults
+
+d_echo "cmdline: $*" 5
+d_echo "processing cmdline args: $@" 5
+
+msg="processing cmdline ..."
+[ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
+process_cmdline "${@}"   # override defaults
+right_status $?
+
 validate_target
 validate_status_file
+
+display_configuration
 
 # for each command in command_sequence array (like rus/jus/kernelupdate)
 run_sequence
 
 echo
 cd $old_dir
-message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
