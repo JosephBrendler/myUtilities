@@ -34,6 +34,8 @@ shopt -s histappend                      # append to history, don't overwrite it
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
+alias emerge='echo "(aliased emerge-chroot)"; emerge-chroot'
+
 export PS1="(armv7a chroot) $PS1"
 [ -e /root/firstlogin ] && /usr/local/sbin/finalize-chroot || echo 'chroot already configured'
 install_my_local_ca_certificates
