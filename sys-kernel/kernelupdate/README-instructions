@@ -12,6 +12,7 @@
   git branch --list --remotes
   git branch --show-current
   git checkout linux-<new_LTS_version>.y
+
 # Fetch Tinkerboard kernel config
   curl -L https://raw.githubusercontent.com/TinkerBoard/debian_kernel/develop/arch/arm/configs/miniarm-rk3288_defconfig '\' 
     -o arch/arm/configs/miniarm-rk3288_defconfig
@@ -23,32 +24,71 @@
   #   symlink points to the right config file
   kernelupdate
 
-# Just wget the current version (e.g. below, 6.4.12) from kernel.org --
-  cd /usr/aarch64-unknown-linux-gnu/usr/src
+# For rockchip kernels, wget a specific version (e.g. below, 6.4.12) from kernel.org --
+  # First remove any existing sources folder
+  cd /home/joe/rockchip-sources
+  rm -r linux
+  # then clone the new sources (there is not update-ebuild.sh because the rockchip-sources ebuild
+  #   is based on explicitly named version archives, and thus uses ${PV} to avoid needing updates
+
+  # Just wget the current version (e.g. below, 6.4.12) from kernel.org --
+  # browse to https://cdn.kernel.org/   and note the latest release (or others)
   wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.4.12.tar.xz
   tar xvpf linux-6.4.12.tar.xz
-  cd ~/My_project/build//
-  ln -snf /usr/aarch64-unknown-linux-gnu/usr/src/linux-<version> linux
-  cd ../../; cp kernelconfigs/<myconfig> build/<model>/.config
-  # (or manually use make_model to make <model>_defconfig and create an initial .config file)
-  # Inspect, confirm the /etc/kernelupdate/kernelupdate.conf
-  #   symlink points to the right config file
+  cd ~/My_${model}_project/
+  ln -snf /home/joe/rockchip-sources/-<version> linux
+  cp kernelconfigs/<myconfig> build/${model}/.config
+    # (or manually use make_model to make <model>_defconfig and create an initial .config file)
+    # Inspect, confirm the /etc/kernelupdate-embedded/kernelupdate-embedded.conf
+    #   symlink points to the right config file
   kernelupdate
+
+  # manually update the new rockchip-sources ebuild
+  cd /home/joe/joetoo/sys-kernel/rockchip-sources/
+  cp ${latest-version} ${new-version}
 
 # Manually clone raspberry-pi sources
-  # ** First, review this:  https://www.raspberrypi.com/documentation/computers/linux_kernel.html
-  cd /usr/aarch64-unknown-linux-gnu/usr/src
-  # browse https://github.com/raspberrypi/linux.git and note available branges and tags
-  git clone --depth 1 --branch rpi-6.2.y https://github.com/raspberrypi/linux.git
-  ln -snf /usr/aarch64-unknown-linux-gnu/usr/src/linux linux
-  cd /home/<user>/My__project
-  # on Pi5, modprobe configs; zcat /proc/config.gz > kernelconfigs/<myconfig>
-  cp kernelconfigs/<myconfig> build/<model>/.config
-  # (or manually use make_model to make <model>_defconfig and create an initial .config file)
-  # Inspect, confirm the /etc/kernelupdate/kernelupdate.conf
-  #   symlink points to the right config file
-  kernelupdate
+  Instructions for raspi-sources --
 
+  # First, on build-workstation, remove any existing sources folder
+  cd /home/joe/raspi-sources
+  rm -r linux
+  # ignore (deprecated) ./update-ebuild.sh   ## created for  EGIT based ebuild, but I'm now downloading, and making tarball myself
+
+  # See https://www.raspberrypi.com/documentation/computers/linux_kernel.html#choosing_sources
+  # Manually clone raspberry-pi sources
+  # browse https://www.kernel.org/ to determine latest stable version of kernel
+  # browse https://github.com/raspberrypi/linux.git and note available branches and tags
+  branch_version=X.Z   ## e.g. 6.8
+  git clone --depth 1 --branch rpi-${branch_version}.y https://github.com/raspberrypi/linux.git linux-${branch_version}.y
+
+  cd linux-${branch_version}.y
+  kernelversion=$(make kernelversion) ; echo "kernelversion: $kernelversion"
+  cd ..
+  mv linux-${branch_version}.y linux-${kernelversion}-raspi
+
+  # then see README-tar-command
+  tar --exclude '.git*' -cvjpf linux-${kernelversion}-raspi.tbz2 linux-${kernelversion}-raspi
+
+  # create link for kernelupdate use
+  ln -snf linux-${kernelversion}-raspi linux
+
+  # scp to raspi56406 to publish
+  scp linux-${kernelversion}-raspi.tbz2 raspi56406:/home/joe/
+
+  # now go to raspi56406 and move (as root) from /home/joe/ to /var/www/localhost/htdocs/raspi-sources/
+  sudo cp /home/joe/linux-${kernelversion}-raspi.tbz2 /var/www/localhost/htdocs/raspi-sources/
+  chown root:root /var/www/localhost/htdocs/raspi-sources/linux-${kernelversion}-raspi.tbz2
+  sudo rm /home/joe/linux-${kernelversion}-raspi.tbz2
+
+  # now go to build-workstation and run (as root)
+  eselect kernelupdate list/set
+  # link the new sources and seed a .config file
+  cd ~/My_${model}_project/
+  ln -snf /home/joe/raspi-sources/-<version> linux
+  cp kernelconfigs/<myconfig> build/${model}/.config
+  # now run kernelupdate
+  kernelupdate
 
 # Alternatively, you might be able to 
   emerge sys-kernel/gentoo-sources or
@@ -57,4 +97,5 @@
   ... to link to /usr/source/linux
   ( IF gentoo-sources can make dtbs [which as of 6.5.1 it cannot] )
 
-
+# You might even be able to cross-build sys-kernel/gentoo-kernel ...
+  I haven't tried that yet
