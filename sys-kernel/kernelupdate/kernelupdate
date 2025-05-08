@@ -453,6 +453,7 @@ publish_ebuild() {
     # move to the ebuild dir
     message "pwd: $(pwd)" && cd ${ebuild_dir} && message "Now working in $$(pwd)"
 
+    NEW_TEMPLATE=$FALSE
     new_template="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
     old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
     # if the ebuild dir does not contain a template ebuild, then populate it
@@ -463,6 +464,7 @@ publish_ebuild() {
         cp $new_template $old_template ; right_status $?
         chown -R ${user}:${user} "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
+        NEW_TEMPLATE=$TRUE
       else
 	E_message "${BRon}Error: ${Boff} $new_template does not exist" 3
       fi
@@ -476,8 +478,10 @@ publish_ebuild() {
         cp $new_template $old_template ; right_status $?
         chown -R ${user}:${user} "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
+        NEW_TEMPLATE=$TRUE
     fi
 
+    NEW_METADATA=$FALSE
     new_metadata="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
     old_metadata="${ebuild_dir%/}/metadata.xml"
     # if the ebuild dir does not contain a metadata file, then populate it
@@ -488,6 +492,7 @@ publish_ebuild() {
         cp  $new_metadata $old_metadata
         chown -R ${user}:${user} "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add /metadata.xml")
+        NEW_METADATA=$TRUE
       else
 	E_message "${BRon}Error: ${Boff} $new_metadata does not exist" 3
       fi
@@ -500,6 +505,7 @@ publish_ebuild() {
         cp $new_metadata $old_metadata ; right_status $?
         chown -R ${user}:${user} "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add /metadata.xml")
+        NEW_METADATA=$TRUE
     fi
 
     ## don't bother with finding latest version ; just use template
@@ -537,12 +543,20 @@ publish_ebuild() {
     # remove the old Manifest file
     rm ${ebuild_dir%/}/Manifest 2>/dev/null
 
+    # build the git command sequence
     publish_ebuild_command_sequence+=( \
         "pkgdev manifest -f -d ${DISTDIR}" \
         "git status" \
         "git add Manifest" \
         "git add ../../metadata/md5-cache/sys-kernel/${kernel_image_name}" \
-        "git add ${kernel_image_name}.ebuild" \
+        "git add ${kernel_image_name}.ebuild")
+    # if we created new template (or metadata?) file above, then add the new hash files, too
+    [[ $NEW_TEMPLATE ]] && publish_ebuild_command_sequence+=( \
+         "git add ../../metadata/md5-cache/sys-kernel/${kernel_basename}-${old_version}")
+#    [[ $NEW_METADATA ]] && publish_ebuild_command_sequence+=( \
+#         "git add ../../metadata/md5-cache/sys-kernel/metadata.xml")
+    # cntinue building the git command sequence
+    publish_ebuild_command_sequence+=( \
         "git commit -m \"adding ${kernel_image_name}\"" \
         'eval "git push git@github.com:${gituser}/${gitrepo}.git master"' \
         'git push' \
