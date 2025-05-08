@@ -1,0 +1,913 @@
+#!/bin/bash
+# kernelupdate -- Joe Brendler 11 May 2024
+# adapted from kernelupdate-dom0 of October 2021,
+#   makeU-distrib-tar of February 2022, and
+#   installU_onServer of February 2022
+# generalized from kernelupdate-embedded, to build kernels for SBCs *or xen domU May 2024
+# dropped dom0 build support in favor of simple gentoo-kernel 20250507
+#
+# 24 July 2024 - first test edit in vscode (rewrite for non-interactive option, etc)
+#
+# Interactive support allows you to copy the ${manual_prefix} string and use it to
+#   manually issue the sequence of commands that accomplishes a kernel update
+#   for (e.g.) tinkerboard
+#
+# this process assumes you have already cloned/linked the kernel sources
+#   and seeded build dir with .config
+#
+# first run creates directory structure
+#
+# To build cross compiler, start clean --
+#   TARGET=armv7a-unknown-linux-gnueabihf
+#   crossdev --clean --target ${TARGET}
+# As of 20250507 all supported boards have stable toolchain available, so use "-S" --
+#   crossdev -S -t ${TARGET}
+# If a specific version of part of the toolchain is needed use this --
+#   crossdev --b ~2.40 --g ~12.3 --k ~2.37 --l ~6.1 --target ${TARGET}
+# may need to first run nodist_path and preface above with FEATURES=${FEATURES}" -distcc"
+#
+# see README_* instructions on getting kernel sources, manual process, etc.
+#
+# see also https://www.raspberrypi.com/documentation/computers/linux_kernel.html
+#
+
+#---[ execute setup and initialization, as required ]-------------------------
+source /usr/local/sbin/script_header_brendlefly
+
+# local variables
+BUILD="0"
+
+eval $( grep ^PORTDIR /etc/portage/make.conf )
+eval $( grep ^PKGDIR /etc/portage/make.conf )
+eval $( grep ^DISTDIR /etc/portage/make.conf )
+
+# default configuration (/etc/${PN}.conf will over-write and override)
+VERBOSE=$TRUE
+verbosity=1
+
+PN=$(basename $0)
+
+# initialize local variables to default values (override with .conf and/or command line)
+user="joe"
+makeopts=" -j9 -l5"
+features=" -userpriv -distcc -distcc-pump"
+arch="arm"
+cross_compile="armv7a-unknown-linux-gnueabihf-"
+model="rk3288-tinker-s"
+image="zImage"
+kernel="kernel7.img"
+dtb_folder="rockchip"
+overlay_folder="rockchip/overlay"
+build_root="/home/joe/My_${model}_project"
+my_devel_dir="/home/joe/myUtilities/sys-kernel"
+my_devel_dir_credentials="/home/joe/myUtilities/.git/.credentials"
+my_ebuild_dir="/home/joe/joetoo/sys-kernel"
+my_ebuild_dir_credentials="/home/joe/joetoo/.git/.credentials"
+host_dir=${build_root%/}/"domU_kernel_images"
+INTERACTIVE=${FALSE}
+RESUME=${FALSE}
+starting_step=0
+answer=""
+newanswer=""
+SSH_AUTH_SOCK="/home/joe/.ssh/ssh-agent.sock"
+
+# previous version loaded ssh keys here, but they were later unaccessible to other shells
+# this now build into "publish" script
+
+#  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
+message "${BMon}About to source ${BGon}setnodistpath${BMon} ..."
+source /usr/local/sbin/setnodistpath && echo "PATH:  $PATH"
+echo
+
+# source the current build number, assuming it was properly generated during ebuild deployment
+if [[ -e /etc/${PN}/BUILD ]] ; then
+  message_n "sourcing BUILD ..."
+  source /etc/${PN}/BUILD
+  right_status $?
+fi
+
+# source ${PN}.conf in order to load customized settings
+#   check each setting below to assign, if needed
+#   Note: ${PN}.conf in /etc/${PN}/ will override one in pwd
+
+[[ -e ${PN}.conf ]] && CONF_DIR="$(pwd)"
+[[ -e /etc/${PN}/${PN}.conf ]] && CONF_DIR="/etc/${PN}"
+message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
+source ${CONF_DIR%/}/${PN}.conf; right_status $?
+
+# append "/" to dtb_folder and overlay_folder if missing and not null
+#( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
+#( [[ ${#overlay_folder} -gt 0 ]] && [[ ! "${overlay_folder: -1}" == "/" ]] ) && overlay_folder+="/"
+# don't need these, since I adopted ${xxx_dir%/}/ instead
+
+# you should not need to edit anything below this point
+sources_dir="${build_root%/}/linux"
+config_dir="${build_root%/}/kernelconfigs"
+build_dir="${build_root%/}/build"
+status_file="${build_dir%/}/status"
+model_dir="${build_dir%/}/${model}"
+model_config="${model_dir%/}/.config"
+kernel_basename="linux-${model}_joetoo_kernelimage"
+distrib_dir="${model_dir%/}/tmp/distrib"
+lib_dir="${distrib_dir%/}/lib"
+boot_dir="${distrib_dir%/}/boot"
+module_dir=""  # to be set after make modules_install
+
+# create the build directory structure if it does not exist (-p makes parents)
+[[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown ${user}:${user} "${build_root}"
+[[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown ${user}:${user} "${config_dir}"
+[[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown ${user}:${user} "${build_dir}"
+[[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown ${user}:${user} "${model_dir}"
+
+# create the staging directory structure if it does not exist
+[[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown ${user}:${user} "${distrib_dir}"
+[[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown ${user}:${user} "${lib_dir}"
+[[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown ${user}:${user} "${boot_dir}"
+[[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown ${user}:${user} "${host_dir}"
+
+# set up the parts of the make command
+make_prefix="MAKEOPTS="
+make_prefix+="\"${makeopts}\" "
+make_prefix+=" FEATURES="
+make_prefix+="\"${features}\""
+make_prefix+=" KERNEL_DIR=\"${sources_dir}\""
+
+make_arch="ARCH=${arch} CROSS_COMPILE=${cross_compile}"
+make_where="KBUILD_OUTPUT=${model_dir%/}/"
+## drop this ; cd to sources_dir (may confuse where to find .config)
+#make_src="-C ${sources_dir}"
+
+# set up the cross-building make command for sbcs or domU
+#make_model+="make KBUILD_OUTPUT=${model_dir%/}/ ARCH=${arch} CROSS_COMPILE=${cross_compile} "
+#make_model="${make_prefix} ${make_where} ${make_arch} make ${make_src}"
+make_model="${make_prefix} ${make_where} ${make_arch} make"
+
+# set up the host build command for manual use, assuming already in ${sources_dir}
+manual_prefix="${make_prefix} ${make_where} ${make_arch}"
+
+# used to pick one of (make_model or make0) above based on model selection
+make_me="${make_model}"
+
+# get and set kernel version number and image name
+old_dir=$PWD
+message "Old pwd: ${old_dir}" && cd ${sources_dir%/} && message "Now working in $PWD"
+### This change was un-necessary -- undo it
+version_number=$(eval ${make_me} -s kernelversion)
+# domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
+#   but for domU, I don't want the "-gentoo" part, so strip it
+[ "${model}" == "domU" ] && \
+    version_number="${version_number/-gentoo/}"
+d_message "version_number: ${version_number}" 3
+kernel_image_name="${kernel_basename}-${version_number}"
+
+devel_dir="${my_devel_dir%/}"
+ebuild_dir="${my_ebuild_dir%/}/${kernel_basename}"
+publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
+publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
+
+d_message "done setup and auto-configure" 3
+
+# 20240724 - removed 'publish_ebuild' from sequence; now using consolidated linux-joetoo-kernelimage.${PV}.ebuild
+#            (found that the consolidated ebuild doesn't work until ALL of the candidate kernels are actually built)
+# 20250112 - put back 'publish_ebuild' for all but dom0; now using separate linux-${model_joetoo-kernelimage.${PV}.ebuilds
+# 20250507 - dropped dom0 build (use gentoo-kernel w savedconfig instead)
+command_sequence=(
+'backup_config'
+'make_mrproper'
+'cp -v ${config_dir%/}/.config.bak ${model_config}'
+'warn_oldconfig'
+'eval ${make_me} oldconfig'
+'eval ${make_me} prepare'
+'eval ${make_me} menuconfig'
+'save_new_config'
+'eval ${make_me}'
+'clean_distrib_dirs'
+'install_kernel'
+'install_modules'
+'install_dtbs'
+'make_tarball'
+'publish_tarball'
+'publish_ebuild'
+)
+d_message "done setting command sequence" 3
+
+#-----[ functions ]--------------------------------------------------
+warn_oldconfig() {
+  message "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
+  message "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
+  message "  ${BMon}in the next step, hit <CTRL>-C to end this program${Boff}"
+  message "  ${LBon}then copy/paste the ${Gon}make_me=${LBon} assignment above,${Boff}"
+  message "  ${LBon}cd sources_dir${Boff}"
+  message "  ${LBon}[ ${Yon}note: sources_dir = ${sources_dir} ${LBon}]${Boff}"
+  message "  ${LBon}run ${BBon}${sources_dir%/}/ # ${Gon}eval \${make_me} olddefconfig${Boff}"
+  message "  ${BYon}and then restart this program with e.g. ${Gon}${PN} -r${Boff}"
+  echo
+  newanswer=""
+  new_prompt "${BYon}Do you want to just go ahead and run ${Gon}eval \${make_me} olddefconfig ${BYon} now? ${Boff}(YyNnSs) "
+  expr "${newanswer:0:1}" : [yY] >/dev/null && eval ${make_me} olddefconfig
+}
+
+make_mrproper() {
+  # clean up both the sources and build directories
+  message "Now working in $PWD (should be sources directory)"
+  clean_make_me="MAKEOPTS=\"${makeopts}\" FEATURES=\"${features}\" "
+  clean_make_me+="make ARCH=${arch} CROSS_COMPILE=${cross_compile} "
+  d_message "Cleaning sources directory [ ${sources_dir} ] ..." 1
+  eval ${clean_make_me} mrproper
+  d_message "Cleaning ${model} build directory [ ${model_dir} ] ..." 1
+  eval ${make_me} mrproper
+}
+
+backup_config() {
+  if [[ -f ${model_config} ]]
+  then
+    cp -v ${model_config} ${config_dir%/}/.config.bak
+  else
+    msg="Config file [ ${model_config} ] not found.\n"
+    msg+="${BYon} Please put a .config file in model build directory [ ${model_dir} ],\n"
+    msg+=" or manually run an appropriate \"make xxx_defconfig\" command in model build directory${Boff}"
+    E_message "$msg"
+    exit
+  fi
+}
+
+save_new_config() {
+  cp -v ${model_config} ${config_dir%/}/.config.${model}-${version_number}
+}
+
+# leaving this here for reference, but it is depracated, since I now
+# build all targets (kernel images, modules, and dtbs) with # eval "${make_me}"
+make_dtbs() {
+  # make dtbs for this model SBC, if this is not a domU build
+  [ ! "${model:0:3}" == "dom" ] && eval "${make_me} dtbs"
+}
+
+clean_distrib_dirs()
+{
+  message "${LBon}Cleaning the distribution staging directory...${Boff}"
+  for x in $lib_dir $boot_dir
+  do
+    [[ -d $x ]] && find ${x%/}/ -mindepth 1 -iname '*' -delete
+  done
+  message "${LBon}Cleaning the tarball and ebuild publishing directory...${Boff}"
+  find ${distrib_dir} -iname '*.tar.bz2' -delete
+  find ${build_dir} -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
+  message "${BYon}Contents of ${distrib_dir} --"
+  message "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
+  tree -L 2 ${distrib_dir%/}/
+}
+
+verify_boot_mount() {
+  # if boot needs to be mounted, ensure it is, or try to mount it...
+  if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  && \
+    ! grep "/boot" /proc/mounts >/dev/null 2>&1
+  then
+    message "/boot is not mounted, trying to mount it now..."
+    ! $(mount /boot) && \
+     ( E_message "Failed to mount /boot" ; exit 1 ) || \
+      message "Succeeded in mounting /boot ; continuing..."
+  else
+    message "Verified /boot is mounted ; continuing..."
+  fi
+}
+
+install_kernel()
+{
+  # stage kernel
+  cd ${sources_dir} && message "Now working in $PWD"
+  message "${LBon}Installing the kernel ...${Boff}"
+  case ${model} in
+    # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
+    "domU" ) eval "INSTALL_PATH=${host_dir} ${make_me} install" ;
+             eval "INSTALL_PATH=${boot_dir} ${make_me} install" ;;
+    # Otherwise (SBC kernel), install to boot_dir for tarball.  Don't just use make install;
+    #   also copy the proper image manually to the proper deployed kernel name
+    *      ) eval "INSTALL_PATH=${boot_dir} ${make_me} install" ;
+             cp -av ${model_dir%/}/arch/${arch}/boot/${image} \
+                 ${boot_dir%/}/${kernel}-${version_number};;
+  esac
+}
+
+install_modules()
+{
+  # stage modules
+  cd ${sources_dir} && message "Now working in $PWD"
+  message "${LBon}Installing modules ...${Boff}"
+  # stage modules for tarball
+  eval "${make_me} INSTALL_MOD_PATH=${distrib_dir} modules_install"
+
+  # identify the new module directory
+  module_dir=$( basename $( find ${lib_dir%/}/modules/  -maxdepth 1  -iname ${version_number}*  -type d ) )
+
+  # fix the build and source symlinks
+  message "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
+  cd ${lib_dir%/}/modules/${module_dir} && message "Now working in $PWD"
+  rm -v build 2>/dev/null
+  ln -snfv /usr/src/linux build
+  message "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/source symlink...${Boff}"
+  rm -v source 2>/dev/null
+  ln -snfv /usr/src/linux source
+  cd $old_dir && message "Now working in $PWD"
+}
+
+install_dtbs()
+{
+    # note - dtb_folder and overlay_folder are relative to build/${model}/arch/${ARCH}/boot/dts/
+    cd ${sources_dir} && message "Now working in $PWD"
+    message "${LBon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
+    mkdir -p ${boot_dir%/}/dts/${dtb_folder}
+    eval "${make_me} INSTALL_DTBS_PATH=${boot_dir%/}/dts/${dtb_folder%/}/ dtbs_install"
+    message "In case of error in dtbs_install, will try to manually copy ..."
+    # manually install dtb files from dtb_folder (omit subdirectories like "overlays")
+    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${dtb_folder%/}/ -maxdepth 1 -mindepth 1 -type f -iname '*.dtb' -or -iname 'README*')
+    do cp -av ${file} ${boot_dir%/}/dts/${dtb_folder%/}/ ; done
+    # manually install dtbo files from overlay_folder (omit .tmp, .cmd files, and omit subdirectories for now)
+    mkdir -p ${boot_dir%/}/dts/${overlay_folder%/}/
+    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/ -maxdepth 1 -mindepth 1 -type f -iname '*.dtb*' -and -not -iname '\.*')
+    do cp -av ${file} ${boot_dir%/}/dts/${overlay_folder%/}/ ; done
+    # copy the overlay_folder's README file(s) if it/they exist(s)
+    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/ -maxdepth 1 -type f -iname 'README*')
+    do cp -av ${file} ${boot_dir%/}/dts/${overlay_folder%/}/ ; done
+    # copy the one dtb file we need up to boot
+    message "${LBon}Staging the dtb file for tarball ...${Boff}"
+    cp -av ${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb ${boot_dir%/}/
+}
+
+make_tarball()
+{
+    message "${BGon}Entering $distrib_dir${Boff}"
+    cd $distrib_dir
+    d_message "pwd: $(pwd)" 2
+
+    # create staged tar archive
+    message "${LBon}Creating the tar archive ...${Boff}"
+
+    # create tarball from staged contents; don't include kernel sources
+    tar_command="tar "
+    tar_command+="  --exclude lib/modules/${module_dir%/}/source/"
+    tar_command+="  -cvjf ${kernel_image_name}.tar.bz2 ./boot ./lib"
+    eval $tar_command && \
+    message "${BYon}Complete.  Your tarball is located in the ${LBon}${distrib_dir}${BYon} directory${Boff}" || \
+    E_message "${BRon}Something went wrong -- refer to output above${Boff}"
+    cd $old_dir && message "Now working in $PWD"
+}
+
+publish_tarball() {
+    # publish_tarball must also publish the tarball corresponding to the template ebuild
+    # or publish_ebuild will fail because pkgdev wont be able to create a manifest
+    publish_tarball_command_sequence=()
+    publish_tarball_command_sequence+=("#!/bin/bash" \
+        'export SSH_AUTH_SOCK="'"${SSH_AUTH_SOCK}"'"' \
+        "ssh-add -l 2>/dev/null >/dev/null" \
+        '[ $? -ge 2 ] && ssh-agent -a ${SSH_AUTH_SOCK} >/dev/null' \
+        "echo 'ssh-agent added, listing keys ...'" \
+        "ssh-add -l" \
+        "source ${my_devel_dir_credentials}" \
+        "echo" \
+        "cd ${devel_dir%/}/" \
+        "echo new PWD: \${PWD}" \
+        "git pull" )
+
+    # if the version 0.0.0 tarball for this package does not exist, create it and upload to github repo
+    if [ ! -e ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ] ; then
+        # use the README-instructions file in /etc/${PN} as content for the dummy tarball 0.0.0
+        message "creating dummy tarball ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ..."
+        tar -cvjpf ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 /etc/${PN}/README-instructions
+        message_n "changing ownership for upload ..."
+        chown -R ${user}:${user} ${devel_dir%/}/ ; right_status $?
+        publish_tarball_command_sequence+=("git add ${kernel_basename}-0.0.0.tar.bz2")
+    else
+        d_message "tarball ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 already exists. Not creating." 3
+    fi
+
+    # copy the new tarball to devel_dir and upload to github repo
+    echo; message "copying package ${distrib_dir%/}/${kernel_image_name}.tar.bz2 to ${devel_dir%/}/"
+    cp -v ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ${devel_dir%/}/
+    message_n "changing ownership for upload ..."
+    chown -R ${user}:${user} ${devel_dir%/}/ ; right_status $?
+
+    publish_tarball_command_sequence+=( \
+        "git status" \
+        "git add ${kernel_image_name}.tar.bz2" \
+        "git commit -m \"adding ${kernel_image_name}\"" \
+        'eval "git push git@github.com:${gituser}/${gitrepo}.git master"' \
+        'git push' \
+        '' )
+
+    # move to the devel_dir, so git commands are relative to it locally
+    old_dir=$(pwd)
+    message "leaving $(pwd)" &&  cd ${devel_dir} && message "Now working in $(pwd)"
+
+    echo; message "Building publish_tarball_cmd_file [ ${publish_tarball_cmd_file} ]..."
+    # actually build the publish_tarball_cmd_file from the publish_tarball_command_sequence
+    # first command uses single ">", to initialize the file; then others use ">>"
+    echo ${publish_tarball_command_sequence[0]} > ${publish_tarball_cmd_file}
+    for ((i=1; i<${#publish_tarball_command_sequence[@]}; i++))
+    do
+        message_n "adding line $i: [ "
+        echo -n ${publish_tarball_command_sequence[$i]}
+        echo -n " ] ..."
+        echo ${publish_tarball_command_sequence[$i]} >> ${publish_tarball_cmd_file}
+        right_status $?
+    done
+
+    message "leaving $(pwd)" &&  cd ${old_dir} && message "Now working in $(pwd)"
+    separator "contents of ${publish_tarball_cmd_file}... " $(hostname)
+    cat ${publish_tarball_cmd_file}
+    message_n "setting permissions on ${publish_tarball_cmd_file}... "
+    chown joe:joe ${publish_tarball_cmd_file} && \
+    chmod +x ${publish_tarball_cmd_file} ; right_status $?
+
+    # now actually execute the publication by running the publication command file
+    separator "now executing commands in ${publish_tarball_cmd_file}... " $(hostname)
+    sudo -u ${user} ${publish_tarball_cmd_file}
+}
+
+publish_ebuild() {
+    # tried retiring this and consolidating all kernels of a given version in one ebuild
+    #   (but then you have to build all 12 kernels before anyone can use the ebuild)
+    #   (so I'm going back to an ebuild for the kernel for each model)
+
+    publish_ebuild_command_sequence=()
+    publish_ebuild_command_sequence=('#!/bin/bash' \
+        'export SSH_AUTH_SOCK="'"${SSH_AUTH_SOCK}"'"' \
+        "ssh-add -l 2>/dev/null >/dev/null" \
+        '[ $? -ge 2 ] && ssh-agent -a ${SSH_AUTH_SOCK} >/dev/null' \
+        "echo 'ssh-agent added, listing keys ...'" \
+        "ssh-add -l" \
+        "source ${my_ebuild_dir_credentials}" \
+        "echo" \
+        "cd ${ebuild_dir%/}/" \
+        "echo new PWD: \${PWD}" \
+        "git pull" )
+
+    # if the ebuild_dir does not exist, create it
+    if [[ ! -d "${ebuild_dir}" ]] ; then
+      mkdir -pv -m 755 "${ebuild_dir}"
+      chown -R ${user}:${user} "${ebuild_dir}"
+      publish_ebuild_command_sequence+=("git add ./")
+    else
+      d_message "${ebuild_dir} already exists; not creating." 3
+    fi
+
+    # move to the ebuild dir
+    message "pwd: $(pwd)" && cd ${ebuild_dir} && message "Now working in $$(pwd)"
+
+    new_template="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
+    old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
+    # if the ebuild dir does not contain a template ebuild, then populate it
+    if [[ ! -f $old_template ]] ; then
+      # populate ebuild template if needed
+      if [[ -f $new_template ]] ; then
+        message_n "published ebuild template does not exist; creating one ..."
+        cp $new_template $old_template ; right_status $?
+        chown -R ${user}:${user} "${ebuild_dir%/}/"
+        publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
+      else
+	E_message "${BRon}Error: ${Boff} $new_template does not exist" 3
+      fi
+    else
+      d_message "$old_template already exists; not creating." 3
+    fi
+
+    # if the ebuild dir contains a template that has changed, then replace it (shouldn't run if above just did)
+    if [[ $(diff $new_template $old_template) ]] ; then
+        message_n "ebuild template has been updated; replacing old one ..."
+        cp $new_template $old_template ; right_status $?
+        chown -R ${user}:${user} "${ebuild_dir%/}/"
+        publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
+    fi
+
+    new_metadata="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
+    old_metadata="${ebuild_dir%/}/metadata.xml"
+    # if the ebuild dir does not contain a metadata file, then populate it
+    message "CONF_DIR: ${CONF_DIR}"
+    if [[ ! -f $old_metadata ]] ; then
+      # populate metadata.xml if needed
+      if [[ -f $new_metadata ]] ; then
+        cp  $new_metadata $old_metadata
+        chown -R ${user}:${user} "${ebuild_dir%/}/"
+        publish_ebuild_command_sequence+=("git add /metadata.xml")
+      else
+	E_message "${BRon}Error: ${Boff} $new_metadata does not exist" 3
+      fi
+    else
+      d_message "$old_metadata already exists; not creating." 3
+    fi
+    # if the ebuild dir contains a metadata file that has changed, then replace it (shouldn't run if above just did)
+    if [[ $(diff $new_metadata $old_metadata) ]] ; then
+        message_n "ebuild metadata has been updated; replacing old one ..."
+        cp $new_metadata $old_metadata ; right_status $?
+        chown -R ${user}:${user} "${ebuild_dir%/}/"
+        publish_ebuild_command_sequence+=("git add /metadata.xml")
+    fi
+
+    ## don't bother with finding latest version ; just use template
+    # enumerate existign ebuilds and determine the most recent "old version" of the ebuild
+#    ebuild_list=()
+#    message_n "enumerating existing ebuilds for $kernel_basename ..."
+#    for x in $(find ${ebuild_dir} -type f -iname "linux-*" | sort)
+#    do
+#      ebuild_list+=("${x}")
+#    done ; right_status $?
+    # the ebuild dir will contain at least the 0.0.0 template (populated above during first run of this script for this model)
+#    message_n "finding most recent existing ebuild version ..."
+#    old_version=$(echo ${ebuild_list[$((${#ebuild_list[@]}-1))]} | sed "s|${ebuild_dir%/}/${kernel_basename}-||" | sed 's|.ebuild||')
+    old_version="0.0.0"
+    right_status $?
+    message "old version: ${old_version}"
+
+    # determine the new version number and kernel image name
+    # ebuild naming syntax forbids the "-gentoo" in the image name, and domU using gentoo-sources will be named that way, so fix it
+    message_n "determining new version number and kernel image name ..."
+    new_version="$(echo ${version_number} | sed 's/-gentoo//')" && \
+    version_number="${new_version}" && \
+    new_kernel_image_name="$(echo ${kernel_image_name} | sed 's/-gentoo//')" && \
+    kernel_image_name="${new_kernel_image_name}"
+    right_status $?
+    message "new version: ${version_number}"
+
+    # create the new ebuild file
+    message "ebuild_dir: ${ebuild_dir}"
+    message "kernel_basename: ${kernel_basename}"
+    message "old ebuild full pathname: ${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild"
+    message "new ebuild full pathname: ${ebuild_dir%/}/${kernel_image_name}.ebuild"
+    cp ${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild ${ebuild_dir%/}/${kernel_image_name}.ebuild
+    chown -R ${user}:${user} ${ebuild_dir%/}/
+    # remove the old Manifest file
+    rm ${ebuild_dir%/}/Manifest 2>/dev/null
+
+    publish_ebuild_command_sequence+=( \
+        "pkgdev manifest -f -d ${DISTDIR}" \
+        "git status" \
+        "git add Manifest" \
+        "git add ../../metadata/md5-cache/sys-kernel/${kernel_image_name}" \
+        "git add ${kernel_image_name}.ebuild" \
+        "git commit -m \"adding ${kernel_image_name}\"" \
+        'eval "git push git@github.com:${gituser}/${gitrepo}.git master"' \
+        'git push' \
+        '' )
+
+    # actually build the publish_ebuild_cmd_file from the publish_ebuild_command_sequence
+    # first command uses single ">", to initialize the file; then others use ">>"
+    echo ${publish_ebuild_command_sequence[0]} > ${publish_ebuild_cmd_file}
+    for ((i=1; i<${#publish_ebuild_command_sequence[@]}; i++))
+    do
+        message_n "adding line $i: [ "
+        echo -n ${publish_ebuild_command_sequence[$i]}
+        echo -n " ] ..."
+        echo ${publish_ebuild_command_sequence[$i]} >> ${publish_ebuild_cmd_file}
+        right_status $?
+    done
+
+#    message_n "loading ssh key if needed ..."
+#    [[ -z $(ssh-add -l | grep -v "no identities") ]] && ssh-add ${gitsshkey} ; right_status $?
+
+    cd ${old_dir} && message "Now working in $PWD"
+    separator "contents of ${publish_ebuild_cmd_file}... " $(hostname)
+    cat ${publish_ebuild_cmd_file}
+    echo
+    message_n "setting permissions on ${publish_ebuild_cmd_file}... "
+    chown joe:joe ${publish_ebuild_cmd_file} && \
+    chmod +x ${publish_ebuild_cmd_file} ; right_status $?
+
+    # now actually execute the publication by running the publication command file
+    separator "now executing commands in ${publish_ebuild_cmd_file}... " $(hostname)
+    sudo -u ${user} ${publish_ebuild_cmd_file}
+}
+
+usage() {
+  N=${#command_sequence[@]}
+  separator "usage" "${PN}"
+  E_message "Usage: ${PN} [options]"
+  message "  -i | --interactive --> run interactively; confirm execution of each step"
+  message "  -n | --noninteractive --> run non-interactively; proceed automatically with each step"
+  message "  -s | --status  --> return status (next step, step_number)"
+  message "  -r | --resume  --> resume proccessing (with next step, from statusfile)"
+  message "  -v | --verbose --> increase verbosity"
+  message "  -q | --quiet   --> decrease verbosity"
+  message "  -[0-${N}]      -->  save ${N} to status file and resume proccessing at step ${N}"
+  echo
+  message "${BMon}Note: single-character options may be combined. For example -${Boff}"
+  message "  ${BGon}${PN} --verbose -nqr11${Boff}"
+  message "  ${BYon}would ressume non-interactively at step 11 with normal verbosity${Boff}"
+  echo
+  message "${BYon}Command sequence steps:${Boff}"
+  for ((s=0; s<${#command_sequence[@]}; s++))
+  do
+    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
+  done
+  exit
+}
+
+new_prompt()        # set external variable $newanswer based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read newanswer; # '=~' not in busybox
+while ! expr "${newanswer:0:1}" : [yYnNsS] >/dev/null;  # newanswer not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read newanswer; done; }
+
+display_config()
+{
+varlist="CONF_DIR arch cross_compile model image kernel dtb_folder overlay_folder build_root"
+varlist+=" INTERACTIVE RESUME starting_step VERBOSE verbosity version_number sources_dir"
+varlist+=" config_dir build_dir model_dir model_config distrib_dir lib_dir boot_dir host_dir"
+varlist+=" kernel_basename kernel_image_name devel_dir ebuild_dir status_file"
+longest=$(get_longest ${varlist})
+
+message "${BMon}Current Configuration:${Boff}"
+display_vars ${longest} "CONF_DIR"
+separator "From Config File and/or command line" $(hostname)
+parmlist="arch cross_compile model image kernel dtb_folder overlay_folder build_root"
+parmlist+=" bool.INTERACTIVE bool.RESUME starting_step bool.VERBOSE verbosity"
+display_vars ${longest} ${parmlist}
+
+echo
+separator "Auto-configured" $(hostname)
+parmlist=" version_number sources_dir"
+parmlist+=" config_dir build_dir model_dir model_config distrib_dir lib_dir boot_dir host_dir"
+parmlist+=" kernel_basename kernel_image_name devel_dir ebuild_dir status_file"
+display_vars ${longest} ${parmlist}
+echo
+
+varlist="publish_tarball_cmd_file publish_ebuild_cmd_file"
+longest=$(get_longest ${varlist})
+parmlist="${varlist}"
+display_vars ${longest} ${parmlist}
+echo
+myvar="make_me"
+display_vars ${#myvar} "${myvar}"
+echo
+message "${Mon}If building manually${Boff} --"
+message "  ${Mon}first${Boff} cd ${sources_dir}"
+message "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
+message "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
+echo
+message "  ${Gon}make_me='${make_me}'${Boff}"
+echo
+message "${Mon}then use e.g.${Boff} --"
+msg1='eval ${manual_prefix}'
+msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
+message "${Gon}${msg1} ${msg2}${Boff}"
+message "or"
+msg2="make menuconfig${Boff}"
+message "${Gon}${msg1} ${msg2}${Boff}"
+echo
+msg1='eval ${make_me} olddefconfig'
+message "or"
+message "${Gon}${msg1}${Boff}"
+echo
+}
+
+make_sources_message() {
+# pull text from /etc/${PN}/README-instructions
+# ignore lines beginning with two #s (i.e. "##")
+# echo lines beginning with one "#" in light blue
+# ehco other lines in bright white
+#
+while read line
+do
+  if [ "${line:0:1}" == "#" ]
+  then
+    [ "${line:1:1}" == "#" ] && break || echo -en ${LBon}
+  else
+    echo -en ${BWon}
+  fi
+  echo ${line}
+done < $(dirname ${CONF_dir%/})/README-instructions
+echo -e ${Boff}
+}
+
+process_command_line() {
+# process command line arguments (for now only -x/--exclude option can have argument(s))
+last=""
+#d_message "processing command line with argument(s): [ ${*} ]" 2
+d_message "processing command line with argument(s): [ ${@} ]" 2
+# shift each argument into position $1 and examine it
+#   process the argument or processit with its own arguments
+while [ ! -z "$1" ]
+do
+  d_message "arg1 = [ $1 ]" 3
+  # if arg begins with a single dash, process it alone
+  if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
+    d_message "processing [ $1 ] alone as single-dash argument" 3
+    process_argument $1
+    shift
+  # if arg begins with a double dash, process it alone
+  elif [ "${1:0:2}" == "--" ] ; then
+    d_message "processing [ $1 ] alone as double-dash argument" 3
+    process_argument $1
+    shift
+  else
+    d_message "does not start with - or --" 3
+    usage; exit
+  fi
+done
+d_message "done with process_command_line" 2
+}
+
+process_argument() {
+  d_message "about to process argument(s): [ $* ]" 1
+  d_message "1: [ $1 ], 2: [ $2 ]" 2
+  # process command line argument (must be one of the following)
+  [ ! -z "$1" ] && case "$1" in
+    "-"[sS] | "--status"         )
+      # display status
+      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
+      read starting_step < ${status_file};
+      message "${BWon}Status: Step $(($starting_step - 1)) complete; next step would be [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
+      exit;
+      ;;
+    "-"[rR] | "--resume"         )
+      # resume at stored step unless that is overridden by a new start # (below)
+      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
+      RESUME=${TRUE}
+      read starting_step < ${status_file};
+      message "${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
+      ;;
+    "-"[iI] | "--interactive"    )
+      # interactive
+      INTERACTIVE=${TRUE};
+      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      ;;
+    "-"[nN] | "--noninteractive" )
+      # non-interactive
+      INTERACTIVE=${FALSE}
+      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      ;;
+    "-"[qQ] | "--quiet"          )
+      # decrease verbosity
+      [[ ${verbosity} -gt 0 ]] && let verbosity--
+      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      message "${BYon}decreased verbosity: ${verbosity}${Boff}"
+      ;;
+    "-"[vV] | "--verbose"          )
+      # increase verbosity
+      [[ ${verbosity} -lt 6 ]] && let verbosity++
+      VERBOSE=${TRUE}
+      message "${BYon}increased verbosity: ${verbosity}${Boff}"
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    *                            )
+    process_compound_arg $1
+      ;;
+  esac
+  d_message "done with process_argument" 1
+}
+
+process_compound_arg()
+{
+d_message "about to process compound argument(s): [ $* ]" 1
+# must begin with a single dash
+[ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+# must not begin with two dashes (would have been picked in process_argument)
+[ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+# strip leading dash(es)
+myargs=${1##-}
+# handle remaining characters in sequence
+while [ -n "${myargs}" ]
+do
+  #handle one character at at time, from the left
+  case ${myargs:0:1} in
+    [sS] )
+      # display status
+      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
+      read starting_step < ${status_file};
+      message "${BWon}Status: Step $(($starting_step - 1)) complete; next step would be [ ${BMon}$starting_step${BWon} ] ( ${BGon}${command_sequence[${starting_step}]}${BWon} )${Boff}";
+      exit;
+      ;;
+    [rR] )
+      # resume at stored step unless that is overridden by a new start # (below)
+      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
+      RESUME=${TRUE}
+      read starting_step < ${status_file};
+      message "${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
+      ;;
+    [0-9] )
+      # currently there are steps 0-13; if the next char is also numeric, append it and "shift"
+      RESUME=${TRUE}
+      starting_step="${myargs:0:1}";
+      if [[ "${myargs:1:1}" == [0-9] ]] ; then
+        starting_step="${myargs:0:2}";
+        myargs=${myargs:1}
+      fi
+      message "${BYon}Saving next step ${BWon}${starting_step}${BYon} to status file [${Boff}${status_file}${BYon}]${Boff}"
+      echo ${starting_step} > ${status_file};
+      message "${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
+      ;;
+    [iI] )
+      # interactive
+      INTERACTIVE=${TRUE};
+      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      ;;
+    [nN] )
+      # non-interactive
+      INTERACTIVE=${FALSE}
+      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      ;;
+    [qQ] )
+      # decrease verbosity
+      [[ ${verbosity} -gt 0 ]] && let verbosity--
+      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      message "${BYon}decreased verbosity: ${verbosity}${Boff}"
+      ;;
+    [vV] )
+      # increase verbosity
+      [[ ${verbosity} -lt 6 ]] && let verbosity++
+      VERBOSE=${TRUE}
+      message "${BYon}increased verbosity: ${verbosity}${Boff}"
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
+  esac
+  #strip first char from myargs (i.e. "shift" one character)
+  myargs=${myargs:1}
+done
+dmseg "done with process_compount_arg" 1
+}
+
+sanity_check() {
+# veryfy the sanity of the combination of arguments on the command line
+### this is carried over from jus example, but it is not used here (yet)
+
+### posible future additional sanity checks like this...
+#BOGUSTEST=${FALSE}
+#[[ ! $INTERACTIVE ]] && [[ $RESUME ]] && [[ $BOGUSTEST ]] \
+#   E_message "Dangerous option combination: noninteractive and resume" && \
+#   usage && exit 1
+
+answer=""
+if [[ $starting_step -eq 0 ]]
+then
+  # if a sources directory has not been linked, advise the user about this
+  if [[ ! -e "${sources_dir}" ]]
+  then
+    make_sources_message
+    exit
+  else
+    # confirm the current configuration before executing main script
+    prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
+    [[ ! $answer == [Yy] ]] && exit
+  fi
+else
+  # resume operation at some step other than 0
+  do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
+  do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
+  prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
+  [[ ! $answer == [yY] ]] && exit
+fi
+}
+
+run_logical_step_sequence()
+{
+for ((step_number=${starting_step}; step_number<${#command_sequence[@]}; step_number++))
+do
+  d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
+  echo $step_number > ${status_file}
+  # skip device tree steps for domU builds
+  if [ "${model:0:3}" == "dom" ] && [ "${command_sequence[step_number]:(-4)}" == "dtbs" ]
+  then
+    # take no action; the loop will increment step counter on next entry
+    d_message "domU does not have dtbs -- skipping this step" 2
+  else
+    if [[ ${INTERACTIVE} ]] ; then
+      d_message "INTERACTIVE is true, will prompt before executing this step [ $step_number ]" 2
+      newanswer=""
+      # confirm user is ready/wants to run the next command
+      new_prompt "${BMon}Are you ready to run ${BGon}${command_sequence[step_number]}${BMon}?${Boff}"
+    elif [ ${step_number} -eq 5 ] ; then  # skip menuconfig for non-interactive
+      message "INTERACTIVE is false; ${BMon}Skipping ${BGon}${command_sequence[step_number]}${BMon} as instructed ...${Boff}"
+      newanswer="s"
+    else  # automatically execute other steps for non-interactive
+      d_message "INTERACTIVE is false; will automatically execute this step [ $step_number ]" 2
+      message "${BMon}Beginning ${BGon}${command_sequence[step_number]}${BMon} as instructed ...${Boff}"
+      newanswer="y"
+    fi  ## interactive
+    case $newanswer in
+      [Yy] )  # execute this command and continue
+        message "${LBon}About to run ${BYon}${command_sequence[step_number]}${LBon}...${Boff}" ; \
+        eval ${command_sequence[step_number]}; right_status $? ;;
+      [Ss] ) ;; # skip this command and continue
+      *    )  # abort due to negative newanswer
+        message "${BRon}As instructed, not running ${BGon}${command_sequence[step_number]}${BRon}. Quitting...${Boff}" ; \
+        exit ;;
+    esac
+  fi # no dtbs for domU
+done
+}
+
+#-----[ main script ]------------------------------------------------
+checkroot
+separator "${PN}-${BUILD}" $(hostname)
+starting_step=0
+
+process_command_line "${@}"
+
+display_config
+sh_countdown 2
+
+sanity_check
+
+run_logical_step_sequence
+
+final_msg="${BMon}Components, including kernel image [ ${image} ], modules, overlays, "
+final_msg+="and dtb files, as appropriate for model [ ${model} ], successfully staged in "
+final_msg+="${build_dir%/}/${model} and published in ${kernel_image_name}.ebuild${Boff}"
+message "${final_msg}"
