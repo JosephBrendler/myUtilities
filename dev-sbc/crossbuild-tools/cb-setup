@@ -1,0 +1,103 @@
+#!/bin/bash
+#
+# populate-target   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit
+}
+
+setup-crossdev-environment() {
+    # check for template imagefile and create if needed
+    if [ ! -f ${imagefile} ] ; then
+        E_message "template imagefile ${imagefile} does not exist; calling cb-mkimagefile"
+        cb-mkimagefile
+    fi
+    # if parts already exist, consider re-running cleanup
+    FLAGGED=$FALSE
+    [ -d /usr/${TARGET} ]  && E_message "target directory /usr/${TARGET} already exists" && FLAGGED=$TRUE
+    [ -f /usr/${BOARD}.img ]  && E_message "image file target /usr/${BOARD}.img already exists" && FLAGGED=$TRUE
+    ( [ -b /dev/loop0p1 ] || [ -b /dev/loop0p2 ] ) && E_message "/dev/loop0 is active" && FLAGGED=$TRUE
+    ( [ -b /dev/loop1p1 ] || [ -b /dev/loop1p2 ] ) && E_message "/dev/loop1 is active" && FLAGGED=$TRUE
+    if [[ $FLAGGED ]] ; then
+        E_message "${BYon}Note red flags above. You should consider re-running cleanup${Boff}"
+        msg="${BWon}Do you want to re-run cleanup?\n"
+        mst+="    y: yes; re-run cleanup | s: no; continue to set up | n: no; exit"
+        response="" ; new_prompt "${msg}"
+        case ${response:0:1} in
+            [yY] ) message_n "re-running cleanup" ; cb-cleanup ${BOARD} ;;
+            [sS] ) message "OK; no action; continuing" ;;
+            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit ;;
+            * ) E_message "Invalid response; exiting" ; exit ;;
+        esac
+    else
+        message "no red flags noted"
+    fi
+    # use or create target directory
+    message "red flags either not present, dealt with, or ignored; proceeding with setup"
+    # use or create target directory
+    if [ -d /usr/${TARGET} ] ; then
+        # exists apparently because we said tp keep it, above - use
+        message "target directory /usr/${TARGET} already exists - using"
+    else
+        message_n "making target /usr/${TARGET} ...."
+        mkdir /usr/${TARGET} ; right_status $?
+    fi
+    # use or create board image file
+    if [ -f /usr/${BOARD}.img ] ; then
+        # exists apparently because we said tp keep it, above - use
+        message "image file /usr/${BOARD}.img already exists - using"
+    else
+        message_n "generating /usr/${BOARD} from template ...."
+        cp /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img /usr/${BOARD}.img ; right_status $?
+    fi
+    # loopmount board image file on target directory
+    if [ -b /dev/loop0p1 ] || [ -b /dev/loop0p2 ] ; then
+        # already active apparently because we said to keep that, above - use
+        message "/dev/loop0p1 and/or /dev/loop0p2 are active - using"
+    else
+        message_n "activating /dev/loop0 for image file /usr/${BOARD}.img ..."
+        losetup -P -f /usr/${BOARD}.img ; right_status $?
+    fi
+    message_n "mounting rootfs (/dev/loop0p2) on /usr/${TARGET}/ ..."
+    mount /dev/loop0p2 /usr/${TARGET}/ ; right_status $?
+    message_n "mounting bootfs (/dev/loop0p1) on /usr/${TARGET}/boot/ ..."
+    mount /dev/loop0p1 /usr/${TARGET}/boot/ ; right_status $?
+    # stop here - need to get stage3 and THEN run crossdev
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/
+message "now working in parent of target directory: [${Mon}$(pwd)${Boff}]"
+
+setup-crossdev-environment
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"

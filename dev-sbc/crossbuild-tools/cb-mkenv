@@ -7,36 +7,47 @@
 #
 source /usr/local/sbin/script_header_brendlefly
 VERBOSE=$TRUE
-verbosity=3
+# set verbosity > 1 for debug incl initialization
+#verbosity=1
+verbosity=2
 PN=$(basename $0)
-source /etc/crossbuild-tools/BUILD
 
-varlist="PN BUILD TARGET TARGET_ARCH STAGE3 old_dir"
-varlist+=" profile_number response starting_step status_file"
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+
+response=""
+
+varlist="PN BUILD BOARD TARGET TARGET_ARCH STAGE3_SELECTOR"
+varlist+=" profile_number"
+varlist+=" starting_step stopping_step status_dir status_file"
 varlist+=" bool.RESUME bool.INTERACTIVE"
-varlist+=" BREAK bool.VERBOSE verbosity"
+varlist+=" bool.CREATE bool.DESTROY"
+varlist+=" BREAK bool.VERBOSE verbosity old_dir"
 
 command_sequence=(
-'cleanup-crossdev-environment'
-'make-target-dir'
+'cb-cleanup ${BOARD}'
+'cb-setup ${BOARD}'
 'wget-stage3'
 'verify-stage3-hashes'
 'untar-stage3'
 'create-new-cross-compiler'
 'select-profile'
-'quickpkg-toolchain ${TARGET}'
-'populate-target ${TARGET}'
+'cb-quickpkg-toolchain ${BOARD}'
+'cb-populate-target ${BOARD}'
 'TARGET-emerge-system'
 'TARGET-emerge-world'
-'buildtarget-qemu ${TARGET}'
+'cb-buildtarget-qemu ${BOARD}'
 'emerge -uavDNgk @world --keep-going'
 'emerge-cross-rust-std'
-'chroot-target ${TARGET}'
+'cb-chroot-target ${BOARD}'
 )
 
 msg1_sequence=(
 'clean up crossdev environment'
-'make target directory'
+'set up target environment'
 'download stage3'
 'verify stage3 hashes'
 'extract stage3 from tar.xz archive'
@@ -54,7 +65,7 @@ msg1_sequence=(
 
 msg2_sequence=(
 'cleaning up crossdev environment'
-'making target directory'
+'setting up target environment'
 'downloading stage3'
 'verifying stage3 hashes'
 'extracting stage3 from tar.xz archive'
@@ -75,26 +86,32 @@ msg2_sequence=(
 usage() {
   N=$(( ${#command_sequence[@]} -1 ))
   separator "${PN}-${BUILD}" "$(hostname)"
-  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -t|--target <TARGET>${Boff}"
+  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -b|--board <BOARD>${Boff}"
   message "${BYon}Valid Options --${Boff}"
-  message "  -i | --interactive .....: run interactively; confirm execution of each step"
-  message "  -n | --noninteractive ..: run non-interactively; proceed automatically with each step"
-  message "  -r | --resume ..........: resume proccessing (with next step, from statusfile)"
-  message "  -s | --status ..........: return status (next step, step_number)"
-  message "  -t | --target <TARGET> .: specify crossbuild environment target"
-  message "  -v | --verbose .........: increase verbosity"
-  message "  -q | --quiet ...........: decrease verbosity"
-  message "  -[0-${N}) ................: save N to status file and resume at step N"
+  message "  -i | --interactive......: run interactively; confirm execution of each step"
+  message "  -n | --noninteractive...: run non-interactively; proceed automatically with each step"
+  message "  -s | --status...........: return status (next step, step_number)"
+  message "  -d | --destroy..........: just clean target/board environment"
+  message "  -c | --create...........: clean,then create/populate a target/board cross-compiler and environment"
+  message "  -r | --resume...........: resume proccessing (with next step, from statusfile)"
+  message "  -b | --board.<BOARD>....: specify BOARD (selects TARGET) for crossbuild environment"
+  message "  -t | --target <TARGET> .: specify TARGET for crossbuild environment"
+  message "  -v | --verbose..........: increase verbosity"
+  message "  -q | --quiet............: decrease verbosity"
+  message "  -[0-${N}].................: save N to status file and resume at step N"
   echo
   message "${BMon}Note: single-character options (except t) may be combined. For example -${Boff}"
   message "  ${BGon}${PN} --verbose -nqr11${Boff}"
   message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
   echo
-  message "${BMon}Note: exactly one <TARGET> is required. Examples:${Boff}"
-  message "  aarch64-unknown-linux-gnu"
-  message "  armv6j-unknown-linux-gnueabihf"
-  message "  armv7a-unknown-linux-gnueabihf"
-  echo
+  message "${BMon}Other notes:${Boff}"
+  message "   - options -i (interactive) is on by default"
+  message "   - options -c (create) and -c (destroy) are off by default and set starting_step=0"
+  message "   - option  -r (resume) sets starting_step to value in status_file [ $status_file ]"
+  message "   - option  -[0-${N}] sets starting_step to the specified value"
+  message "   - if a BOARD is specified, TARGET will be selected, overriding any -t setting"
+  message "   - if no BOARD is specified, TARGET must be, implying a generic TARGET environment"
+  usage-common-message
   message "${BYon}Command sequence steps:${Boff}"
   for ((s=0; s<${#command_sequence[@]}; s++))
   do
@@ -108,15 +125,24 @@ initialize_variables() {
     initialize_vars ${varlist}
 
     # set default values
-    PN=$(basename $0) && \
     source /etc/crossbuild-tools/BUILD && \
-    VERBOSE=$TRUE && \
-    verbosity=3 && \
+    d_message "sourced BUILD = ${BUILD}" 2 && \
     old_dir=$(pwd) && \
+    d_message "set old_dir = ${old_dir}" 2 && \
     starting_step=0 && \
+    d_message "set starting_step = ${starting_step}" 2 && \
+    stopping_step=${#command_sequence[@]} && \
+    d_message "set stopping_step = ${stopping_step}" 2 && \
     status_file="/root/bin/mkcrossbuildenv_status" && \
+    d_message "set status_file = ${status_file}" 2 && \
     PN=$(basename $0) && \
-    INTERACTIVE=$TRUE
+    d_message "set PN = ${PN}" 2 && \
+    INTERACTIVE=$TRUE && \
+    d_message "set default INTERACTIVE true" 2 && \
+    VERBOSE=$TRUE && \
+    d_message "set default VERBOSE true" 2 && \
+    verbosity=3
+    d_message "set default verbosity = 3" 2 && \
     result=$?
     right_status $result
     return $result
@@ -143,8 +169,8 @@ process_cmdline() {
     # if arg begins with a single dash, process it alone
     if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
       d_message "processing [ $1 ] alone as single-dash argument" 3
-      process_argument $1 $2   # incl $2 in case $1 is -t
-      [[ "$1" == "-t" ]] && shift  # extra shift to clear target
+      process_argument $1 $2   # incl $2 in case $1 is -t or -b
+      [[ "${1}" =~ ^(-t|-b)$ ]] && shift  # extra shift to clear target or board
       shift
     # if arg begins with a double dash, process it alone
     elif [ "${1:0:2}" == "--" ] ; then
@@ -190,6 +216,18 @@ process_argument() {
       INTERACTIVE=${TRUE};
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
+    "-"[cC] | "--create"    )
+      # create
+      CREATE=${TRUE};
+      stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+      d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
+      ;;
+    "-"[dD] | "--destroy"    )
+      # destroy
+      DESTROY=${TRUE};
+      stopping_step=0 ;
+      d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
+      ;;
     "-"[nN] | "--noninteractive" )
       # non-interactive
       INTERACTIVE=${FALSE}
@@ -211,6 +249,11 @@ process_argument() {
       # specify TARGET (next arg in $@ set)
       TARGET=$2
       d_message "${BYon}set TARGET = ${TARGET}" 2
+      ;;
+    "-"[bB] | "--board"         )
+      # specify BOARD (next arg in $@ set)
+      BOARD=$2
+      d_message "${BYon}set BOARD = ${BOARD}" 2
       ;;
     *                            )
     process_compound_arg $1
@@ -277,6 +320,18 @@ do
       INTERACTIVE=${TRUE};
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
+    [cC] )
+      # create
+      CREATE=${TRUE};
+      stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+      d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
+      ;;
+    [dD] )
+      # destroy
+      DESTROY=${TRUE};
+      stopping_step=0 ;
+      d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
+      ;;
     [nN] )
       # non-interactive
       INTERACTIVE=${FALSE}
@@ -302,7 +357,23 @@ done
 d_message "done with process_compount_arg" 3
 }
 
-
+sanity_check() {
+    # sanity check configuration
+    message_n "sanity-checking configuration ..."
+    if [[ $DESTROY ]] && [ $starting_step -ne 0 ] ; then
+        E_message "user specified DESTROY and non-zero starting_step"
+        right_status 1 ; usage
+    elif [[ $CREATE ]] && [ $starting_step -ne 0 ] ; then
+        E_message "user specified CREATE and non-zero starting_step"
+        right_status 1 ; usage
+    elif [[ $CREATE ]] && [[ $DESTROY ]] ; then
+        E_message "user specified both CREATE and DESTROY"
+        right_status 1 ; usage
+    elif [[ $TRUE ]] ; then
+        echo -en " (sane)"
+        right_status $?
+    fi
+}
 
 emerge-cross-rust-std() {
     # this doesn't work yet
@@ -328,11 +399,24 @@ TARGET-emerge-world() {
 }
 
 select-profile() {
-    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
-    number_prompt "Select profile: "
+    message "setting default profile ..."
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
-    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
-    return $?
+    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
+    response=""
+    new_prompt "${BYon}Would you like to select a diffeeent profile?"
+    case ${response:0:1} in
+        [yY] )
+            message "${BMon}Available profiles --${Boff}"
+            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
+            number_prompt "${BYon}Select profile: ${Boff}"
+            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
+            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
+            ;;
+        [nN] ) E_message "exiting as instructed"; exit ;;
+        [sS] ) E_message "skipping; profile remains ${profile_number}" ;;
+        * ) E_message "invalid response [ ${response} ]"; exit ;;
+    esac
+    return 0
 }
 
 create-new-cross-compiler() {
@@ -434,84 +518,9 @@ wget-stage3() {
     message_n "moving from ${old_dir} to /usr/${TARGET} ..."
     cd /usr/${TARGET} ; right_status $?
     message "now getting stage3 in target sysroot directory: [${Mon}$(pwd)${Boff}] ..."
-    eval "$(grep ${STAGE3} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')"
+    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')"
     wget ${href} && wget ${href}.DIGESTS
     return $?
-}
-
-make-target-dir() {
-    message_n "creating /usr/${TARGET} directory ..."
-    mkdir /usr/${TARGET}
-    result=$?
-    right_status $result
-    return $result
-}
-
-cleanup-crossdev-environment() {
-    message "cleaning up old crossdev environment ..."
-    crossdev -C -t ${TARGET}
-    result=$?
-    right_status $result
-    return $result
-}
-
-validate_target() {
-    d_message "in validate_target()" 4
-    case $TARGET in
-        "aarch64-unknown-linux-gnu" )
-            d_message "valid target: [${TARGET}]" 2 ;
-            # used for eselect profile (form: arm64)
-            TARGET_ARCH="arm64" ;
-            STAGE3="stage3-arm64-openrc-[0-9]" ;
-            ;;
-        "armv6j-unknown-linux-gnueabihf" )
-            d_message "valid target: [${TARGET}]" 2 ;
-            TARGET_ARCH="arm" ;
-            STAGE3="stage3-armv6j_hardfp-openrc-[0-9]" ;
-            ;;
-        "armv7a-unknown-linux-gnueabihf" )
-            d_message "valid target: [${TARGET}]" 2 ;
-            TARGET_ARCH="arm" ;
-            STAGE3="stage3-armv7a_hardfp-openrc-[0-9]" ;
-            ;;
-        * )
-            E_message "invalid target: [${TARGET}]" ;
-            usage ;;
-    esac
-
-    # if we got here, the target is valid
-    # now make sure it's not already mounted
-    while [ ! -z "$(mount | grep ${TARGET} | awk '{print $3}')" ] ; do
-        echo
-        E_message "${BRon}Warning: the following TARGET resources are already mounted ...${Boff}"
-        mount | grep ${TARGET}
-        if [ $starting_step -lt 2 ] ; then
-            E_message "${BYon}cleaning or making new target directory could destroy data in these resources${Boff}"
-            E_message "${BMon}Please un-mount them before proceeding${Boff}"
-        fi
-        echo
-        response=""
-        new_prompt "Would you like to unmouunt them all now? "
-        case $response in
-          [Yy] )  # try to umount
-            for x in $(mount | grep ${TARGET} | awk '{print $3}'); do
-                message_n "unmounting ${x} ..."
-                umount ${x}; right_status $?
-            done
-            ;;
-          [Ss] )  # ignor mounts (e.g. for build image)
-            message "${BYon}Important: ${Boff}proceeding with existing mounted resources..."
-            message "${BWon}Press <CTRL>-C now to quit ..."
-            sh_countdown 5
-            break
-            ;;
-          *    )  # abort due to negative response
-            message "${BRon}Response [${response}] interpreted as no - quitting"
-            exit ;;
-        esac
-    done
-
-    return 0
 }
 
 validate_status_file() {
@@ -534,19 +543,13 @@ number_prompt()  {
         isnumber $profile_number ; result=$? ; done
 }
 
-new_prompt()        # set external variable $response based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
-while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
-
 run_sequence() {
     echo
     separator "Running command sequence" "${PN}-${BUILD}"
     echo
-    for ((step_number=${starting_step}; step_number<${#command_sequence[@]}; step_number++))
+    for ((step_number=${starting_step}; step_number<=${stopping_step}; step_number++))
     do
-        separator "(${step_number}: ${command_sequence[${step_number}]}" "${PN}-${BUILD}"
+        separator "(${step_number}: ${command_sequence[${step_number}]})" "${PN}-${BUILD}"
         d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
         echo $step_number > ${status_file}
         if [[ ${INTERACTIVE} ]] ; then
@@ -578,7 +581,8 @@ checkroot
 separator ${PN} $(hostname)
   if [ $# -eq 1 ] ; then
     if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] && \
-       [[ "$1" != "-"*"r"* ]] && [[ "$1" != "--resume" ]] ; then
+       [[ "$1" != "-"*"r"* ]] && [[ "$1" != "--resume" ]] && \
+       [[ "$1" != "-"*"b"* ]] && [[ "$1" != "--baseline" ]] ; then
       E_message "invalid argument [${arglist}]"
       usage
     fi
@@ -596,7 +600,7 @@ right_status $?
 
 validate_target
 validate_status_file
-
+sanity_check
 display_configuration
 
 # for each command in command_sequence array (like rus/jus/kernelupdate)

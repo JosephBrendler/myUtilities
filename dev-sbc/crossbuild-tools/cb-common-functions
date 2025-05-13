@@ -1,0 +1,174 @@
+#!/bin/bash
+# crossbuild-common-functions    (c) joe.brendler  2025-2072
+#
+# to be sourced in programs that employ these functions
+# /usr/local/sbin/scritp_header_brendlefly must be sourced first
+#
+# DEFAULT_profile_number values by ARCH as of 5/11/2025 -
+#    [59]  default/linux/arm/23.0/armv6j_hf (stable)
+#    [72]  default/linux/arm/23.0/armv7a_hf (stable)
+#    [15]  default/linux/arm64/23.0 (stable)
+#       [29]  default/linux/arm64/23.0/split-usr (stable) *** split-usr (old system)
+#
+
+BOARD=$1
+VALID=$FALSE
+
+validate_target() {
+    case $BOARD in
+        "bcm2708-rpi-b"          )
+            TARGET=armv6j-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            profile_number=59 ;
+            VALID=$TRUE ;;
+        "bcm2709-rpi-2-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b-plus"   )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "bcm2711-rpi-4-b"        )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "bcm2712-rpi-5-b"        )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3288-tinker-s"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "rk3399-tinker-2"        )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3399-rock-pi-4c-plus" )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3588s-orangepi-5"     )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3588s-rock-5c"        )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        *                        )
+            VALID=$FALSE ;;
+    esac
+
+    if [[ $VALID ]] ; then
+        d_message "BOARD ...........: ${BOARD}" 3
+        d_message "TARGET ..........: ${TARGET}" 3
+        d_message "TARGET_ARCH .....: ${TARGET_ARCH}" 3
+        d_message "profile_number .: ${profile_number}" 3
+        d_message "${BGon}[valid target]${Boff}" 2
+    else
+        E_message "${BRon}[invalid target]${Boff}"
+        usage
+    fi
+    return 0
+}
+
+validate_mounts() {
+    # if we got here, the target is valid
+    # now make sure it's not already mounted
+    ### to-do - consider moving this to a separate function mount-target() {}
+    while [ ! -z "$(mount | grep ${BOARD} | awk '{print $3}')" ] ; do
+        echo
+        E_message "${BMon}Warning: the below BOARD/TARGET resources are already mounted ...${Boff}"
+        E_message "${BYon}"'For cb-mkimage, image media (e.g. /dev/sdc2) should be mounted on /usr/${BOARD}'"${Boff}"
+        E_message "${BGon}"'  If that is your use-case, and only that is mounted, you can safely proceed,'"${Boff}"
+        E_message "${BGon}  but you should probably use cb-mkimage instead (this is ${PN})${Boff}"
+        E_message "${BYon}Important: it may be problematic if repositories or kernel source trees are already mounted.${Boff}"
+        E_message "${BRon}  >> cleaning or making new << target directory could destroy data in such resources${Boff}"
+
+        echo
+        message "BOARD/TARGET Resources already mounted:"
+        mount | grep ${BOARD}
+        if [ $starting_step -lt 2 ] ; then
+            E_message "${BMon}This operation includes clean/make, so you should un-mount them before proceeding${Boff}"
+        fi
+        echo
+        response=""
+        new_prompt "Would you like to unmouunt them all now? "
+        case $response in
+          [Yy] )  # try to umount
+            for x in $(mount | grep ${BOARD} | awk '{print $3}'); do
+                message_n "unmounting ${x} ..."
+                umount ${x}; right_status $?
+            done
+            ;;
+          [Ss] )  # ignor mounts (e.g. for build image)
+            message "${BYon}Important: ${Boff}proceeding with existing mounted resources..."
+            message "${BWon}Press <CTRL>-C now to quit ..."
+            sh_countdown 5
+            break
+            ;;
+          *    )  # abort due to negative response
+            message "${BRon}Response [${response}] interpreted as no - quitting"
+            exit ;;
+        esac
+    done
+
+    return 0
+}
+
+new_prompt()        # set external variable $response based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
+while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+
+linear_search() {  # find $2 in array $1, return index
+    # pass arguments like this usage:
+    # linear_search "make-target" "${command_sequence[@]}"
+    #
+    needle="$1" ; shift ; haystack=("$@")
+#    echo "needle: ${needle}"
+#    echo "haystack length: ${#haystack[@]}"
+    for ((i=0; i<${#haystack[@]}; i++ )) ; do
+        [[ "${haystack[$i]}" == "${needle}" ]] && echo $i && return $i
+    done
+}
+
+usage-common-message() {
+    echo
+    message "  ${BMon}Note: exactly one <BOARD> must be specified. Examples:${Boff}"
+    message "  bcm2708-rpi-b"
+    message "  bcm2709-rpi-2-b"
+    message "  bcm2710-rpi-3-b"
+    message "  bcm2710-rpi-3-b-plus"
+    message "  bcm2711-rpi-4-b"
+    message "  bcm2712-rpi-5-b"
+    message "  rk3288-tinker-s"
+    message "  rk3399-tinker-2"
+    message "  rk3399-rock-pi-4c-plus"
+    message "  rk3588s-orangepi-5"
+    message "  rk3588s-rock-5c"
+
+    echo
+    message "${BMon}Note: exactly one <TARGET> will be selected automatically. Examples:${Boff}"
+    message "  aarch64-unknown-linux-gnu"
+    message "  armv6j-unknown-linux-gnueabihf"
+    message "  armv7a-unknown-linux-gnueabihf"
+    echo
+}

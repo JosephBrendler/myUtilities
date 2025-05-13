@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# populate-target   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit
+}
+cleanup-crossdev-environment() {
+    # inspect target (mount point) - is anything mounted? (un-mount)
+    if [ -n "$(mount | grep "on /usr/${TARGET}")" ] ; then
+        # something is mounted - un-mount it
+        E_message "${BYon}The following devices are mounted on /usr/${TARGET} --${Boff}"
+        mount | grep "on /usr/${TARGET}"
+        message_n "running umount -r /usr/${TARGET} ..."
+        umount -R /usr/${TARGET} ; right_status $?
+    else
+        message "nothing is mounted on /usr/${TARGET} ; continuing"
+    fi
+    # examine loop0 -- still in use? (de-activate)
+    if [ -b /dev/loop0p1 ] || [ -b /dev/loop0p2 ] ; then
+        message_n "running losetup -D /dev/loop0 ..."
+        losetup -D /dev/loop0 ; right_status $?
+    else
+        message "no loop0 devices are active ; continuing"
+    fi
+    # examine ${BOARD}.img - ask what to do with it
+    if [ -f /usr/${BOARD}.img ] ; then
+        msg="${BYon}Do you want to delete image file /usr/${BOARD}.img ?\n"
+        msg+="     y: delete | s: no, but continue cleanup | n: no, and exit now"
+        response="" ; new_prompt "${msg}"
+        case ${response:0:1} in
+            [yY] ) message_n "deleting /usr/${BOARD}.img ..." ; rm /usr/${BOARD}.img ; right_status $? ;;
+            [sS] ) message "OK; no action; continuing" ;;
+            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit ;;
+            * ) E_message "Invalid response; exiting" ; exit ;;
+        esac
+    else
+        message "no /usr/${BOARD}.img file exists ; continuing"
+    fi
+    # cleanup crossdev crosscompiler
+
+    message "${BYon}Cleaning up crossdev cross-compiler and environment /usr/${TARGET} ..."
+    message "if asked, remove target tree by responding ${BMon}y${Boff} to the ${BYon}remove-recursive?${Boff} question"
+    crossdev -C -t ${TARGET} ; right_status $?
+
+    return 0
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/
+message "now working in parent of target directory: [${Mon}$(pwd)${Boff}]"
+
+cleanup-crossdev-environment
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"

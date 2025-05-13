@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# populate-target   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img
+
+# image and partition sizes
+image_size_mb=8192
+partition1_size_mb=512
+partition2_size_mb=$((image_size_mb - partition1_size_mb))
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <s|f>${Boff}"
+    echo -e "${BYon}    [sS]: sparse | [fF]: fixed size${Boff}"
+    exit
+}
+
+display-config() {
+    message "IMAGE_TYPE ...........: ${IMAGE_TYPE}"
+    message "imagefile ............: ${imagefile}"
+    message "image_size_mb ........: ${image_size_mb}"
+    message "partition1_size_mb ...: ${partition1_size_mb}"
+    message "partition2_size_mb ...: ${partition2_size_mb}"
+}
+
+prepare() {
+    FLAGGED=$FALSE
+    [ -n "$(losetup -a)" ] && E_message "There are loop devices already active" && FLAGGED=$TRUE
+    [ -m "$(mount | grep loop)" ] && E_message "There are loop devices mounted" && FLAGGED=$TRUE
+    [ -f "${imagefile}" ] && E_message "imagefile ${imagefile} already exists" && FLAGGED=$TRUE
+    if [[ $FLAGGED ]] ; then
+        E_message "Note red flags above. Please clean up before continuing"
+        exit
+    fi
+}
+mksparseimagetemplate() {
+    # Create empty image file
+    message_n "creating sparse image file [ ${imagefile} ] ..."
+    dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M ; right_status $?
+    mktemplate-common
+}
+
+mkimagetemplate() {
+    # Create empty image file
+    message_n "creating fixed-size image file [ ${imagefile} ] ..."
+    dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb} ; right_status $?
+    mktemplate-common
+}
+
+mktemplate-common() {
+    # Set up loop device
+    message_n "setting up loop device"
+    loop_device="$(losetup --find --show ${imagefile})"; result=$?
+    echo -n " ( ${loop_device} )"
+    right_status ${result}
+    # Create partition table
+    message_n "making dos disk label ..."
+    parted -s "$loop_device" mklabel msdos ; right_status $?
+    # Create partitions
+    message_n "creating partition 1 ..."
+    parted -s "$loop_device" mkpart primary 0% ${partition1_size_mb}MiB ; right_status $?
+    message_n "creating partition 2 ..."
+    parted -s "$loop_device" mkpart primary ${partition1_size_mb}MiB 100% ; right_status $?
+    # Get partition device names
+    message_n "getting device name for partition 1 ..."
+    partition1_device="${loop_device}p1" ; result=$?
+    echo -n " ( ${partition1_device} )"
+    right_status ${result}
+    message_n "getting device name for partition 1 ..."
+    partition2_device="${loop_device}p2" ; result=$?
+    echo -n " ( ${partition2_device} )"
+    right_status ${result}
+    # Format partitions
+    message "formatting partition 1 ..."
+    mkfs.vfat -F 32 -n bootfs "$partition1_device" ; right_status $?
+    message "formatting partition 2 ..."
+    mkfs.ext4 -L rootfs "$partition2_device" ; right_status $?
+    # Clean up loop device
+    message_n "cleaning up loop device [ ${loop_device} ]"
+    losetup -d "$loop_device" ; right_status $?
+    echo "Image ${imagefile} created with two partitions:"
+    echo "Partition 1: $partition1_size_mb MB, formatted as vfat"
+    echo "Partition 2: $partition2_size_mb MB, formatted as ext4"
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+[ $# -ne 1 ] && usage
+IMAGE_TYPE=$1
+
+prepare
+
+display-config
+
+case ${IMAGE_TYPE:0:1} in
+    [sS] ) mksparseimagetemplate ;;
+    [fF] ) mkimagetemplate ;;
+    * ) E_message "Invalid argument [ ${IMAGE_TYPE} ]" ; usage ;;
+esac
+
+mkimagetemplate
+

@@ -1,0 +1,97 @@
+#!/bin/bash
+#
+# chroot-target-image   (c) joe.brendler  2025-2072
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+verbosity=3
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit
+}
+
+sync_repo() {
+    # use host system to populate a repository prior to chroot
+    REPO=$1
+    E_message "Repository ${REPO} is empty ..."
+    ${TARGET}-emerge -av --sync ${REPO}
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator $(basename $0) $(hostname)
+[ $# -ne 1 ] && usage
+BOARD=$1
+
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/${TARGET}
+message "now working in target sysroot directory: [${Mon}$(pwd)${Boff}]"
+
+message_n "restarting qemu-binfmt ..."
+/etc/init.d/qemu-binfmt restart ; right_status $?
+
+# Next two lines are optional.
+# (Activate if the qemu-wrapper is used. Check that the wrapper location corresponds with the call at the end of line 2!)
+#echo '-1' > /proc/sys/fs/binfmt_misc/arm #deregister wrong arm
+#echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\x00\xff\xfe\xff\xff\xff:/usr/local/bin/qemu-wrapper:' > /proc/sys/fs/binfmt_misc/register
+
+dirlist="proc dev var/db/repos/gentoo var/db/repos/joetoo \
+  var/db/repos/crossdev usr/src/linux lib/modules sys tmp dev/pts"
+
+for x in ${dirlist}
+do
+  if [ ! -d $x ] ; then
+    E_message_n "directory $x does not exist; creating it ..."
+    mkdir -pv $x ; right_status $?
+  else
+    echo "directory $x already exists; skipping mkdir"
+  fi
+done
+
+# for image chroot, don't mount repos - populate them if empty
+message_n "mounting proc for chroot target ..."
+mount -t proc none proc ; right_status $?
+message_n "mounting dev for chroot target ..."
+mount -o bind /dev dev ; right_status $?
+message_n "mounting sys for chroot target ..."
+mount -o bind /sys sys ; right_status $?
+message_n "copying /etc/resolv.conf for chroot target ..."
+cp /etc/resolv.conf etc/resolv.conf ; right_status $?
+# not chrooted yet, use rel addresses for repos
+[[ -z $(find var/db/repos/gentoo/ -mindepth 1) ]] && sync_repo gentoo
+[[ -z $(find var/db/repos/joetoo/ -mindepth 1) ]] && sync_repo joetoo
+[[ -z $(find usr/src/linux/ -mindepth 1) ]] && E_message "/usr/src/linux/ is empty; consider installing a kernel sources package ..."
+[[ -z $(find lib/modules/ -mindepth 1) ]] && E_message "/lib/modules/ s empty; consider installing a boot-firmware package ..."
+#mount -o bind /tmp tmp
+#mount -o bind /dev/pts dev/pts #only for X
+ 
+chroot . /bin/bash --login
+ 
+#umount dev/pts
+#umount tmp
+message_n "un-mounting sys from chroot target ..."
+umount sys ; right_status $?
+message_n "un-mounting dev from chroot target ..."
+umount dev ; right_status $?
+message_n "un-mounting proc from chroot target ..."
+umount proc ; right_status $?
+
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+

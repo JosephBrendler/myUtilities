@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# populate-target   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+    # pre-requisite: cb-mkenv has been fully completed, with possible exception of its chroot step
+    # this script expects --
+    #    a working image file is set up and mounted on the appropriate target directory (cb-setup)
+    #    the image file has stage3 already extracted, and a working crossdev crosscompile (cb-mkenv)
+    #    the image has been populated with joetoo cross-build configs (cb-populate-target)
+    #    ${TARGET}-emerge has been run for both @system and @world sets (cb-mkenv)
+    #    the image has a working qemu, for qemu-chroot (cb-buildtarget-qemu)
+    # It is not necessary for the cb-mkenv's chroot step and subsequent native chroot-emerge @world
+    # to have been done.  We'll re-do that here, after establishing actual repositories for the image
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit
+}
+
+complete-image() {
+    FLAGGED=$FALSE
+    [ ! -d /usr/${TARGET} ]  && E_message "target directory /usr/${TARGET} does not exist" && FLAGGED=$TRUE
+    [ ! -f /usr/${BOARD}.img ]  && E_message "image file target /usr/${BOARD}.img does not exist" && FLAGGED=$>
+    [ ! -b /dev/loop0p1 ] && E_message "/dev/loop0p1 is inactive" && FLAGGED=$TRUE
+    [ ! -b /dev/loop0p2 ] && E_message "/dev/loop0p2 is inactive" && FLAGGED=$TRUE
+    ( [ -b /dev/loop1p1 ] || [ -b /dev/loop1p2 ] ) && E_message "/dev/loop1 is already active" && FLAGGED=$TRUE
+    if [[ $FLAGGED ]] ; then
+        E_message "${BYon}Note red flags above${Boff}"
+        E_message "${BWon}You should consider whether you need to correct issues before continuing${Boff}"
+        msg="${BWon}Do you really want to continue?\n"
+        mst+="    y|s: yes; continue | n: no; exit"
+        response="" ; new_prompt "${msg}"
+        case ${response:0:1} in
+            [yYsS] ) message "OK; continuing" ;;
+            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit ;;
+            * ) E_message "Invalid response; exiting" ; exit ;;
+        esac
+    else
+        message "no red flags noted"
+    fi
+    # load complete-image versions of finalize-chroot, root/.bashrc, etc...
+    # run cb-chroot-target-image ${BOARD} and let it do the 
+    # first-run finalize chroot to complete the process
+    # including --
+    #  root passwd
+    #  set timezone and verify current date/time
+    #  set hostname
+    #  useradd
+    #  mod /etc/inittab
+    #  fix /etc/fstab
+    #  populate user/joetoo-specific (sensitive) files
+    #    /home/joe/.ssh
+    #    /etc/openvpn (keys, local/remote.conf)
+    #    /etc/apache2/ssl (keys, vhost configs)
+    #  re-run emerge-chroot -uavDN @world --keep-going
+    #  install boot-firmware with sys-boot/raspi-boot-firmware
+    #    (or sys-boot/rockchip(?)-boot-firmware)
+    #  also install "firmware-nonfree"
+    #  add all services to default runlevel (see outline)
+    # now un-chroot
+    #  formate/layout an SD card or other external device
+    #  loop-mount the external device to "/mnt/to" and "/mnt/to/boot"
+    #  use host to copy from complete image "/usr/${TARGET}/*" to "/mnt/to/"
+    #  emerge --config dev-db/mysql && /etc/init.d/mysql start && mysql_secure_installation
+
+}
+
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/${TARGET}
+message "now working in target sysroot directory: [${Mon}$(pwd)${Boff}]"
+
+complete-image
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+
