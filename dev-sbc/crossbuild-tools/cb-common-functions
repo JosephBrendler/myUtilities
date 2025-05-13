@@ -14,8 +14,53 @@
 BOARD=$1
 VALID=$FALSE
 
+validate_status_file() {
+    [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
+    status_file=$1
+    d_message "status_file: [ ${status_file} ]" 3
+    status_dir=$(dirname ${status_file})
+    d_message "status_dir: [ ${status_dir} ]" 3
+    message_n "validating status_dir [${status_dir}] ..."
+    if [ ! -d ${status_dir} ] ; then
+        echo -en " (creating) ..."
+        mkdir -p ${status_dir} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    message_n "validating status_file [${status_file}] ..."
+    if [ ! -f ${status_file} ] ; then
+        echo -en " (creating) ..."
+        touch ${status_file} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    # final validation
+    message_n "re-verifying status_file [${status_file}] ..."
+    [ -f ${status_file} ] && result=$TRUE || result=1
+    right_status $result
+    return $result
+}
+
 validate_target() {
+    [ $# -ne 1 ] && E_message "Error: must specify BOARD" && return 1
+    BOARD=$1
+    d_message "validating BOARD: [ ${BOARD} ]" 3
     case $BOARD in
+        "generic-armv6j"         )
+            TARGET=armv6j-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            profile_number=59 ;
+            VALID=$TRUE ;;
+        "generic-armv7a"         )
+            TARGET=armv7a-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "generic-aarch64"        )
+            TARGET=aarch64-unknown-linux-gnu ;      TARGET_ARCH=arm64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
         "bcm2708-rpi-b"          )
             TARGET=armv6j-unknown-linux-gnueabihf ; TARGET_ARCH=arm ;
             STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
@@ -83,52 +128,26 @@ validate_target() {
         d_message "${BGon}[valid target]${Boff}" 2
     else
         E_message "${BRon}[invalid target]${Boff}"
-        usage
+        usage  # will run the usage function of whatever script from which cb-common-functions was sourced
     fi
     return 0
 }
 
-validate_mounts() {
-    # if we got here, the target is valid
-    # now make sure it's not already mounted
-    ### to-do - consider moving this to a separate function mount-target() {}
-    while [ ! -z "$(mount | grep ${BOARD} | awk '{print $3}')" ] ; do
-        echo
-        E_message "${BMon}Warning: the below BOARD/TARGET resources are already mounted ...${Boff}"
-        E_message "${BYon}"'For cb-mkimage, image media (e.g. /dev/sdc2) should be mounted on /usr/${BOARD}'"${Boff}"
-        E_message "${BGon}"'  If that is your use-case, and only that is mounted, you can safely proceed,'"${Boff}"
-        E_message "${BGon}  but you should probably use cb-mkimage instead (this is ${PN})${Boff}"
-        E_message "${BYon}Important: it may be problematic if repositories or kernel source trees are already mounted.${Boff}"
-        E_message "${BRon}  >> cleaning or making new << target directory could destroy data in such resources${Boff}"
+TARGET-emerge-system() {
+    ${TARGET}-emerge -uavDN @system --keep-going
+    echo
+    message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
+    message "Some must be compiled natively after chroot, in steps to follow"
+    echo
+    return 0
+}
 
-        echo
-        message "BOARD/TARGET Resources already mounted:"
-        mount | grep ${BOARD}
-        if [ $starting_step -lt 2 ] ; then
-            E_message "${BMon}This operation includes clean/make, so you should un-mount them before proceeding${Boff}"
-        fi
-        echo
-        response=""
-        new_prompt "Would you like to unmouunt them all now? "
-        case $response in
-          [Yy] )  # try to umount
-            for x in $(mount | grep ${BOARD} | awk '{print $3}'); do
-                message_n "unmounting ${x} ..."
-                umount ${x}; right_status $?
-            done
-            ;;
-          [Ss] )  # ignor mounts (e.g. for build image)
-            message "${BYon}Important: ${Boff}proceeding with existing mounted resources..."
-            message "${BWon}Press <CTRL>-C now to quit ..."
-            sh_countdown 5
-            break
-            ;;
-          *    )  # abort due to negative response
-            message "${BRon}Response [${response}] interpreted as no - quitting"
-            exit ;;
-        esac
-    done
-
+TARGET-emerge-world() {
+    ${TARGET}-emerge -uavDN @world --keep-going
+    echo
+    message "Do not worry if some @world packages fail to build (e.g. gcc, above)"
+    message "Some must be compiled natively after chroot, in steps to follow"
+    echo
     return 0
 }
 
@@ -140,7 +159,7 @@ RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
 
 linear_search() {  # find $2 in array $1, return index
     # pass arguments like this usage:
-    # linear_search "make-target" "${command_sequence[@]}"
+    # linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}"
     #
     needle="$1" ; shift ; haystack=("$@")
 #    echo "needle: ${needle}"
@@ -153,6 +172,9 @@ linear_search() {  # find $2 in array $1, return index
 usage-common-message() {
     echo
     message "  ${BMon}Note: exactly one <BOARD> must be specified. Examples:${Boff}"
+    message "  generic-armv6j"
+    message "  generic-armv7a"
+    message "  generic-aarch64"
     message "  bcm2708-rpi-b"
     message "  bcm2709-rpi-2-b"
     message "  bcm2710-rpi-3-b"
@@ -171,4 +193,5 @@ usage-common-message() {
     message "  armv6j-unknown-linux-gnueabihf"
     message "  armv7a-unknown-linux-gnueabihf"
     echo
+    return 0
 }

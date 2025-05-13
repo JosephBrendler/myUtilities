@@ -22,7 +22,7 @@ response=""
 
 varlist="PN BUILD BOARD TARGET TARGET_ARCH STAGE3_SELECTOR"
 varlist+=" profile_number"
-varlist+=" starting_step stopping_step status_dir status_file"
+varlist+=" starting_step stopping_step mkenvstatusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" bool.CREATE bool.DESTROY"
 varlist+=" BREAK bool.VERBOSE verbosity old_dir"
@@ -34,7 +34,7 @@ command_sequence=(
 'verify-stage3-hashes'
 'untar-stage3'
 'create-new-cross-compiler'
-'select-profile'
+'eselect-profile'
 'cb-quickpkg-toolchain ${BOARD}'
 'cb-populate-target ${BOARD}'
 'TARGET-emerge-system'
@@ -93,8 +93,8 @@ usage() {
   message "  -s | --status...........: return status (next step, step_number)"
   message "  -d | --destroy..........: just clean target/board environment"
   message "  -c | --create...........: clean,then create/populate a target/board cross-compiler and environment"
-  message "  -r | --resume...........: resume proccessing (with next step, from statusfile)"
-  message "  -b | --board.<BOARD>....: specify BOARD (selects TARGET) for crossbuild environment"
+  message "  -r | --resume...........: resume proccessing (with next step, from mkenvstatusfile)"
+  message "  -b | --board <BOARD>....: specify BOARD (selects TARGET) for crossbuild environment"
   message "  -t | --target <TARGET> .: specify TARGET for crossbuild environment"
   message "  -v | --verbose..........: increase verbosity"
   message "  -q | --quiet............: decrease verbosity"
@@ -107,7 +107,7 @@ usage() {
   message "${BMon}Other notes:${Boff}"
   message "   - options -i (interactive) is on by default"
   message "   - options -c (create) and -c (destroy) are off by default and set starting_step=0"
-  message "   - option  -r (resume) sets starting_step to value in status_file [ $status_file ]"
+  message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
   message "   - option  -[0-${N}] sets starting_step to the specified value"
   message "   - if a BOARD is specified, TARGET will be selected, overriding any -t setting"
   message "   - if no BOARD is specified, TARGET must be, implying a generic TARGET environment"
@@ -117,7 +117,7 @@ usage() {
   do
     echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
   done
-  exit
+  exit 1
 }
 
 initialize_variables() {
@@ -125,27 +125,32 @@ initialize_variables() {
     initialize_vars ${varlist}
 
     # set default values
-    source /etc/crossbuild-tools/BUILD && \
-    d_message "sourced BUILD = ${BUILD}" 2 && \
-    old_dir=$(pwd) && \
-    d_message "set old_dir = ${old_dir}" 2 && \
-    starting_step=0 && \
-    d_message "set starting_step = ${starting_step}" 2 && \
-    stopping_step=${#command_sequence[@]} && \
-    d_message "set stopping_step = ${stopping_step}" 2 && \
-    status_file="/root/bin/mkcrossbuildenv_status" && \
-    d_message "set status_file = ${status_file}" 2 && \
-    PN=$(basename $0) && \
-    d_message "set PN = ${PN}" 2 && \
-    INTERACTIVE=$TRUE && \
-    d_message "set default INTERACTIVE true" 2 && \
-    VERBOSE=$TRUE && \
-    d_message "set default VERBOSE true" 2 && \
-    verbosity=3
-    d_message "set default verbosity = 3" 2 && \
-    result=$?
-    right_status $result
-    return $result
+    FLAGGED=$FALSE
+    d_message_n "sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting old_dir = $(pwd)" 2
+    old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default starting_step = 0" 2
+    starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_messagez_m "setting default stopping_step = ${#command_sequence[@]}" 2
+    stopping_step=${#command_sequence[@]} && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default mkenvstatusfile = /root/bin/mkcrossbuildenv_status" 2
+    mkenvstatusfile="/root/bin/mkcrossbuildenv_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default INTERACTIVE true" 2
+    INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default VERBOSE true" 2
+    VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default verbosity = 3" 2
+    verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
 }
 
 display_configuration()  {
@@ -194,8 +199,8 @@ process_argument() {
   [ ! -z "$1" ] && case "$1" in
     "-"[sS] | "--status"         )
       # display status
-      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
-      read starting_step < ${status_file};
+      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+      read starting_step < ${mkenvstatusfile};
       msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
       msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
@@ -204,9 +209,9 @@ process_argument() {
       ;;
     "-"[rR] | "--resume"         )
       # resume at stored step unless that is overridden by a new start # (below)
-      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
+      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
       RESUME=${TRUE}
-      read starting_step < ${status_file};
+      read starting_step < ${mkenvstatusfile};
       msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
       d_message "${msg}" 2
@@ -260,118 +265,158 @@ process_argument() {
       ;;
   esac
   d_message "done with process_argument" 3
+  return 0
 }
 
 process_compound_arg()  {
-d_message "about to process compound [ $* ]" 2
-# must begin with a single dash
-[ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-# must not begin with two dashes (would have been picked in process_argument)
-[ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-# strip leading dash(es)
-myargs=${1##-}
-# handle remaining characters in sequence
-while [ -n "${myargs}" ]
-do
-  #handle one character at at time, from the left
-  case ${myargs:0:1} in
-    [sS] )
-      # display status
-      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
-      read starting_step < ${status_file};
-      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
-      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
-      msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
-      d_message "${msg}" 2
-      exit;
-      ;;
-    [rR] )
-      # resume at stored step unless that is overridden by a new start # (below)
-      d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" 2
-      RESUME=${TRUE}
-      read starting_step < ${status_file};
-      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
-      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-      d_message "${msg}" 2
-      ;;
-    [0-9] )
-      # currently there are double-digin steps; if the next char is also numeric, append it and "shift"
-      RESUME=${TRUE}
-      starting_step="${myargs:0:1}";
-      if [[ "${myargs:1:1}" == [0-9] ]] ; then
-        starting_step="${myargs:0:2}";
+    d_message "about to process compound [ $* ]" 2
+    # must begin with a single dash
+    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    # must not begin with two dashes (would have been picked in process_argument)
+    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    # strip leading dash(es)
+    myargs=${1##-}
+    # handle remaining characters in sequence
+    while [ -n "${myargs}" ]
+    do
+        #handle one character at at time, from the left
+        case ${myargs:0:1} in
+            [sS] )
+                # display status
+                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+                read starting_step < ${mkenvstatusfile};
+                msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+                msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+                msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
+                d_message "${msg}" 2
+                exit;
+                ;;
+            [rR] )
+                # resume at stored step unless that is overridden by a new start # (below)
+                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+                RESUME=${TRUE}
+                read starting_step < ${mkenvstatusfile};
+                msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+                msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                d_message "${msg}" 2
+                ;;
+            [0-9] )
+                # currently there are double-digin steps; if the next char is also numeric, append it and "shift"
+                RESUME=${TRUE}
+                starting_step="${myargs:0:1}";
+                if [[ "${myargs:1:1}" == [0-9] ]] ; then
+                    starting_step="${myargs:0:2}";
+                    myargs=${myargs:1}
+                fi
+                if [ $starting_step -gt ${#command_sequence[@]} ] ; then
+                    E_message "invalid starting_step [${starting_step}]"
+                    usage
+                else
+                    msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
+                    msg+=" to status file [${Boff}${mkenvstatusfile}${BYon}]${Boff}"
+                    d_message "${msg}" 2
+                    echo ${starting_step} > ${mkenvstatusfile};
+                    msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
+                    msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                    d_message "${msg}" 2
+                fi
+                ;;
+            [iI] )
+                # interactive
+                INTERACTIVE=${TRUE};
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [cC] )
+                # create
+                CREATE=${TRUE};
+                stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+                d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
+                ;;
+            [dD] )
+                # destroy
+                DESTROY=${TRUE};
+                stopping_step=0 ;
+                d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
+                ;;
+            [nN] )
+                # non-interactive
+                INTERACTIVE=${FALSE}
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [qQ] )
+                # decrease verbosity
+                [[ ${verbosity} -gt 0 ]] && let verbosity--
+                [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+                d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+                ;;
+            [vV] )
+                # increase verbosity
+                [[ ${verbosity} -lt 6 ]] && let verbosity++
+                VERBOSE=${TRUE}
+                d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+                ;;       # note: "numeric" args like -4 should fall through to this default
+            *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
+        esac
+        #strip first char from myargs (i.e. "shift" one character)
         myargs=${myargs:1}
-      fi
-      if [ $starting_step -gt ${#command_sequence[@]} ] ; then
-        E_message "invalid starting_step [${starting_step}]"
-        usage
-      else
-        msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
-        msg+=" to status file [${Boff}${status_file}${BYon}]${Boff}"
-        d_message "${msg}" 2
-        echo ${starting_step} > ${status_file};
-        msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
-        msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-        d_message "${msg}" 2
-      fi
-      ;;
-    [iI] )
-      # interactive
-      INTERACTIVE=${TRUE};
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-      ;;
-    [cC] )
-      # create
-      CREATE=${TRUE};
-      stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
-      d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
-      ;;
-    [dD] )
-      # destroy
-      DESTROY=${TRUE};
-      stopping_step=0 ;
-      d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
-      ;;
-    [nN] )
-      # non-interactive
-      INTERACTIVE=${FALSE}
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-      ;;
-    [qQ] )
-      # decrease verbosity
-      [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
-      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
-      ;;
-    [vV] )
-      # increase verbosity
-      [[ ${verbosity} -lt 6 ]] && let verbosity++
-      VERBOSE=${TRUE}
-      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
-      ;;       # note: "numeric" args like -4 should fall through to this default
-    *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
-  esac
-  #strip first char from myargs (i.e. "shift" one character)
-  myargs=${myargs:1}
-done
-d_message "done with process_compount_arg" 3
+    done
+    d_message "done with process_compount_arg" 3
+    return 0
 }
 
 sanity_check() {
     # sanity check configuration
-    message_n "sanity-checking configuration ..."
+    FLAGGED=$FALSE
+    message "sanity-checking configuration ..."
     if [[ $DESTROY ]] && [ $starting_step -ne 0 ] ; then
         E_message "user specified DESTROY and non-zero starting_step"
-        right_status 1 ; usage
-    elif [[ $CREATE ]] && [ $starting_step -ne 0 ] ; then
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [[ $CREATE ]] && [ $starting_step -ne 0 ] ; then
         E_message "user specified CREATE and non-zero starting_step"
-        right_status 1 ; usage
-    elif [[ $CREATE ]] && [[ $DESTROY ]] ; then
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [[ $CREATE ]] && [[ $DESTROY ]] ; then
         E_message "user specified both CREATE and DESTROY"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+
+    # caution: -n tests true even when the variable is NULL 
+    #echo "BOARD: [${BOARD}]"
+    #echo "TARGET: [${TARGET}]"
+    #echo -n "-n: BOARD: " ; [ -n ${BOARD} ] && echo true || echo false
+    #echo -n "-n: TARGET: " ; [ -n ${TARGET} ] && echo true || echo false
+    #echo -n "-z: BOARD: " ; [ -z ${BOARD} ] && echo true || echo false
+    #echo -n "-z: TARGET: " ; [ -z ${TARGET} ] && echo true || echo false
+    #echo -n "len: BOARD: " ; echo ${#BOARD}
+    #echo -n "len: TARGET: " ; echo ${#TARGET}
+    #    if [ -n ${BOARD} ] && [ -n ${TARGET} ] ; then
+    #    if [ ${#BOARD} -ne 0 ] && [ ${#TARGET} -ne 0 ] ; then
+    if [ ! -z ${BOARD} ] && [ ! -z ${TARGET} ] ; then
+        E_message "user specified both BOARD [${BOARD}] and TARGET [${TARGET}}"
+        message "OK: validate_target() will use BOARD and (re)assign TARGET"
+    fi
+    if [ -z ${BOARD} ] && [ -z ${TARGET} ] ; then
+        E_message "user specified neither BOARD nor TARGET"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [ -z ${BOARD} ] && [ -n ${TARGET} ] ; then
+        E_message "user specified TARGET but no board"
+        message_n "OK: auto-selecting generic board:"
+        case ${TARGET} in
+            "armv6j-unknown-linux-gnueabihf" ) BOARD="generic-armv6j" ; echo -n " [${BOARD}]" ;;
+            "armv7a-unknown-linux-gnueabihf" ) BOARD="generic-armv7a" ; echo -n " [${BOARD}]" ;;
+            "aarch64-unknown-linux-gnu"      ) BOARD="generic-aarch64" ; echo -n " [${BOARD}]" ;;
+            *                                ) E_message "invalid target ${TARGET}" ; FLAGGED=$TRUE ;;
+        esac ; right_status $?
+    fi
+    message_n "overall sanity check:"
+    if [[ ${FLAGGED} ]] ; then
+        echo -en " ${BRon}(errors)${Boff}"
         right_status 1 ; usage
-    elif [[ $TRUE ]] ; then
-        echo -en " (sane)"
-        right_status $?
+    else
+        echo -en " ${BGon}(sane)${Boff}"
+        right_status 0 ; return 0
     fi
 }
 
@@ -382,39 +427,52 @@ emerge-cross-rust-std() {
     return 0
 }
 
-TARGET-emerge-system() {
-    ${TARGET}-emerge -uavDN @system --keep-going
-    echo
-    message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
-    message "Some must be compiled natively after chroot, in steps to follow"
-    echo
+get-max-profile-number() {
+    BOARD=$1
+    validate_target ${BOARD} # set TARGET, TARGET_ARCH just in case not already set
+    cmd="ARCH=${TARGET_ARCH}"
+    cmd+=" PORTAGE_CONFIGROOT=/usr/${TARGET}/"
+    cmd+=" eselect profile list |"
+    cmd+=" grep '\[[0-9]\+\]' |"
+    cmd+=" awk '{print \$1}' |"
+    cmd+=" sed 's/\[//' |"
+    cmd+=" sed 's/\]//' |"
+    cmd+=" sort -n |"
+    cmd+=" tail -n 1"
+    result=$(eval ${cmd})
+    echo $result
+    return $result
 }
 
-TARGET-emerge-world() {
-    ${TARGET}-emerge -uavDN @world --keep-going
-    echo
-    message "Do not worry if some @world packages fail to build (e.g. gcc, above)"
-    message "Some must be compiled natively after chroot, in steps to follow"
-    echo
+profile_number_prompt()  {
+    ps=$1; echo; echo; CUU; SCP;
+    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
+    message_n "$ps [0-${max_num}]: " && read profile_number;
+    isnumber $profile_number ; result=$?
+    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt ${max_num} ] ; do
+        RCP; echo -en "$( repeat ' ' $( termwidth ) )"; RCP;
+        message_n "$ps [0-${max_num}]: " && read profile_number;
+        isnumber $profile_number ; result=$? ; done
 }
 
-select-profile() {
+eselect-profile() {
     message "setting default profile ..."
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
+
     response=""
     new_prompt "${BYon}Would you like to select a diffeeent profile?"
     case ${response:0:1} in
         [yY] )
             message "${BMon}Available profiles --${Boff}"
             ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
-            number_prompt "${BYon}Select profile: ${Boff}"
+            profile_number_prompt "${BYon}Select profile: ${Boff}"
             ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
             ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
             ;;
-        [nN] ) E_message "exiting as instructed"; exit ;;
+        [nN] ) E_message "exiting as instructed"; return 0;;
         [sS] ) E_message "skipping; profile remains ${profile_number}" ;;
-        * ) E_message "invalid response [ ${response} ]"; exit ;;
+        * ) E_message "invalid response [ ${response} ]"; exit 1 ;;
     esac
     return 0
 }
@@ -424,12 +482,13 @@ create-new-cross-compiler() {
     message "because crossdev may produce split-usr layout, and I prefer the"
     message "merged-usr layout that modern stage3 provides ..."
     echo
+    FLAGGED=$FALSE
     for x in profiles metadata; do
         target_dir="/var/db/repos/crossdev/${x}"
         message_n "validating ${target_dir} ..."
         if [ ! -d ${target_dir} ] ; then
-            echo -en "${BYon}(creating)${Boff}"
-            mkdir -p ${target_dir} ; right_status $?
+            echo -en " (${BYon}creating${Boff})"
+            mkdir -p ${target_dir} && right_status $? || ( right_status $? && FLAGGED=$TRUE )
         else
             echo -en " (${BGon}valid${Boff})"
             right_status $TRUE
@@ -441,8 +500,8 @@ create-new-cross-compiler() {
     if [ ! -f /var/db/repos/crossdev/metadata/layout.conf ] || \
        [ -z "$(grep 'masters = gentoo' /var/db/repos/crossdev/metadata/layout.conf 2>/dev/null)" ] ; then
         echo -en " ${BYon}(populating)${Boff} ..."
-        echo 'masters = gentoo' > /var/db/repos/crossdev/metadata/layout.conf
-        right_status $?
+        echo 'masters = gentoo' > /var/db/repos/crossdev/metadata/layout.conf && \
+        right_status $? || ( right_status $? && FLAGGED=$TRUE )
     else
         echo -en " (${BGon}valid${Boff})"
         right_status $TRUE
@@ -453,8 +512,8 @@ create-new-cross-compiler() {
     if [ ! -f /var/db/repos/crossdev/profiles/repo_name ] || \
        [ -z "$(grep 'crossdev' /var/db/repos/crossdev/profiles/repo_name)" ] ; then
         echo -en " ${BYon}(populating)${Boff} ..."
-        echo 'crossdev' > /var/db/repos/crossdev/profiles/repo_name
-        right_status $?
+        echo 'crossdev' > /var/db/repos/crossdev/profiles/repo_name && \
+        right_status $? || ( right_status $? && FLAGGED=$TRUE )
     else
         echo -en " (${BGon}valid${Boff})"
         right_status $TRUE
@@ -462,23 +521,24 @@ create-new-cross-compiler() {
 
     # set permissions
     message_n "setting permission for portate on /var/db/repos/crossdev ..."
-    chown -R portage:portage /var/db/repos/crossdev
-    right_status $?
+    chown -R portage:portage /var/db/repos/crossdev && \
+    right_status $? || ( right_status $? && FLAGGED=$TRUE )
 
     # now actually build the new cross-compiler
     message "building new cross-compiler ..."
-    crossdev -S -t ${TARGET}
-    result=$?
-    right_status $result
-    return $result
+    crossdev -S -t ${TARGET} && \
+    right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above" ; return 1
+    else
+        message "cross-compiler creation complete" ; return 0
+    fi
 }
 
 untar-stage3() {
     message_n "extracting stage3 from tar.xz archive ..."
     tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /usr/${TARGET}/
-    result=$?
-    right_status $result
-    return $result
+    result=$? ; right_status $result ; return $result
 }
 
 verify-stage3-hashes() {
@@ -498,78 +558,62 @@ verify-stage3-hashes() {
 
     if [[ "${SHA512_DIGEST}" != "${SHA512_HASH}" ]] ; then
         E_message "openssl sha512 hash has does not match digest"
-        exit
+        return 1
     elif [[ "${BLAKE2B_DIGEST}" != "${BLAKE2B_HASH}" ]] ; then
         E_message "openssl blake2b512 hash has does not match digest"
-        exit
+        return 1
     else
         message_n "openssl sha512 and blake2b512 hashes both ${BGon}match${Boff} digest"
         right_status $TRUE
     fi
-    # to do: verify hashes automatically
-#    E_message "automatic hash verification would occur here. not implemented yet ..."
-#    message "compare output of commands above to verify manually"
     return 0
 }
 
 wget-stage3() {
-
     old_dir="$(pwd)"
     message_n "moving from ${old_dir} to /usr/${TARGET} ..."
     cd /usr/${TARGET} ; right_status $?
     message "now getting stage3 in target sysroot directory: [${Mon}$(pwd)${Boff}] ..."
-    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')"
+    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')" && \
     wget ${href} && wget ${href}.DIGESTS
     return $?
-}
-
-validate_status_file() {
-    status_dir=$(dirname ${status_file})
-    [ ! -d ${status_dir} ] && mkdir -p ${status_dir}
-    message_n "validating status_dir [${status_file}] ..."
-    [ ! -f ${status_file} ] && touch ${status_file}
-    [ -f ${status_file} ] && result=$TRUE || result=1
-    right_status $result
-    return $result
-}
-
-number_prompt()  {
-    ps=$1; echo; echo; CUU; SCP;
-    message_n "$ps [0-999]: " && read profile_number;
-    isnumber $profile_number ; result=$?
-    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt 999 ]; do
-        RCP; echo -en "$( repeat ' ' $( termwidth ) )"; RCP;
-        message_n "$ps [0-999]: " && read profile_number;
-        isnumber $profile_number ; result=$? ; done
 }
 
 run_sequence() {
     echo
     separator "Running command sequence" "${PN}-${BUILD}"
     echo
+    d_message "starting_step: [ ${starting_step} ]" 3
+    d_message "stopping_step: [ ${stopping_step} ]" 3
     for ((step_number=${starting_step}; step_number<=${stopping_step}; step_number++))
     do
         separator "(${step_number}: ${command_sequence[${step_number}]})" "${PN}-${BUILD}"
-        d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
-        echo $step_number > ${status_file}
+        d_message "Writing step_number [ $step_number ] to mkenvstatusfile ( $mkenvstatusfile )" 2
+        echo $step_number > ${mkenvstatusfile}
         if [[ ${INTERACTIVE} ]] ; then
-          d_message "INTERACTIVE is true, will prompt before executing this step [ $step_number ]" 2
-          response=""
-          # confirm user is ready/wants to run the next command
-          new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step_number}]}${BMon}?${Boff}"
+            d_message "INTERACTIVE ${BGon}ON{Boff}; will prompt to ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            response=""
+            # confirm user is ready/wants to run the next command
+            new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step_number}]}${BMon}?${Boff}"
         else  # automatically execute other steps for non-interactive
-          d_message "INTERACTIVE is false; will automatically execute this step [ $step_number ]" 2
-          message "${BMon}Beginning ${BGon}${command_sequence[${step_number}]}${BMon} as instructed ...${Boff}"
-          response="y"
+            d_message "INTERACTIVE ${BRon}OFF${Boff}; will automatically ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            message "${BMon}Beginning ${BGon}${command_sequence[${step_number}]}${BMon} as instructed ...${Boff}"
+            response="y"
        fi  ## interactive
-        case $response in
-          [Yy] )  # execute this command and continue
-            message "${LBon}About to run ${BYon}${command_sequence[${step_number}]}${LBon}...${Boff}" ; \
-            eval ${command_sequence[${step_number}]}; right_status $? ;;
-          [Ss] ) ;; # skip this command and continue
-          *    )  # abort due to negative response
-            message "${BRon}As instructed, not running ${BGon}${command_sequence[${step_number}]}${BRon}. Quitting...${Boff}" ; \
-            exit ;;
+       case $response in
+           [Yy] )  # execute this command and continue
+               message "${LBon}About to run ${BYon}${command_sequence[${step_number}]}${LBon} ...${Boff}" ; \
+               eval ${command_sequence[${step_number}]} ; result=$? ;
+               if [ ${result} -eq 0 ] ; then
+                   message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BGon}completed successfully${Boff}"
+               else
+                   E_message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BRon}failed${Boff}"
+               fi
+               ;;
+           [Ss] ) ;; # skip this command and continue
+           *    )  # abort due to negative response
+               message "${BRon}As instructed, not running ${BGon}${command_sequence[${step_number}]}${BRon}. Quitting...${Boff}" ; \
+               exit ;;
         esac
 
     done
@@ -595,17 +639,16 @@ d_echo "processing cmdline args: $@" 5
 
 msg="processing cmdline ..."
 [ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
-process_cmdline "${@}"   # override defaults
+process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
 right_status $?
 
-validate_target
-validate_status_file
-sanity_check
-display_configuration
-
-# for each command in command_sequence array (like rus/jus/kernelupdate)
+sanity_check && \
+validate_target ${BOARD} && \
+validate_status_file ${mkenvstatusfile} && \
+display_configuration && \
 run_sequence
 
 echo
 cd $old_dir
 d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
+exit 0

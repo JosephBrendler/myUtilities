@@ -40,11 +40,11 @@ result=$? ; right_status $result
 
 if [ $result -eq 0 ] ; then
     message "installing qemu binary in ${TARGET} ..."
-    ROOT=/usr/${TARGET}/ emerge -av1 --usepkgonly --nodeps qemu
-    right_status $?
+    ROOT=/usr/${TARGET}/ emerge -av1 --usepkgonly --nodeps qemu && \
+    right_status $? || ( right_status $? && exit 1 )
 else
     E_message "${BRon}Failed to build qemu for ${TARGET} ...${Boff}"
-    exit
+    exit 1
 fi
 
 # set up for rust-std [NOTE: this doesn't really work yet]
@@ -53,27 +53,28 @@ if [ -z "$(grep -iR rust-src /etc/portage/package.use/)" ] ; then
     message_n "adding USE rust-src to package.use ..."
     echo "dev-lang/rust rust-src" >> /etc/portage/package.use/joetoo && \
     echo "dev-lang/rust-bin rust-src" >> /etc/portage/package.use/joetoo
-    right_status $?
+    right_status $? || ( right_status $? && exit 1 )
 fi
 if [ -z "$(grep 'LLVM_TARGETS' /etc/portage/make.conf)" ] ; then
     # there is no LLVM_TARGETS entry in make.conf, so add it
     message_n "adding LLVM_TARGETS to make.conf ..."
     echo 'LLVM_TARGETS="AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore"' >> /etc/portage/make.conf
-    right_status $?
+    right_status $? || ( right_status $? && exit 1 )
 fi
 echo
 message "double-check make.conf and package.use, and then rebuild rust and llvm"
 message "  with rust-src/LLVM_TARGETS configuration (run emerge -uavDN world)"
-E_message "  Note: as of 15 April 2025, this doesn't really work"
+E_message "  Note: as of 15 April 2025, emerge cross-${TARGET}/rust-std doesn't work"
 echo
 message_n "creating rust-std link in crossdev repo ..."
 cd /var/db/repos/crossdev/cross-${TARGET} && \
 ln -s /var/db/repos/gentoo/sys-devel/rust-std
-right_status $?
+right_status $? || ( right_status $? && exit 1 )
 message_n "unmasking rust-std in package.accept_keywords ..."
 echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std
-right_status $?
+right_status $? || ( right_status $? && exit 1 )
 
 echo
 cd $old_dir
 message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0
