@@ -42,72 +42,73 @@ display-config() {
 prepare() {
     FLAGGED=$FALSE
     [ -n "$(losetup -a)" ] && E_message "There are loop devices already active" && FLAGGED=$TRUE
-    [ -m "$(mount | grep loop)" ] && E_message "There are loop devices mounted" && FLAGGED=$TRUE
+    [ -n "$(mount | grep loop)" ] && E_message "There are loop devices mounted" && FLAGGED=$TRUE
     [ -f "${imagefile}" ] && E_message "imagefile ${imagefile} already exists" && FLAGGED=$TRUE
     if [[ $FLAGGED ]] ; then
         E_message "Note red flags above. Please clean up before continuing"
-        exit
+        exit 1
     fi
 }
 mksparseimagetemplate() {
     # Create empty image file
     message_n "creating sparse image file [ ${imagefile} ] ..."
-    dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M ; right_status $?
-    mktemplate-common
+    dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M && right_status $? && \
+    mktemplate-common || ( right_status $? && exit 1 )
 }
 
 mkimagetemplate() {
     # Create empty image file
     message_n "creating fixed-size image file [ ${imagefile} ] ..."
-    dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb} ; right_status $?
-    mktemplate-common
+    dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb} && right_status $? || ( right_status $? && exit 1 )
+    mktemplate-common && right_status $? || ( right_status $? && exit 1 )
 }
 
 mktemplate-common() {
     # Set up loop device
     message_n "setting up loop device"
-    loop_device="$(losetup --find --show ${imagefile})"; result=$?
-    echo -n " ( ${loop_device} )"
-    right_status ${result}
+    loop_device="$(losetup --find --show ${imagefile})" && result=$? && \
+    echo -n " ( ${loop_device} )" && \
+    right_status ${result} || ( right_status $? && exit 1 )
     # Create partition table
     message_n "making dos disk label ..."
-    parted -s "$loop_device" mklabel msdos ; right_status $?
+    parted -s "$loop_device" mklabel msdos && right_status $? || ( right_status $? && exit 1 )
     # Create partitions
     message_n "creating partition 1 ..."
-    parted -s "$loop_device" mkpart primary 0% ${partition1_size_mb}MiB ; right_status $?
+    parted -s "$loop_device" mkpart primary 0% ${partition1_size_mb}MiB && right_status $? || ( right_status $? && exit 1 )
     message_n "creating partition 2 ..."
-    parted -s "$loop_device" mkpart primary ${partition1_size_mb}MiB 100% ; right_status $?
+    parted -s "$loop_device" mkpart primary ${partition1_size_mb}MiB 100% && right_status $? || ( right_status $? && exit 1 )
     # Get partition device names
     message_n "getting device name for partition 1 ..."
-    partition1_device="${loop_device}p1" ; result=$?
-    echo -n " ( ${partition1_device} )"
-    right_status ${result}
+    partition1_device="${loop_device}p1" && result=$? && \
+    echo -n " ( ${partition1_device} )" && \
+    right_status ${result} || ( right_status $? && exit 1 )
     message_n "getting device name for partition 1 ..."
-    partition2_device="${loop_device}p2" ; result=$?
-    echo -n " ( ${partition2_device} )"
-    right_status ${result}
+    partition2_device="${loop_device}p2" && result=$? && \
+    echo -n " ( ${partition2_device} )" && \
+    right_status ${result} || ( right_status $? && exit 1 )
     # Format partitions
     message "formatting partition 1 ..."
-    mkfs.vfat -F 32 -n bootfs "$partition1_device" ; right_status $?
+    mkfs.vfat -F 32 -n bootfs "$partition1_device" && right_status $? || ( right_status $? && exit 1 )
     message "formatting partition 2 ..."
-    mkfs.ext4 -L rootfs "$partition2_device" ; right_status $?
+    mkfs.ext4 -L rootfs "$partition2_device" && right_status $? || ( right_status $? && exit 1 )
     # mount rootfs, mkdir boot
     if [ ! -d /mnt/image ] ; then
         message_n "creating mountpoint /mnt/image ..."
-        mkdir /mnt/image ; right_status $?
+        mkdir /mnt/image && right_status $? || ( right_status $? && exit 1 )
     fi
     message_n "mounting rootfs ..."
-    mount "${partition2_device}" /mnt/image ; right_status $?
+    mount "${partition2_device}" /mnt/image && right_status $? || ( right_status $? && exit 1 )
     message_n "creating boot directory ..."
-    mkdir /mnt/image/boot ; right_status $?
+    mkdir /mnt/image/boot && right_status $? || ( right_status $? && exit 1 )
     message "un-mounting rootfs ..."
-    umount /mnt/image ; right_status $?
+    umount /mnt/image && right_status $? || ( right_status $? && exit 1 )
     # Clean up loop device
     message_n "cleaning up loop device [ ${loop_device} ]"
-    losetup -d "$loop_device" ; right_status $?
+    losetup -d "$loop_device" && right_status $? || ( right_status $? && exit 1 )
     echo "Image ${imagefile} created with two partitions:"
     echo "Partition 1: $partition1_size_mb MB, formatted as vfat"
     echo "Partition 2: $partition2_size_mb MB, formatted as ext4"
+    return 0
 }
 
 #-----[ main script ]---------------------------------------------
@@ -126,5 +127,4 @@ case ${IMAGE_TYPE:0:1} in
     * ) E_message "Invalid argument [ ${IMAGE_TYPE} ]" ; usage ;;
 esac
 
-mkimagetemplate
-
+exit 0

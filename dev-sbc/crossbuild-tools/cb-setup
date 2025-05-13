@@ -23,17 +23,24 @@ imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img
 usage() {
     message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
     usage-common-message
-    exit
+    exit 1
 }
 
 setup-crossdev-environment() {
+    FLAGGED=$FALSE
     # check for template imagefile and create if needed
     if [ ! -f ${imagefile} ] ; then
-        E_message "template imagefile ${imagefile} does not exist; calling cb-mkimagefile"
-        cb-mkimagefile
+        E_message "template imagefile ${imagefile} does not exist; calling cb-mktemplateimage"
+        # using sparse image format (for now)
+        cb-mktemplateimage s; result=$?
+        if [[ ${result} -ne 0 ]] ; then
+            E_message "cb-mktemplateimage ${BRon}failed${Boff}"
+            FLAGGED=$TRUE
+        else
+            message "cb-mktemplateimage ${BGon}succeeded${Boff}"
+        fi
     fi
     # if parts already exist, consider re-running cleanup
-    FLAGGED=$FALSE
     [ -d /usr/${TARGET} ]  && E_message "target directory /usr/${TARGET} already exists" && FLAGGED=$TRUE
     [ -f /usr/${BOARD}.img ]  && E_message "image file target /usr/${BOARD}.img already exists" && FLAGGED=$TRUE
     ( [ -b /dev/loop0p1 ] || [ -b /dev/loop0p2 ] ) && E_message "/dev/loop0 is active" && FLAGGED=$TRUE
@@ -44,10 +51,12 @@ setup-crossdev-environment() {
         mst+="    y: yes; re-run cleanup | s: no; continue to set up | n: no; exit"
         response="" ; new_prompt "${msg}"
         case ${response:0:1} in
-            [yY] ) message_n "re-running cleanup" ; cb-cleanup ${BOARD} ;;
+            [yY] ) message "re-running cleanup" ; cb-cleanup ${BOARD} && \
+                   ( right_status $? && message "cb-cleanup succeeded" ) || \
+                   ( right_status $? && exit 1 ) ;;
             [sS] ) message "OK; no action; continuing" ;;
-            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit ;;
-            * ) E_message "Invalid response; exiting" ; exit ;;
+            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit 1 ;;
+            * ) E_message "Invalid response; exiting" ; exit 1 ;;
         esac
     else
         message "no red flags noted"
@@ -60,15 +69,16 @@ setup-crossdev-environment() {
         message "target directory /usr/${TARGET} already exists - using"
     else
         message_n "making target /usr/${TARGET} ...."
-        mkdir /usr/${TARGET} ; right_status $?
+        mkdir /usr/${TARGET} && right_status $? || ( right_status $? && exit 1 )
     fi
     # use or create board image file
     if [ -f /usr/${BOARD}.img ] ; then
         # exists apparently because we said tp keep it, above - use
         message "image file /usr/${BOARD}.img already exists - using"
     else
-        message_n "generating /usr/${BOARD} from template ...."
-        cp /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img /usr/${BOARD}.img ; right_status $?
+        message_n "generating /usr/${BOARD}.img from template ...."
+        cp /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img /usr/${BOARD}.img && \
+        right_status $? || ( right_status $? && exit 1 )
     fi
     # loopmount board image file on target directory
     if [ -b /dev/loop0p1 ] || [ -b /dev/loop0p2 ] ; then
@@ -76,12 +86,23 @@ setup-crossdev-environment() {
         message "/dev/loop0p1 and/or /dev/loop0p2 are active - using"
     else
         message_n "activating /dev/loop0 for image file /usr/${BOARD}.img ..."
-        losetup -P -f /usr/${BOARD}.img ; right_status $?
+        img_loop_dev=$(losetup --find --show --partscan /usr/${BOARD}.img) && \
+        right_status $? || ( right_status $? && exit 1 )
+        # Get partition device names
+        message_n "getting device name for partition 1 ..."
+        img_partition1_dev="${img_loop_dev}p1" && result=$? && \
+        echo -n " ( ${img_partition1_dev} )" && \
+        right_status ${result} || ( right_status $? && exit 1 )
+        message_n "getting device name for partition 1 ..."
+        img_partition2_dev="${img_loop_dev}p2" && result=$? && \
+        echo -n " ( ${img_partition2_dev} )" && \
+        right_status ${result} || ( right_status $? && exit 1 )
+
     fi
-    message_n "mounting rootfs (/dev/loop0p2) on /usr/${TARGET}/ ..."
-    mount /dev/loop0p2 /usr/${TARGET}/ ; right_status $?
-    message_n "mounting bootfs (/dev/loop0p1) on /usr/${TARGET}/boot/ ..."
-    mount /dev/loop0p1 /usr/${TARGET}/boot/ ; right_status $?
+    message_n "mounting rootfs (${img_partition2_dev}) on /usr/${TARGET}/ ..."
+    mount ${img_partition2_dev} /usr/${TARGET}/ && right_status $? || ( right_status $? && exit 1 )
+    message_n "mounting bootfs (${img_partition1_dev}) on /usr/${TARGET}/boot/ ..."
+    mount ${img_partition1_dev} /usr/${TARGET}/boot/ && right_status $? || ( right_status $? && exit 1 )
     # stop here - need to get stage3 and THEN run crossdev
 }
 
@@ -101,3 +122,4 @@ setup-crossdev-environment
 echo
 cd $old_dir
 message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0
