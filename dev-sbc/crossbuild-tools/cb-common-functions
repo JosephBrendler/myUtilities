@@ -195,3 +195,312 @@ usage-common-message() {
     echo
     return 0
 }
+
+run_sequence() {
+    echo
+    separator "Running command sequence" "${PN}-${BUILD}"
+    echo
+    d_message "starting_step: [ ${starting_step} ]" 3
+    d_message "stopping_step: [ ${stopping_step} ]" 3
+    for ((step_number=${starting_step}; step_number<=${stopping_step}; step_number++))
+    do
+        separator "(${step_number}: ${command_sequence[${step_number}]})" "${PN}-${BUILD}"
+        d_message "Writing step_number [ $step_number ] to mkenvstatusfile ( $mkenvstatusfile )" 2
+        echo $step_number > ${mkenvstatusfile}
+        if [[ ${INTERACTIVE} ]] ; then
+            d_message "INTERACTIVE ${BGon}ON{Boff}; will prompt to ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            response=""
+            # confirm user is ready/wants to run the next command
+            new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step_number}]}${BMon}?${Boff}"
+        else  # automatically execute other steps for non-interactive
+            d_message "INTERACTIVE ${BRon}OFF${Boff}; will automatically ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            message "${BMon}Beginning ${BGon}${command_sequence[${step_number}]}${BMon} as instructed ...${Boff}"
+            response="y"
+       fi  ## interactive
+       case $response in
+           [Yy] )  # execute this command and continue
+               message "${LBon}About to run ${BYon}${command_sequence[${step_number}]}${LBon} ...${Boff}" ; \
+               eval ${command_sequence[${step_number}]} ; result=$? ;
+               if [ ${result} -eq 0 ] ; then
+                   message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BGon}completed successfully${Boff}"
+               else
+                   E_message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BRon}failed${Boff}"
+               fi
+               ;;
+           [Ss] ) ;; # skip this command and continue
+           *    )  # abort due to negative response
+               message "${BRon}As instructed, not running ${BGon}${command_sequence[${step_number}]}${BRon}. Quitting...${Boff}" ; \
+               exit ;;
+        esac
+
+    done
+    echo
+}
+
+sanity_check() {
+    # sanity check configuration
+    FLAGGED=$FALSE
+    message "sanity-checking configuration ..."
+    if [[ $DESTROY ]] && [ $starting_step -ne 0 ] ; then
+        E_message "user specified DESTROY and non-zero starting_step"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [[ $CREATE ]] && [ $starting_step -ne 0 ] ; then    
+        E_message "user specified CREATE and non-zero starting_step"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [[ $CREATE ]] && [[ $DESTROY ]] ; then
+        E_message "user specified both CREATE and DESTROY"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+
+    # caution: -n tests true even when the variable is NULL 
+    #echo "BOARD: [${BOARD}]"  
+    #echo "TARGET: [${TARGET}]"
+    #echo -n "-n: BOARD: " ; [ -n ${BOARD} ] && echo true || echo false
+    #echo -n "-n: TARGET: " ; [ -n ${TARGET} ] && echo true || echo false
+    #echo -n "-z: BOARD: " ; [ -z ${BOARD} ] && echo true || echo false
+    #echo -n "-z: TARGET: " ; [ -z ${TARGET} ] && echo true || echo false
+    #echo -n "len: BOARD: " ; echo ${#BOARD}  
+    #echo -n "len: TARGET: " ; echo ${#TARGET}
+    #    if [ -n ${BOARD} ] && [ -n ${TARGET} ] ; then
+    #    if [ ${#BOARD} -ne 0 ] && [ ${#TARGET} -ne 0 ] ; then
+    if [ ! -z ${BOARD} ] && [ ! -z ${TARGET} ] ; then
+        E_message "user specified both BOARD [${BOARD}] and TARGET [${TARGET}}"
+        message "OK: validate_target() will use BOARD and (re)assign TARGET"
+    fi
+    if [ -z ${BOARD} ] && [ -z ${TARGET} ] ; then
+        E_message "user specified neither BOARD nor TARGET"
+        right_status 1 ; FLAGGED=$TRUE
+    fi
+    if [ -z ${BOARD} ] && [ -n ${TARGET} ] ; then
+        E_message "user specified TARGET but no board"
+        message_n "OK: auto-selecting generic board:" 
+        case ${TARGET} in
+            "armv6j-unknown-linux-gnueabihf" ) BOARD="generic-armv6j" ; echo -n " [${BOARD}]" ;;
+            "armv7a-unknown-linux-gnueabihf" ) BOARD="generic-armv7a" ; echo -n " [${BOARD}]" ;;
+            "aarch64-unknown-linux-gnu"      ) BOARD="generic-aarch64" ; echo -n " [${BOARD}]" ;;
+            *                                ) E_message "invalid target ${TARGET}" ; FLAGGED=$TRUE ;;
+        esac ; right_status $?
+    fi
+    message_n "overall sanity check:"
+    if [[ ${FLAGGED} ]] ; then
+        echo -en " ${BRon}(errors)${Boff}"
+        right_status 1 ; usage
+    else
+        echo -en " ${BGon}(sane)${Boff}"
+        right_status 0 ; return 0
+    fi
+}
+
+display_configuration()  {
+    # will pick up PN, BUILD, varlist from the environment of whatever script sources cb-common-functions
+    separator "configuration" "${PN}-${BUILD}"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+    return 0
+}
+
+process_cmdline() {
+  # process command line arguments (for now only -x/--exclude option can have argument(s))
+  arglist="$@"
+
+  last=""
+  d_message "processing command line with [ ${arglist} ]" 2
+  # shift each argument into position $1 and examine it
+  #   process the argument or processit with its own arguments
+  while [ ! -z "$1" ]
+  do
+    d_message "arg1 = [ $1 ]" 3
+    # if arg begins with a single dash, process it alone
+    if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
+      d_message "processing [ $1 ] alone as single-dash argument" 3
+      process_argument $1 $2   # incl $2 in case $1 is -t or -b
+      [[ "${1}" =~ ^(-t|-b)$ ]] && shift  # extra shift to clear target or board
+      shift
+    # if arg begins with a double dash, process it alone
+    elif [ "${1:0:2}" == "--" ] ; then
+      d_message "processing [ $1 ] alone as double-dash argument" 3
+      process_argument $1 $2   # incl $2 in case $1 is --target
+      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
+      shift
+    else
+      d_message "does not start with - or --" 3
+      usage; exit
+    fi
+  done
+  d_message "done with process_command_line" 2
+  return 0
+}
+
+process_argument() {
+  d_message "about to process [ $* ]" 2
+  d_message "1: [ $1 ], 2: [ $2 ]" 2
+  # process command line argument (must be one of the following)
+  [ ! -z "$1" ] && case "$1" in
+    "-"[sS] | "--status"         )
+      # display status
+      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+      read starting_step < ${mkenvstatusfile};
+      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
+      message "${msg}"
+      exit;
+      ;;
+    "-"[rR] | "--resume"         )
+      # resume at stored step unless that is overridden by a new start # (below)
+      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+      RESUME=${TRUE}
+      read starting_step < ${mkenvstatusfile};
+      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+      d_message "${msg}" 2
+      ;;
+    "-"[iI] | "--interactive"    )
+      # interactive
+      INTERACTIVE=${TRUE};
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[cC] | "--create"    )
+      # create
+      CREATE=${TRUE};
+      stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+      d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
+      ;;
+    "-"[dD] | "--destroy"    )
+      # destroy
+      DESTROY=${TRUE};
+      stopping_step=0 ;
+      d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
+      ;;
+    "-"[nN] | "--noninteractive" )
+      # non-interactive
+      INTERACTIVE=${FALSE}
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[qQ] | "--quiet"          )
+      # decrease verbosity
+      [[ ${verbosity} -gt 0 ]] && let verbosity--
+      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      ;;
+    "-"[vV] | "--verbose"          )
+      # increase verbosity
+      [[ ${verbosity} -lt 6 ]] && let verbosity++
+      VERBOSE=${TRUE}
+      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    "-"[tT] | "--target"         )
+      # specify TARGET (next arg in $@ set)
+      TARGET=$2
+      d_message "${BYon}set TARGET = ${TARGET}" 2
+      ;;
+    "-"[bB] | "--board"         )
+      # specify BOARD (next arg in $@ set)
+      BOARD=$2
+      d_message "${BYon}set BOARD = ${BOARD}" 2
+      ;;
+    *                            )
+    process_compound_arg $1
+      ;;
+  esac
+  d_message "done with process_argument" 3
+  return 0
+}
+
+process_compound_arg()  {
+    d_message "about to process compound [ $* ]" 2
+    # must begin with a single dash
+    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    # must not begin with two dashes (would have been picked in process_argument)
+    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    # strip leading dash(es)
+    myargs=${1##-}
+    # handle remaining characters in sequence
+    while [ -n "${myargs}" ]
+    do
+        #handle one character at at time, from the left
+        case ${myargs:0:1} in
+            [sS] )
+                # display status
+                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+                read starting_step < ${mkenvstatusfile};
+                msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+                msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+                msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
+                d_message "${msg}" 2
+                exit;
+                ;;
+            [rR] )
+                # resume at stored step unless that is overridden by a new start # (below)
+                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
+                RESUME=${TRUE}
+                read starting_step < ${mkenvstatusfile};
+                msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+                msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                d_message "${msg}" 2
+                ;;
+            [0-9] )
+                # currently there are double-digin steps; if the next char is also numeric, append it and "shift"
+                RESUME=${TRUE}
+                starting_step="${myargs:0:1}";
+                if [[ "${myargs:1:1}" == [0-9] ]] ; then
+                    starting_step="${myargs:0:2}";
+                    myargs=${myargs:1}
+                fi
+                if [ $starting_step -gt ${#command_sequence[@]} ] ; then
+                    E_message "invalid starting_step [${starting_step}]"
+                    usage
+                else
+                    msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
+                    msg+=" to status file [${Boff}${mkenvstatusfile}${BYon}]${Boff}"
+                    d_message "${msg}" 2
+                    echo ${starting_step} > ${mkenvstatusfile};
+                    msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
+                    msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                    d_message "${msg}" 2
+                fi
+                ;;
+            [iI] )
+                # interactive
+                INTERACTIVE=${TRUE};
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [cC] )
+                # create
+                CREATE=${TRUE};
+                stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+                d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
+                ;;
+            [dD] )
+                # destroy
+                DESTROY=${TRUE};
+                stopping_step=0 ;
+                d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
+                ;;
+            [nN] )
+                # non-interactive
+                INTERACTIVE=${FALSE}
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [qQ] )
+                # decrease verbosity
+                [[ ${verbosity} -gt 0 ]] && let verbosity--
+                [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+                d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+                ;;
+            [vV] )
+                # increase verbosity
+                [[ ${verbosity} -lt 6 ]] && let verbosity++
+                VERBOSE=${TRUE}
+                d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+                ;;       # note: "numeric" args like -4 should fall through to this default
+            *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
+        esac
+        #strip first char from myargs (i.e. "shift" one character)
+        myargs=${myargs:1}
+    done
+    d_message "done with process_compount_arg" 3
+    return 0
+}
