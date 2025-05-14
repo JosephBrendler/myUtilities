@@ -3,6 +3,7 @@
 # populate-target   (c) joe.brendler  2025-2072
 # copy appropriate template files into crossbuild target filesystem
 #
+
     # pre-requisite: cb-mkenv has been fully completed, with possible exception of its chroot step
     # this script expects --
     #    a working image file is set up and mounted on the appropriate target directory (cb-setup)
@@ -13,36 +14,184 @@
     # It is not necessary for the cb-mkenv's chroot step and subsequent native chroot-emerge @world
     # to have been done.  We'll re-do that here, after establishing actual repositories for the image
 
+# Note: as of build 0.1.4, these additional functions were moved to cb-common-functions:
+#    sanity_check() display_configuration(), process_cmdline(),
+#    process_argument(), process_compound_arg(), and run_sequence()
+# These were already in cb-common-functions:
+#    linear_search(), new_prompt(), TARGET-emerge-world(), TARGET-emerge-system(),
+#    validate_target(), and validate_status_file()
+# Most of these functions and most "cb-<name>" crossbuild-tools employ only one argument
+#    (BOARD, status_file) or simply subsist off the environment of whichever abstract automated
+#    workflow script called them or sourced cb-common-functions (cb-mkenv or cb-complete-image)
+# However, usage() and initialize_variables() as well as the command_ and messageN_sequence
+#    array variables will be defined somewhat differently in both of the abstract automated
+#    workflow scripts (cb-mkenv and cb-complete-image)
+
 source /usr/local/sbin/script_header_brendlefly
+
+#-----[ variagles ]-----------------------------------------------------
+
 VERBOSE=$TRUE
 #verbosity=2
 verbosity=3
-
 PN=$(basename $0)
+
+
+response=""
+
+varlist="PN BUILD BOARD TARGET TARGET_ARCH"
+varlist+=" profile_number"
+varlist+=" starting_step stopping_step mkimgstatusfile"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" BREAK bool.VERBOSE verbosity old_dir"
+
+# Note: much of the workflow is accopmlished by the finalize-chroot-image
+#    script that will run once in the chroot (after replacing the
+#    basic finalize-chroot script provided for cb-mkenv)
+
+command_sequence=(
+'validate-image'
+'repopulate-image'
+'placeholder-cb-chroot-target-image ${BOARD}'  # change to 'cb-chroot-target-image ${BOARD}' when ready
+)
+
+msg1_sequence=(
+'validate image construction and assembly'
+'repopulate image additional content'
+'chroot into target image ${BOARD}'
+)
+
+msg2_sequence=(
+'validating image construction and assembly'
+'repopulating image additional content'
+'chrooting into target image ${BOARD}'
+)
+
+#-----[ functions ]-----------------------------------------------------
 
 message_n "sourcing BUILD ..."
 source /etc/crossbuild-tools/BUILD ; right_status $?
 
 message_n "sourcing cb-common-functions ..."
 source /usr/bin/cb-common-functions ; right_status $?
-TARGET=""
 
 usage() {
-    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
-    usage-common-message
-    exit
+  N=$(( ${#command_sequence[@]} -1 ))
+  separator "${PN}-${BUILD}" "$(hostname)"
+  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -b|--board <BOARD>${Boff}"
+  message "${BYon}Valid Options --${Boff}"
+  message "  -i | --interactive......: run interactively; confirm execution of each step"
+  message "  -n | --noninteractive...: run non-interactively; proceed automatically with each step"
+  message "  -s | --status...........: return status (next step, step_number)"
+  message "  -r | --resume...........: resume proccessing (with next step, from mkenvstatusfile)"
+  message "  -b | --board <BOARD>....: specify BOARD (selects TARGET) for crossbuild environment"
+  message "  -v | --verbose..........: increase verbosity"
+  message "  -q | --quiet............: decrease verbosity"
+  message "  -[0-${N}].................: save N to status file and resume at step N"
+  echo
+  message "${BMon}Note: single-character options (except b) may be combined. For example -${Boff}"
+  message "  ${BGon}${PN} --verbose -nqr11 -b bcm2712-rpi-5-b${Boff}"
+  message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
+  message "  ${BYon}creating a crossbuild environment for a raspu5b${Boff}"
+  echo
+  message "${BMon}Other notes:${Boff}"
+  message "   - options -i (interactive) is on by default"
+  message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
+  message "   - option  -[0-${N}] sets starting_step (default 0) to the specified value"
+  message "   - exactly one BOARD must be specified, TARGET  will be selected automatically"
+  usage-common-message
+  message "${BYon}Command sequence steps:${Boff}"
+  for ((s=0; s<${#command_sequence[@]}; s++))
+  do
+    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
+  done
+  exit 1
 }
 
-complete-image() {
+initialize_variables() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+
+    # set default values
     FLAGGED=$FALSE
-    [ ! -d /usr/${TARGET} ]  && E_message "target directory /usr/${TARGET} does not exist" && FLAGGED=$TRUE
-    [ ! -f /usr/${BOARD}.img ]  && E_message "image file target /usr/${BOARD}.img does not exist" && FLAGGED=$>
-    [ ! -b /dev/loop0p1 ] && E_message "/dev/loop0p1 is inactive" && FLAGGED=$TRUE
-    [ ! -b /dev/loop0p2 ] && E_message "/dev/loop0p2 is inactive" && FLAGGED=$TRUE
-    ( [ -b /dev/loop1p1 ] || [ -b /dev/loop1p2 ] ) && E_message "/dev/loop1 is already active" && FLAGGED=$TRUE
+    d_message_n "sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting old_dir = $(pwd)" 2
+    export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default starting_step = 0" 2
+    export starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_messagez_m "setting default stopping_step = ${#command_sequence[@]}" 2
+    export stopping_step=${#command_sequence[@]} && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default mkimgstatusfile = /root/bin/mkcrossbuildimg_status" 2
+    export mkimgstatusfile="/root/bin/mkcrossbuildimg_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default INTERACTIVE true" 2
+    export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default VERBOSE true" 2
+    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default verbosity = 3" 2
+    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
+}
+
+placeholder-cb-chroot-target-image() {
+    # delete this when the ready for the real chroot
+    BOARD=$1
+    message "now running placeholder-cb-chroot-target-image ${BOARD}"
+}
+
+repopulate-image() {
+    message "now running repopulate-image()"
+}
+
+validate-image() {
+    FLAGGED=$FALSE
+    # validate target mountpoint directory
+    if [ ! -d /usr/${TARGET} ] ; then
+        E_message "target directory /usr/${TARGET} does not exist"
+        FLAGGED=$TRUE
+    fi
+    # validate board image file exists
+    if [ ! -f /usr/${BOARD}.img ] ; then
+        E_message "image file target /usr/${BOARD}.img does not exist"
+        FLAGGED=$TRUE
+    fi
+    # verify loop device is active
+    message "the following loop devices are active for image file(s) --"
+    losetup -a
+    loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
+    if [ -z "${loop_dev}" ] ; then
+        E_message "no loop device is active for /usr/${BOARD}"
+        FLAGGED=$TRUE
+    fi
+    # verify the loop device is mounted on the target
+    mountpoint=$(mount | grep "${loop_dev}p2" | awk '{print $3}')
+    [[ ! "${mountpoint}" == "/usr/${TARGET}" ]] && E_message "no rootfs (loop_dev p2) is mounted on target /usr/${TARGET}" && FLAGGED=$TRUE
+    mountpoint=$(mount | grep "${loop_dev}p1" | awk '{print $3}')
+    if [[ ! "${mountpoint}" == "/usr/${TARGET}/boot" ]] ; then
+        E_message "no bootfs (loop_dev p1) is mounted on target /usr/${TARGET}/boot"
+        FLAGGED=$TRUE
+    fi
+    if [ -z "$(mount | grep loop)" ] ; then
+        E_message "no loop device is mounted at all"
+        FLAGGED=$TRUE
+    fi
+    # verify other loop device(s) are not active
+    if [ ! -z "$(mount | grep loop | grep -v ${loop_dev})" ] ; then
+        E_message "other loop devices are also already active"
+        FLAGGED=$TRUE
+    fi
     if [[ $FLAGGED ]] ; then
         E_message "${BYon}Note red flags above${Boff}"
         E_message "${BWon}You should consider whether you need to correct issues before continuing${Boff}"
+        d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
         if [[ $INTERACTIVE ]] ; then
             msg="${BWon}Do you really want to continue?\n"
             mst+="    y|s: yes; continue | n: no; exit"
@@ -58,6 +207,9 @@ complete-image() {
     else
         message "no red flags noted"
     fi
+}
+
+
     # load complete-image versions of finalize-chroot, root/.bashrc, etc...
     # run cb-chroot-target-image ${BOARD} and let it do the 
     # first-run finalize chroot to complete the process
@@ -83,23 +235,36 @@ complete-image() {
     #  use host to copy from complete image "/usr/${TARGET}/*" to "/mnt/to/"
     #  emerge --config dev-db/mysql && /etc/init.d/mysql start && mysql_secure_installation
 
-}
 
 
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
-[ $# -ne 1 ] && usage
-BOARD=$1
-validate_target ${BOARD}
+  if [ $# -eq 1 ] ; then
+    # option s (status) is the only one that can appear alone on the command line
+    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+      E_message "invalid argument [${arglist}]"
+      usage
+    fi
+  fi
 
-old_dir="$(pwd)"
-cd /usr/${TARGET}
-message "now working in target sysroot directory: [${Mon}$(pwd)${Boff}]"
+initialize_variables     # set defaults
 
-complete-image
+d_echo "cmdline: $*" 5
+d_echo "processing cmdline args: $@" 5
+
+msg="processing cmdline ..."
+[ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
+process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
+right_status $?
+
+sanity_check && \
+validate_target ${BOARD} && \
+validate_status_file ${mkimgstatusfile} && \
+display_configuration && \
+run_sequence
 
 echo
 cd $old_dir
-message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
 exit 0

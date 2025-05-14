@@ -134,7 +134,8 @@ validate_target() {
 }
 
 TARGET-emerge-system() {
-    ${TARGET}-emerge -uavDN @system --keep-going
+    [[ $INTERACTIVE ]] && options="-uavDN" || ptions="-uvDN"
+    ${TARGET}-emerge ${options} @system --keep-going
     echo
     message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
@@ -143,7 +144,8 @@ TARGET-emerge-system() {
 }
 
 TARGET-emerge-world() {
-    ${TARGET}-emerge -uavDN @world --keep-going
+    [[ $INTERACTIVE ]] && options="-uavDN" || ptions="-uvDN"
+    ${TARGET}-emerge ${options} @world --keep-going
     echo
     message "Do not worry if some @world packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
@@ -208,12 +210,16 @@ run_sequence() {
         d_message "Writing step_number [ $step_number ] to mkenvstatusfile ( $mkenvstatusfile )" 2
         echo $step_number > ${mkenvstatusfile}
         if [[ ${INTERACTIVE} ]] ; then
-            d_message "INTERACTIVE ${BGon}ON{Boff}; will prompt to ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will prompt to ${step_number}: (${msg1_sequence[${step_number}]})"
+            d_message "${msg}" 2
             response=""
             # confirm user is ready/wants to run the next command
             new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step_number}]}${BMon}?${Boff}"
         else  # automatically execute other steps for non-interactive
-            d_message "INTERACTIVE ${BRon}OFF${Boff}; will automatically ${step_number}: (${msg1_sequence[${step_number}]})" 2
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will automatically ${step_number}: (${msg1_sequence[${step_number}]})"
+            d_message "${msg}" 2
             message "${BMon}Beginning ${BGon}${command_sequence[${step_number}]}${BMon} as instructed ...${Boff}"
             response="y"
        fi  ## interactive
@@ -277,9 +283,9 @@ sanity_check() {
         E_message "user specified TARGET but no board"
         message_n "OK: auto-selecting generic board:" 
         case ${TARGET} in
-            "armv6j-unknown-linux-gnueabihf" ) BOARD="generic-armv6j" ; echo -n " [${BOARD}]" ;;
-            "armv7a-unknown-linux-gnueabihf" ) BOARD="generic-armv7a" ; echo -n " [${BOARD}]" ;;
-            "aarch64-unknown-linux-gnu"      ) BOARD="generic-aarch64" ; echo -n " [${BOARD}]" ;;
+            "armv6j-unknown-linux-gnueabihf" ) export BOARD="generic-armv6j" ; echo -n " [${BOARD}]" ;;
+            "armv7a-unknown-linux-gnueabihf" ) export BOARD="generic-armv7a" ; echo -n " [${BOARD}]" ;;
+            "aarch64-unknown-linux-gnu"      ) export BOARD="generic-aarch64" ; echo -n " [${BOARD}]" ;;
             *                                ) E_message "invalid target ${TARGET}" ; FLAGGED=$TRUE ;;
         esac ; right_status $?
     fi
@@ -351,7 +357,7 @@ process_argument() {
     "-"[rR] | "--resume"         )
       # resume at stored step unless that is overridden by a new start # (below)
       d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-      RESUME=${TRUE}
+      export RESUME=${TRUE}
       read starting_step < ${mkenvstatusfile};
       msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
@@ -359,46 +365,46 @@ process_argument() {
       ;;
     "-"[iI] | "--interactive"    )
       # interactive
-      INTERACTIVE=${TRUE};
+      export INTERACTIVE=${TRUE};
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
     "-"[cC] | "--create"    )
       # create
-      CREATE=${TRUE};
+      export CREATE=${TRUE};
       stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
       d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
       ;;
     "-"[dD] | "--destroy"    )
       # destroy
-      DESTROY=${TRUE};
+      export DESTROY=${TRUE};
       stopping_step=0 ;
       d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
       ;;
     "-"[nN] | "--noninteractive" )
       # non-interactive
-      INTERACTIVE=${FALSE}
+      export INTERACTIVE=${FALSE}
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
     "-"[qQ] | "--quiet"          )
       # decrease verbosity
       [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+      [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
       d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
       ;;
     "-"[vV] | "--verbose"          )
       # increase verbosity
       [[ ${verbosity} -lt 6 ]] && let verbosity++
-      VERBOSE=${TRUE}
+      export VERBOSE=${TRUE}
       d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
       ;;       # note: "numeric" args like -4 should fall through to this default
     "-"[tT] | "--target"         )
       # specify TARGET (next arg in $@ set)
-      TARGET=$2
+      export TARGET=$2
       d_message "${BYon}set TARGET = ${TARGET}" 2
       ;;
     "-"[bB] | "--board"         )
       # specify BOARD (next arg in $@ set)
-      BOARD=$2
+      export BOARD=$2
       d_message "${BYon}set BOARD = ${BOARD}" 2
       ;;
     *                            )
@@ -435,7 +441,7 @@ process_compound_arg()  {
             [rR] )
                 # resume at stored step unless that is overridden by a new start # (below)
                 d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-                RESUME=${TRUE}
+                export RESUME=${TRUE}
                 read starting_step < ${mkenvstatusfile};
                 msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
                 msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
@@ -443,10 +449,10 @@ process_compound_arg()  {
                 ;;
             [0-9] )
                 # currently there are double-digin steps; if the next char is also numeric, append it and "shift"
-                RESUME=${TRUE}
+                export RESUME=${TRUE}
                 starting_step="${myargs:0:1}";
                 if [[ "${myargs:1:1}" == [0-9] ]] ; then
-                    starting_step="${myargs:0:2}";
+                    export starting_step="${myargs:0:2}";
                     myargs=${myargs:1}
                 fi
                 if [ $starting_step -gt ${#command_sequence[@]} ] ; then
@@ -464,36 +470,36 @@ process_compound_arg()  {
                 ;;
             [iI] )
                 # interactive
-                INTERACTIVE=${TRUE};
+                export INTERACTIVE=${TRUE};
                 d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
                 ;;
             [cC] )
                 # create
-                CREATE=${TRUE};
-                stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
+                export CREATE=${TRUE};
+                export stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
                 d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
                 ;;
             [dD] )
                 # destroy
-                DESTROY=${TRUE};
-                stopping_step=0 ;
+                export DESTROY=${TRUE};
+                export stopping_step=0 ;
                 d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
                 ;;
             [nN] )
                 # non-interactive
-                INTERACTIVE=${FALSE}
+                export INTERACTIVE=${FALSE}
                 d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
                 ;;
             [qQ] )
                 # decrease verbosity
                 [[ ${verbosity} -gt 0 ]] && let verbosity--
-                [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
+                [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
                 d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
                 ;;
             [vV] )
                 # increase verbosity
                 [[ ${verbosity} -lt 6 ]] && let verbosity++
-                VERBOSE=${TRUE}
+                export VERBOSE=${TRUE}
                 d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
                 ;;       # note: "numeric" args like -4 should fall through to this default
             *   ) E_message "${E_BAD_ARGS}" && usage && exit 1

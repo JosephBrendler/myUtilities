@@ -20,17 +20,14 @@
 #    workflow scripts (cb-mkenv and cb-complete-image)
 
 source /usr/local/sbin/script_header_brendlefly
+
+#-----[ variagles ]-----------------------------------------------------
+
 VERBOSE=$TRUE
 # set verbosity > 1 for debug incl initialization
 #verbosity=1
 verbosity=2
 PN=$(basename $0)
-
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
-
-message_n "sourcing cb-common-functions ..."
-source /usr/bin/cb-common-functions ; right_status $?
 
 response=""
 
@@ -97,6 +94,12 @@ msg2_sequence=(
 
 #-----[ functions ]-----------------------------------------------------
 
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+
 usage() {
   N=$(( ${#command_sequence[@]} -1 ))
   separator "${PN}-${BUILD}" "$(hostname)"
@@ -114,13 +117,14 @@ usage() {
   message "  -q | --quiet............: decrease verbosity"
   message "  -[0-${N}].................: save N to status file and resume at step N"
   echo
-  message "${BMon}Note: single-character options (except t) may be combined. For example -${Boff}"
-  message "  ${BGon}${PN} --verbose -nqr11${Boff}"
+  message "${BMon}Note: single-character options (except b or t) may be combined. For example -${Boff}"
+  message "  ${BGon}${PN} --verbose -nqr11 -t armv6j-unknown-linux-gnueabihf${Boff}"
   message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
+  nessage "  ${BYon}creating a generic-armv6j board image on the selected target${Boff}"
   echo
   message "${BMon}Other notes:${Boff}"
   message "   - options -i (interactive) is on by default"
-  message "   - options -c (create) and -c (destroy) are off by default and set starting_step=0"
+  message "   - options -c (create) and -d (destroy) are off by default and set starting_step=0"
   message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
   message "   - option  -[0-${N}] sets starting_step to the specified value"
   message "   - if a BOARD is specified, TARGET will be selected, overriding any -t setting"
@@ -143,21 +147,21 @@ initialize_variables() {
     d_message_n "sourcing BUILD ..." 2
     source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting old_dir = $(pwd)" 2
-    old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default starting_step = 0" 2
-    starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_messagez_m "setting default stopping_step = ${#command_sequence[@]}" 2
-    stopping_step=${#command_sequence[@]} && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export stopping_step=${#command_sequence[@]} && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default mkenvstatusfile = /root/bin/mkcrossbuildenv_status" 2
-    mkenvstatusfile="/root/bin/mkcrossbuildenv_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export mkenvstatusfile="/root/bin/mkcrossbuildenv_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting PN = $(basename $0)" 2
     PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default INTERACTIVE true" 2
-    INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default VERBOSE true" 2
-    VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default verbosity = 3" 2
-    verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     if [[ $FLAGGED ]] ; then
         E_message "failed clean exit; note red flags above"
         return 1
@@ -206,6 +210,7 @@ eselect-profile() {
     message "setting default profile ..."
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
+    d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
     if [[ $INTERACTIVE ]] ; then
         msg="${BYon}Would you like to select a diffeeent profile?\n"
         msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
@@ -334,9 +339,8 @@ wget-stage3() {
 checkroot
 separator ${PN} $(hostname)
   if [ $# -eq 1 ] ; then
-    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] && \
-       [[ "$1" != "-"*"r"* ]] && [[ "$1" != "--resume" ]] && \
-       [[ "$1" != "-"*"b"* ]] && [[ "$1" != "--baseline" ]] ; then
+    # option s (status) is the only one that can appear alone on the command line
+    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
       E_message "invalid argument [${arglist}]"
       usage
     fi
