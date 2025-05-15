@@ -34,8 +34,20 @@ shopt -s histappend                      # append to history, don't overwrite it
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
-[ -e /root/firstlogin ] && /usr/local/sbin/finalize-chroot || echo 'chroot already configured'
+[ -e /root/firstenvlogin ] && /usr/local/sbin/finalize-chroot || echo 'basic chroot already configured'
+[ -e /root/firstimglogin ] && /usr/local/sbin/finalize-chroot-for-image || echo 'image chroot already configured'
+
 install_my_local_ca_certificates
 
 machine=$(portageq envvar CHOST | cut -d'-' -f1)
+
+# set prompt after determining if running inside chroot
+# by comparing inode of / and /proc/1/root
+if [ "$(stat -c %i /)" != "$(stat -c %i /proc/1/root)" ]; then
+    echo "Inside chroot"
+else
+    echo "Not in chroot"
+fi
+
+# (above doesn't work yet - change this manually after deployed)
 export PS1="(${machine} chroot) ${PS1}"

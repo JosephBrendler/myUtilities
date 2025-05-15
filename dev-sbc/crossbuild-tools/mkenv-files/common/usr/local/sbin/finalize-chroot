@@ -2,17 +2,28 @@
 #
 # finalize-chroot joe brendler 17 April 2025
 #
-# should be run automatically by /root/.bashrc if file /root/firstlogin exists
+# should be run automatically by /root/.bashrc if file ${firstrunmarker} exists
+#
+# proper context - running inside a qemu-chroot
+# (don't want to run this for an actual deployed image)
+# if all goes well, remove the ${firstrunmarker} file
 
-# if all goes well, remove the firstlogin file
+# don't run this script more than once
+# look for /root/firstlogin (which is removed upon completion of this script)
+firstrunmarker=/root/firstenvlogin
+[ ! -e ${firstrunmarker} ] && exit 0
+
 source /usr/local/sbin/script_header_brendlefly
 COMPLETE=$TRUE  # (tentatively; any step below can change this)
 result=0
 
-# determine what chroot crossbuild environment (target) I'm running inisde of
-TARGET=$(portageq envvar CHOST)
-
-[ ! -e /root/firstlogin ] && exit
+# determine what chroot crossbuild environment (target) I'm running inisde of (fatal if failure)
+message_n "determining TARGET ..."
+TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+[ $result -eq 0 ] && message "TARGET: $TARGET" || ( E_message "failed to determine TARGET" && exit 1 )
+# determine what sbc board I am ... (non-fatal if failure)
+BOARD=$(losetup -a | awk '{print $3}' | sed 's|(/usr/||' | sed 's|.img)||') ; result=$? ; right_status $result
+[ $result -eq 0 ] && message "BOARD: $BOARD" || E_message "failed to determine BOARD"
 
 # Create the chroot's portage temporary directory with ln;
 message_n "creating portage temporary directory with ln ..."
@@ -85,9 +96,8 @@ source /etc/profile ; result=$?
 [ $result -ne 0 ] && COMPLETE=$FALSE
 right_status $result
 
-message_n "removing /root/firstlogin ..."
-rm /root/firstlogin ; result=$?
-[ $result -ne 0 ] && COMPLETE=$FALSE
+message_n "removing ${firstrunmarker} ..."
+rm ${firstrunmarker} ; result=$?[ $result -ne 0 ] && COMPLETE=$FALSE
 right_status $result
 
 [[ $COMPLETE ]] && \
