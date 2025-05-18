@@ -43,7 +43,7 @@ varlist+=" BREAK lv.chroot_emerge"
 command_sequence=(
 'validate-prerequisites'
 'check-reload-config'
-'set-root-password'
+'set-password root'
 'set-timezone'
 'set-hostname'
 'add-user'
@@ -52,6 +52,7 @@ command_sequence=(
 'chroot_emerge-world'
 'run-dispatch-conf'
 'add-default-runlevel-services'
+'setup-clock'
 'install-boot-firmware'
 'display-next-steps'
 )
@@ -67,8 +68,9 @@ msg1_sequence=(
 'write fstab'
 'chroot_emerge world'
 'run dispatch-conf'
-'adding default runlevel services'
-'installing boot firmware'
+'add default runlevel services'
+'set up clock'
+'install boot firmware'
 'display next steps'
 )
 
@@ -83,8 +85,9 @@ msg2_sequence=(
 'writing fstab'
 'emerging(-chroot) world'
 'running dispatch-conf'
-'add-default-runlevel-services'
-'installing boot-firmware'
+'adding default runlevel services'
+'setting up clock'
+'installing boot firmware'
 'displaying next steps'
 )
 
@@ -524,15 +527,17 @@ check-reload-config() {
     return $result
 }
 
-set-root-password() {
-    # set root passwd
-    message "please set the root password for this image"
-    passwd ; result=$?
+set-password() {
+    # set passwd for user $1
+    [ $# -ne 1 ] && E_message "invalid argument for set-password()" && return 1
+    user="$1"
+    message "please set the password for user [${user}] on this image"
+    passwd $${user}" ; result=$?
     if [ $result -eq 0 ] ; then
         message "${BGon}(success)${Boff}"
         return 0
     else
-        E_message "failed to set root passwd"
+        E_message "failed to set passwd for user [${user}]"
         FLAGGED=$TRUE
         return 1
     fi
@@ -583,7 +588,7 @@ add-user() {
     if [[ "${response}" == [yY] ]] ; then
         message_n "setting up user ${candidate}"
         useradd -m -G wheel,console,audio,cdrom,video,cdrw,usb,users,portage -s /bin/bash ${candidate} && \
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
         ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
     else
         E_message "candidate username provided, then rejected"
@@ -591,6 +596,10 @@ add-user() {
         message "    useradd ${BMon}-m -G${Boff} wheel,console,audio,cdrom,video,cdrw,usb,users,portage ${BMon}-s${Boff} /bin/bash ${BRon}\${username}${Boff}"
         return 2
     fi
+
+    # set password for this user
+    set-password ${candidate} && ( right_status $? && return 0 ) || \
+        ( right_status $? && FLAGGED=$TRUE && return 1 )
 }
 
 fix-inittab() {
@@ -705,6 +714,37 @@ add-default-runlevel-services() {
         FLAGGED=$TRUE
         return 1
     fi
+}
+
+setup-clock() {
+    # determine what is presently set up, query user to fix
+    currentclock=$(find /etc/runlevels/boot/ -iname "*clock" -exec basename {} \;)
+    case ${currentclock} in
+        [sh]"wclock" )
+            message "boot runlevel currentclock: ${currentclock}" ;
+            case ${currentclock:0:1} in
+                "h" ) otherclock="swclock" ;;
+                "s" ) otherclock="hwclock" ;;
+                * ) E_message "invalid currentclock" ; return 1 ;;
+            esac
+            response="" ;
+            msg="would you like to change to ${otherclock} ?\n"
+            msg+="  y = yes; change | [s|n] = no; keep"
+            new_prompt "${msg}"
+            case ${response:0:1} in
+                [yY] )
+                    message_n "removing current boot runlevel clock service ..." ;
+                    rm /etc/runlevels/boot/${currentclock} ; right_status $?
+                    message_n "adding new boot runlevel clock service [${otherclock}] ..."
+                    ln -s /etc/init.d/${otherclock} /etc/runlevels/boot/${otherclock} ; right_status $?
+                    ;;
+                [nNsS] ) ;;
+                * ) E_message "invalid response" ; return 1 ;;
+            esac
+            return 0 ;
+            ;;
+        * ) E_message "invalid clock for boot runlevel: [{currentclock}]" ; return 1 ;;
+    esac
 }
 
 install-boot-firmware() {
