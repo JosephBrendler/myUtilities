@@ -443,16 +443,31 @@ run_sequence() {
 get-target() {
     # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
     message_n "determining TARGET ..."
-    TARGET=$(portageq envvar CHOST) && \
-    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+    [ $result -eq 0 ] && message "apparent_TARGET: $apparent_TARGET" || \
+        ( E_message "failed to determine apparent_TARGET" && FLAGGED=$TRUE && return 1 )
 }
 
-get-board() {
-    # determine what sbc board image is mounted ... (flag, non-fatal if failure)
-    BOARD=$(losetup -a | awk '{print $3}' | sed 's|(/usr/||' | sed 's|.img)||') && \
-    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+get-check-config() {
+    # source /root/.cb-config and validate TARGET (fatal if failure)
+    # also assign BOARD, etc. I am ... (non-fatal if failure)
+    [ -e /root/.cb-config ] && source /root/.cb-config || ( E_message "/root/.cb-config not found" )
+    message_n "validating BOARD, TARGET and qemu-chroot config ..."
+    if [[ "${apparent_TARGET}" == "${TARGET}" ]]
+        echo -en " ${BGon}(match)${Boff)"
+        right_status $TRUE
+        message "  BOARD ........: $BOARD"
+        message "  TARGET .......: $TARGET"
+        message "  TARGET_ARCH ..: $TARGET_ARCH"
+        message "  QEMU_ARCH ....: $QEMU_ARCH"
+        return 0
+    else
+        echo -en " ${BRon}(mismatch)${Boff)"
+        right_status 1
+        E_message "TARGET mismatch; exiting"
+        FLAGGED=$TRUE
+        return 1
+    fi
 }
 
 build-chroot_emerge-command() {
@@ -759,18 +774,30 @@ process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
 right_status $?
 
 validate_status_file ${finishupstatusfile}
-get-target
-get-board
-build-chroot_emerge-command
-display_configuration
-run_sequence
+get-target ;  result=$?
+[ $result -eq 0 ] && message "get-target returned ${BGon}success${Boff}" || \
+    ( E_message "get-target returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+get-check-config ;  result=$?
+[ $result -eq 0 ] && message "get-check-config returned ${BGon}success${Boff}" || \
+    ( E_message "get-check-config returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+build-chroot_emerge-command ;  result=$?
+[ $result -eq 0 ] && message "build-chroot_emerge-command returned ${BGon}success${Boff}" || \
+    ( E_message "build-chroot_emerge-command returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+display_configuration ;  result=$?
+[ $result -eq 0 ] && message "display_configuration returned ${BGon}success${Boff}" || \
+    ( E_message "display_configuration returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+run_sequence ;  result=$?
+[ $result -eq 0 ] && message "run_sequence returned ${BGon}success${Boff}" || \
+    ( E_message "run_sequence returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
 
 message_n "removing ${firstrunmarker} ..."
 rm ${firstrunmarker} ; result=$?
 [ $result -ne 0 ] && COMPLETE=$FALSE
 right_status $result
 
+[[ $FLAGGED ]] && COMPLETE=$FALSE
+
 [[ $COMPLETE ]] && \
-message "chroot firstlogin configuration complete" || \
-E_message "chroot firstlogin configuration failed"
+message "chroot firstlogin configuration completed successfully" || \
+E_message "chroot firstlogin configuration completed with errors; check red flags in output above"
 echo
