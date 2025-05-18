@@ -19,13 +19,28 @@ result=0
 
 # determine what chroot crossbuild environment (target) I'm running inisde of (fatal if failure)
 message_n "determining TARGET ..."
-TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
-[ $result -eq 0 ] && message "TARGET: $TARGET" || ( E_message "failed to determine TARGET" && exit 1 )
-# determine what sbc board I am ... (non-fatal if failure)
-BOARD=$(losetup -a | awk '{print $3}' | sed 's|(/usr/||' | sed 's|.img)||') ; result=$? ; right_status $result
-[ $result -eq 0 ] && message "BOARD: $BOARD" || E_message "failed to determine BOARD"
+apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+[ $result -eq 0 ] && message "apparent_TARGET: $apparent_TARGET" || \
+    ( E_message "failed to determine apparent_TARGET" && exit 1 )
+# source /root/.cb-config and validate TARGET (fatal if failure)
+# also assign BOARD, etc. I am ... (non-fatal if failure)
+[ -e /root/.cb-config ] && source /root/.cb-config || ( E_message "/root/.cb-config not found" )
+message_n "validating BOARD, TARGET and qemu-chroot config ..."
+if [[ "${apparent_TARGET}" == "${TARGET}" ]]
+    echo -en " ${BGon}(match)${Boff)"
+    right_status $TRUE
+    message "  BOARD ........: $BOARD"
+    message "  TARGET .......: $TARGET"
+    message "  TARGET_ARCH ..: $TARGET_ARCH"
+    message "  QEMU_ARCH ....: $QEMU_ARCH"
+else
+    echo -en " ${BRon}(mismatch)${Boff)"
+    right_status 1
+    E_message "TARGET mismatch; exiting"
+    exit 1
+fi
 
-# Create the chroot's portage temporary directory with ln;
+# chect/create the chroot's portage temporary directory with ln;
 message_n "creating portage temporary directory with ln ..."
 if [ ! -L /usr/${TARGET}/tmp ] ; then
     ln -s /tmp /usr/${TARGET}/tmp
