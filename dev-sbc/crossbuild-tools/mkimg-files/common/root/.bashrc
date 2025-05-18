@@ -25,6 +25,7 @@ source /usr/local/sbin/script_header_brendlefly_extended
 source /usr/local/sbin/bashrc_aliases_include_joe_brendler
 
 source /etc/bash/bashrc.d/emerge-chroot
+source /root/.cb-config   # assigns BOARD, TARGET, TARGET_ARCH, QEMU_ARCH
 
 export HISTCONTROL=ignoredups:erasedups  # no duplicate entries
 export HISTSIZE=100000                   # big big history
@@ -40,5 +41,5 @@ install_my_local_ca_certificates
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
 echo
-machine=$(portageq envvar CHOST | cut -d'-' -f1)
-export PS1="(${machine} chroot) ${PS1}"
+
+export PS1="(${QEMU_ARCH} chroot) ${PS1}"
