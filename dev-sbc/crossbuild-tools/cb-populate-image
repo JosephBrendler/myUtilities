@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# populate-target   (c) joe.brendler  2025-2072
+# populate-image   (c) joe.brendler  2025-2072
 # copy appropriate template files into target deployable cross-built image filesystem
 #
 
@@ -28,31 +28,6 @@ usage() {
     exit
 }
 
-install_files_from_source() {
-    SOURCE="$1"
-    # strip source directory name from each pathname to use relative to /usr/${TARGET}/
-    for x in $(find ${SOURCE} -type f | sed "s|${SOURCE}||") ; do
-        DESTINATION="/usr/${TARGET}/$(dirname ${x})"
-        FILE="$(basename ${x})"
-        if [ ! -d ${DESTINATION} ] ; then
-            d_echo "" 3
-            d_message "TARGET......: ${TARGET}" 3
-            d_message "SOURCE......: ${SOURCE}" 3
-            d_message "x...........: ${x}" 4
-            d_message "dirname x...: $(dirname $x)" 4
-            d_message "basename x..: $(basename $x)" 4
-            d_message "DESTINATION.: ${DESTINATION}" 3
-            d_message "FILE........: ${FILE}" 3
-            d_echo "" 3
-            message_n "creating destination directory ${DESTINATION} ..."
-            mkdir -p ${DESTINATION} && right_status $? || ( right_status $? && exit 1 )
-        fi
-        message_n "populating ${x} ..."
-        cp ${SOURCE}${x} ${DESTINATION}/${FILE} && right_status $? || ( right_status $? && exit 1 )
-    done
-    return 0
-}
-
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
@@ -64,29 +39,21 @@ old_dir="$(pwd)"
 cd /usr/${TARGET}
 message "now working in target directory: [${Mon}$(pwd)${Boff}]"
 
-build_dir="${SOURCE_DIR%/}/common/etc/crossbuild-tools"
+# populate the BUILD assignment file in this board image's own 
+# /etc/crossbuild-tools directory (via mkimg-files)
+build_dir="${SOURCE_DIR%/}/${BOARD}/etc/crossbuild-tools"
 message_n "checking for build_dir [${build_dir}] ..."
 [ ! -d ${build_dir} ] && mkdir -p ${build_dir} ; right_status $?
 message_n "updating BUILD ..."
 cp /etc/crossbuild-tools/BUILD ${build_dir%/}/ ; right_status $?
 
-message "looking for ${SOURCE_DIR%/}/${BOARD}/ ..."
-if [ -d ${SOURCE_DIR%/}/${BOARD}/ ] ; then
-    install_files_from_source "${SOURCE_DIR%/}/${BOARD}/" || \
-        E_message "failed while installing files from ${SOURCE_DIR%/}/${BOARD}/"
-else
-    # not an error if not found - no such content as of 5/14/2025
-    message "no directory [${SOURCE_DIR%/}/${BOARD}/] exists; moving on ..."
-fi
+#install files from board-unique sources
+install_files_from_source "${SOURCE_DIR%/}/${BOARD}/" || \
+    E_message "failed while installing files from ${SOURCE_DIR%/}/${BOARD}/"
 
-message "looking for ${SOURCE_DIR%/}/common/ ..."
-if [ -d ${SOURCE_DIR%/}/common/ ] ; then
-    install_files_from_source "${SOURCE_DIR%/}/common/" || \
-        E_message "failed while installing files from ${SOURCE_DIR%/}/common/"
-else
-    # error if now found
-    E_message "no directory [${SOURCE_DIR%/}/common/] exists; ${BRon}(fail)${Boff}"
-fi
+#install files from common sources
+install_files_from_source "${SOURCE_DIR%/}/common/" || \
+    E_message "failed while installing files from ${SOURCE_DIR%/}/common/"
 
 # make scripts executable in chroot (joetoo-meta should have deployed them with emerge-world)
 DESTINATION="/usr/${TARGET}/usr/local/sbin"

@@ -25,6 +25,7 @@ source /usr/local/sbin/script_header_brendlefly_extended
 source /usr/local/sbin/bashrc_aliases_include_joe_brendler
 
 source /etc/bash/bashrc.d/emerge-chroot
+source /root/.cb-config   # assigns BOARD, TARGET, TARGET_ARCH, QEMU_ARCH
 
 export HISTCONTROL=ignoredups:erasedups  # no duplicate entries
 export HISTSIZE=100000                   # big big history
@@ -34,11 +35,13 @@ shopt -s histappend                      # append to history, don't overwrite it
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
-[ -e /root/firstlogin ] && /usr/local/sbin/finalize-chroot || echo 'chroot already configured'
+[ -e /root/firstimglogin ] && /usr/local/sbin/finalize-chroot-for-image || \
+    echo 'chroot already configured for image; re-run with /usr/local/sbin/finalize-chroot-for-image'
+
 install_my_local_ca_certificates
 
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
 echo
-machine=$(portageq envvar CHOST | cut -d'-' -f1)
-export PS1="(${machine} chroot) ${PS1}"
+
+export PS1="(${QEMU_ARCH} chroot) ${PS1}"

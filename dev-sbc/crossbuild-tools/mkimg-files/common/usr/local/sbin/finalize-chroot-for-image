@@ -43,15 +43,18 @@ varlist+=" BREAK lv.chroot_emerge"
 command_sequence=(
 'validate-prerequisites'
 'check-reload-config'
-'set-root-password'
+'set-password root'
 'set-timezone'
 'set-hostname'
+'sync-repo gentoo'
+'sync-repo joetoo'
 'add-user'
 'fix-inittab'
 'write-fstab'
 'chroot_emerge-world'
 'run-dispatch-conf'
 'add-default-runlevel-services'
+'setup-clock'
 'install-boot-firmware'
 'display-next-steps'
 )
@@ -62,13 +65,16 @@ msg1_sequence=(
 'set root password'
 'set timezone'
 'set hostname'
+'sync repo gentoo'
+'sync repo joetoo'
 'add user'
 'fix inittab'
 'write fstab'
 'chroot_emerge world'
 'run dispatch-conf'
-'adding default runlevel services'
-'installing boot firmware'
+'add default runlevel services'
+'set up clock'
+'install boot firmware'
 'display next steps'
 )
 
@@ -78,13 +84,16 @@ msg2_sequence=(
 'setting root password'
 'setting timezone'
 'setting hostname'
+'syncing repo gentoo'
+'syncing repo joetoo'
 'adding user'
 'fixing inittab'
 'writing fstab'
 'emerging(-chroot) world'
 'running dispatch-conf'
-'add-default-runlevel-services'
-'installing boot-firmware'
+'adding default runlevel services'
+'setting up clock'
+'installing boot firmware'
 'displaying next steps'
 )
 
@@ -443,16 +452,31 @@ run_sequence() {
 get-target() {
     # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
     message_n "determining TARGET ..."
-    TARGET=$(portageq envvar CHOST) && \
-    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+    [ $result -eq 0 ] && message "apparent_TARGET: $apparent_TARGET" || \
+        ( E_message "failed to determine apparent_TARGET" && FLAGGED=$TRUE && return 1 )
 }
 
-get-board() {
-    # determine what sbc board image is mounted ... (flag, non-fatal if failure)
-    BOARD=$(losetup -a | awk '{print $3}' | sed 's|(/usr/||' | sed 's|.img)||') && \
-    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+get-check-config() {
+    # source /root/.cb-config and validate TARGET (fatal if failure)
+    # also assign BOARD, etc. I am ... (non-fatal if failure)
+    [ -e /root/.cb-config ] && source /root/.cb-config || ( E_message "/root/.cb-config not found" )
+    message_n "validating BOARD, TARGET and qemu-chroot config ..."
+    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
+        echo -en " ${BGon}(match)${Boff}"
+        right_status $TRUE
+        message "  BOARD ........: $BOARD"
+        message "  TARGET .......: $TARGET"
+        message "  TARGET_ARCH ..: $TARGET_ARCH"
+        message "  QEMU_ARCH ....: $QEMU_ARCH"
+        return 0
+    else
+        echo -en " ${BRon}(mismatch)${Boff}"
+        right_status 1
+        E_message "TARGET mismatch; exiting"
+        FLAGGED=$TRUE
+        return 1
+    fi
 }
 
 build-chroot_emerge-command() {
@@ -509,15 +533,17 @@ check-reload-config() {
     return $result
 }
 
-set-root-password() {
-    # set root passwd
-    message "please set the root password for this image"
-    passwd ; result=$?
+set-password() {
+    # set passwd for user $1
+    [ $# -ne 1 ] && E_message "invalid argument for set-password()" && return 1
+    user="$1"
+    message "please set the password for user [${user}] on this image"
+    passwd "${user}" ; result=$?
     if [ $result -eq 0 ] ; then
         message "${BGon}(success)${Boff}"
         return 0
     else
-        E_message "failed to set root passwd"
+        E_message "failed to set passwd for user [${user}]"
         FLAGGED=$TRUE
         return 1
     fi
@@ -553,6 +579,31 @@ set-hostname() {
     fi
 }
 
+sync-repo() {
+    REPO=$1
+    # if the eix database directory does not exist, create it and give portage permission to use it
+    if [ ! -d /var/cache/eix ] ; then
+        message_n "eix database directory does not exist; creating ..."
+        mkdir -p /var/cache/eix ; right_status $?
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    else
+        message "eix database /var/cache/eix already exists"
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    fi
+    # just notify which case we have - empty or existing repo
+    [[ -z $(find var/db/repos/${REPO}/ -mindepth 1) ]] && E_message "Repository ${REPO} is empty" || \
+        message "Repository ${REPO} exists"
+    # run ${chroot_emerge} --sync (explicitly rather than with alias) for this repo
+    message 'synchronizing portage tree with ${chroot_emerge} -av --sync'" ${REPO} ..."
+    d_message "chroot_emerge = ${chroot_emerge}" 3
+
+    eval "${chroot_emerge} -av --sync ${REPO}" ; result=$?
+    message_n "exit status - " && right_status $result || ( right_status $result && return 1 )
+    return 0
+}
+
 add-user() {
     # populate-user -- cb-populate-image should have loaded whatever structure
     #    was found in /etc/crossbuild-tools/mkimg-files ...
@@ -568,7 +619,7 @@ add-user() {
     if [[ "${response}" == [yY] ]] ; then
         message_n "setting up user ${candidate}"
         useradd -m -G wheel,console,audio,cdrom,video,cdrw,usb,users,portage -s /bin/bash ${candidate} && \
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
         ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
     else
         E_message "candidate username provided, then rejected"
@@ -576,6 +627,10 @@ add-user() {
         message "    useradd ${BMon}-m -G${Boff} wheel,console,audio,cdrom,video,cdrw,usb,users,portage ${BMon}-s${Boff} /bin/bash ${BRon}\${username}${Boff}"
         return 2
     fi
+
+    # set password for this user
+    set-password ${candidate} && ( right_status $? && return 0 ) || \
+        ( right_status $? && FLAGGED=$TRUE && return 1 )
 }
 
 fix-inittab() {
@@ -692,6 +747,37 @@ add-default-runlevel-services() {
     fi
 }
 
+setup-clock() {
+    # determine what is presently set up, query user to fix
+    currentclock=$(find /etc/runlevels/boot/ -iname "*clock" -exec basename {} \;)
+    case ${currentclock} in
+        [sh]"wclock" )
+            message "boot runlevel currentclock: ${currentclock}" ;
+            case ${currentclock:0:1} in
+                "h" ) otherclock="swclock" ;;
+                "s" ) otherclock="hwclock" ;;
+                * ) E_message "invalid currentclock" ; return 1 ;;
+            esac
+            response="" ;
+            msg="would you like to change to ${otherclock} ?\n"
+            msg+="  y = yes; change | [s|n] = no; keep"
+            new_prompt "${msg}"
+            case ${response:0:1} in
+                [yY] )
+                    message_n "removing current boot runlevel clock service ..." ;
+                    rm /etc/runlevels/boot/${currentclock} ; right_status $?
+                    message_n "adding new boot runlevel clock service [${otherclock}] ..."
+                    ln -s /etc/init.d/${otherclock} /etc/runlevels/boot/${otherclock} ; right_status $?
+                    ;;
+                [nNsS] ) ;;
+                * ) E_message "invalid response" ; return 1 ;;
+            esac
+            return 0 ;
+            ;;
+        * ) E_message "invalid clock for boot runlevel: [{currentclock}]" ; return 1 ;;
+    esac
+}
+
 install-boot-firmware() {
     # install boot-firmware with
     #    sys-boot/raspi-boot-firmware  -- for raspi boards, all of which are named bcm27xx-rpi-x-x...
@@ -759,18 +845,30 @@ process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
 right_status $?
 
 validate_status_file ${finishupstatusfile}
-get-target
-get-board
-build-chroot_emerge-command
-display_configuration
-run_sequence
+get-target ;  result=$?
+[ $result -eq 0 ] && message "get-target returned ${BGon}success${Boff}" || \
+    ( E_message "get-target returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+get-check-config ;  result=$?
+[ $result -eq 0 ] && message "get-check-config returned ${BGon}success${Boff}" || \
+    ( E_message "get-check-config returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+build-chroot_emerge-command ;  result=$?
+[ $result -eq 0 ] && message "build-chroot_emerge-command returned ${BGon}success${Boff}" || \
+    ( E_message "build-chroot_emerge-command returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+display_configuration ;  result=$?
+[ $result -eq 0 ] && message "display_configuration returned ${BGon}success${Boff}" || \
+    ( E_message "display_configuration returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+run_sequence ;  result=$?
+[ $result -eq 0 ] && message "run_sequence returned ${BGon}success${Boff}" || \
+    ( E_message "run_sequence returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
 
 message_n "removing ${firstrunmarker} ..."
 rm ${firstrunmarker} ; result=$?
 [ $result -ne 0 ] && COMPLETE=$FALSE
 right_status $result
 
+[[ $FLAGGED ]] && COMPLETE=$FALSE
+
 [[ $COMPLETE ]] && \
-message "chroot firstlogin configuration complete" || \
-E_message "chroot firstlogin configuration failed"
+message "chroot firstlogin configuration completed successfully" || \
+E_message "chroot firstlogin configuration completed with errors; check red flags in output above"
 echo
