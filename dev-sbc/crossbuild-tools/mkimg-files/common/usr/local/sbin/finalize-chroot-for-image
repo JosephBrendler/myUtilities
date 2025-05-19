@@ -46,6 +46,8 @@ command_sequence=(
 'set-password root'
 'set-timezone'
 'set-hostname'
+'sync-repo gentoo'
+'sync-repo joetoo'
 'add-user'
 'fix-inittab'
 'write-fstab'
@@ -63,6 +65,8 @@ msg1_sequence=(
 'set root password'
 'set timezone'
 'set hostname'
+'sync repo gentoo'
+'sync repo joetoo'
 'add user'
 'fix inittab'
 'write fstab'
@@ -80,6 +84,8 @@ msg2_sequence=(
 'setting root password'
 'setting timezone'
 'setting hostname'
+'syncing repo gentoo'
+'syncing repo joetoo'
 'adding user'
 'fixing inittab'
 'writing fstab'
@@ -456,7 +462,7 @@ get-check-config() {
     # also assign BOARD, etc. I am ... (non-fatal if failure)
     [ -e /root/.cb-config ] && source /root/.cb-config || ( E_message "/root/.cb-config not found" )
     message_n "validating BOARD, TARGET and qemu-chroot config ..."
-    if [[ "${apparent_TARGET}" == "${TARGET}" ]]
+    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
         echo -en " ${BGon}(match)${Boff}"
         right_status $TRUE
         message "  BOARD ........: $BOARD"
@@ -532,7 +538,7 @@ set-password() {
     [ $# -ne 1 ] && E_message "invalid argument for set-password()" && return 1
     user="$1"
     message "please set the password for user [${user}] on this image"
-    passwd $${user}" ; result=$?
+    passwd "${user}" ; result=$?
     if [ $result -eq 0 ] ; then
         message "${BGon}(success)${Boff}"
         return 0
@@ -571,6 +577,31 @@ set-hostname() {
         message "    ${BBon}echo ${BYon}<hostname> ${BGon}> ${Boff}/etc/hostname"
         return 2
     fi
+}
+
+sync-repo() {
+    REPO=$1
+    # if the eix database directory does not exist, create it and give portage permission to use it
+    if [ ! -d /var/cache/eix ] ; then
+        message_n "eix database directory does not exist; creating ..."
+        mkdir -p /var/cache/eix ; right_status $?
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    else
+        message "eix database /var/cache/eix already exists"
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    fi
+    # just notify which case we have - empty or existing repo
+    [[ -z $(find var/db/repos/${REPO}/ -mindepth 1) ]] && E_message "Repository ${REPO} is empty" || \
+        message "Repository ${REPO} exists"
+    # run ${chroot_emerge} --sync (explicitly rather than with alias) for this repo
+    message 'synchronizing portage tree with ${chroot_emerge} -av --sync'" ${REPO} ..."
+    d_message "chroot_emerge = ${chroot_emerge}" 3
+
+    eval "${chroot_emerge} -av --sync ${REPO}" ; result=$?
+    message_n "exit status - " && right_status $result || ( right_status $result && return 1 )
+    return 0
 }
 
 add-user() {
