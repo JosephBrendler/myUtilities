@@ -35,8 +35,11 @@ shopt -s histappend                      # append to history, don't overwrite it
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
-[ -e /root/firstenvlogin ] && /usr/local/sbin/finalize-chroot || echo 'basic chroot already configured'
-[ -e /root/firstimglogin ] && /usr/local/sbin/finalize-chroot-for-image || echo 'image chroot already configured'
+rerunmsg="chroot already configured"
+[ -e /root/firstenvlogin ] && /usr/local/sbin/finalize-chroot || \
+    echo "${rerunmsg} for environment; re-run with /usr/local/sbin/finalize-chroot"
+[ -e /root/firstimglogin ] && /usr/local/sbin/finalize-chroot-for-image || \
+    echo "${rerunmsg} for image; re-run with /usr/local/sbin/finalize-chroot-for-image"
 
 install_my_local_ca_certificates
 
