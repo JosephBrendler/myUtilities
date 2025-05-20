@@ -1,0 +1,242 @@
+#!/bin/bash
+# Fall 2023; joe brendler
+# ver 10 Mar 2025 - first version for x4
+#
+TRUE=0
+FALSE=
+
+STATUS=0
+
+# unlike other sbc's the x4 writes status to its internam microcontroller
+# over an internal serial port.  joetoo convention is that the
+# rp2040 microcontroller will have a green, yellow, and red leds
+# in the same physical pin locations as other sbc, but it will use
+# a custom firmware developed for the rp2040 to set these LEDs on/off
+# and that fimware will read a single status byte from the serial port.
+# joetoo convention will be that the x4 uses -
+# status bit 0 to set the green led,
+# status bit 1 to set the yellow led, and
+# status bit 2 to set the red led
+#CTRL-A Z for help | 115200 8N1 | NOR | Minicom 2.9 | VT102 | Offline | ttyS4
+
+VPN_BIT=0             # maps to VPN LED (green)
+SVC_BIT=1             # maps to Services LED (yellow)
+TEMP_BIT=2            # maps to Temp LED (red)
+
+SERIAL_PORT=/dev/ttyS4
+
+blinkwait=0.2         # s wait during fluttler blink
+wait_time=30          # s wait for ping
+
+BLINKS=3              # how many times to blink
+
+vpn_server_ip="192.168.63.1"
+vpn_status_file="/root/bin/vpn_status"
+
+thermalzones='/sys/class/thermal/thermal_zone*'
+temp_threshold=60     # deg celcius above which to consider cpu to be hot
+
+PROG_NAME="sbc-status-leds"
+
+VPN_OK=$TRUE
+
+#NEED_WORKAROUND=$TRUE
+NEED_WORKAROUND=$FALSE
+
+#VERBOSE=$FALSE
+VERBOSE=$TRUE    # verbpse logging pm/off
+verbosity=2     # 0: none; 1: restarts; 2: errors; 3: success; 4: dump
+
+CHECKVPN=$TRUE
+CHECKSVC=$TRUE
+CHECKTEMP=$TRUE
+
+#-----[ override defaults with config file ]--------------------
+[ -e /etc/sbc-status-leds/sbc-status-leds.conf ] && \
+      source /etc/sbc-status-leds/sbc-status-leds.conf || \
+      ( echo "Error: symlink /etc/sbc-status-leds/sbc-status-leds.conf does not exist" ;
+        echo "use eselect sbc-status-leds to create it" )
+
+[ ! -d $(dirname ${vpn_status_file}) ] && mkdir -p $(dirname ${vpn_status_file})
+[ ! -f ${vpn_status_file} ] && echo "up 1715612707" > ${vpn_status_file}
+
+#-----[ functions ]---------------------------------------------
+
+send_status() {
+    echo ${STATUS} > ${SERIAL_PORT}
+}
+
+light_off() {
+  # clear the bit selected by $1
+  mask=$(( ~ $((1 << $1)) ))
+  STATUS=$(( $STATUS & $mask ))
+  send_status
+}
+
+light_on() {
+  # set the bit selected by $1
+  STATUS=$(( $STATUS | $(( 1 << $1 )) ))
+  send_status
+}
+
+blink_light() {
+  # blink LED selected by $1; finish off
+  my_led=$1
+  for ((i=0;i<${BLINKS};i++))       # blink on/off 5 times, quickly
+  do
+    light_on $my_led
+    sleep ${blinkwait}
+    light_off $my_led
+    sleep ${blinkwait}
+  done
+}
+
+check_vpn() {
+  echo -n "Checking VPN... "
+  # blink vpn led to indicate running check
+  blink_light ${VPN_BIT}
+
+  # get last result from storeage, for comparison
+  read last_status < ${vpn_status_file}
+  last_timestamp="$(echo ${last_status} | cut -d' ' -f2)"
+  last_updown="$(echo ${last_status} | cut -d' ' -f1)"
+
+  # check the vpn using ping
+  response="$(ping -c1 -w${wait_time} ${vpn_server_ip})"
+  result="$(echo ${response} | grep transmitted | \
+           cut -d',' -f3 | cut -d'%' -f1 | cut -d'.' -f1 | sed 's/[[:space:]]//g')"
+  # capture time of this result
+  timestamp="$(date +%s)"
+  # set a boolean variable with the result
+###  [[ ${result} -eq 0 ]] && VPN_OK=${TRUE} || VPN_OK=${FALSE}
+### had to include test for null ${result}, which oddly tests true for [[ ${result} -eq 0 ]]
+  [[ ${result} -eq 0 && ${#result} -ne 0 ]] && VPN_OK=${TRUE} || VPN_OK=${FALSE}
+
+  # store and conditionally log the result and set led as appropriate (on = good status; off = problem)
+  if [[ ${VPN_OK} ]]   # current status: no loss; good vpn
+  then
+    # record status in file, overwriting old status
+    echo "up ${timestamp}" > ${vpn_status_file}
+    [[ $VERBOSE ]] && [[ verbosity -ge 3 ]] && \
+      /usr/bin/logger -p cron.notice "${PROG_NAME} success -- vpn result: ${result}; all OK."
+    light_on ${VPN_BIT}
+  else
+    # if last status was OK (up oldtime), then record new status (down newtime) in file, turn off LED and continue
+    # if last status was NOT_OK (down oldtime), then if newtime - oldtime > 3 min then restart, else let old time "age"
+    case "${last_updown}" in
+      "up"   ) echo "down ${timestamp}" > ${vpn_status_file} ;
+               [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+                   /usr/bin/logger -p cron.notice "${PROG_NAME} falure -- vpn response: ${response}" ;
+               light_off ${VPN_BIT} ;;
+      "down" ) if [ $(( ${timestamp} - ${last_timestamp} )) -gt 180 ]
+               then
+                 [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+                     /usr/bin/logger -p cron.notice "${PROG_NAME} vpn falure over 3 min; resetting ..." ;
+                 restart_vpn ;
+               fi ;;
+      * ) [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && echo "* Invalid last status..." ; LAST_VPN_OK=$FALSE ;;
+    esac
+  fi
+  echo "done"
+}
+
+restart_vpn() {
+  if [ ${NEED_WORKAROUND} ]
+  then
+    /usr/local/sbin/stopvpn
+    /usr/local/sbin/startvpn r
+  else
+    #check if the network is down and reset it if needed
+    check_restart_network
+    # now restart the vpn
+    /etc/init.d/openvpn.remote restart
+  fi
+}
+
+check_restart_network() {
+  # there may be more than one active adapter - check and if needed reset each
+  interface_list="$(rc-status | grep 'net\.' | awk '{print $1}' | sed 's/net\.//')"
+  for interface in ${interface_list}
+  do
+    # if this interface has no ipv4 address assigned, consider it down
+    if [ -z "$(ip address show dev ${interface} | grep 'inet ')" ]
+    then
+      #  "DOWN" -- restart this network and conditionally log
+          [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+            /usr/bin/logger -p cron.notice "Network interface ${interface} is down; restarting ..."
+      /etc/init.d/net.${interface} restart
+    else
+      #  "UP"   -- take no action, just contitionally log
+          [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+            /usr/bin/logger -p cron.notice "Network interface ${interface} is up; taking no action."
+    fi
+  done
+}
+
+check_svc() {
+  echo -n "Checking Services... "
+  # blink svc led to indicate running check
+  blink_light ${SVC_BIT}
+  # use rc-status to get services status
+  result=$( rc-status | grep '\[' | grep -v 'started\|inactive' )
+  # conditionally log the result and set led as appropriate (off = good status; on = problem)
+  if [[ ! ${result} ]]   ## all services are "started"
+  then
+    [[ $VERBOSE ]] && [[ verbosity -ge 3 ]] && \
+      /usr/bin/logger -p cron.notice "${PROG_NAME} success -- Result: all services are started"
+    light_off ${SVC_BIT}
+  else
+    [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+      /usr/bin/logger -p cron.notice "${PROG_NAME} service failure -- Result: ${result}"
+    light_on ${SVC_BIT}
+  fi
+  echo "done"
+}
+
+check_temp() {
+  echo -n "Checking CPU Temp... "
+  # blink temp led to indicate running check
+  blink_light ${TEMP_BIT}
+  # get cpu temp from ${thermalzones}
+  cpu_temp=0
+  for x in ${thermalzones} ; do
+    c_temp=$(echo "scale=0; $(cat $x/temp)/1000" | bc)
+    [ ${c_temp} -gt ${cpu_temp} ] && cpu_temp=${c_temp}
+  done
+  int_temp=${cpu_temp:0:2}
+  # conditionally log the result and set led as appropriate (off = good status; on = > threshold)
+  if [[ ${int_temp} -ge ${temp_threshold} ]]
+  then
+    [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
+      /usr/bin/logger -p cron.notice "${PROG_NAME} temp check failure -- CPU Temp: ${int_temp} C [ > threshold: ${temp_threshold} C ]"
+    light_on ${TEMP_BIT}
+  else
+    [[ $VERBOSE ]] && [[ verbosity -ge 3 ]] && \
+      /usr/bin/logger -p cron.notice "${PROG_NAME} temp check success -- CPU Temp: ${int_temp} C [ < threshold: ${temp_threshold} C ]"
+    light_off ${TEMP_BIT}
+  fi
+  echo "done"
+
+}
+
+#-----[ main script ]-----------------------
+
+# set/reset the serial port
+# (moved to /etc/local.d/serial_port_kick.start
+
+# start with LEDs off
+light_off ${VPN_BIT}
+light_off ${SVC_BIT}
+light_off ${TEMP_BIT}
+
+[ $CHECKVPN ] && check_vpn
+sleep ${blinkwait}
+
+[ $CHECKSVC ] && check_svc
+sleep ${blinkwait}
+
+[ $CHECKTEMP ] && check_temp
+sleep ${blinkwait}
+
+[[ $VERBOSE ]] && [[ verbosity -ge 1 ]] && \
+    /usr/bin/logger -p cron.notice "${PROG_NAME} complete"
