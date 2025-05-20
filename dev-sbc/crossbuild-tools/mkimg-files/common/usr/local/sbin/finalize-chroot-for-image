@@ -46,11 +46,13 @@ command_sequence=(
 'set-password root'
 'set-timezone'
 'set-hostname'
+'prep-eix-db-dir'
 'sync-repo gentoo'
 'sync-repo joetoo'
 'add-user'
 'fix-inittab'
 'write-fstab'
+'make-mountpoints'
 'chroot_emerge-world'
 'run-dispatch-conf'
 'add-default-runlevel-services'
@@ -65,11 +67,13 @@ msg1_sequence=(
 'set root password'
 'set timezone'
 'set hostname'
+'prepare eix database directory'
 'sync repo gentoo'
 'sync repo joetoo'
 'add user'
 'fix inittab'
 'write fstab'
+'make mountpoints'
 'chroot_emerge world'
 'run dispatch-conf'
 'add default runlevel services'
@@ -84,11 +88,13 @@ msg2_sequence=(
 'setting root password'
 'setting timezone'
 'setting hostname'
+'prepare eix database directory'
 'syncing repo gentoo'
 'syncing repo joetoo'
 'adding user'
 'fixing inittab'
 'writing fstab'
+'making mountpoints'
 'emerging(-chroot) world'
 'running dispatch-conf'
 'adding default runlevel services'
@@ -560,6 +566,11 @@ set-timezone() {
 set-hostname() {
 #  set hostname
     response=""
+    message "${BYon}Please identify the hostname for this system${Boff}"
+    message "${BMon}Note:${Boff} If you are providing apache ssl or openvpn keys"
+    message "via the /etc/crossbuild-tools/mkimg-files/ structure of this build,"
+    message "then they must correspond to this hostname"
+    echo
     while [[ ! "${response}" == [yYsS] ]] ; do
         echo -en "${BGon}*${Boff} set hostname for this image: "
         read candidate
@@ -577,6 +588,26 @@ set-hostname() {
         message "    ${BBon}echo ${BYon}<hostname> ${BGon}> ${Boff}/etc/hostname"
         return 2
     fi
+}
+
+prep-eix-db-dir() {
+    SOFARSOGOOD=$TRUE
+    # prepare the directory that will hold the eix database
+    message "preparing the eix database directory ..."
+    message_n "looking for /var/cache/eix"
+    if [ ! -d /var/cache/eix ] ; then
+        echo -en " (creating)"
+        mkdir -p /var/cache/eix/ ; result=$?
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+    else
+        echo -en " (found)" ; right_status $TRUE
+    fi
+    message_n "setting permissions for /var/cache/eix"
+    chown portage:portage /var/cache/eix ; result=$?
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+    [[ $SOFARSOGOOD ]] && return 0 || ( FLAGGED=$TRUE && return 1)
 }
 
 sync-repo() {
@@ -611,6 +642,7 @@ add-user() {
     #    as long as user populated that structure after emerging crossbuild-tools
     response=""
     while [[ ! "${response}" == [yYsS] ]] ; do
+        echo
         echo -en "${BGon}*${Boff} set username for routine daily user: "
         read candidate
         message "you responded [ ${candidate} ]"
@@ -705,6 +737,19 @@ write-fstab() {
     return 0
 }
 
+make-mountpoints() {
+    #make standard joetoo mountpoints in /mnt/
+    for x in card stick thumb image gentoo from to key temp ; do
+        message_n "mountpoint ${x}"
+        if [ ! -d /mnt/${x} ] ; then
+            echo -en " (making)"
+            mkdir -p /mnt/${x} ; right_status $?
+        else
+            echo -en " (exists)" ; right_status $TRUE
+        fi
+    done
+}
+
 chroot_emerge-world() {
     # re-run chroot_emerge -uavDN @world --keep-going
     message "about to run chroot_emerge -uavDN @world --keep-going"
@@ -726,8 +771,23 @@ run-dispatch-conf() {
 add-default-runlevel-services() {
     # add all services to default runlevel (should have merged with world)
     SOFARSOGOOD=$TRUE
+    # add prerequisite networking links in /etc/init.d
+    message "Adding prerequisite network interface links in /etc/init.d ..."
+    list="eth0 wlan0"
+    for x in $list ; do
+        message_n "interface ${x}"
+        if [ ! -L /etc/init.d/net.${x} ] ; then
+            echo -en " (linking)"
+            ln -s /etc/init.d/net.lo /etc/init.d/net.${x} ; result=$?
+            ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+            ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+        else
+            echo -en " (already linked)" ; right_status $TRUE
+        fi
+    done
+    # add links for services in default runlevel
     message "Adding services to the default runlevel ..."
-    list="apache2 chronyd cronie dbus distccd gpm local mysql net.eth0 net.wlan0 netmount ntpd php-fpm rsyncd sshd sysklogd"
+    list="apache2 chronyd cronie dbus distccd gpm mysql net.eth0 net.wlan0 ntpd php-fpm rsyncd sshd sysklogd"
     for x in $list ; do
         message_n "examining ${x}"
         if [ ! -L /etc/runlevels/default/${x} ] ; then
@@ -824,15 +884,19 @@ validate_status_file ${finishupstatusfile}
 get-target ;  result=$?
 [ $result -eq 0 ] && message "get-target returned ${BGon}success${Boff}" || \
     ( E_message "get-target returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+
 get-check-config ;  result=$?
 [ $result -eq 0 ] && message "get-check-config returned ${BGon}success${Boff}" || \
     ( E_message "get-check-config returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+
 build-chroot_emerge-command ;  result=$?
 [ $result -eq 0 ] && message "build-chroot_emerge-command returned ${BGon}success${Boff}" || \
     ( E_message "build-chroot_emerge-command returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+
 display_configuration ;  result=$?
 [ $result -eq 0 ] && message "display_configuration returned ${BGon}success${Boff}" || \
     ( E_message "display_configuration returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+
 run_sequence ;  result=$?
 [ $result -eq 0 ] && message "run_sequence returned ${BGon}success${Boff}" || \
     ( E_message "run_sequence returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )

@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# umount   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit 1
+}
+
+umount-board() {
+    # inspect target (mount point) - is anything mounted? (un-mount)
+    if [ -n "$(mount | grep "on /usr/${TARGET}")" ] ; then
+        # something is mounted - un-mount it
+        E_message "${BYon}the following devices are mounted on /usr/${TARGET} --${Boff}"
+        mount | grep "on /usr/${TARGET}"
+        message_n "running umount -R /usr/${TARGET} ..."
+        umount -R /usr/${TARGET}
+        right_status $?
+    else
+        message "nothing is mounted on /usr/${TARGET} ; continuing"
+    fi
+    # inspect for loop devices attached to BOARD image file
+    message "looking for loop device attached to /usr/${BOARD}.img ..."
+    loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
+    message_n "detaching ${loop_dev} ..."
+    losetup -d ${loop_dev}
+    right_status $?
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator "(${BOARD})" "${PN}"
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/
+message "now working in parent of target directory: [${Mon}$(pwd)${Boff}]"
+
+umount-board
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0
