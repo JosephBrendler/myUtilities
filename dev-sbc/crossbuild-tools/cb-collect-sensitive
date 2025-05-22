@@ -1,0 +1,265 @@
+#!/bin/bash
+#
+# collect-sensitive (for system rebuild) (c) joe.brendler  2025-2072
+# collect appropriate template files for crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+user=joe
+collection_directory="stuffforimage_$(hostname)"
+
+#message_n "sourcing cb-common-functions ..."
+#source /usr/bin/cb-common-functions ; right_status $?
+#TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    usage-common-message
+    exit 1
+}
+
+# included because I want to run this on source machine w/o the who package installed
+validate_target() {
+    [ $# -ne 1 ] && E_message "Error: must specify BOARD" && return 1
+    BOARD=$1
+    d_message "validating BOARD: [ ${BOARD} ]" 3
+    case $BOARD in
+        "generic-armv6j"         )
+            TARGET=armv6j-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            profile_number=59 ;
+            VALID=$TRUE ;;
+        "generic-armv7a"         )
+            TARGET=armv7a-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "generic-aarch64"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "bcm2708-rpi-b"          )
+            TARGET=armv6j-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            profile_number=59 ;
+            VALID=$TRUE ;;
+        "bcm2709-rpi-2-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b-plus"   )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "bcm2711-rpi-4-b"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "bcm2712-rpi-5-b"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3288-tinker-s"        )
+            TARGET=armv7a-unknown-linux-gnueabihf ;
+            TARGET_ARCH=arm ;
+            QEMU_ARCH=arm ;
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]" ;
+            profile_number=72 ;
+            VALID=$TRUE ;;
+        "rk3399-tinker-2"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3399-rock-pi-4c-plus" )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3588-rock-5b"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3588s-orangepi-5"     )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        "rk3588s-rock-5c"        )
+            TARGET=aarch64-unknown-linux-gnu ;
+            TARGET_ARCH=arm64 ;
+            QEMU_ARCH=aarch64 ;
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]" ;
+            profile_number=15 ;
+            VALID=$TRUE ;;
+        *                        )
+            VALID=$FALSE ;;
+    esac
+
+    if [[ $VALID ]] ; then
+        echo
+        d_message "BOARD ...........: ${BOARD}" 3
+        d_message "TARGET ..........: ${TARGET}" 3
+        d_message "TARGET_ARCH .....: ${TARGET_ARCH}" 3
+        d_message "QEMU_ARCH .......: ${QEMU_ARCH}" 3
+        d_message "profile_number ..: ${profile_number}" 3
+        d_message "${BGon}[valid target]${Boff}" 2
+    else
+        E_message "${BRon}[invalid target]${Boff}"
+        usage  # will run the usage function of whatever script from which cb-common-functions was sourced
+    fi
+    echo
+    return 0
+}
+
+# included because I want to run this on source machine w/o the who package installed
+usage-common-message() {
+    echo
+    message "  ${BMon}Note: exactly one <BOARD> must be specified with -b . Examples:${Boff}"
+    message "  generic-armv6j"
+    message "  generic-armv7a"
+    message "  generic-aarch64"
+    message "  bcm2708-rpi-b"
+    message "  bcm2709-rpi-2-b"
+    message "  bcm2710-rpi-3-b"
+    message "  bcm2710-rpi-3-b-plus"
+    message "  bcm2711-rpi-4-b"
+    message "  bcm2712-rpi-5-b"
+    message "  rk3288-tinker-s"
+    message "  rk3399-tinker-2"
+    message "  rk3399-rock-pi-4c-plus"
+    message "  rk3588-rock-5b"
+    message "  rk3588s-orangepi-5"
+    message "  rk3588s-rock-5c"
+
+    echo
+    message "${BMon}Note: exactly one <TARGET> will be selected automatically. Examples:${Boff}"
+    message "  aarch64-unknown-linux-gnu"
+    message "  armv6j-unknown-linux-gnueabihf"
+    message "  armv7a-unknown-linux-gnueabihf"
+    echo
+    message "${BYon}Note: find additionl information at /etc/crossbuild-tools/README"
+    return 0
+}
+
+validate_source() {
+    BOARD=$1
+    model=$(lshw | grep -i -A5 $(hostname) | grep product | cut -d':' -f2 | sed 's/^[[:space:]]*//')
+    case ${model} in
+        "" ) my_board="" ;;
+        "Raspberry Pi 2 Model B Rev 1.1" ) my_board="bcm2709-rpi-2-b" ;;
+        "Raspberry Pi 3 Model B Rev 1.2" ) my_board="bcm2710-rpi-3-b" ;;
+        "Raspberry Pi 3 Model B Plus Rev 1.3" ) my_board="bcm2710-rpi-3-b-plus" ;;
+        "Raspberry Pi 4 Model B Rev 1.1" ) my_board="bcm2711-rpi-4-b" ;;
+        "Raspberry Pi 5 Model B Rev 1.0" ) my_board="bcm2712-rpi-5-b" ;;
+        "Radxa ROCK Pi 4C+" ) my_board="rk3399-rock-pi-4c-plus" ;;
+        "Radxa ROCK 5B" ) my_board="rk3588-rock-5b" ;;
+        "Orange Pi 5B" ) my_board="rk3588s-orangepi-5" ;;
+        "Radxa ROCK 5C" ) my_board="rk3588s-rock-5c" ;;
+    esac
+    echo
+    message "source reports it is [${model}], so source board is [${my_board}]"
+    message "comparing my_board [${my_board}] and BOARD [${BOARD}] ..."
+    if [[ "${my_board}" == "${BOARD}" ]] ; then
+        message "this is a ${BGon}match${Boff}"
+        return 0
+    else
+        E_message "this is a ${BRon}mismatch${Boff}"
+        return 1
+    fi
+}
+
+collect-sensitive() {
+    FLAGGED=$FALSE
+    message "running collect-sensitive()"
+    old_dir=$(pwd)
+    cd /home/${user}
+    message "now working in ${BMon}$(pwd)${Boff}"
+    message_n "creating collection directory [${collection_directory}]"
+    [ ! -d ${collection_directory} ] && mkdir -p ${collection_directory} ; result=$?
+    right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+    cd ${collection_directory}
+    message "now working in ${BMon}$(pwd)${Boff}"
+
+    message_n "copying apache_ssl content"
+    cp -a /etc/apache2/ssl apache_ssl
+    result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+
+    message_n "copying apache_vhosts.d content"
+    cp -a /etc/apache2/vhosts.d apache_vhosts.d
+    result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+
+    message_n "copying openvpnkeys_2024 content"
+    cp -a /etc/openvpn/openvpnkeys_2024 openvpnkeys_2024
+    result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+
+    message_n "copying ${user}/.ssh content"
+    [ ! -d ${user} ] && mkdir ${user}
+    cp -a /home/${user}/.ssh ${user}/
+    result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+
+    message_n "copying wpa_supplicant content"
+    [ ! -d ${wpa_supplicant} ] && mkdir wpa_supplicant
+    cp -a /etc/wpa_supplicant/wpa_supplicant.conf wpa_supplicant/
+    result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+
+    message "please inspect results ..."
+    tree -a
+    echo
+
+    cd ${old_dir}
+    message "now working in previous directory ${BMon}$(pwd)${Boff}"
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator "($(hostname))" "${PN}"
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+validate_source ${BOARD} && collect-sensitive || ( E_message "exiting" && exit 1 )
+
+exit 0
