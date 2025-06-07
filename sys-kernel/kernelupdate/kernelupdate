@@ -47,7 +47,7 @@ verbosity=1
 
 PN=$(basename $0)
 
-# initialize local variables to default values (override with .conf and/or command line)
+# initialize local variables to default values (override later with .conf and/or command line)
 user="joe"
 makeopts=" -j9 -l5"
 features=" -userpriv -distcc -distcc-pump"
@@ -123,6 +123,7 @@ module_dir=""  # to be set after make modules_install
 [[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown ${user}:${user} "${distrib_dir}"
 [[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown ${user}:${user} "${lib_dir}"
 [[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown ${user}:${user} "${boot_dir}"
+[[ "${model}" == "domU" ]] && \
 [[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown ${user}:${user} "${host_dir}"
 
 # set up the parts of the make command
@@ -150,16 +151,25 @@ make_me="${make_model}"
 
 # get and set kernel version number and image name
 old_dir=$PWD
-message "Old pwd: ${old_dir}" && cd ${sources_dir%/} && message "Now working in $PWD"
-### This change was un-necessary -- undo it
-version_number=$(eval ${make_me} -s kernelversion)
-# domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
-#   but for domU, I don't want the "-gentoo" part, so strip it
-[ "${model}" == "domU" ] && \
+# if this is the first-run for this model, sources_dir won't exist, so assign a placeholder for kernelversion
+# after assigning/displaying config, provide README-instructions instead of running command_sequence
+if [[ ! -e "${sources_dir}" ]] ; then
+    version_number="<TBD>"
+else
+    message "Old pwd: ${old_dir}" && cd ${sources_dir%/} && message "Now working in $PWD"
+    version_number=$(eval ${make_me} -s kernelversion)
+    # domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
+    #   but for domU, I don't want the "-gentoo" part, so strip it
+fi
+# if this build is for a domU, then fix the version number
+if [ "${model}" == "domU" ] ; then
     version_number="${version_number/-gentoo/}"
+fi
+# build the kernel_image_name
 d_message "version_number: ${version_number}" 3
 kernel_image_name="${kernel_basename}-${version_number}"
 
+# build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
 devel_dir="${my_devel_dir%/}"
 ebuild_dir="${my_ebuild_dir%/}/${kernel_basename}"
 publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
@@ -678,18 +688,21 @@ make_sources_message() {
 # echo lines beginning with one "#" in light blue
 # ehco other lines in bright white
 #
+d_message "running make_sources_message() ..." 3
+d_message "CONF_DIR: ${CONF_DIR}" 3
+d_message_n "README-instructions file" 3
+[ -f ${CONF_DIR%/}/README-instructions ] && d_message "found" 3 || dE_message "not found!" 3
 while read line
 do
-  if [ "${line:0:1}" == "#" ]
-  then
-    [ "${line:1:1}" == "#" ] && break || echo -en ${LBon}
+  d_message "considering line: $line" 5
+  if [ "${line:0:1}" == "#" ] ; then
+    if [ "${line:1:1}" != "#" ] ; then    # do not print those lines starting "##" at all
+        echo -e ${LBon}${line}${Boff}    # emphasize in light blue the comment lines beginning "#"
+    fi
   else
-    echo -en ${BWon}
+    echo -e ${BWon}${line}${Boff}        # emphasize in bright white only the lines that do not begin with "#"
   fi
-  echo ${line}
-#done < $(dirname ${CONF_DIR%/})/README-instructions
 done < ${CONF_DIR%/}/README-instructions
-echo -e ${Boff}
 }
 
 process_command_line() {
@@ -848,12 +861,16 @@ sanity_check() {
 #   E_message "Dangerous option combination: noninteractive and resume" && \
 #   usage && exit 1
 
+d_message "running sanity_check() ..." 3
+d_message "sources_dir: ${sources_dir}" 3
 answer=""
 if [[ $starting_step -eq 0 ]]
 then
   # if a sources directory has not been linked, advise the user about this
   if [[ ! -e "${sources_dir}" ]]
   then
+    separator "${PN}" "Manual Prerequisites"
+    E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
     make_sources_message
     exit
   else
