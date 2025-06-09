@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# umount   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+source /usr/local/sbin/script_header_brendlefly
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE>${Boff}"
+    usage-common-message
+    exit 1
+}
+
+check-target-board-loopmount() {
+    FLAGGED=$FALSE
+    # inspect target (mount point) - verify that BOARD is mounted and get its loop_dev
+    if [ -n "$(mount | grep "on /usr/${TARGET}")" ] ; then
+        # something is mounted - look for loop_dev
+        E_message "${BYon}the following devices are mounted on /usr/${TARGET} --${Boff}"
+        mount | grep "on /usr/${TARGET}"
+        # note: this will fail if there are more than 10 partitions
+        target_loop_dev=$(mount | grep /usr/${TARGET} | grep 'loop' | head -n1 | cut -d' ' -f1 | tr -d 'p[:numeric:]$')
+    else
+        FLAGGED=$TRUE
+        E_message "nothing is mounted on /usr/${TARGET}"
+    fi
+    # inspect for loop devices attached to BOARD image file
+    message "${BYon}the following loop devices are attached to /usr/${BOARD}.img ...${Boff}"
+    losetup -a | grep "/usr/${BOARD}.img"
+    #board_loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
+    board_loop_dev="$(losetup --find --show /usr/${BOARD}.img"
+    if [ -n "${board_loop_dev}" ] ; then
+        # confirm BOARD and TARGET are the same loop device
+        message_n "confirming BOARD.img loop_dev is the same one mounted on TARGET ..."
+        if [[ "${board_loop_dev}" == "${target_loop_dev}" ]] ; then
+            echo -en "${BGon} (confirmed)${Boff}"
+            right_status $TRUE
+            message_n "exporting loop_dev $loop_dev ..."
+            export ${loop_dev} ; right_status $?
+        else
+            echo -en "${BRon} (different)${Boff}"
+            right_status 1
+            FLAGGED=$TRUE
+        fi
+    else
+        FLAGGED=$TRUE
+        E_message "no loop device is attached to /usr/${BOARD}.img"
+    fi
+
+    [ $FLAGGED ] && return 1 || return 0
+}
+
+final_warning() {
+    answer=""
+    msg="${BYon}Warning:${BRon} this process will destroy all data on device [ ${OUTPUTDEVICE} ]\n"
+    msg+="${BWon}Are you sure you want to continue?"
+    prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to final warning"; exit 1 ;;
+    esac
+    return 0
+}
+
+confirm_continue_or_exit() {
+    answer=""
+    msg="${BYon}Do you want to continue?"
+    prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to final warning"; exit 1 ;;
+    esac
+    return 0
+
+}
+
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator "(${BOARD})" "${PN}"
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD}
+validate_device ${OUTPUTDEVICE}
+
+old_dir="$(pwd)"
+cd /usr/
+message "now working in parent of crossbuild target directory: [${Mon}$(pwd)${Boff}]"
+
+message "confirming BOARD is mounted on crossbuild TARGET ..."
+check-target-board-loopmount ; result=$?
+if [ $result -ne 0 ] ; then
+    E_message "note red flags; consider correcting any issues before proceeding"
+    confirm_continue_or_exit
+else
+    d_message "check-target-board-loopmount returned OK; continuing" 3
+fi
+
+# if we get here, BOARD, TARGET, and OUTPUTDEVICE are all assigned and validated
+final_warning ; result=$?
+[ $result -ne 0 ] && E_message "Negative response to final warning - should have already exited, do so now" && exit 1
+
+# 
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0

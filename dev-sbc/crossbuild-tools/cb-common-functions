@@ -185,6 +185,23 @@ validate_target() {
     return 0
 }
 
+validate_device() {
+    [ $# -ne 1 ] && E_message "Error: must specify OUTPUTDEVICE" && return 1
+    OUTPUTDEVICE=$1
+    separator "(validate_device)" ${PN}
+    message_n "validating OUTPUTDEVICE: [ ${OUTPUTDEVICE} ] ..."
+    if [ -b ${OUTPUTDEVICE} ] ; then
+        right_status $TRUE
+        message "running fdisk -l ${OUTPUTDEVICE} ..."
+        fdisk -l ${OUTPUTDEVICE} | sed 's|^|    |'
+    else
+        right_status 1
+        E_message "no such block device found for [ ${OUTPUTDEVICE} ]"
+        exit 1
+    fi
+    return 0
+}
+
 install_files_from_source() {
     SOURCE="$1"
     # strip source directory name from each pathname to use relative to /usr/${TARGET}/
@@ -250,7 +267,7 @@ linear_search() {  # find $2 in array $1, return index
 
 usage-common-message() {
     echo
-    message "  ${BMon}Note: exactly one <BOARD> must be specified with -b . Examples:${Boff}"
+    message "  ${BMon}Note: exactly one <BOARD> may be specified.  Examples:${Boff}"
     message "  generic-armv6j"
     message "  generic-armv7a"
     message "  generic-aarch64"
@@ -407,7 +424,7 @@ process_cmdline() {
     if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
       d_message "processing [ $1 ] alone as single-dash argument" 3
       process_argument $1 $2   # incl $2 in case $1 is -t or -b
-      [[ "${1}" =~ ^(-t|-b)$ ]] && shift  # extra shift to clear target or board
+      [[ "${1}" =~ ^(-t|-b|-o)$ ]] && shift  # extra shift to clear target, board, or outputdevice
       shift
     # if arg begins with a double dash, process it alone
     elif [ "${1:0:2}" == "--" ] ; then
@@ -511,6 +528,11 @@ process_argument() {
       export BOARD=$2
       d_message "${BYon}set BOARD = ${BOARD}" 2
       ;;
+    "-"[oO] | "--outputdevice"         )
+      # specify output device to be flashed (next arg in $@ set)
+      export OUTPUTDEVICE=$2
+      d_message "${BYon}set OUTPUTDEVICE = ${OUTPUTDEVICE}" 2
+      ;;
     *                            )
     process_compound_arg $1
       ;;
@@ -606,6 +628,11 @@ process_compound_arg()  {
                 export VERBOSE=${TRUE}
                 d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
                 ;;       # note: "numeric" args like -4 should fall through to this default
+            [oO] )
+                # specify output device to be flashed (next arg in $@ set)
+                export OUTPUTDEVICE=$2
+                d_message "${BYon}set OUTPUTDEVICE = ${OUTPUTDEVICE}" 2
+                ;;
             *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
         esac
         #strip first char from myargs (i.e. "shift" one character)

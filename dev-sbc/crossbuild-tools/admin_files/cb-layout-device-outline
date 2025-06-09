@@ -1,0 +1,277 @@
+#---- do something like this, but for device, not loopdev
+
+    # must be root
+    checkroot
+
+    # partition and format a block device
+
+    # determine device size and set variables for partition sizing
+
+    # for a loopdev
+    device="$(losetup --find --show ${imagefile})" && result=$?
+
+    # for a normal blockdev
+    device=/dev/sdc
+
+    # set sizing variables
+    partition1_start_sector_size_bytes=512
+    partition1_start_sector=16384  ## for raspi nvme (follow what genrpi does)
+    #partition1_start_sector=32768  ## for rockchip nvme (leave room for u-boot)
+    #partition1_start_sector=8192   ## for old timker boards SD card
+    echo "partition1_start_sector: $partition1_start_sector"
+    partition1_size_mb=512
+
+    # set mountpoint
+    mountpoint=/mnt/to
+    #mountpoint=/mnt/gentoo
+
+    # set hostname (used in cryptsetup layout naming)
+#    hostname=rock5b6401
+    HOSTNAME=raspiCM46401
+
+    # if doing cryptsetup layout, specify volume group name
+    #    root_vg=vg_raspiCM56401
+    root_vg=vg_${HOSTNAME}
+    # also specify the keying device, filename, and passphrase
+    crypt_keydev=/dev/sda1
+    crypt_keydev_mountpoint=/mnt/key/
+    keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
+    crypt_passphrase=Mustang7526
+    
+    # caclulate partition 1/2 breakpoint in MiB
+    MiB=$((1024 * 1024)); echo "MiB: $MiB"
+    partition1_start_byte=$(($partition1_start_sector_size_bytes * $partition1_start_sector)); 
+    echo "partition1_start_byte: $partition1_start_byte"
+    partition1_start_mb=$(($partition1_start_byte / $MiB)); echo "partition1_start_mb: $partition1_start_mb"
+
+    # calculate disk size in MiB
+    #  (to-do: use this for relative layout sizing on device or arbitrary size)
+    fdisk -l ${device} | head -n1
+    bytesize=$(fdisk -l ${device} | head -n1 | awk '{print $5}'); echo $bytesize
+    MiBsize=$(( $bytesize / $((1024 * 1024)) )); echo $MiBsize
+
+    # Create partition table
+    message_n "making dos disk label ..."
+    parted -s "${device}" mklabel msdos ; right_status $?   ### msdos
+    # or for gpt --
+    message_n "making gpt disk label ..."
+    parted -s "${device}" mklabel gpt ; right_status $?     ### gpt
+
+    # Create partitions
+       #mkpart [part-type name fs-type] start end
+       #          Create  a new partition. part-type may be specified only with msdos and
+       #          dvh partition tables, it should be one of "primary", "logical", or "ex-
+       #          tended".  name is required for GPT partition tables and fs-type is  op-
+       #          tional.   fs-type  can  be  one  of  "btrfs",  "ext2",  "ext3", "ext4",
+       #          "fat16", "fat32",  "hfs",  "hfs+",  "linux-swap",  "ntfs",  "reiserfs",
+       #          "udf", or "xfs".
+
+    # create partition 1 starting at 0 and going until designated size
+    # (0% example)   parted -s "${device}" mkpart primary 0% ${partition1_size_mb}MiB; right_status $?
+    message_n "creating partition 1 ..."
+    parted -s "${device}" mkpart primary ${partition1_start_mb}MiB ${partition1_size_mb}MiB; right_status $?
+
+    # (man parted) set partition 1 bootable flag on
+        # set <partition> <flag> <state>
+        #         Change  the  state  of the flag on partition to state.  Supported flags
+        #         are:  "boot",  "root",  "swap",   "hidden",   "raid",   "lvm",   "lba",
+        #         "legacy_boot", "irst", "msftres", "esp", "chromeos_kernel", "bls_boot",
+        #         "linux-home", "no_automount", "bios_grub", and "palo".  state should be
+        #         either "on" or "off".
+    message_n "setting partition 1 bootable flag on ..."
+    parted -s "${device}" set 1 boot on ; right_status $?
+
+    # (man parted) set partition 1 type to msdos data ( 0c W95 FAT32 (LBA) )
+        # type partition id or uuid
+        #         On  MS-DOS set the type aka. partition id of partition to id. The id is
+        #         a value between "0x01" and "0xff". On GPT the type-uuid of partition to
+        #         uuid.
+    message_n "setting partition 1 type to msdos data (0c) ..."
+    parted -s "${device}" type 1 0c ; right_status $?
+
+    # create partition 2 starting at the end of partition 1 and using the rest of the device
+    message_n "creating partition 2 ..."
+    parted -s "${device}" mkpart primary ${partition1_size_mb}MiB 100% ; right_status $?
+
+    #  set partition 2 lvm flag on (*** for crypt layout ***)
+    message_n "setting partition 2 lvm flag on ..."
+    parted -s "${device}" set 2 lvm on ; right_status $?
+
+    # set partition 2 type to Linux (83)
+    message_n "setting partition 2 type to Linux (83)"
+    parted -s "${device}" type 2 83 ; right_status $?
+
+    # (*** if doing cryptsetup layout ***) set partition 2 type to Linux lvm (8e)
+    #    message_n "setting partition 2 type to Linux lvm type (8e)"
+    #    parted -s "${device}" type 2 8e ; right_status $?
+
+    # Get partition device names grep info: ^ (line starts w device name) p? (0-1 p char)
+    # ( works for all of e.g. /dev/sda1 /dev/mmcblk0p1 /dev/nvme0n1p1 )
+    message_n "getting device name for partition 1 ..."
+    partition1_device=$(fdisk -l $device | grep -E "^${device}p?1" | awk '{print $1}') ; result=$?
+    echo -n " ( ${partition1_device} )" ;  right_status ${result}
+
+    message_n "getting device name for partition 2 ..."
+    partition2_device=$(fdisk -l $device | grep -E "^${device}p?2" | awk '{print $1}') ; result=$?
+    echo -n " ( ${partition2_device} )" ;  right_status ${result}
+
+    # Format partitions  *** note: some layouts p1 is vfat, others ext4
+    message "formatting partition 1 vfat ..."
+    mkfs.vfat -F 32 -n boot_fs "$partition1_device" ; right_status $?
+    # if sd card, format partition 2 -- 
+    # *** for cyrptsetup layout skip to dd command below ***
+    message "formatting partition 2 ..."
+    mkfs.ext4 -L root_fs "$partition2_device" ; right_status $?
+
+    # mount rootfs, mkdir boot
+    if [ ! -d ${mountpoint} ] ; then
+        message_n "creating mountpoint ${mountpoint} ..."
+        mkdir -p ${mountpoint} ; right_status $?
+    fi
+    message_n "mounting root_fs ..."
+    mount "${partition2_device}" ${mountpoint} ; right_status $?
+    if [ ! -d ${mountpoint%/}/boot ] ; then
+        message_n "creating boot directory ..."
+        mkdir ${mountpoint%/}/boot ; right_status $?
+    fi
+    message_n "mounting boot_fs ..."
+    mount "${partition1_device}" ${mountpoint%/}/boot ; right_status $?
+    
+    #----- then do something like this to lvm layout
+    dd if=/dev/urandom of=/dev/nvme0n1p2 bs=4M status=progress
+
+    echo "${crypt_passphrase}" | cryptsetup -q luksFormat ${partition2_device}
+
+    mount ${crypt_keydev} ${crypt_keydev_mountpoint}
+    cryptsetup luksAddKey ${partition2_device} ${keyfile} 
+
+    # determine an edev name to use with this device 
+    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
+    message_n "determining edev name ..."
+    bn=$(basename ${device})
+    case ${bn:0:2} in
+      "sd" ) # scsi device
+        edev=$(echo ${bn} | sed 's/^s/e/')
+        ;;
+      "nv" ) # nvme device
+        edev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
+        ;;
+      "mm" ) # mmc device
+        edev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
+        ;;
+      *    ) # tbd
+        echo "Error: bad luks device name [$device]"
+        ;;
+    esac ; right_status $?
+    echo "edev: $edev"
+
+    # open (unlock) the device
+    cryptsetup luksOpen -d ${keyfile} ${partition2_device} ev012
+
+    # create PV
+    message_n "creating PV /dev/mapper/${edev}
+    pvcreate /dev/mapper/${edev} ; right_status $?
+
+    # create VG
+    message_n "creating VG vg_${HOSTNAME} ..."
+    vgcreate vg_${HOSTNAME} /dev/mapper/${edev} ; right_status $?
+
+    # create LVs (todo: automate with relative sizing)
+    message "creating LVs ..."
+    lvcreate -n root -L10G vg_${HOSTNAME}
+    lvcreate -n usr -L40G vg_${HOSTNAME}
+    lvcreate -n var -L100G vg_${HOSTNAME}
+    lvcreate -n tmp -L50G vg_${HOSTNAME}
+    lvcreate -n home -L200G vg_${HOSTNAME}
+    lvcreate -n opt -L5G vg_${HOSTNAME}
+    lvcreate -n swap -L8G vg_${HOSTNAME}
+    lvcreate -n srv -L500G vg_${HOSTNAME}
+    lvcreate -n extra -L17.48G vg_${HOSTNAME}
+    right_status $?
+
+    # format all as ext4; then redo swap
+    message "formatting new LVs ..."
+    yes | for x in /dev/mapper/vg_${HOSTNAME}-*; do
+        myfs=$(echo $x | sed 's|/dev/mapper/vg_${HOSTNAME}-||');
+        echo $myfs ; mkfs.ext4 -L "${myfs}_fs" $x;
+    done : right_status $?
+    message "reformatting /dev/mapper/vg_${HOSTNAME}-swap as swap ..."
+    mkswap /dev/mapper/vg_${HOSTNAME}-swap ; right_status $?
+
+    # mount the new root device
+    message_n "mounting new root dev [ /dev/mapper/vg_${HOSTNAME}-root ] ..."
+    mount /dev/mapper/vg_${HOSTNAME}-root /mnt/gentoo/ ; right_status
+    cd /mnt/gentoo/
+
+    # determine the UUID of the boot device
+    message_n "determining UUID of boot device [ $partition1_device ] ..."
+    eval "$(blkid $partition1_device -o export | grep '^UUID')" && BOOT_UUID=${UUID} && \
+    echo -en "( $BOOT_UUID )" ; right_status $?
+
+    # capture the rest of boot_device blkid data
+    message_n "capturing the rest of boot_device blkid data ..."
+    boot_dev_blkid_data="$(blkid $partition1_device)" ; right_status $?
+    
+    # create mount-the-rest script
+    mounttherestscript="/mnt/gentoo/mount-the-rest.${HOSTNAME}"
+    message_n "creating ${mounttherestscript} ..."
+    echo "#!/bin/bash" > ${mounttherestscript}
+    echo "root_vg=vg_${HOSTNAME}" >> ${mounttherestscript}
+    echo "boot_uuid=${BOOT_UUID}" >> ${mounttherestscript}
+
+    cat << EOF >> ${mounttherestscript}
+# (create and/or) mount LVs
+for x in $(lvs | grep ${root_vg} | grep -v 'root\|swap\|extra' | awk '{print $1}')
+do
+  [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x
+  mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x
+done
+# display results
+echo "here is what I mounted..."
+mount | grep ${mountpoint}
+echo
+# explain how to mount boot
+[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot
+echo "mount /boot as below now, or at / AFTER chroot (see fstab)"
+echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"
+
+EOF && \
+    echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript} && \
+    chmod +x ${mounttherestscript}
+    right_status $?
+
+    # create chroot-prep
+    chrootprepscript="/mnt/gentoo/chroot-prep"
+    message_n "creating ${chrootprepscript} ..."
+    cat << EOF > ${chrootprepscript}
+[ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run
+mount --types proc proc /mnt/gentoo/proc
+mount --rbind /sys /mnt/gentoo/sys
+mount --make-rslave /mnt/gentoo/sys
+mount --rbind /dev /mnt/gentoo/dev
+mount --make-rslave /mnt/gentoo/dev
+mount --bind /run /mnt/gentoo/run
+mount --make-rslave /mnt/gentoo/run
+
+test -L /dev/shm && rm /dev/shm && mkdir /dev/shm
+mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm
+chmod 1777 /dev/shm
+EOF && \
+    chmod +x ${chrootprepscript}
+    right_status $?
+
+    # create chroot-commands file
+    chrootcommandsfile=/mnt/gentoo/chroot-commands" 
+    message_n "creating ${chrootcommandsfile} ..."
+    cat << EOF > ${chrootcommandsfile}
+chroot /mnt/gentoo /bin/bash
+env-update
+source /etc/profile
+export PS1="(chroot) $PS1"
+EOF
+    right_status $?
+
+    # wrap up
+    echo
+    message "layout complete"
+    message "${BYon}Hint:  use cb-flash <BOARD> <DEVICE>${Boff} to populate the new device"

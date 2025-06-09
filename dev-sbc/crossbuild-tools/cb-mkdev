@@ -1,0 +1,296 @@
+#!/bin/bash
+#
+# mkdev   (c) joe.brendler  2025-2072
+# copy appropriate template files into crossbuild target filesystem
+#
+
+    # pre-requisite: cb-mkenv and cb-mkimg have been fully completed, with possible exception of its chroot step
+    # this script expects --
+    #    a working, nearly bootable image file is set up and mounted on the appropriate target directory (cb-setup)
+    #    the image file is ready to be transferred to a real block device, finalized, and deployed
+
+source /usr/local/sbin/script_header_brendlefly
+
+#-----[ variables ]-----------------------------------------------------
+
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+PN=$(basename $0)
+
+
+response=""
+
+varlist="PN BUILD DEVICE BOARD TARGET TARGET_ARCH QEMU_ARCH"
+varlist+=" layout_number"
+varlist+=" starting_step stopping_step mkdevstatusfile"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" BREAK bool.VERBOSE verbosity old_dir"
+
+# Note: much of the workflow is accopmlished by the finalize-chroot-image
+#    script that will run once in the chroot (after replacing the
+#    basic finalize-chroot script provided for cb-mkenv)
+
+command_sequence=(
+'validate-image'
+'select-validate-device'
+'eselect-layout'
+'cb-layout-device ${OUTPUTDEVICE}'
+'cb-flash-device ${OUTPUTDEVICE}'
+'post-flash-cleanup'
+)
+
+msg1_sequence=(
+'validate source (crossbuilt BOARD and TARGET)'
+'eselect and validate OUTPUTDEVICE'
+'select layout'
+'layout OUTPUTDEVICE'
+'flash OUTPUTDEVICE'
+'conduct post-flash cleanup'
+)
+
+msg2_sequence=(
+'validating source (crossbuilt BOARD and TARGET)'
+'eselecting and validating OUTPUTDEVICE'
+'selecting OUTPUTDEVICE layout'
+'laying out OUTPUTDEVICE'
+'flashing OUTPUTDEVICE'
+'conducting post-flash cleanup')
+
+#-----[ functions ]-----------------------------------------------------
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+
+message_n "sourcing cb-common-functions ..."
+source /usr/bin/cb-common-functions ; right_status $?
+
+usage() {
+  N=$(( ${#command_sequence[@]} -1 ))
+  separator "${PN}-${BUILD}" "$(hostname)"
+  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -b|--board <BOARD>${Boff}"
+  message "${BYon}Valid Options --${Boff}"
+  message "  -i | --interactive..................: run interactively; confirm execution of each step"
+  message "  -n | --noninteractive...............: run non-interactively; proceed automatically with each step"
+  message "  -s | --status.......................: return status (next step, step_number)"
+  message "  -r | --resume.......................: resume proccessing (with next step, from mkenvstatusfile)"
+  message "  -o | --outputdevice <OUTPUTDEVICE>..: specify DEVICE to be formatted and flashed"
+  message "  -b | --board <BOARD>................: specify BOARD (selects crossbuilt TARGET to use as source)"
+  message "  -v | --verbose......................: increase verbosity"
+  message "  -q | --quiet........................: decrease verbosity"
+  message "  -[0-${N}].............................: save N to status file and resume at step N"
+  echo
+  message "${BMon}Note: single-character options (except o & b) may be combined. For example -${Boff}"
+  message "  ${BGon}${PN} --verbose -nqr11 -o /dev/nvme0n1 -b bcm2712-rpi-cm5-cm5io${Boff}"
+  message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
+  message "  ${BYon}to lay out and format /dev/nvme0n1 and flash it with the contents of"
+  message "  the /usr/bcm2712-rpi-cm5-cm5io.img board image file${Boff}"
+  echo
+  message "${BMon}Other notes:${Boff}"
+  message "   - options -i (interactive) is on by default"
+  message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
+  message "   - option  -[0-${N}] sets starting_step (default 0) to the specified value"
+  message "   - exactly one valid block device may be specified (user will be prompted otherwise)"
+  message "   - ${PN} will default to a previously mounted BOARD image file, if a new one"
+  message "     is not specified on the command line; user may override with prompt response"
+  usage-common-message
+  message "${BYon}Command sequence steps:${Boff}"
+  for ((s=0; s<${#command_sequence[@]}; s++))
+  do
+    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
+  done
+  exit 1
+}
+
+initialize_variables() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+
+    # set default values
+    FLAGGED=$FALSE
+    d_message_n "sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting old_dir = $(pwd)" 2
+    export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default starting_step = 0" 2
+    export starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default stopping_step = $(( ${#command_sequence[@]} - 1 ))" 2
+    export stopping_step=$(( ${#command_sequence[@]} - 1 )) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default mkdevstatusfile = /root/bin/mkcrossbuilddev_status" 2
+    export mkdevstatusfile="/root/bin/mkcrossbuilddev_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default layout_number = 1" 2
+    layout_number=1 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default INTERACTIVE true" 2
+    export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default VERBOSE true" 2
+    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default verbosity = 3" 2
+    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
+}
+
+validate-image() {
+    FLAGGED=$FALSE
+    # validate target mountpoint directory
+    if [ ! -d /usr/${TARGET} ] ; then
+        E_message "target directory /usr/${TARGET} does not exist"
+        FLAGGED=$TRUE
+    fi
+    # validate board image file exists
+    if [ ! -f /usr/${BOARD}.img ] ; then
+        E_message "image file target /usr/${BOARD}.img does not exist"
+        FLAGGED=$TRUE
+    fi
+    # verify loop device is active
+    message "the following loop devices are active for image file(s) --"
+    losetup -a
+    loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
+    if [ -z "${loop_dev}" ] ; then
+        E_message "no loop device is active for /usr/${BOARD}"
+        FLAGGED=$TRUE
+    fi
+    # verify the loop device is mounted on the target
+    mountpoint=$(mount | grep "${loop_dev}p2" | awk '{print $3}')
+    [[ ! "${mountpoint}" == "/usr/${TARGET}" ]] && E_message "no rootfs (loop_dev p2) is mounted on target /usr/${TARGET}" && FLAGGED=$TRUE
+    mountpoint=$(mount | grep "${loop_dev}p1" | awk '{print $3}')
+    if [[ ! "${mountpoint}" == "/usr/${TARGET}/boot" ]] ; then
+        E_message "no bootfs (loop_dev p1) is mounted on target /usr/${TARGET}/boot"
+        FLAGGED=$TRUE
+    fi
+    if [ -z "$(mount | grep loop)" ] ; then
+        E_message "no loop device is mounted at all"
+        FLAGGED=$TRUE
+    fi
+    # verify other loop device(s) are not active
+    if [ ! -z "$(mount | grep loop | grep -v ${loop_dev})" ] ; then
+        E_message "other loop devices are also already active"
+        FLAGGED=$TRUE
+    fi
+    if [[ $FLAGGED ]] ; then
+        E_message "${BYon}Note red flags above${Boff}"
+        E_message "${BWon}You should consider whether you need to correct issues before continuing${Boff}"
+        d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
+        if [[ $INTERACTIVE ]] ; then
+            msg="${BWon}Do you really want to continue?\n"
+            mst+="    y|s: yes; continue | n: no; exit"
+            response="" ; new_prompt "${msg}"
+        else
+            response="n"    ## take the safe course (do not non-interactively destroy stuff)
+        fi
+        case ${response:0:1} in
+            [yYsS] ) message "OK; continuing" ;;
+            [nN] ) E_message "Exiting as instructed [ ${response} ]" ; return 1 ;;
+            * ) E_message "Invalid response; exiting" ; return 1 ;;
+        esac
+    else
+        message "No red flags noted"
+    fi
+    return 0
+}
+
+select-validate-device() {
+    # default to device specified in config file or command line
+    # if none was provided via config or cmdline, then ask for OUTPUTDEVICE
+    # ask user to confirm (warn that write will destroy all data...)
+    # export OUTPUTDEVICE
+}
+
+get-max-layout-number() {
+    cmd=" eselect cb-layout-device list |"
+    cmd+=" grep '\[[0-9]\+\]' |"
+    cmd+=" awk '{print \$1}' |"
+    cmd+=" sed 's/\[//' |"
+    cmd+=" sed 's/\]//' |"
+    cmd+=" sort -n |"
+    cmd+=" tail -n 1"
+    result=$(eval ${cmd})
+    echo $result
+    return $result
+}
+
+layout_number_prompt()  {
+    ps=$1; echo; echo; CUU; SCP;
+    get-max-layout-number >/dev/null ; max_num=$?
+    message_n "$ps [0-${max_num}]: " && read layout_number;
+    isnumber $layout_number ; result=$?
+    while [ $result -ne 0 ] || [ $layout_number -lt 0 ] || [ $layout_number -gt ${max_num} ] ; do
+        RCP; echo -en "$( repeat ' ' $( termwidth ) )"; RCP;
+        message_n "$ps [0-${max_num}]: " && read layout_number;
+        isnumber $layout_number ; result=$? ; done
+}
+
+eselect-layout() {
+    # default to layout specified in config file
+    # or suggest one based on board image type (straight SD card, luks-encrypted NVMe stick, etc)
+    # export layout variables (partition1_size_mb, HOSTNAME, root_vg, crypt_keydev, etc.)
+    message "setting default layout ..."
+    eselect cb-layout-device set 1
+    eselect cb-layout-device list | grep '\*'
+    d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
+    if [[ $INTERACTIVE ]] ; then
+        msg="${BYon}Would you like to select a different layout?\n"
+        msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
+        response="" ; new_prompt "${msg}"
+    else
+        response="s"  # keep default profile and continue
+    fi
+    case ${response:0:1} in
+        [yY] )
+            message "${BMon}Available layouts --${Boff}"
+            eselect cb-layout-device list
+            layout_number_prompt "${BYon}Select profile: ${Boff}"
+            eselect cb-layout-device set ${layout_number}
+            eselect cb-layout-device list
+            ;;
+        [nN] ) E_message "exiting as instructed"; return 0;;
+        [sS] ) E_message "skipping; layout remains ${layout_number}" ;;
+        * ) E_message "invalid response [ ${response} ]"; exit 1 ;;
+    esac
+    return 0
+}
+
+post-flash-cleanup() {
+    # umount outputdevice
+    # umount BOARD/TARGET
+    # provide parting instructions
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+  if [ $# -eq 1 ] ; then
+    # option s (status) is the only one that can appear alone on the command line
+    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+      E_message "invalid argument [${arglist}]"
+      usage
+    fi
+  fi
+
+initialize_variables     # set defaults
+
+d_echo "cmdline: $*" 5
+d_echo "processing cmdline args: $@" 5
+
+msg="processing cmdline ..."
+[ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
+process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
+right_status $?
+
+sanity_check && \
+validate_target ${BOARD} && \
+validate_status_file ${mkdevstatusfile} && \
+display_configuration && \
+run_sequence ${mkdevstatusfile}
+
+echo
+cd $old_dir
+d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
+exit 0
