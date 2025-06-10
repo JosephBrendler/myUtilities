@@ -199,6 +199,66 @@ validate_device() {
         E_message "no such block device found for [ ${OUTPUTDEVICE} ]"
         exit 1
     fi
+    # check if any part of this device is mounted - un-mount before continuing
+    # first unmount anything mounted to lvm in luks
+    # note:  | sed 's|\\x0a| |' substitutes a space for the escaped newline
+    #     control charackter in multiple mountpoints in lsblk -P output
+    while read line; do
+        # echo -n $line
+        if [[ ! -z $(echo $line) ]] ; then
+           eval "${line}" # will set NAME,TYPE, and MOUNTPOINTS
+           d_message "${TYPE}: $NAME  MOUNTPOINTS: ${MOUNTPOINTS}" 2
+           if [[ ! -z ${MOUNTPOINTS} ]] ; then
+               for x in ${MOUNTPOINTS}; do
+                   umount -R ${x} && message "successfully ran umount -R ${x}" || \
+                       die "failed to umount -R ${x}"
+               done
+           else
+               d_message "no MOUNTPOINTS for TYPE [$TYPE] NAME [$NAME]" 2
+           fi
+           # get volume group name and fs_name for this LV (for joetoo standard lv naming)
+           VG=$(echo $NAME | cut -d'-' -f1)
+           fs_name=$(echo $NAME | cut -d'-' -f2)
+           # turn off swap, if it is turn on for this LV
+           if [[ "${fs_name}" == "swap" ]] && \
+              [[ ! -z "$(swapon --noheadings --show | grep ${NAME})" ]] ; then
+               swapoff /dev/mapper/${NAME} && message "successfully ran swapoff /dev/mapper/${NAME}" || \
+                   die "failed to run swapoff /dev/mapper/${NAME}"
+           fi
+        fi
+    done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "lvm" | sed 's|\\x0a| |')
+    # next, release the volume group's LVs
+    if [[ ! -z $(lsblk ${OUTPUTDEVICE} | grep lvm) ]] ; then
+        vgchange -an ${VG} >/dev/null && message "successfully ran vgchange -an ${VG} >/dev/null" || \
+            die "failed to run vgchange -an ${VG} >/dev/null"
+    else
+        d_message "no LVs active in VG [${VG}]" 2
+    fi
+    # next, close any luks cyprt device
+    while read line ; do
+        if [[ ! -z $(echo $line) ]] ; then
+            eval "${line}"
+            d_message "TYPE: [${TYPE}] NAME: [$NAME]  MOUNTPOINTS: [${MOUNTPOINTS}]" 2
+            cryptsetup luksClose ${NAME} && message "successfully ran cryptsetup luksClose ${NAME}" || \
+                die "failed to run cryptsetup luksClose ${NAME}"
+        fi
+    done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "crypt" | sed 's|\\x0a| |')
+    # finally, unmount any mounted regular partitions
+    while read line ; do
+        if [[ ! -z $(echo $line) ]] ; then
+            eval "${line}"
+            if [[ ! -z ${MOUNTPOINTS} ]] ; then
+                message_n "umounting MOUNTPOINTS: [${MOUNTPOINTS}] from partition [$NAME] ..."
+                for x in ${MOUNTPOINTS}; do
+                    umount -R ${x} && message "successfully ran umount -R ${x}" || \
+                       die "failed to umount -R ${x}"
+                done
+            else
+                d_message "no MOUNTPOINTS for TYPE: [$TYPE] NAME: [$NAME]" 2
+            fi
+        fi
+    done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "part" | sed 's|\\x0a| |')
+
     return 0
 }
 
@@ -641,3 +701,96 @@ process_compound_arg()  {
     d_message "done with process_compount_arg" 3
     return 0
 }
+
+format_warning() {
+    separator "(format warning)" ${PN}
+    answer=""
+    msg="${BYon}Warning:${BRon} this process will destroy all data on device [ ${OUTPUTDEVICE} ]\n"
+    msg+="${BWon}Are you sure you want to continue?"
+    prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to format_warning"; exit 1 ;;
+    esac
+    return 0
+}
+
+confirm_continue_or_exit() {
+    answer=""
+    msg="${BYon}Do you want to continue?"
+    prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
+    esac
+    return 0
+
+}
+
+die() {
+    msg="${1}"
+    E_message "${msg}"
+    exit 1
+}
+
+get_luks_keyfile() {
+    # use info in arg1 (crypt_keydev) to identify keyfile
+    # determine keydev type
+    # if it starts with "/" it is a device name
+    # if it contains "-" it may be a UUID
+    # if it does not, it may be a LABEL
+    message_n "examining crypt_keydev [ ${crypt_keydev} ] ..."
+    if [ -b ${crypt_keydev} ] ; then
+        crypt_keydev_type=devicename
+    elif echo ${crypt_keydev} | grep "-" ; then
+        crypt_keydev_type=UUID
+    else
+        crypt_keydev_type=LABEL
+    fi
+    # if it is not mounted, try to mount it
+    if [[ ! -z "$( mount | grep ${crypt_keydev_mountpoint%/} )" ]] ; then
+        echo -en " ${BGon}(mounted)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " trying to mount (${crypt_keydev_type}) [${crypt_keydev}] ..."
+        case $crypt_keydev_type in
+             "devicename" ) mount ${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             "UUID"       ) mount UUID=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+
+             "LABEL"      ) mount LABEL=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             * )  right_status 1 ; die "invalid crypt_keydev" ;;
+        esac
+    fi
+    # set keyfile pathname
+    export keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
+    return 0
+}
+
+get_luks_edev_name() {
+    # determine an edev name to use with this device
+    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
+    message_n "determining edev name ..."
+    bn=$(basename ${luks_partition_device})
+    case ${bn:0:2} in
+      "sd" ) # scsi device
+        myedev=$(echo ${bn} | sed 's/^s/e/')
+        ;;
+      "nv" ) # nvme device
+        myedev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
+        ;;
+      "mm" ) # mmc device
+        myedev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
+        ;;
+      *    ) # tbd
+        echo "Error: bad luks device name [${OUTPUTDEVICE}]"
+        ;;
+    esac ; result=$?
+    export edev=${myedev}
+    return $result
+}
+

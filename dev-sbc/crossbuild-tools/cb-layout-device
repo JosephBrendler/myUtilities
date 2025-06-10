@@ -15,7 +15,7 @@ PN=$(basename $0)
 
 varlist="OUTPUTDEVICE"
 varlist+=" outputdevice_sector_size_bytes MiB disklabel_type"
-varlist+=" HOSTNAME bool.LUKS"
+varlist+=" configfile DEV_HOSTNAME bool.LUKS"
 varlist+=" crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
 varlist+=" root_vg root_vg_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
 varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
@@ -24,7 +24,6 @@ hidden_varlist="crypt_passphrase partition_device luks_partition_device"
 #-----[ functions ]-------------------------------------------------------------------------
 
 initialize_variables() {
-    configfile="/etc/crossbuild-tools/cb-layout-device.conf"
 
     message_n "sourcing BUILD ..."
     source /etc/crossbuild-tools/BUILD ; right_status $?
@@ -35,15 +34,13 @@ initialize_variables() {
     initialize_vars ${varlist}
     initialize_vars ${hidden_varlist}
 
-    message_n "initializing MiB = \$((1024 * 1024)) ..."
-    MiB=$((1024 * 1024)) ; right_status $?
-    message_n "initializing outputdevice_sector_size_bytes = 512 ..."
-    outputdevice_sector_size_bytes=512 ; right_status $?
-    VERBOSE=$TRUE ; right_status $?
     message_n "re-initializing VERBOSE = TRUE ..."
     VERBOSE=$TRUE ; right_status $?
     message_n "re-initializing verbosity = 3 ..."
     verbosity=3 ;  right_status $?
+
+    message_n "initializing configfile = /etc/crossbuild-tools/cb-layout-device.conf"
+    configfile=/etc/crossbuild-tools/cb-layout-device.conf  ; right_status $?
 
     message_n "sourcing cb-layout-device.conf ..."
     if [ -e ${configfile} ] ; then
@@ -59,14 +56,19 @@ initialize_variables() {
         die "${configfile} does not exist"
     fi
 
+    message_n "initializing MiB = \$((1024 * 1024)) ..."
+    MiB=$((1024 * 1024)) ; right_status $?
+    message_n "initializing outputdevice_sector_size_bytes = 512 ..."
+    outputdevice_sector_size_bytes=512 ; right_status $?
+
     message_n "initializing crypt_keydev_mountpoint = /mnt/key ..."
     crypt_keydev_mountpoint=/mnt/key ; right_status $?
 
     message_n "initializing root_vg_mountpoint = /mnt/gentoo ..."
     root_vg_mountpoint="/mnt/gentoo" ; right_status $?
 
-    message_n "initializing mounttherestscript = ${root_vg_mountpoint%/}/mount-the-rest.${HOSTNAME} ..."
-    mounttherestscript="${root_vg_mountpoint%/}/mount-the-rest.${HOSTNAME}" ; right_status $?
+    message_n "initializing mounttherestscript = ${root_vg_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME} ..."
+    mounttherestscript="${root_vg_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
 
     message_n "initializing chrootprepscript = ${root_vg_mountpoint%/}/chroot-prep ..."
     chrootprepscript="${root_vg_mountpoint%/}/chroot-prep" ; right_status $?
@@ -98,33 +100,6 @@ usage() {
     done <<< $(lsblk -d -P -o NAME )
     usage-common-message
     exit 1
-}
-
-format_warning() {
-    separator "(format warning)" ${PN}
-    answer=""
-    msg="${BYon}Warning:${BRon} this process will destroy all data on device [ ${OUTPUTDEVICE} ]\n"
-    msg+="${BWon}Are you sure you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to format_warning"; exit 1 ;;
-    esac
-    return 0
-}
-
-confirm_continue_or_exit() {
-    answer=""
-    msg="${BYon}Do you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
-    esac
-    return 0
-
 }
 
 validate_config() {
@@ -202,41 +177,10 @@ validate_config() {
 
     # examine the rest only if there is a luks-formatted partition
     if [ $LUKS ] ; then
-        # ignore HOSTNAME for now - verify explicitly later
+        # ignore DEV_HOSTNAME for now - verify explicitly later
         # examine crypt_keydev [ block device ]
-#        message_n "examining crypt_keydev [ block device ] [ ${crypt_keydev} ]" 
-        # determine keydev type
-        # if it starts with "/" it is a device name
-        # if it contains "-" it may be a UUID
-        # if it does not, it may be a LABEL
-        message_n "examining crypt_keydev [ ${crypt_keydev} ] ..."
-        if [ -b ${crypt_keydev} ] ; then
-            crypt_keydev_type=devicename
-        elif echo ${crypt_keydev} | grep "-" ; then
-            crypt_keydev_type=UUID
-        else
-            crypt_keydev_type=LABEL
-        fi
-        # if it is not mounted, try to mount it
-        if [[ ! -z "$( mount | grep ${crypt_keydev_mountpoint%/} )" ]] ; then
-            echo -en " ${BGon}(mounted)${Boff}"
-            right_status $TRUE
-        else
-            echo -en " trying to mount (${crypt_keydev_type}) [${crypt_keydev}] ..."
-            case $crypt_keydev_type in
-                 "devicename" ) mount ${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                      ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-                 "UUID"       ) mount UUID=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                      ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-
-                 "LABEL"      ) mount LABEL=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                      ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-                 * )  right_status 1 ; die "invalid crypt_keydev" ;;
-            esac
-        fi
-        # set keyfile pathname
-        export keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
-
+        get_luks_keyfile ${crypt_keydev}
+        d_message "get_luks_keyfile() returned keyfile: [${keyfile}]" 5
         # examine crypt_keydev_mountpoint [ directory ]
         # ignore crypt_passphrase for now - verify explicitly later
 
@@ -295,8 +239,8 @@ set-crypt_passphrase() {
     return 0
 }
 
-set-hostname() {
-#  set hostname
+set-DEV_HOSTNAME() {
+#  set DEV_HOSTNAME
     response=""
     message "${BYon}Please provide the hostname for this system${Boff}"
     message "${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff}"
@@ -308,8 +252,8 @@ set-hostname() {
         new_prompt "is this correct?"
     done
     if [[ "${response}" == [yY] ]] ; then
-        message_n "setting HOSTNAME: ${candidate}"
-        export HOSTNAME="${candidate}" ; result=$? && \
+        message_n "setting DEV_HOSTNAME: ${candidate}"
+        export DEV_HOSTNAME="${candidate}" ; result=$? && \
         ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
         ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && return 1 )
     else
@@ -327,16 +271,16 @@ finalize_config() {
     else
         d_message "luks format requested; and more than 1 partition: ok" 3
     fi
-    # check/get hostname
-    if [ -z $HOSTNAME ] ; then
-        msg="HOSTNAME is unset; please provide one"
-        set-hostname
-        d_message "HOSTNAME: $HOSTNAME" 3
+    # check/get DEV_HOSTNAME
+    if [ -z $DEV_HOSTNAME ] ; then
+        msg="DEV_HOSTNAME is unset; please provide one"
+        set-DEV_HOSTNAME
+        d_message "DEV_HOSTNAME: $DEV_HOSTNAME" 3
     else
-        d_message "HOSTNAME already assigned" 3
+        d_message "DEV_HOSTNAME already assigned" 3
     fi
-    # now that it has been checked, use HOSTNAME to set root_vg
-    export root_vg="vg_${HOSTNAME}"
+    # now that it has been checked, use DEV_HOSTNAME to set root_vg
+    export root_vg="vg_${DEV_HOSTNAME}"
 
     # check/get luks passphrase
     if [ -z $crypt_passphrase ] ; then
@@ -429,6 +373,7 @@ layout_partitions() {
         d_message "\nabout to run parted -s \"${OUTPUTDEVICE}\" type ${partnum} \"${part_type_id}\"" 5
         parted -s "${OUTPUTDEVICE}" type ${partnum} "${part_type_id}" ; result=$?
 
+# leave this for now as example sgdisk alternative to parted (both should work with both dos/gpt now)
 #        case ${disklabel_type} in
 #            "dos" )
 #                d_message "\nabout to run parted -s \"${OUTPUTDEVICE}\" type ${partnum} \"${part_type_id}\"" 5
@@ -491,7 +436,7 @@ format_partitions() {
                 # add control-wrapper for dd (aka disk-destroyer)
                 echo -e " (${format})"
                 export luks_partition_device=${partition_device}
-                message "about to run dd if=/dev/urandom of=${partition_device} bs=4M status=progress" ;
+                message "${BYon}about to run dd if=/dev/urandom of=${partition_device} bs=4M status=progress${Boff}" ;
                 msg="${BYon}Caution:${BWon} this will ${BRon}destroy ${BMon}all data${BWon} on ${partition_device}${Boff}, and ${BYon}it will take a while${Boff}\n" ;
                 msg+="${BWon}Are you sure you want to continue? ${LBon}(y: run dd | s: skip & continue | n: quit)${Boff}" ;
                 response="" ; new_prompt "${msg}" ;
@@ -515,32 +460,15 @@ layout_cryptsetup() {
     separator "(layout_cryptsetup)" ${PN}
     d_message "in layout_cryptsetup" 3
     # run cryptsetup luksFormat (provide passphrase it will ask for)
-    d_message "about to run echo -n ${crypt_passphrase} | cryptsetup -q luksFormat ${luks_partition_device}" 3
+    d_message "about to use passphrase to run cryptsetup -q luksFormat ${luks_partition_device}" 3
     message_n "formatting luks_partition_device [${luks_partition_device}] ..."
     eval "echo -n ${crypt_passphrase} | cryptsetup -q luksFormat ${luks_partition_device}"
     result=$? ; right_status $result ; [ $result -eq 0 ] || die "cryptsetup failed to luksFormat ${luks_partition_device}"
     # run cryptsetup luksAddKey (should already be mounted) (provide passphrase it will ask for)
-    message_n "running echo -n ${crypt_passphrase} | cryptsetup luksAddKey ${luks_partition_device} ${keyfile} ..."
+    message_n "about to use passphrase to add keyfile with cryptsetup luksAddKey ${luks_partition_device} ${keyfile} ..."
     eval "echo -n ${crypt_passphrase} | cryptsetup luksAddKey ${luks_partition_device} ${keyfile}"
     result=$? ; right_status $result ; [ $result -eq 0 ] || die "cryptsetup failed to luksAddKey ${luks_partition_device} ${keyfile}"
-    # determine an edev name to use with this device
-    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
-    message_n "determining edev name ..."
-    bn=$(basename ${luks_partition_device})
-    case ${bn:0:2} in
-      "sd" ) # scsi device
-        edev=$(echo ${bn} | sed 's/^s/e/')
-        ;;
-      "nv" ) # nvme device
-        edev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
-        ;;
-      "mm" ) # mmc device
-        edev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
-        ;;
-      *    ) # tbd
-        echo "Error: bad luks device name [${OUTPUTDEVICE}]"
-        ;;
-    esac ; result=$?
+    get_luks_edev_name && result=$? || die "failed to get_luks_edev_name"
     echo -en " ${BGon} (${edev})${Boff}"
     right_status $result ; [ $result -eq 0 ] || ERROR=$TRUE
     # open (unlock) the device
@@ -548,13 +476,12 @@ layout_cryptsetup() {
     right_status $result ; [ $result -eq 0 ] || ERROR=$TRUE
     # create PV
     message_n "creating PV /dev/mapper/${edev} ..."
-    pvcreate /dev/mapper/${edev} ; result=$?
-    right_status $result ; [ $result -eq 0 ] || ERROR=$TRUE
+    pvcreate /dev/mapper/${edev} >/dev/null && right_status $? || \
+        die "failed to pvcreate /dev/mapper/${edev} >/dev/null"
     # create VG
-    message_n "creating VG vg_${HOSTNAME} ..."
-    vgcreate vg_${HOSTNAME} /dev/mapper/${edev} ; result=$?
-    right_status $result ; [ $result -eq 0 ] || ERROR=$TRUE
-
+    message_n "creating VG vg_${DEV_HOSTNAME} ..."
+    vgcreate vg_${DEV_HOSTNAME} /dev/mapper/${edev} >/dev/null && right_status $? || \
+        die "failed to vgcreate vg_${DEV_HOSTNAME} /dev/mapper/${edev} >/dev/null"
     # create LVs (todo: automate with relative sizing)
     for ((i=0; i<${#lv_list[@]}; i++)) ; do
         d_message "lv_list[${i}]: ${lv_list[${i}]}" 5
@@ -575,21 +502,23 @@ layout_cryptsetup() {
         [ $result -eq 0 ] || die "error in LV configuration"
         # now create the LV
         message_n "running lvcreate -n \"${lv_name}\" -L ${lv_size_gb}G ${root_vg} ..."
-        lvcreate -n "${lv_name}" -L ${lv_size_gb}G ${root_vg} ; result=$?
-        right_status $result; [ $result -eq 0 ] || ERROR=$TRUE
+        lvcreate -n "${lv_name}" -L ${lv_size_gb}G ${root_vg} >/dev/null && right_status $? || \
+            die "failed to lvcreate -n "${lv_name}" -L ${lv_size_gb}G ${root_vg} >/dev/null"
     done
     # format all as ext4; then redo swap
     message "formatting new LVs ..."
-    yes | for x in /dev/mapper/vg_${HOSTNAME}-* ; do
-        myfs=$(echo $x | sed 's|/dev/mapper/vg_${HOSTNAME}-||') ;
-        echo $myfs ; mkfs.ext4 -L "${myfs}_fs" $x || ERROR=$TRUE ;
-    done ; result=$? ; right_status $result ; [ $result -eq 0 ] || ERROR=$TRUE
-    message "reformatting /dev/mapper/vg_${HOSTNAME}-swap as swap ..."
-    mkswap /dev/mapper/vg_${HOSTNAME}-swap ; result=$?
-    right_status $result; [ $result -eq 0 ] || ERROR=$TRUE
+    yes | for x in /dev/mapper/vg_${DEV_HOSTNAME}-* ; do
+        myfs=$(echo $x | sed "s|/dev/mapper/vg_${DEV_HOSTNAME}-||") ;
+        mkfs.ext4 -L "${myfs}_fs" $x >/dev/null 2>/dev/null && \
+            message "successfully ran mkfs.ext4 -L "${myfs}_fs" $x >/dev/null" || \
+            die "failed to mkfs.ext4 -L "${myfs}_fs" $x >/dev/null"
+    done
+    message_n "reformatting /dev/mapper/vg_${DEV_HOSTNAME}-swap as swap ..."
+    mkswap /dev/mapper/vg_${DEV_HOSTNAME}-swap >/dev/null 2>/dev/null && right_status $? || \
+        die "failed to mkswap /dev/mapper/vg_${DEV_HOSTNAME}-swap >/dev/null"
     # mount the new root device
-    message_n "mounting new root dev [ /dev/mapper/vg_${HOSTNAME}-root ] ..."
-    mount /dev/mapper/vg_${HOSTNAME}-root ${root_vg_mountpoint} ; right_status
+    message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
+    mount /dev/mapper/vg_${DEV_HOSTNAME}-root ${root_vg_mountpoint} ; right_status
     cd ${root_vg_mountpoint}
     # determine the UUID of the boot device
     message_n "determining UUID of boot device [ $partition1_device ] ..."
@@ -600,60 +529,57 @@ layout_cryptsetup() {
     boot_dev_blkid_data="$(blkid $partition1_device)" ; right_status $?
 
     # create mount-the-rest script
-#    message_n "creating ${mounttherestscript} ..."
-#    echo "#!/bin/bash" > ${mounttherestscript}
-#    echo "root_vg=vg_${HOSTNAME}" >> ${mounttherestscript}
-#    echo "boot_uuid=${BOOT_UUID}" >> ${mounttherestscript}
-#    echo "# (create and/or) mount LVs" >> ${mounttherestscript}
-#    echo 'for x in $(lvs | grep ${root_vg} | grep -v "root\|swap\|extra" | awk "{print $1}") ; do' >> ${mounttherestscript}
-#    echo '    [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x' >> ${mountthe>
-#    echo '    mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x' >> ${mounttherestscript}
-#    echo 'done' >> ${mounttherestscript}
-#    echo '# display results' >> ${mounttherestscript}
-#    echo 'echo "here is what I mounted..."' >> ${mounttherestscript}
-#    echo 'mount | grep ${mountpoint}' >> ${mounttherestscript}
-#    echo 'echo' >> ${mounttherestscript}
-#    echo '# explain how to mount boot' >> ${mounttherestscript}
-#    echo '[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot' >> ${mount>
-#    echo 'echo "mount /boot as below now, or at / AFTER chroot (see fstab)"' >> ${mounttherestscript}
-#    echo 'echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"' >> ${mounttherestscript}
-#    echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript}
-#    chmod +x ${mounttherestscript}
-#    right_status $?
+    message_n "creating ${mounttherestscript} ..."
+    echo "#!/bin/bash" > ${mounttherestscript}
+    echo "root_vg=vg_${DEV_HOSTNAME}" >> ${mounttherestscript}
+    echo "boot_uuid=${BOOT_UUID}" >> ${mounttherestscript}
+    echo "# (create and/or) mount LVs" >> ${mounttherestscript}
+    echo 'for x in $(lvs | grep ${root_vg} | grep -v "root\|swap\|extra" | awk "{print $1}") ; do' >> ${mounttherestscript}
+    echo '    [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x' >> ${mounttherestscript}
+    echo '    mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x' >> ${mounttherestscript}
+    echo 'done' >> ${mounttherestscript}
+    echo '# display results' >> ${mounttherestscript}
+    echo 'echo "here is what I mounted..."' >> ${mounttherestscript}
+    echo 'mount | grep ${mountpoint}' >> ${mounttherestscript}
+    echo 'echo' >> ${mounttherestscript}
+    echo '# explain how to mount boot' >> ${mounttherestscript}
+    echo '[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot' >> ${mounttherestscript}
+    echo 'echo "mount /boot as below now, or at / AFTER chroot (see fstab)"' >> ${mounttherestscript}
+    echo 'echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"' >> ${mounttherestscript}
+    echo 'echo "   # doing so now for cb-flash-device (comment out below if not needed)"' >> ${mounttherestscript}
+    echo " mount UUID=${boot_uuid} ${mountpoint%/}/boot" >> ${mounttherestscript}
+    echo "" >> ${mounttherestscript}
+    echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript}
+    chmod +x ${mounttherestscript}
+    right_status $?
 
     # create chroot-prep
-#    message_n "creating ${chrootprepscript} ..."
-#    echo '[ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run' > ${chrootprepscript}
-#    echo 'mount --types proc proc /mnt/gentoo/proc' >> ${chrootprepscript}
-#    echo 'mount --rbind /sys /mnt/gentoo/sys' >> ${chrootprepscript}
-#    echo 'mount --make-rslave /mnt/gentoo/sys' >> ${chrootprepscript}
-#    echo 'mount --rbind /dev /mnt/gentoo/dev' >> ${chrootprepscript}
-#    echo 'mount --make-rslave /mnt/gentoo/dev' >> ${chrootprepscript}
-#    echo 'mount --bind /run /mnt/gentoo/run' >> ${chrootprepscript}
-#    echo 'mount --make-rslave /mnt/gentoo/run' >> ${chrootprepscript}
-#    echo '' >> ${chrootprepscript}
-#    echo 'test -L /dev/shm && rm /dev/shm && mkdir /dev/shm' >> ${chrootprepscript}
-#    echo 'mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm' >> ${chrootprepscript}
-#    echo 'chmod 1777 /dev/shm' >> ${chrootprepscript}
-#    chmod +x ${chrootprepscript}
-#    right_status $?
+    message_n "creating ${chrootprepscript} ..."
+    echo '[ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run' > ${chrootprepscript}
+    echo 'mount --types proc proc /mnt/gentoo/proc' >> ${chrootprepscript}
+    echo 'mount --rbind /sys /mnt/gentoo/sys' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/sys' >> ${chrootprepscript}
+    echo 'mount --rbind /dev /mnt/gentoo/dev' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/dev' >> ${chrootprepscript}
+    echo 'mount --bind /run /mnt/gentoo/run' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/run' >> ${chrootprepscript}
+    echo '' >> ${chrootprepscript}
+    echo 'test -L /dev/shm && rm /dev/shm && mkdir /dev/shm' >> ${chrootprepscript}
+    echo 'mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm' >> ${chrootprepscript}
+    echo 'chmod 1777 /dev/shm' >> ${chrootprepscript}
+    chmod +x ${chrootprepscript}
+    right_status $?
 
     # create chroot-commands file
-#    message_n "creating ${chrootcommandsfile} ..."
-#    echo 'chroot /mnt/gentoo /bin/bash' > ${chrootcommandsfile}
-#    echo 'env-update' >> ${chrootcommandsfile}
-#    echo 'source /etc/profile' >> ${chrootcommandsfile}
-#    echo 'export PS1="(chroot) $PS1"' >> ${chrootcommandsfile}
-#    right_status $?
+    message_n "creating ${chrootcommandsfile} ..."
+    echo 'chroot /mnt/gentoo /bin/bash' > ${chrootcommandsfile}
+    echo 'env-update' >> ${chrootcommandsfile}
+    echo 'source /etc/profile' >> ${chrootcommandsfile}
+    echo 'export PS1="(chroot) $PS1"' >> ${chrootcommandsfile}
+    right_status $?
 
     [ $ERROR ] && return 1
     return 0
-}
-
-die() {
-    msg="${1}"
-    E_message "${msg}"
-    exit 1
 }
 
 #-----[ main script ]---------------------------------------------
@@ -674,7 +600,8 @@ display_configuration
 format_warning || die "failed format warning somehow, oddly"
 
 layout_partitions || die "failed to layout partitions"
-# re-validate device (really just to get the fdisk -l print out for visual confirmation prior to starting format
+# re-validate device (really just to get the fdisk -l print out
+# for visual confirmation prior to starting format
 validate_device ${OUTPUTDEVICE} || die "failed to validate device [ ${OUTPUTDEVICE} ]"
 
 format_partitions || die "failed to format partitions"

@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# umount   (c) joe.brendler  2025-2072
-# copy appropriate template files into crossbuild target filesystem
+# cb-flach-device   (c) joe.brendler  2025-2072
+# copy appropriate content froma crossbuild target filesystem into an operational block device
 #
 
 source /usr/local/sbin/script_header_brendlefly
@@ -9,47 +9,126 @@ VERBOSE=$TRUE
 #verbosity=2
 verbosity=3
 
+#-----[ variables ]-------------------------------------------------------------------------
+
 PN=$(basename $0)
 
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
+# NOTEs:
+#  (1) Crossbuild TARGET, BOARD, which function as SOURCES here,
+#      are expected to be set in the environment
+#  (2) OUTPUTDEVICE functions as a defacto target here, and it is
+#      expected to already be formatted, (if luks, unlocked) and
+#      ready to be mounted for flashing
+#  (3) OUTPUTDEVICE's boolloader (grub menu, config.txt, joetooEnv.txt, etc)
+#      and /etc/fstab will need to be updated after the image is flashed to this new block device
 
-message_n "sourcing cb-common-functions ..."
-source /usr/bin/cb-common-functions ; right_status $?
-TARGET=""
+varlist="OUTPUTDEVICE root_dev newroot_mountpoint"
+varlist+=" BREAK configfile disklabel_type DEV_HOSTNAME bool.LUKS"
+varlist+=" crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
+
+hidden_varlist="crypt_passphrase luks_partition_device"
+
+#-----[ functions ]-------------------------------------------------------------------------
+
+initialize_variables() {
+
+    message_n "sourcing BUILD ..."
+    source /etc/crossbuild-tools/BUILD ; right_status $?
+
+    message_n "sourcing cb-common-functions ..."
+    source /usr/bin/cb-common-functions ; right_status $?
+
+    initialize_vars ${varlist}
+    initialize_vars ${hidden_varlist}
+
+    message_n "re-initializing VERBOSE = TRUE ..."
+    VERBOSE=$TRUE ; right_status $?
+    message_n "re-initializing verbosity = 3 ..."
+    verbosity=3 ;  right_status $?
+
+    message_n "initializing configfile = /etc/crossbuild-tools/cb-layout-device.conf"
+    configfile=/etc/crossbuild-tools/cb-layout-device.conf  ; right_status $?
+
+    message_n "sourcing cb-layout-device.conf ..."
+    if [ -e ${configfile} ] ; then
+        source ${configfile} ; result=$?
+        if [ $result -eq 0 ] ; then
+            right_status $TRUE
+        else
+            right_status 1
+            die "failed to source ${configfile}"
+        fi
+    else
+        right_status 1
+        die "${configfile} does not exist"
+    fi
+
+    message_n "initializing crypt_keydev_mountpoint = /mnt/key ..."
+    crypt_keydev_mountpoint=/mnt/key ; right_status $?
+
+    message_n "initializing newroot_mountpoint = /mnt/gentoo ..."
+    newroot_mountpoint="/mnt/gentoo" ; right_status $?
+
+    message_n "initializing default LUKS = FALSE ..."
+    LUKS=$FALSE ; right_status $?
+
+    message_n "initializing default root_dev = TBD ..."
+    root_dev="TBD" ; right_status $?
+
+    message_n "initializing default OUTPUTDEVICE NULL ..."
+    OUTPUTDEVICE="" ; right_status $?
+
+    return 0
+}
 
 usage() {
-    message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE>${Boff}"
+    E_message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE> <BOARD>${Boff}"
+    echo
+    message "${PN} requires a valid (already formatted) OUTPUTDEVCE, and it also requires"
+    message "  a valid (already cross-built and mounted) BOARD as its second argument"
+    echo
+    message "${BYon}Notess:${Boff}"
+    message " ${LBon}(1) Crossbuild TARGET, BOARD, which function as de facto SOURCES here, ${Boff}"
+    message " ${LBon}    are expected to be set up prior to running ${PN}${Boff}"
+    message " ${LBon}(2) OUTPUTDEVICE functions as a defacto output target here, and it is${Boff}"
+    message " ${LBon}    expected to already be formatted, (if luks, unlocked) and${Boff}"
+    message " ${LBon}    ready to be mounted for flashing${Boff}"
+    message " ${LBon}(3) OUTPUTDEVICE's bootloader (grub menu, config.txt, joetooEnv.txt, etc)${Boff}"
+    message " ${LBon}    and /etc/fstab will need to be updated after the image is flashed to${Boff}"
+    message " ${LBon}    this new block device${Boff}"
     usage-common-message
     exit 1
 }
 
 check-target-board-loopmount() {
+    separator "(check-target-board-loopmount)" ${PN}
     FLAGGED=$FALSE
     # inspect target (mount point) - verify that BOARD is mounted and get its loop_dev
-    if [ -n "$(mount | grep "on /usr/${TARGET}")" ] ; then
+    if [[ ! -z $(findmnt -ln | grep "/usr/${TARGET}") ]] ; then
         # something is mounted - look for loop_dev
         E_message "${BYon}the following devices are mounted on /usr/${TARGET} --${Boff}"
-        mount | grep "on /usr/${TARGET}"
-        # note: this will fail if there are more than 10 partitions
-        target_loop_dev=$(mount | grep /usr/${TARGET} | grep 'loop' | head -n1 | cut -d' ' -f1 | tr -d 'p[:numeric:]$')
+        findmnt -ln | grep "/usr/${TARGET}" | cut -c1-86 | sed 's|$| ...|' | sed 's|^|    |'
+        # note: this will fail if there are more than 99 partitions on this loop device
+        target_loop_dev=$(findmnt -ln | grep /usr/${TARGET} | grep 'loop' | head -n1 | awk '{print $2}' | \
+               sed 's|[0-9]$||' | sed 's|[0-9]$||' | sed 's|p$||')
+        d_message "target_loop_dev: $target_loop_dev" 5
     else
         FLAGGED=$TRUE
         E_message "nothing is mounted on /usr/${TARGET}"
     fi
     # inspect for loop devices attached to BOARD image file
     message "${BYon}the following loop devices are attached to /usr/${BOARD}.img ...${Boff}"
-    losetup -a | grep "/usr/${BOARD}.img"
-    #board_loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
-    board_loop_dev="$(losetup --find --show /usr/${BOARD}.img"
-    if [ -n "${board_loop_dev}" ] ; then
+    d_message "about to run losetup -a | grep /usr/${BOARD}.img" 5
+    losetup -a | grep "/usr/${BOARD}.img" | sed 's|^|    |'
+    board_loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
+    if [[ ! -z "${board_loop_dev}" ]] ; then
         # confirm BOARD and TARGET are the same loop device
         message_n "confirming BOARD.img loop_dev is the same one mounted on TARGET ..."
         if [[ "${board_loop_dev}" == "${target_loop_dev}" ]] ; then
             echo -en "${BGon} (confirmed)${Boff}"
             right_status $TRUE
-            message_n "exporting loop_dev $loop_dev ..."
-            export ${loop_dev} ; right_status $?
+            message_n "exporting loop_dev = $board_loop_dev ..."
+            export loop_dev=${board_loop_dev} ; right_status $?
         else
             echo -en "${BRon} (different)${Boff}"
             right_status 1
@@ -63,44 +142,103 @@ check-target-board-loopmount() {
     [ $FLAGGED ] && return 1 || return 0
 }
 
-final_warning() {
-    answer=""
-    msg="${BYon}Warning:${BRon} this process will destroy all data on device [ ${OUTPUTDEVICE} ]\n"
-    msg+="${BWon}Are you sure you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to final warning"; exit 1 ;;
-    esac
+prep-newroot() {
+    separator "(prep-newroot)" ${PN}
+    d_message "in prep-newroot" 4
+    # examine OUTPUTDEVICE expected to be o(if luks, pen and) ready for mounting
+    message_n "is newroot mounted?"
+    if [[ -z "$(findmnt -ln | grep ${newroot_mountpoint})" ]] ; then
+        root_dev="nothingmounted"
+        echo -en " ${BRon}no${Boff}, mounting"
+        # if there's a luks device, mount its "-root" lv on newroot_mountpoint
+        if [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i luks)" ]] ; then
+            echo -en " ${BMon}(luks)${Boff}"
+            export LUKS=$TRUE
+            # if the luks device isn't unlocked, unlock it
+            luks_partition_device=$(blkid ${OUTPUTDEVICE}* | grep -i luks | cut -d':' -f1)
+            echo -en " (${luks_partition_device})"
+            if [[ -z $(lsblk -l ${luks_partition_device} | grep crypt) ]] ; then
+                # use crypt_keydev info from configfile to get keyfile
+                get_luks_keyfile ${crypt_keydev}
+                d_message "get_luks_keyfile() returned keyfile: [${keyfile}]" 5
+                # use luks_partition_device name to derive edev name
+                get_luks_edev_name && result=$? || die "failed to get_luks_edev_name"
+                echo -en " ${BGon} (${edev})${Boff}"
+                # open (unlock) the device
+                cryptsetup luksOpen -d ${keyfile} ${luks_partition_device} ${edev} && \
+                    echo -en " ${BGon}(unlocked)${Boff}" || \
+                    die "failed to cryptsetup luksOpen -d ${keyfile} ${luks_partition_device} ${edev}"
+            else
+                edev=$(lsblk -l ${luks_partition_device} | grep crypt | awk '{print $1}')
+                echo -en " ${BGon}([${edev}] already unlocked)${Boff}"
+            fi
+            # use vgscan and vgchange to activate LVs, if not yet active
+            if [[ -z $(lsblk -l ${luks_partition_device} | grep lvm) ]]  ; then
+                echo -en " vgscan/change"
+                vgscan --quiet --devices /dev/mapper/${edev} >/dev/null || \
+                    die "failed to vgscan --quiet --devices /dev/mapper/${edev} >/dev/null"
+                vgchange -ay --quiet --devices /dev/mapper/${edev} >/dev/null || \
+                    die "failed to vgchange -ay --quiet --devices /dev/mapper/${edev} >/dev/null"
+                [[ ! -z $(lsblk -l ${luks_partition_device} | grep lvm) ]] && \
+                    echo -en " ${BGon}lvm ok${Boff}" || die "vgscan/vgchange done but no LVs found"
+            else
+                echo -en " ${BGon}lvm ok${Boff}"
+            fi
+            # use lsblk data to look up the lvm volume used for rootfs (e.g. vg_raspicm56402-root)
+            root_lv=$(lsblk -l ${luks_partition_device} | grep lvm | grep root | awk '{print $1}')
+            root_dev="/dev/mapper/${root_lv}"
+            echo -en " ${BMon}${root_dev}"${Boff}
+            mount ${root_dev} ${newroot_mountpoint} && right_status $? || \
+                die "failed to mount /dev/mapper/${root_lv}"
+        # otherwise, if there's a LABEL=root_fs device, mount it on newroot_mountpoint
+        elif [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i root_fs)" ]] ;  then
+            # use blkid data to idendify root_fs device (e.g. /dev/sdb)
+            root_dev=$(blkid ${OUTPUTDEVICE}* | grep boot_fs | cut -d' ' -f1 | sed 's|\:$||')
+            echo -en " ${LBon}${root_dev}${Boff}"
+            mount ${root_dev} ${newroot_mountpoint} && right_status $? || \
+                die "failed to mount /dev/mapper/${root_lv}"
+        else
+            die "no root luks or regular block device found"
+        fi
+        # if we get here, it should be successfully mounted
+        right_status $TRUE
+    else
+        # use lsblk data to set root_dev
+        eval $(findmnt -o TARGET,SOURCE -P | grep ${newroot_mountpoint})
+        root_dev=${SOURCE}
+        echo -en " ${BGon}yes${Boff}" ; right_status $TRUE
+    fi
+    # whether already mounted or just mounted, we can now go to newroot_mountpoint
+    #   and if there is a mount-the-rest script, run it ( flash-device() )
     return 0
 }
 
-confirm_continue_or_exit() {
-    answer=""
-    msg="${BYon}Do you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to final warning"; exit 1 ;;
-    esac
+flash-device() {
+    separator "(flash-device)" ${PN}
+    d_message "in flash-device" 5
+    old_dir=$(pwd)
+    message_n "moving from $(pwd) to ${newroot_mountpoint} ..."
+    cd ${newroot_mountpoint} && right_status $? || die "failed to cd ${newroot_mountpoint}"
+    message "now working in $(pwd)"
+    message_n "looking for mount-the-rest script"
+    mounttherestscript="$(find ./ -iname 'mount-the-rest*' -type f -executable)" && right_status $? || \
+        die "failed to find ./ -iname 'mount-the-rest*' -type f -executable"
+    exec ${mounttherestscript}
+
     return 0
-
 }
-
 
 #-----[ main script ]---------------------------------------------
 checkroot
-separator "(${BOARD})" "${PN}"
-[ $# -ne 1 ] && usage
-BOARD=$1
+separator "$(hostname)" "${PN}"
+initialize_variables || die "failed to initialize variables"
+[ $# -ne 2 ] && usage
+OUTPUTDEVICE=$1
+BOARD=$2
+# board must be set in environment by calling script or manually
+d_message "about to run validate_target ${BOARD}" 3
 validate_target ${BOARD}
 validate_device ${OUTPUTDEVICE}
-
-old_dir="$(pwd)"
-cd /usr/
-message "now working in parent of crossbuild target directory: [${Mon}$(pwd)${Boff}]"
 
 message "confirming BOARD is mounted on crossbuild TARGET ..."
 check-target-board-loopmount ; result=$?
@@ -111,12 +249,23 @@ else
     d_message "check-target-board-loopmount returned OK; continuing" 3
 fi
 
-# if we get here, BOARD, TARGET, and OUTPUTDEVICE are all assigned and validated
-final_warning ; result=$?
-[ $result -ne 0 ] && E_message "Negative response to final warning - should have already exited, do so now" && exit 1
+# now that we are past initialization, add persistent external variables to varlist
+varlist+=" BREAK BOARD TARGET loop_dev"
+varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 
-# 
+# cb-layout-device gets bool.LUKS and keyfile during finalize_config
+# it can't get edev until it creates one, be we can get both now
+prep-newroot || die "failed to prep-newroot"
+
+display_configuration
 echo
-cd $old_dir
-message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+format_warning || die "failed format warning somehow, oddly"
+
+flash-device
+
+separator "(wrapping up)" ${PN}
+message_n "moving from $(pwd) to ${old_dir} ..."
+cd ${old_dir} && right_status $? || die "failed to cd ${old_dir}"
+message "now working in $(pwd)"
+
 exit 0

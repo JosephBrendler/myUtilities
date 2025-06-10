@@ -27,11 +27,11 @@
 
     # set hostname (used in cryptsetup layout naming)
 #    hostname=rock5b6401
-    HOSTNAME=raspiCM46401
+    DEV_HOSTNAME=raspiCM46401
 
     # if doing cryptsetup layout, specify volume group name
     #    root_vg=vg_raspiCM56401
-    root_vg=vg_${HOSTNAME}
+    root_vg=vg_${DEV_HOSTNAME}
     # also specify the keying device, filename, and passphrase
     crypt_keydev=/dev/sda1
     crypt_keydev_mountpoint=/mnt/key/
@@ -173,34 +173,34 @@
     pvcreate /dev/mapper/${edev} ; right_status $?
 
     # create VG
-    message_n "creating VG vg_${HOSTNAME} ..."
-    vgcreate vg_${HOSTNAME} /dev/mapper/${edev} ; right_status $?
+    message_n "creating VG vg_${DEV_HOSTNAME} ..."
+    vgcreate vg_${DEV_HOSTNAME} /dev/mapper/${edev} ; right_status $?
 
     # create LVs (todo: automate with relative sizing)
     message "creating LVs ..."
-    lvcreate -n root -L10G vg_${HOSTNAME}
-    lvcreate -n usr -L40G vg_${HOSTNAME}
-    lvcreate -n var -L100G vg_${HOSTNAME}
-    lvcreate -n tmp -L50G vg_${HOSTNAME}
-    lvcreate -n home -L200G vg_${HOSTNAME}
-    lvcreate -n opt -L5G vg_${HOSTNAME}
-    lvcreate -n swap -L8G vg_${HOSTNAME}
-    lvcreate -n srv -L500G vg_${HOSTNAME}
-    lvcreate -n extra -L17.48G vg_${HOSTNAME}
+    lvcreate -n root -L10G vg_${DEV_HOSTNAME}
+    lvcreate -n usr -L40G vg_${DEV_HOSTNAME}
+    lvcreate -n var -L100G vg_${DEV_HOSTNAME}
+    lvcreate -n tmp -L50G vg_${DEV_HOSTNAME}
+    lvcreate -n home -L200G vg_${DEV_HOSTNAME}
+    lvcreate -n opt -L5G vg_${DEV_HOSTNAME}
+    lvcreate -n swap -L8G vg_${DEV_HOSTNAME}
+    lvcreate -n srv -L500G vg_${DEV_HOSTNAME}
+    lvcreate -n extra -L17.48G vg_${DEV_HOSTNAME}
     right_status $?
 
     # format all as ext4; then redo swap
     message "formatting new LVs ..."
-    yes | for x in /dev/mapper/vg_${HOSTNAME}-*; do
-        myfs=$(echo $x | sed 's|/dev/mapper/vg_${HOSTNAME}-||');
+    yes | for x in /dev/mapper/vg_${DEV_HOSTNAME}-*; do
+        myfs=$(echo $x | sed 's|/dev/mapper/vg_${DEV_HOSTNAME}-||');
         echo $myfs ; mkfs.ext4 -L "${myfs}_fs" $x;
     done : right_status $?
-    message "reformatting /dev/mapper/vg_${HOSTNAME}-swap as swap ..."
-    mkswap /dev/mapper/vg_${HOSTNAME}-swap ; right_status $?
+    message "reformatting /dev/mapper/vg_${DEV_HOSTNAME}-swap as swap ..."
+    mkswap /dev/mapper/vg_${DEV_HOSTNAME}-swap ; right_status $?
 
     # mount the new root device
-    message_n "mounting new root dev [ /dev/mapper/vg_${HOSTNAME}-root ] ..."
-    mount /dev/mapper/vg_${HOSTNAME}-root /mnt/gentoo/ ; right_status
+    message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
+    mount /dev/mapper/vg_${DEV_HOSTNAME}-root /mnt/gentoo/ ; right_status
     cd /mnt/gentoo/
 
     # determine the UUID of the boot device
@@ -212,63 +212,58 @@
     message_n "capturing the rest of boot_device blkid data ..."
     boot_dev_blkid_data="$(blkid $partition1_device)" ; right_status $?
     
+
+##-----------------------------------------------------------------------------
+## mount-the-rest and chroot files purely by echo
+
     # create mount-the-rest script
-    mounttherestscript="/mnt/gentoo/mount-the-rest.${HOSTNAME}"
+    mounttherestscript="/mnt/gentoo/mount-the-rest.${DEV_HOSTNAME}"
     message_n "creating ${mounttherestscript} ..."
     echo "#!/bin/bash" > ${mounttherestscript}
-    echo "root_vg=vg_${HOSTNAME}" >> ${mounttherestscript}
+    echo "root_vg=vg_${DEV_HOSTNAME}" >> ${mounttherestscript}
     echo "boot_uuid=${BOOT_UUID}" >> ${mounttherestscript}
-
-    cat << EOF >> ${mounttherestscript}
-# (create and/or) mount LVs
-for x in $(lvs | grep ${root_vg} | grep -v 'root\|swap\|extra' | awk '{print $1}')
-do
-  [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x
-  mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x
-done
-# display results
-echo "here is what I mounted..."
-mount | grep ${mountpoint}
-echo
-# explain how to mount boot
-[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot
-echo "mount /boot as below now, or at / AFTER chroot (see fstab)"
-echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"
-
-EOF && \
-    echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript} && \
+    echo "# (create and/or) mount LVs" >> ${mounttherestscript}
+    echo 'for x in $(lvs | grep ${root_vg} | grep -v "root\|swap\|extra" | awk "{print $1}") ; do' >> ${mounttherestscript}
+    echo '    [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x' >> ${mounttherestscript}
+    echo '    mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x' >> ${mounttherestscript}
+    echo 'done' >> ${mounttherestscript}
+    echo '# display results' >> ${mounttherestscript}
+    echo 'echo "here is what I mounted..."' >> ${mounttherestscript}
+    echo 'mount | grep ${mountpoint}' >> ${mounttherestscript}
+    echo 'echo' >> ${mounttherestscript}
+    echo '# explain how to mount boot' >> ${mounttherestscript}
+    echo '[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot' >> ${mounttherestscript}
+    echo 'echo "mount /boot as below now, or at / AFTER chroot (see fstab)"' >> ${mounttherestscript}
+    echo 'echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"' >> ${mounttherestscript}
+    echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript} 
     chmod +x ${mounttherestscript}
     right_status $?
 
     # create chroot-prep
     chrootprepscript="/mnt/gentoo/chroot-prep"
     message_n "creating ${chrootprepscript} ..."
-    cat << EOF > ${chrootprepscript}
-[ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run
-mount --types proc proc /mnt/gentoo/proc
-mount --rbind /sys /mnt/gentoo/sys
-mount --make-rslave /mnt/gentoo/sys
-mount --rbind /dev /mnt/gentoo/dev
-mount --make-rslave /mnt/gentoo/dev
-mount --bind /run /mnt/gentoo/run
-mount --make-rslave /mnt/gentoo/run
-
-test -L /dev/shm && rm /dev/shm && mkdir /dev/shm
-mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm
-chmod 1777 /dev/shm
-EOF && \
+    echo '[ ! -d /mnt/gentoo/run ] && mkdir /mnt/gentoo/run' > ${chrootprepscript}
+    echo 'mount --types proc proc /mnt/gentoo/proc' >> ${chrootprepscript}
+    echo 'mount --rbind /sys /mnt/gentoo/sys' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/sys' >> ${chrootprepscript}
+    echo 'mount --rbind /dev /mnt/gentoo/dev' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/dev' >> ${chrootprepscript}
+    echo 'mount --bind /run /mnt/gentoo/run' >> ${chrootprepscript}
+    echo 'mount --make-rslave /mnt/gentoo/run' >> ${chrootprepscript}
+    echo '' >> ${chrootprepscript}
+    echo 'test -L /dev/shm && rm /dev/shm && mkdir /dev/shm' >> ${chrootprepscript}
+    echo 'mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm' >> ${chrootprepscript}
+    echo 'chmod 1777 /dev/shm' >> ${chrootprepscript}
     chmod +x ${chrootprepscript}
     right_status $?
 
     # create chroot-commands file
     chrootcommandsfile=/mnt/gentoo/chroot-commands" 
     message_n "creating ${chrootcommandsfile} ..."
-    cat << EOF > ${chrootcommandsfile}
-chroot /mnt/gentoo /bin/bash
-env-update
-source /etc/profile
-export PS1="(chroot) $PS1"
-EOF
+    echo 'chroot /mnt/gentoo /bin/bash' > ${chrootprepscript}
+    echo 'env-update' >> ${chrootprepscript}
+    echo 'source /etc/profile' >> ${chrootprepscript}
+    echo 'export PS1="(chroot) $PS1"' >> ${chrootprepscript}
     right_status $?
 
     # wrap up

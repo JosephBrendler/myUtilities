@@ -1,0 +1,42 @@
+
+prep-newroot-for-flash() {
+# examine OUTPUTDEVICE expected to be o(if luks, pen and) ready for mounting
+    message_n "is newroot mounted?"
+    if [[ -z "$(mount | grep ${newroot_mountpoint})" ]] ; then
+        echo -en " no, mounting"
+        # if there's a luks device, mount its "-root" lv on newroot_mountpoint
+        if [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i luks)" ]] ; then
+            # use lsblk data to look up the lvm volume used for rootfs (e.g. vg_raspicm56402-root)
+            root_lv=$(lsblk -l ${OUTPUTDEVICE} | grep lvm | grep root | awk '{print $1}')
+            echo -en " ${root_lv}"
+            mount /dev/mapper/${root_lv} ${newroot_mountpoint} && right_status $? || \
+                die "failed to mount /dev/mapper/${root_lv}"
+        # otherwise, if there's a LABEL=root_fs device, mount it on newroot_mountpoint
+        elif [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i root_fs)" ]] ;  then
+            # use blkid data to idendify root_fs device (e.g. /dev/sdb)
+            root_dev=$(blkid ${OUTPUTDEVICE}* | grep boot_fs | cut -d' ' -f1 | sed 's|\:$||')
+            echo -en " ${root_dev}"
+            mount ${root_dev} ${newroot_mountpoint} && right_status $? || \
+                die "failed to mount /dev/mapper/${root_lv}"
+        else
+            die "no root luks or regular block device found"
+        fi
+        # if we get here, it should be successfully mounted
+        right_status $TRUE
+    else
+        echo -en " ${BGon}yes${Boff}"
+    fi
+    # whether already mounted or just mounted, go to newroot_mountpoint
+    #   and if there is a mount-the-rest script, run it
+
+old_dir=$(pwd)
+message_n "moving from $(pwd) to ${newroot_mountpoint} ..."
+cd ${newroot_mountpoint} && right_status $? || die "failed to cd ${newroot_mountpoint}"
+message "now working in $(pwd)"
+message_n "looking for mount-the-rest script"
+
+}
+
+flash-device() {
+    d_message "in flash-device" 3
+}
