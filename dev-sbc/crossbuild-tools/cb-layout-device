@@ -17,7 +17,7 @@ varlist="OUTPUTDEVICE"
 varlist+=" outputdevice_sector_size_bytes MiB disklabel_type"
 varlist+=" configfile DEV_HOSTNAME bool.LUKS"
 varlist+=" crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
-varlist+=" root_vg root_vg_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
+varlist+=" root_vg root_dev_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
 varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 
 hidden_varlist="crypt_passphrase partition_device luks_partition_device"
@@ -64,17 +64,17 @@ initialize_variables() {
     message_n "initializing crypt_keydev_mountpoint = /mnt/key ..."
     crypt_keydev_mountpoint=/mnt/key ; right_status $?
 
-    message_n "initializing root_vg_mountpoint = /mnt/gentoo ..."
-    root_vg_mountpoint="/mnt/gentoo" ; right_status $?
+    message_n "initializing root_dev_mountpoint = /mnt/gentoo ..."
+    root_dev_mountpoint="/mnt/gentoo" ; right_status $?
 
-    message_n "initializing mounttherestscript = ${root_vg_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME} ..."
-    mounttherestscript="${root_vg_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
+    message_n "initializing mounttherestscript = ${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME} ..."
+    mounttherestscript="${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
 
-    message_n "initializing chrootprepscript = ${root_vg_mountpoint%/}/chroot-prep ..."
-    chrootprepscript="${root_vg_mountpoint%/}/chroot-prep" ; right_status $?
+    message_n "initializing chrootprepscript = ${root_dev_mountpoint%/}/chroot-prep ..."
+    chrootprepscript="${root_dev_mountpoint%/}/chroot-prep" ; right_status $?
 
-    message_n "initializing chrootcommandsfile = ${root_vg_mountpoint%/}/chroot-commands ..."
-    chrootcommandsfile="${root_vg_mountpoint%/}/chroot-commands" ; right_status $?
+    message_n "initializing chrootcommandsfile = ${root_dev_mountpoint%/}/chroot-commands ..."
+    chrootcommandsfile="${root_dev_mountpoint%/}/chroot-commands" ; right_status $?
 
     message_n "initializing default LUKS = FALSE ..."
     LUKS=$FALSE ; right_status $?
@@ -518,23 +518,34 @@ layout_cryptsetup() {
         die "failed to mkswap /dev/mapper/vg_${DEV_HOSTNAME}-swap >/dev/null"
     # mount the new root device
     message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
-    mount /dev/mapper/vg_${DEV_HOSTNAME}-root ${root_vg_mountpoint} ; right_status
-    cd ${root_vg_mountpoint}
+    mount /dev/mapper/vg_${DEV_HOSTNAME}-root ${root_dev_mountpoint} ; right_status
+    cd ${root_dev_mountpoint}
     # determine the UUID of the boot device
-    message_n "determining UUID of boot device [ $partition1_device ] ..."
-    eval "$(blkid $partition1_device -o export | grep '^UUID')" && BOOT_UUID=${UUID} && \
-    echo -en "( $BOOT_UUID )" ; right_status $?
+    boot_device="$(blkid | grep ${OUTPUTDEVICE} | grep boot_fs | cut -d':' -f1)"
+    message_n "determining UUID of boot device [ $boot_device ] ..."
+#    BOOT_UUID=$(blkid $boot_device -o export | grep '^UUID' | cut -d'=' -f2)
+#    eval $(blkid --probe $boot_device | sed "s|^${boot_device}: ||")
+#    BOOT_UUID=${UUID}
+    BOOT_UUID="$(blkid -o value -s UUID ${boot_device})"
+    result=$?
+    echo -en "( $BOOT_UUID )"
+    right_status $result
     # capture the rest of boot_device blkid data
     message_n "capturing the rest of boot_device blkid data ..."
-    boot_dev_blkid_data="$(blkid $partition1_device)" ; right_status $?
+    boot_dev_blkid_data="$(blkid | grep $boot_device | sed 's|^|#|')" ; right_status $?
 
     # create mount-the-rest script
     message_n "creating ${mounttherestscript} ..."
     echo "#!/bin/bash" > ${mounttherestscript}
     echo "root_vg=vg_${DEV_HOSTNAME}" >> ${mounttherestscript}
     echo "boot_uuid=${BOOT_UUID}" >> ${mounttherestscript}
+    echo "mountpoint=${root_dev_mountpoint}" >> ${mounttherestscript}
     echo "# (create and/or) mount LVs" >> ${mounttherestscript}
-    echo 'for x in $(lvs | grep ${root_vg} | grep -v "root\|swap\|extra" | awk "{print $1}") ; do' >> ${mounttherestscript}
+    echo -n 'for x in $(lvs | grep ${root_vg} | grep -v "root\|swap\|extra" | awk '  >> ${mounttherestscript}
+    echo -n "'" >> ${mounttherestscript}
+    echo -n "{print \$1}" >> ${mounttherestscript}
+    echo -n "'" >> ${mounttherestscript}
+    echo  ') ; do' >> ${mounttherestscript}
     echo '    [ ! -d ${mountpoint%/}/$x ] && echo "mkdir ${mountpoint%/}/$x..." && mkdir ${mountpoint%/}/$x' >> ${mounttherestscript}
     echo '    mount /dev/mapper/${root_vg}-$x ${mountpoint%/}/$x' >> ${mounttherestscript}
     echo 'done' >> ${mounttherestscript}
@@ -544,10 +555,11 @@ layout_cryptsetup() {
     echo 'echo' >> ${mounttherestscript}
     echo '# explain how to mount boot' >> ${mounttherestscript}
     echo '[ ! -d ${mountpoint%/}/boot ] && echo "mkdir ${mountpoint%/}/boot ..." && mkdir ${mountpoint%/}/boot' >> ${mounttherestscript}
-    echo 'echo "mount /boot as below now, or at / AFTER chroot (see fstab)"' >> ${mounttherestscript}
-    echo 'echo "   # mount UUID=${boot_uuid} ${mountpoint%/}/boot"' >> ${mounttherestscript}
-    echo 'echo "   # doing so now for cb-flash-device (comment out below if not needed)"' >> ${mounttherestscript}
-    echo " mount UUID=${boot_uuid} ${mountpoint%/}/boot" >> ${mounttherestscript}
+    echo "echo \"mount "'${mountpoint%/}'"/boot as below now, or at /boot AFTER chroot (see fstab)\"" >> ${mounttherestscript}
+    echo "echo \"# mount UUID=${BOOT_UUID} "'${mountpoint%/}'"/boot\"" >> ${mounttherestscript}
+    echo "echo \"# doing so now for cb-flash-device (comment out below if not needed)\"" >> ${mounttherestscript}
+    echo "" >> ${mounttherestscript}
+    echo "mount UUID=${BOOT_UUID} ${root_dev_mountpoint}/boot" >> ${mounttherestscript}
     echo "" >> ${mounttherestscript}
     echo "# ${boot_dev_blkid_data}" >> ${mounttherestscript}
     chmod +x ${mounttherestscript}

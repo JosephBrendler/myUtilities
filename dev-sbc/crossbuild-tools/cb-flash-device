@@ -149,7 +149,7 @@ prep-newroot() {
     message_n "is newroot mounted?"
     if [[ -z "$(findmnt -ln | grep ${newroot_mountpoint})" ]] ; then
         root_dev="nothingmounted"
-        echo -en " ${BRon}no${Boff}, mounting"
+        echo -e " ${BRon}no${Boff}, mounting"
         # if there's a luks device, mount its "-root" lv on newroot_mountpoint
         if [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i luks)" ]] ; then
             echo -en " ${BMon}(luks)${Boff}"
@@ -206,7 +206,7 @@ prep-newroot() {
         # use lsblk data to set root_dev
         eval $(findmnt -o TARGET,SOURCE -P | grep ${newroot_mountpoint})
         root_dev=${SOURCE}
-        echo -en " ${BGon}yes${Boff}" ; right_status $TRUE
+        echo -e " ${BGon}yes${Boff}" ; right_status $TRUE
     fi
     # whether already mounted or just mounted, we can now go to newroot_mountpoint
     #   and if there is a mount-the-rest script, run it ( flash-device() )
@@ -223,7 +223,22 @@ flash-device() {
     message_n "looking for mount-the-rest script"
     mounttherestscript="$(find ./ -iname 'mount-the-rest*' -type f -executable)" && right_status $? || \
         die "failed to find ./ -iname 'mount-the-rest*' -type f -executable"
+
+    # DANGER Will Robinson - check this first
     exec ${mounttherestscript}
+
+    # ok - now copy content
+    msg= "about to run cp -av /usr/${TARGET}/* ${newroot_mountpoint}/ \n"
+    msg+="are you sure you want to continue"
+    response="" ; new_prompt "${msg}"
+    case ${response:0:1} in
+        [yY] ) message "affirmative response [${response}] from user; continuing" ;;
+        [sSnN] ) E_message "negative response [${response}] from user; quitting" ; exit 1 ;;
+        * )  die "invalid response to run copy content prompt" ;;
+    esac
+    cp -av /usr/${TARGET}/* ${newroot_mountpoint}/ && \
+        message "successfully ran cp -av /usr/${TARGET}/* ${newroot_mountpoint}/" || \
+        die "failed to run cp -av /usr/${TARGET}/* ${newroot_mountpoint}/"
 
     return 0
 }
