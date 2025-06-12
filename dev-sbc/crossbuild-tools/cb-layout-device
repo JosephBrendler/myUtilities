@@ -90,16 +90,57 @@ usage() {
     echo
     message "${PN} requires exactly one valid device name as its only argument"
     message "these candidate devices are present in your system but not mounted"
-    while read line; do
-        # echo $line
-        eval $line
-        if [ -z "$(mount | grep $NAME)" ] ; then
-            # echo
-            blkid -o export /dev/${NAME}* | sed 's|^|       |'
-        fi
-    done <<< $(lsblk -d -P -o NAME )
+    echo
+    list_unused_disks
+    echo
     usage-common-message
     exit 1
+}
+
+non-stty-separator() {  # expects TERMWIDTH to be set in environment
+    local msg preface msg_len;
+    [ ! -z "$2" ] && preface="$2" || preface=$(hostname);
+    msg="${BYon}---[${BRon} $preface ${LBon}$1 ${BYon}]";
+    msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ));
+    echo -en "$msg" && echo -n $(repeat "-" $(( ${TERMWIDTH} - $(( $msg_len + ${#Boff} )) ))) && echo -e ${Boff} && return 0 || return 1
+}
+
+non-stty-right_status ()
+{
+    local msg status=$1;
+    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+    echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1
+}
+
+list_unused_disks() {
+    # set this now because doing so will be an inappropriate use of io control for stdin during while loop's redirection for "read line"
+    TERMWIDTH=$(termwidth)
+    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
+    while read line ; do
+        # use eval to interpret the -P pairs as variable assignments
+        eval ${line}
+        if [[ "${TYPE}" == "disk" ]] ; then
+            # look for disks with no children (TYPE crypt, part, lvm) mounted
+            candidate_name=$NAME ; candidate_type=$TYPE
+            INUSE=$FALSE
+            message_n "checking ${candidate_type} ${candidate_name} ..."
+            while read innerline; do
+                eval ${innerline}
+                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
+                    INUSE=$TRUE
+                fi
+            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
+            if [[ ! $INUSE ]] ; then
+                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status $TRUE
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
+            else
+                echo -en "${BRon}(in use)${Boff}"
+                non-stty-right_status 1
+            fi
+        fi
+    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
+    return 0
 }
 
 validate_config() {
