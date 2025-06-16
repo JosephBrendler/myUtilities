@@ -18,6 +18,6 @@ WAN_IP=$( ${WAN_IP_GET_PROG} ) && \
 echo "${WAN_IP} [$(my_short_date)]" > ${WAN_IP_DROPBOX_DIR%/}/${WAN_IP}
 chown ${WAN_IP_USER}:${WAN_IP_USER} ${WAN_IP_DROPBOX_DIR%/}/${WAN_IP}
 
-. /root/bin/loggit
+. /usr/local/sbin/loggit
 
 cd ${old_dir}
