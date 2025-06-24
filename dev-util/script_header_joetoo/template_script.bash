@@ -7,7 +7,7 @@ source ./script_header_joetoo
 source ./script_header_joetoo_extended
 
 # only needed for testing sources pending package build
-script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
 
 #-----[ variables ]------------------------------------------------------
 cmdseq_statusfile=/root/cmdseq_status
