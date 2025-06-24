@@ -2,9 +2,10 @@
 # template script employing script_header_joetoo (extended)
 
 # source headers
-# this should work for ash shell
-source ./script_header_joetoo
-source ./script_header_joetoo_extended
+#script_header_installed_dir=./         ## only when testing, pre-ebuild
+script_header_installed_dir=/usr/sbin   # this is where it should be installed
+source ${script_header_installed_dir%/}/script_header_joetoo
+source ${script_header_installed_dir%/}/script_header_joetoo_extended
 
 # only needed for testing sources pending package build
 #script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
