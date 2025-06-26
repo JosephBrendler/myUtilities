@@ -3,7 +3,7 @@
 # joe brendler 2 Jan 15
 # format device specified by argument ($1) as 32bit FAT, of HDD media type (0xf8),
 #   with label="KEY", and random UUID
-source /usr/local/sbin/script_header_brendlefly
+source /usr/sbin/script_header_joetoo
 
 BUILD="0.0.0 20150102"
 DEBUG="true"

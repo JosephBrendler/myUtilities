@@ -2,7 +2,7 @@
 # strip_d_lines.sh  - parse the content of input file $1
 # line for line, echo content but eliminate aty d_ "arg" statements
 # assumes input comes from a "grep -n ',pattern>'" command so each line is numbered:
-source /usr/local/sbin/script_header_brendlefly
+source /usr/sbin/script_header_joetoo
 
 n=1
 grep -v "#" $1 | while read full_line

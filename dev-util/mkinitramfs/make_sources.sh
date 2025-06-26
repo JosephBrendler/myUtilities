@@ -8,7 +8,7 @@
 # the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs),
 #   and the MAKE_DIR (parent dir of this script)
 source GLOBALS
-source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
+source ${SCRIPT_HEADER_DIR}/script_header_joetoo
 # script header will over-ride BUILD, but globals must be sourced 1st to get _DIRs
 BUILD="${KERNEL_VERSION}-${DATE_STAMP}"
 

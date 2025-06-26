@@ -12,7 +12,7 @@
 #   will be sourced here to instantiate the BUILD variable
 source GLOBALS
 # source my usual functions and formatting "shortcuts" (must be run from the MAKE_DIR)
-source ${SCRIPT_HEADER_DIR}/script_header_brendlefly
+source ${SCRIPT_HEADER_DIR}/script_header_joetoo
 source ${SOURCES_DIR}/BUILD
 
 VERBOSE=$TRUE
