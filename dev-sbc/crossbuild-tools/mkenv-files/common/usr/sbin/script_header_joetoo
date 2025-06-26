@@ -1,16 +1,21 @@
 #!/bin/sh
 ####!/bin/bash   ### switched so it's also valid in busybox (ash) shell
 #   script header with basic functions
-# Author: brendlefly 19 Jul 2014
+# Author: joe brendler 19 Jul 2014
+#         24 June 2025 - v1.0.0 moved to /usr/sbin/ and consolidated as script_header_joetoo
 #
 
 #---[ Define common variables for use in various scripts ]---
 BUILD="0.0.0 (19620207)"  #redefine in base script
 ROOT_UID=0       # Only users with $UID 0 have root privileges
+script_header_installed_dir=/usr/sbin
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+
 #  Error message used by various scripts
-E_NOTROOT="Must be root to run this script."
-E_ROOT="Please run this script as user, not root."
-E_BAD_ARGS="Improperly formatted command line argument."
+E_NOTROOT="Must be root to run this script"
+E_ROOT="Please run this script as user, not root"
+E_BAD_ARGS="Improperly formatted command line argument"
+E_BAD_OPT="Invalid option"
 
 TRUE=0    # will evaluate to be logically true in a boolean operation
 FALSE=""  # will evaluate to be logically false in a boolean operation
@@ -20,7 +25,7 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
 [[ -z $VERBOSE ]] && VERBOSE=$FALSE
 [[ -z $verbosity ]] && verbosity=1
 
-non_interactive_header=/usr/local/sbin/script_header_brendlefly_noninteractive
+non_interactive_header=${script_header_installed_dir%/}/script_header_joetoo_noninteractive
 
 #--[ Easy ANSI Escape sequences to put color in my scripts ]---
 #  see http://en.wikipedia.org/wiki/ANSI_escape_code
@@ -142,7 +147,7 @@ CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
   [ ! -z "$2" ] && col=$2 || col=1
   echo -en "${CSI}${row};${col}H" && return 0 || return 1
 }
-CLR()    # Clear the screen
+CLR()    # Clear stdout
 { echo -en "${CSI}2J" && return 0 || return 1; }
 CUU()    # Move the cursor up ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} + 1 ))"A" && return 0 || return 1; }
@@ -152,7 +157,7 @@ CUF()    # Move the cursor forward ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
 CUB()    # Move the cursor back ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
-CPR()    # Report the current position (row, col) of the cursor [tip: hit return again]
+CPR()    # Report position (row, col) of the cursor [tip: hit return again]
 { perl -e '$/ = "R";' -e 'print "\033[6n";my $x=<STDIN>;my($n, $m)=$x=~m/(\d+)\;(\d+)/;print "Col: $m, Row: $n\n";'; }
 
 # ---[ common function blocks ]------------------------------------------
@@ -169,56 +174,59 @@ checkroot()     # Run as root, of course.
 checknotroot()  # Run as not root, of course.
 { if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; exit 1; else return 0; fi; }
 
-checkboot()     # check to see if the /boot partition is properly mounted (look for grub)
-{ machine=$(uname -m); case ${machine} in
-  "x86_64"|"x86"     ) result="$(find /boot/ -iname grub -type d)" ;;
-  "aarch64"|"armv7l" ) result="$(find /boot/ -iname *.dtb)" ;;
-  * ) E_message "${BRon}Error: machine ${machine} checkboot not supported" ; return 1;;  esac
-  if [[ "${result}" ]] ; then return 0 ; else E_message "${BRon}/boot not mounted${Boff}" ;
-    return 1 ; fi ; }
+checkboot()     # check to see if the /boot partition is properly mounted
+{
+# (used to look for grub)
+#machine=$(uname -m); case ${machine} in
+#  "x86_64"|"x86"     ) result="$(find /boot/ -iname grub -type d)" ;;
+#  "aarch64"|"armv7l" ) result="$(find /boot/ -iname *.dtb)" ;;
+#  * ) E_message "${BRon}Error: machine ${machine} checkboot not supported" ; return 1;;  esac
+#  if [[ "${result}" ]] ; then return 0 ; else E_message "${BRon}/boot not mounted${Boff}" ;
+#    return 1 ; fi ; }
+  [[ ! -z $(findmnt -nl /boot) ]] && return 0 || return 1 ; }
 
 checkshell()    # reset colors if this shell is not interactive
 { [[ ! -t 0 && ! -t 1 ]] && source ${non_interactive_header}; }
 
-message()       # echo a simply formatted message (arg $1) to the screen
+message()       # echo a simply formatted message $1 to stdout
 { echo -e " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
 
-message_n()     # echo -n a simply formatted message (arg $1) to the screen
+message_n()     # echo -n a simply formatted message $1 to stdout
 { echo -en " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
 
-E_message()     # echo a simply formatted error message (arg $1) to the screen
+E_message()     # echo a simply formatted error message $1 to stdout
 { echo -e " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
 
-E_message_n()   # echo -n a simply formatted error message (arg $1) to the screen
+E_message_n()   # echo -n a simply formatted error message $1 to stdout
 { echo -en " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
 
-d_message()     # pass argument $1 to message() if "external" boolean VERBOSE tests true
+d_message()     # pass $1 to message() if IAW verbosity
 { [[ $VERBOSE && $2 -le $verbosity ]] && message "$1"; }
 
-d_message_n()   # pass argument $1 to message_n() if "external" boolean VERBOSE tests true
+d_message_n()   # pass $1 to message_n() if IAW verbosity
 { [[ $VERBOSE && $2 -le $verbosity ]] && message_n "$1"; }
 
-dE_message()    # pass argument $1 to E_message() if "external" boolean VERBOSE tests true
+dE_message()    # pass $1 to E_message() if IAW verbosity
 { [[ $VERBOSE && $2 -le $verbosity ]] && E_message "$1"; }
 
-dE_message_n()  # pass argument $1 to E_message() if "external" boolean VERBOSE tests true
+dE_message_n()  # pass $1 to E_message() if IAW verbosity
 { [[ $VERBOSE && $2 -le $verbosity ]] && E_message_n "$1"; }
 
-d_echo()        # echo all but last (level) argument if $VERBOSE && verbosity -ge $level
+d_echo()        # echo all but last (level) argument if IAW verbosity
 { input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
   E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
   [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
 
-de_echo()       # echo -e all but last (level) argument if $VERBOSE && verbosity -ge $level
+de_echo()       # echo -e all but last (level) argument if IAW verbosity
 { input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
   E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
   [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo -e $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
 
-status_color()  # emit to stdout the escape seq for color based on arg $1 (T/F Y/N 1/0)
+status_color()  # emit escape seq for color per arg $1 (T/F Y/N 1/0)
 { case $1 in "1"|[yY]*|[tT]*|"up"|$TRUE   ) echo -en ${BGon};;
              "0"|[nN]*|[fF]*|"down"|$FALSE) echo -en ${BRon};; *) echo -en ${BYon};; esac ; }
 
-TrueFalse()     # echo to stdout "True" or "False", depending on truth of arg $1
+TrueFalse()     # echo "True" or "False", depending on truth of arg $1
 {  [[ $1 ]] && echo -en "True" || echo -en "False" ; }
 
 prompt()        # set external variable $answer based on reponse to prompt $1
@@ -232,6 +240,12 @@ old_prompt()    # set external variable $answer based on reponse to prompt $1
   while read answer && ! expr "${answer:0:1}" : [yYnN] >/dev/null;  # answer not a regex match
     do case ${answer:0:1} in [yY1]|"$TRUE") answer="n";; [nN0]|"$FALSE") answer="x";; esac
   RCP; echo -en "$(repeat ' ' $(termwidth))"; RCP; message_n "$ps [Y/n]: " ; done; }
+
+new_prompt()    # set external variable $response based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
+while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
 
 alpha_words()   # alphabetize the words in a quoted input string
 { echo $(for x in $@; do echo $x; done | sort -db ) ; }
@@ -253,7 +267,7 @@ swr()           # ssh when ready (pur(), then ssh after nmap shows port)
   while [ ! $(nmap -p ssh $1 | grep 'ssh' | cut -d' ' -f2) == "open" ]; do sleep 1; done && \
   ssh $1 ; }
 
-vercomp()       # compare two version numbers return [0:equal|1:greaterthan|2:lessthan]
+vercomp()       # compare versions return [0:equal|1:greaterthan|2:lessthan]
 { if [[ "$1" == "$2" ]]; then return 0; else first=$(echo -en "$1\n$2" | sort -V | head -n1);
   [[ "$first" == "$2" ]] && return 1 || return 2; fi }
 
@@ -261,12 +275,12 @@ show_result()   # show the result of vercomp comparison, in english
 { case $1 in 1) echo "${LBon}>${Boff}";; 2) echo "${BRon}<${Boff}";; \
              0) echo "${BGon}=${Boff}";; *) echo "${BYon}*** Error ***${Boff}";; esac }
 
-my_date()       # echo a simply formatted date string (DDD MM dd hh:mm:ss AP TZ yyyy)
+my_date()       # echo date string (DDD MM dd hh:mm:ss AP TZ yyyy)
 { day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
   timeofday=$(date +%X); timezone=$(date +%Z)
   echo "$day $month $monthday $timeofday $timezone $year" ; }
 
-my_short_date() # echo a short formatted date string (yyyymmdd)
+my_short_date() # echo shorter date string (yyyymmdd)
 { month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
   echo "${monthday}${month}${year}-${timehack}" ; }
 
@@ -280,7 +294,7 @@ loggit()        # send a job completion status message to the cron logger
   esac
   /usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE" ; }
 
-repeat()        # output a repeated string of character (arg $1) of length (arg $2)
+repeat()        # output a repeated string of char $1 (of len $2)
 { local i thing limit
   thing="$1"; limit=$2; out_str=""; i=0
   while [ $i -lt $limit ]; do out_str="${out_str}${thing}"; let "i++"; done
@@ -292,21 +306,21 @@ termwidth()     # calculate and output the width of the terminal
 termheight()    # calculate and output the height of the terminal
 { echo -n $(stty size | cut -d' ' -f1) && return 0 || return 1; }
 
-separator()     # draw a horizontal line with a simple title (arg $1) and preface (arg $2)
+separator()     # draw a horizontal line with preface $1 and title $2
 { # to facilitate separation of portions of the output of various scripts
-  # include a title preface (arg $2 or $(hostname) if $2 is not provided
-  local msg preface msg_len
-  [ ! -z "$2" ] && preface="$2" || preface=$(hostname)
-  msg="${BYon}---[${BRon} $preface ${LBon}$1 ${BYon}]"
+  local msg preface title msg_len
+  [ ! -z "$1" ] && preface="$1" || preface=$(hostname)
+  [ ! -z "$2" ] && title="$2" || title=$(basename $0)
+  msg="${BYon}---[${BRon} ${preface} ${LBon}${title} ${BYon}]"
   msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ))
   echo -en "$msg" && \
   echo -n $(repeat "-" $(( $(termwidth) - $(( $msg_len + ${#Boff} )) )) ) && echo -e ${Boff} && \
   return 0 || return 1 ; }
 
-get_longest()    # return via echo to stdout the length of longest string in input $@
+get_longest()     # echo length of longest string in input $@
 { ans=0; for x in $@; do [ ${#x} -gt $ans ] && ans=${#x}; done ; echo $ans ; }
 
-display_vars()   # show aligned values for vars in $@; incl bool. lv. ; $1=longest
+display_vars()    # show vals for vars in $@; incl bool/lv/; $1=longest
 {
   if ! isnumber $1 ; then
     E_message "Error: arg \$1 must be numeric longest expected input var name"
@@ -355,7 +369,7 @@ display_vars()   # show aligned values for vars in $@; incl bool. lv. ; $1=longe
   done
 }
 
-initialize_vars()   # initialize values for vars in $@; incl bool. lv.
+initialize_vars() # initialize values for vars in $@; incl bool. lv.
 {
   [ $# -lt 1 ] && return
   parmlist=$(echo $@ | sed 's|verbosity||' | sed 's|bool.VERBOSE||')
@@ -407,7 +421,7 @@ initialize_vars()   # initialize values for vars in $@; incl bool. lv.
   done
 }
 
-echo_n_long()    #  spread a long string over several lines, if needed.  $1=start
+echo_n_long()     # echo long string over several lines, if need. $1=start
 {
   if ! isnumber $1 ; then E_message "Error: arg \$1 must be numeric starting caracter position"; exit; fi
   if [ $# -le 1 ] ; then set $@ "<empty>"; fi
@@ -427,7 +441,7 @@ echo_n_long()    #  spread a long string over several lines, if needed.  $1=star
   echo -n "${newline}"
 }
 
-right_status()   # output 8 char [ ok/fail ] status at the right margin
+right_status()    # output 8 char [ ok/fail ] status at the right margin
 { # test message_n "good_test" ; right_status $?
   #      E_message_n "fail_test" && cat unexistent 2>/dev/null; right_status $?
   local msg status=$1
@@ -435,14 +449,14 @@ right_status()   # output 8 char [ ok/fail ] status at the right margin
   # go to start of line, *then* move fwd to 7 chars from the right margin ("[ xx ]" is 6)
   echo -en "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
 
-d_right_status() # output 8 char [ ok/fail ] status at the right margin, if $VERBOSE
+d_right_status()  # output rigit_status IAW verbosity
 { # test with v=((verbosity+1)) and v=(($verbosity-1))
   # d_message_n "good_test" $v; d_right_status $? $v
   #      dE_message_n "fail_test" $v && cat unexistent 2>/dev/null; d_right_status $? $v
   local status=$1
   [[ $VERBOSE && $2 -le $verbosity ]] && right_status $status && return 0 || return 1 ; }
 
-sh_countdown()   # count-down seconds (arg $1)
+sh_countdown()    # count-down seconds (arg $1)
 { # special note: bb sh cannot use base#number notation with prefix 10# to ensure interpretation as base 10
   if [[ ! -z $1 ]]
   then rem_time="${1}" ;
@@ -464,7 +478,7 @@ sh_countdown()   # count-down seconds (arg $1)
   return 0
 }
 
-progress()       # display an arrow depicting progress (visualize $1 of $2 steps complete)
+progress()        # show progress arrow (visualize $1 of $2 steps complete)
 {
   [ $# -ne 2 ] && E_message "${BRon}Error - two arguments required (${BYon}step ${BRon}and ${BYon}number_of_steps${BRon})${Boff}"
   step=$1; number_of_steps=$2
@@ -490,19 +504,48 @@ progress()       # display an arrow depicting progress (visualize $1 of $2 steps
   CUP $myrow $middlestart; echo -en "( ${pct_color}$percent%${Boff} )"; RCP
 }
 
-fe()             # find ebuild files matching filter "*$1*"
+fe()              # find ebuild files matching filter "*$1*"
 { echo "looking for ebuild(s) matching filter: $1"; find / -iname "*$1*.ebuild" -type f -print 2>/dev/null; }
 
-summarize_me()   # list contents of this script header (employ me with "source" or ".")
+non_stty_separator()       # expects TERMWIDTH to be set in environment
+{
+  local msg preface title msg_len
+  [ ! -z "$1" ] && preface="$1" || preface=$(hostname)
+  [ ! -z "$2" ] && title="$2" || title=$(basename $0)
+  msg="${BYon}---[${BRon} ${preface} ${LBon}${title} ${BYon}]"
+  msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ));
+  echo -en "$msg" && echo -n $(repeat "-" $(( ${TERMWIDTH} - $(( $msg_len + ${#Boff} )) ))) && echo -e ${Boff} && return 0 || return 1
+}
+
+non_stty_right_status()    # expects TERMWIDTH to be set in environment
+{
+    local msg status=$1;
+    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+    echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1
+}
+
+confirm_continue_or_exit() # use prompt() to confirm user wants to continue
+{ answer="" ; msg="${BYon}Do you want to continue?" ; prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
+    esac ; return 0 ; }
+
+die()             # print message $1 and exit
+{ msg="${1}" ; E_message "${msg}" ; exit 1 ; }
+
+summarize_me()    # list functions in header ("source" to employ)
 {
   echo
-  separator "script_header_brendlefly-$BUILD | content summary" && \
+  separator "script_header_joetoo-$BUILD | content summary" && \
   message "This script header defines some ${BYon}common variables${Boff} for" && \
   message "  use in various scripts, it provides pre-formatted ${BYon}easy-to-use${Boff}" && \
   message "  ${BYon}ANSI Escape sequences${Boff} to facilitate the use of ${BMon}color${Boff} and" && \
   message "  ${BYon}cursor${Boff} movement in my scripts, and it provides a number of" && \
   message "  useful ${BGon}functions${Boff}, for some routine tasks, as described below\n" && \
-  grep "()" /usr/local/sbin/script_header_brendlefly | grep -v "grep" && echo && \
+#  grep "()" /usr/sbin/script_header_joetoo | grep -v "grep" && echo && \
+  grep "()" ${script_header_installed_dir%/}/script_header_joetoo | grep -v "grep" && echo && \
   msg="${BGon}* ${Boff}  ${BYon}About to run:\n        ${BBon}message${Boff}" && \
   msg="${msg}  ${BYon}\""'${BYon}VERBOSE is currently ' && \
   msg="${msg}${BGon}\$(${BBon}status_color \\\"${BRon}\$VERBOSE${BBon}\\\"${BGon})${Boff}" && \

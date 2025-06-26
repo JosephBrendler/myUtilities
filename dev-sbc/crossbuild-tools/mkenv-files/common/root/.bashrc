@@ -20,9 +20,9 @@ fi
 alias la='ls -al --color=tty'
 alias lr='ls -alrt --color=tty'
 
-source /usr/local/sbin/script_header_brendlefly
-source /usr/local/sbin/script_header_brendlefly_extended
-source /usr/local/sbin/bashrc_aliases_include_joe_brendler
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_extended
+source /usr/sbin/bashrc_aliases_include_joe_brendler
 
 source /etc/bash/bashrc.d/emerge-chroot
 source /root/.cb-config   # assigns BOARD, TARGET, TARGET_ARCH, QEMU_ARCH
