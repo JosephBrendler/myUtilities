@@ -1,0 +1,25 @@
+source /usr/sbin/script_header_joetoo
+BUILD=0
+INPUTFILE=/var/log/messages
+
+#-----[ main script ]---------------------
+checkroot
+separator "rejectlookup-${BUILD}"
+while read line
+do
+  count=$(echo $line | cut -d' ' -f1)
+  ip=$(echo $line | cut -d' ' -f2)
+  who=$(whois $ip | grep Organization | sed 's/Organization://' | sed 's/^\ *//')
+  nslook=$(nslookup $ip | grep name | cut -d'=' -f2 | sed 's/^\ *//')
+  msg="$count REJECTS on ip: $ip ($nslook)"
+  msg+="\n\t whois: ${who}"
+  msg+="\n\t nslookup: ${nslook}"
+  # curl transfers data from web server (-s = silent)
+  # jq is a command line json processor - used here for field extraction
+  result=$(curl -s "https://tools.keycdn.com/geo.json?host=${ip}")
+  city=$(echo $result | jq '.data.geo.city')
+  country=$(echo $result | jq '.data.geo.country_name')
+  msg+="\n\t Geolocation: ${city}, ${country}"
+  message "${msg}"
+done <<< $(grep REJECT ${INPUTFILE} | cut -d' ' -f14 | cut -d'=' -f2 | sort | uniq -c)
+

@@ -1,0 +1,62 @@
+#!/bin/bash
+# display_potential_beacons
+# Joe Brendler   16 January 2017
+#
+
+source /usr/sbin/script_header_joetoo
+BUILD="0.1.1 20170116"
+tempfile="/home/joe/tempfile"
+#default_logfile="/var/log/firewall.log"
+#wayback_logfile="/var/log/old_logs/firewall.log*"
+#default_logfile="/var/log/syslog"
+#wayback_logfile="/var/log/old_logs/syslog*"
+default_logfile="/var/log/messages"
+wayback_logfile="/var/log/old_logs/messages*"
+
+separator "display_foreign_connections-${BUILD}"
+
+if [[ -z $1 ]]
+then
+  logfile=$default_logfile
+  grep_cmd="grep"
+else
+  logfile=$wayback_logfile
+  grep_cmd="zgrep"
+fi
+message "Using logfile $logfile"
+
+# Unlike display_foreign_connections, where we want to 
+#   only look at records for accepted connections to or from the 'net' zone
+#   otherwise you'll see "false positives" from loc2fw or vpn2fw ACCEPTs of nat
+#   traffic corresponding to REJECTED fw2net traffic, etc,
+# here - for display_potential_beacons, those are exactly what we are looking for...
+for ip in $($grep_cmd ACCEPT $logfile | \
+            grep -v 'MAC' | \
+            awk '{print $8}' | \
+            grep -v '192.168' | \
+            grep -v '10.17' | \
+            cut -d'=' -f2 | \
+            sort -h | uniq)
+do
+    spaces=""
+#    msg="$spaces$ip"
+#    while [ ${#msg} -lt 18 ]; do spaces="$spaces "; msg="$spaces$ip"; done
+    msg="$(repeat " " $((18 - ${#ip})) ) ${ip}"
+    msg2=$(geoiplookup ${ip} | grep "Country" | cut -d: -f2 | sed 's/^ //g')
+
+#    message "${BWon}${msg}: ${BYon}$(geoiplookup $ip | cut -d' ' -f4-)${Boff}"
+    message "${BWon}${msg}: ${BYon}${msg2}${Boff}"
+done | grep -v 'United States'
+
+/usr/local/sbin/loggit
+
+# backup
+# note: sed makes space-delimited structure predictable (trying awk above)
+#for ip in $($grep_cmd ACCEPT $logfile | \
+#            sed 's/\  / /' | \
+#            cut -d' ' -f8 | \
+#            grep -v MAC | \
+#            cut -d'=' -f2 | \
+#            grep -v 192.168 | \
+#            grep -v 10.17 | \
+#            sort -h | uniq)

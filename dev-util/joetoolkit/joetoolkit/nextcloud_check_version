@@ -1,0 +1,139 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+program="nextcould_check_version"
+BUILD=0
+VERBOSE=$TRUE
+verbosity=0
+
+emerged_version_list=()
+version=""
+
+#-----[ functions ]------------------------------------------------------
+
+usage() {
+  E_message "Error: invalid cmdline options [$@]"
+  message "usage:  nextcould_check_version <options>"
+  message "options:"
+  message "  -[v|V] increase verbosity"
+  message "  -[q|Q] decrease verbosity"
+  exit
+}
+
+process_cmdline() {
+  while [ $# -gt 0 ]
+  do
+    # option ok w or w/o '-' or '--'
+    option=$( echo $1 | sed 's/^-//' | sed 's/^-//' )
+    case ${option} in
+       [vV] | verbose ) let verbosity++ ;;
+       [qQ] | quiet   ) let verbosity-- ;;
+       *              ) process_compound_option "$option" ;;
+    esac
+    shift
+  done
+}
+
+process_compound_option() {
+  myargs=$1
+  while [ -n "${myargs}" ]
+  do
+    #handle first char
+    case ${myargs:0:1} in
+       [vV] ) [ ! VERBOSE ] && VERBOSE=$TRUE; let verbosity++ ;;
+       [qQ] ) let verbosity--; [ verbosity -le 0 ] && VERBOSE=$FALSE ;;
+       *    ) usage "${myargs}" ;;
+    esac
+    #strip first char from myargs (i.e. "shift")
+    myargs=${myargs:1}
+  done
+}
+
+display_config() {
+  echo -e ${BYon}"Congiguration:"${Boff}
+  echo -e ${LBon}"VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
+  echo -e ${LBon}"verbosity..............: "${Boff}${verbosity}
+}
+
+get_webapp_installed_version(){
+  if [ -z "$(find /var/www/localhost/htdocs/myCloud/ 2>/dev/null)" ]
+  then
+    E_message "nextcloud has not been installed by webapp-config"
+    exit
+  else
+    webapp_installed_version=$(basename $(find /var/www/localhost/htdocs/myCloud/ -maxdepth 1 -iname '.webapp-nextcloud*') | \
+      sed 's/\.webapp-nextcloud-//')
+    message "webapp_installed_version: ${webapp_installed_version}"
+  fi
+}
+
+get_emerged_versions() {
+  ev_string="$(eix-update -q && eix -eIc nextcloud)"
+  d_message "ev_string: ${ev_string}" 2
+  ev_string_l="${ev_string#*\(}"
+  d_message "ev_string_l: ${ev_string_l}" 2
+  ev_string_lr="${ev_string_l%)*}"
+#  emerged_versions=$(echo ${answer} | awk -F[\(\)] '{print $3,$5,$7 }' )
+  cut=""; version=""
+  # find possibly multiple version numbers enclosed in parentheses
+#  while [ -n "${ev_string_lr}" ]
+  while [[ "${ev_string_lr}" ==  *"("* ]]
+  do
+    d_message "ev_string_lr: ${ev_string_lr}" 2
+    # cut out the first parenthetically enclosed version
+    cut="${ev_string_lr#*\(}"
+    d_message "  cut: ${cut}" 3
+    version="${cut%%)*}"
+    d_message "  version: ${version}" 2
+    emerged_version_list+=("${version}")
+    msg="  emerged_version_list: [${emerged_version_list[@]}]"
+    d_message "${msg}" 2
+    # re-set ev_string_lr to the remainder
+    ev_string_lr="${cut#*)}"
+ done
+msg="emerged_version_list: [${emerged_version_list[@]}]"
+message "${msg}"
+
+}
+
+# supercede script_header's built-in d_message
+#d_message () { echo "1: $1"; echo "2: $2"; [[ $VERBOSE ]] && [[ $2 -le $verbosity ]] && message "$1" ; }
+d_message () { [[ $VERBOSE ]] && [[ $2 -le $verbosity ]] && message "$1" ; }
+
+check_emerged_versions() {
+  for ((i=0; i<${#emerged_version_list[@]}; i++))
+  do
+    myver="${emerged_version_list[$i]}"
+    vercomp ${myver} ${webapp_installed_version} ; result=$?
+    echo -e "${BGon} * ${BWon}(emerged version) ${myver} $(show_result ${result}) ${BWon}${webapp_installed_version} (webapp-installed version)${Boff}"
+    case ${result} in
+      2 ) message "${BRon}  version $myver should be removed${Boff}" ;; # 2 is <
+      0 ) message "${BWon}  version $myver is current; no action required${Boff}" ;; # 0 is =
+      1 ) message "${BYon}  version $myver is newer ; please run ${BGon}nextcloud_upgrade ${myver}${Boff}" ; maybe_do_upgrade "${myver}" ;; # 1 is >
+      * ) E_message "  error: bad version comparison"; exit ;;
+    esac
+  done
+}
+
+maybe_do_upgrade() {
+  myver="$1"
+  answer=""
+  prompt "${BYon}  would you like to run ${BRon}# ${BGon}nextcloud_upgrade ${myver}${BYon} now?${Boff}"
+  case ${answer:0:1} in
+    [yY] ) eval "nextcloud_upgrade ${myver}" ;;
+    [nN] ) message "${BRon}Not${Boff} running nextcloud_upgrade; user declined" ;;
+    *    ) E_message "error; bad response to upgrade question" ;;
+  esac
+}
+
+
+#-----[ main script ]--------------------------------------------
+separator "${program}-${BUILD}"
+#checkroot
+process_cmdline $@
+display_config
+
+get_webapp_installed_version
+
+get_emerged_versions
+
+check_emerged_versions

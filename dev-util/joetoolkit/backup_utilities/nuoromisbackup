@@ -1,0 +1,85 @@
+#!/bin/bash
+# nuoromisbackup - backup everything on my workstation/server
+# joe brendler - 17 Feb 2021 (based on thuviabackup of 23 June 2019)
+
+# Paste from lvs output
+# lvs
+#  LV   VG      Attr       LSize   Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+#  home vg_nvme -wi-ao---- 317.00g                                                    
+#  opt  vg_nvme -wi-ao----   2.00g                                                    
+#  root vg_nvme -wi-ao----  20.00g                                                    
+#  srv  vg_nvme -wi-ao---- 400.00g                                                    
+#  swap vg_nvme -wi-ao----   3.00g                                                    
+#  tmp  vg_nvme -wi-ao----  50.00g                                                    
+#  usr  vg_nvme -wi-ao----  60.00g                                                    
+#  var  vg_nvme -wi-ao---- 100.00g                                                    
+#  ROOT vg_ssda -wi-a-----  20.00g                                                    
+#  USR  vg_ssda -wi-a-----  50.00g                                                    
+#  home vg_ssda -wi-a----- 600.00g                                                    
+#  opt  vg_ssda -wi-a-----   2.00g                                                    
+#  srv  vg_ssda -wi-a----- 800.00g                                                    
+#  swap vg_ssda -wi-a-----   3.00g                                                    
+#  tmp  vg_ssda -wi-a----- 110.00g                                                    
+#  var  vg_ssda -wi-a----- 200.00g                                                    
+#  ROOT vg_ssdb -wi-a-----  20.00g                                                    
+#  USR  vg_ssdb -wi-a-----  50.00g                                                    
+#  home vg_ssdb -wi-a----- 600.00g                                                    
+#  opt  vg_ssdb -wi-a-----   2.00g                                                    
+ # srv  vg_ssdb -wi-a----- 800.00g                                                    
+#  swap vg_ssdb -wi-a-----   3.00g                                                    
+#  tmp  vg_ssdb -wi-a----- 110.00g                                                    
+#  var  vg_ssdb -wi-a----- 200.00g 
+#
+# Note: current backup device will be vg_ssda
+
+source /usr/sbin/script_header_joetoo
+BUILD=0.0
+VERBOSE=$TRUE
+verbosity=2
+
+#---[ variables ]-----------------------------------------------------------
+# sync all content in these directories (restrict each to single LV filesystem)
+dirlist="/ home opt usr var tmp"
+
+
+# Exclude file/dirs matching these patterns
+excludestring="--exclude='/mnt/*'"
+excludestring+=" --exclude='/tmp/*'"
+excludestring+=" --exclude='/var/tmp/*'"
+excludestring+=" --exclude='/var/log/*'"
+excludestring+=" --exclude='/proc/*'"
+excludestring+=" --exclude='/sys/*'"
+excludestring+=" --exclude='/srv/*'"
+
+#---[ functions ]-----------------------------------------------------------
+
+useage() {
+  E_message "Useage: nuoromisbackup [TBD]" && exit
+}
+
+#---[ main script ]---------------------------------------------------------
+checkroot
+separator "nuoromisbackup-${BUILD}"
+
+nuoromisbackup_mount
+
+echo; message "Running backup sync..."
+for dir in ${dirlist}
+do
+  d_message "dirlist: [${dirlist}]" 1
+  # sync only what needs to be updated; stay on one filesystem; delete what was deleted; exclude junk
+  [ "${dir}" == "/" ] && target="" || target="${dir}/"  ## deal with '/' characters
+  cmd="rsync -uavx"
+  cmd+=" ${excludestring}"
+  cmd+=" --delete --delete-excluded"
+  cmd+=" /${target}* /mnt/nuoromisbackupROOT/${target}"
+  message "${BYon}About to sync target [${Boff}${target}${BYon}] with the command:\n${BRon}${cmd}${Boff}"
+  sh_countdown 3
+  eval ${cmd}
+done
+
+nuoromisbackup_umount
+
+echo; message "un-mounted nuoromisbackup. Here's what left..."
+mount | grep nuoromisbackupROOT
+message "Done"

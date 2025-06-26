@@ -1,0 +1,96 @@
+#!/bin/bash
+# thuviabackup - backup everything on my workstation/server
+# joe brendler - 23 June 2019
+
+source /usr/sbin/script_header_joetoo
+BUILD=0.0
+VERBOSE=$TRUE
+verbosity=2
+
+#---[ variables ]-----------------------------------------------------------
+# sync all content in these directories (restrict each to single LV filesystem)
+# (joetoo expects each of these to be implemented as a separate block device)
+#dirlist="/ home opt usr var srv tmp"
+### To Do -- add a drive so I have room to back up /srv and /home/virtualmachines
+dirlist="/ home opt usr var"
+
+# todo - implement separate exclude lists for each dir...
+
+# Exclude file/dirs matching these patterns, using bash array list
+excludelist=('/mnt/*'
+             '/srv/*'
+             '/dev/*'
+             '/usr/armv*/*'
+             '/root/.ccache/*'
+             '/root/.distcc/*'
+             '/root/build/*'
+             '/home/*/.ccache/*'
+             '/home/*/.distcc/*'
+             '/home/virtualmachines/*'
+             '/home/joe/nextCloud/*'
+             '/home/joe/MyRaspberryFiles/*'
+             '/home/joe/Dropbox/*'
+             '/home/joe/Downloads/*'
+             '/home/joe/.*/*'
+             '/home/joe/Desktop/pascalCloud/*'
+             '/usr/src/linux*'
+             '/usr/src/initramfs*'
+             '/usr/portage/*'
+             '/proc/*'
+             '/sys/*'
+             'tmp/*'
+             'var/tmp/*'
+             'var/log/*'
+             'var/cache/*'
+             'cache/*'
+             'tmp/*'
+             'db/pkg/*'
+             'armv*/*'
+             'aarch*/*'
+             'avr/*'
+             'joe/hobbyCloud/*'
+             'joe/card_backup/*'
+             'joe/MyRaspberryFiles/*'
+             'joe/musicCloud/*'
+             'joe/MyTinkerboardFiles/*'
+             'joe/MyRaspi464Files/*'
+             'joe/familyPictureCloud/*'
+             'www/*'
+            )
+
+for ((i=0; i<${#excludelist[@]}; i++))
+do
+  excludestring+=" --exclude='${excludelist[i]}'"
+done
+[[ ${VERBOSE} ]] && echo -e "${BYon}excludestring: [ ${Boff}${excludestring} ${BYon}]${Boff}"
+
+#---[ functions ]-----------------------------------------------------------
+
+useage() {
+  E_message "Useage: thuviabackup [TBD]" && exit
+}
+
+#---[ main script ]---------------------------------------------------------
+checkroot
+separator "thuviabackup-${BUILD}"
+
+# call backup_mount
+thuviabackup_mount
+
+echo; message "Running backup sync..."
+for dir in ${dirlist}
+do
+  d_message "dirlist: [${dirlist}]" 1
+  # sync only what needs to be updated; stay on one filesystem; delete what was deleted; exclude junk
+  [ "${dir}" == "/" ] && target="" || target="${dir}/"  ## deal with '/' characters
+  cmd="rsync -uavx"
+  cmd+=" ${excludestring}"
+  cmd+=" --delete --delete-excluded"
+  cmd+=" /${target}* /mnt/thuviabackupROOT/${target}"
+  message "${BYon}About to sync target [${Boff}${target}${BYon}] with the command:\n${BRon}${cmd}${Boff}"
+  sh_countdown 3
+  eval ${cmd}
+done
+
+# call backup_umount
+thuviabackup_umount

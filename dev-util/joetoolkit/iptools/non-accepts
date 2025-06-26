@@ -1,0 +1,54 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+BUILD=0.0
+log_file=/var/log/messages
+
+D="DST="
+S="SRC="
+
+#-----[ functions ]----------------------------------------------
+useage() {
+  E_message "Useage: non-accepts [\"filter_string\"]" && exit
+}
+
+
+get_ip() {
+[[ -n "$1" ]] && my_filter="$1"
+while read line
+do
+  # find the destination ip in this line
+  ip=$(echo $line | grep -o "$D.*" | cut -d' ' -f1 | cut -d'=' -f2)
+  # if the destination is my private ip space, then get the source instead
+  [[ "${ip:0:7}" == "192.168" ]] && ip=$(echo $line | grep -o "$S.*" | cut -d' ' -f1 | cut -d'=' -f2)
+  # ignore blank lines and multicast address 224.0.0.1
+  [[ -n $ip ]] && [[ ! "$ip" == "224.0.0.1" ]] && echo ${ip}
+done <<<$(grep -v '=53 ' ${log_file} | grep -v ACCEPT | grep -v ftp: | grep "$my_filter" | cut -d' ' -f10,11,12)
+}
+
+get_count_per_unique_ip() {
+[[ -n "$1" ]] && fltr="$1"
+while read newline
+do
+  set $newline;  count=$1;  ip=$2
+  msg="${BYon}${count}${Boff} hits on ip: ${BRon}${ip}${Boff}"
+  [[ -n "$fltr" ]] && msg+=" for filter [${BGon}${fltr}${Boff}]"
+  identity="$(whois ${ip} 2>/dev/null | grep Organization | cut -d':' -f2 | sed 's/^ *//' )"
+  [[ "${identity:0:8}" == "Internap" ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+  [[ -z `echo $identity` ]] && identity="$(nslookup ${ip} | grep 'name =' | cut -d'=' -f2 | sed 's/^ *//' |sed 's/.$//')"
+  msg+=" ${LBon}${identity}${Boff}"
+  # fuck GeoIP, use keycdn with -s silent curl to get geo data
+  result=$(curl -s "https://tools.keycdn.com/geo.json?host=${ip}")
+  city=$(echo $result | jq '.data.geo.city')
+  country=$(echo $result | jq '.data.geo.country_name')
+  msg+=" [ ${BYon}${city}, ${country}${Boff} ]"
+  # output the message
+  message "${msg}"
+done <<<$(get_ip "$fltr" | sort | uniq -c | sort -nr)   ## feed with get_ip function
+}
+
+#-----[ main script ]-------------------------------------------
+checkroot
+[[ $# -gt 1 ]] && useage
+[[ -n "$1" ]] && filter="$1"
+separator "non-accepts-$BUILD"
+get_count_per_unique_ip "$filter"

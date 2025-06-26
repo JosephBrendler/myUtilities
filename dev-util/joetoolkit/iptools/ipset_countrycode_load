@@ -1,0 +1,108 @@
+#! /bin/bash
+
+# /usr/local/sbin/ipset_countrycode_load
+# based on ipdeny by BoneKracker  # Rev. 11 October 2012
+# Modified by Joe Brendle,r Rev 21 Feb 2015 - ipset setlist size bugfix
+#  Adopted to ipset_countrycode_load 17 Feb 2022
+
+# Purpose: Load ip networks registered in a country into an ipset and load that
+# ipset into a setlist containing several such ipsets, while this setlist is
+# being used in a running firewall.
+#
+# Notes: Call this from crontab. Feed updated about 05:07 and 15:07 daily.
+#
+# Usage: 'ipset_countrycode_load <TLD>' (where TLD is top-level national domain, such as "us")
+#
+# for i in $(echo ${countries}); do echo $i; done > /home/joe/tempfile
+# for i in $(cat /home/joe/tempfile | sort); do echo -n "$i "; done; echo; rm /home/joe/tempfile
+# ===> bg by cn cx fr il iq ir kg kp kr la lb li lt lv my ng pk ru su sy tn tw ua uz vn ye
+#
+# twice daily, update the ipsets for geo-blocked countries, so shorewall can block them
+# Reference: http://www.ipdeny.com/ipblocks/data/countries/
+#countries="af ae al am ao az bd bg bh by cn cx cz dz eg eh er es et fm fr gb ge hk hn hr hu id il iq ir jo kh kg kp kr la lb li lt lv ly ma mc md me mm mn ms mt my nc ni ng om pk pl ps pe ph pt qa ro rs ru sa si sk sl sn so ss su sy tj th tm tn tr tw ua uz va ve vn ye za zw"
+
+source /usr/sbin/script_header_joetoo
+
+#-----[ variable initialization ]----------------------------------
+
+ipset_params="hash:net"
+data_dir="/var/tmp/ipdeny"
+BUILD="0.0.1"
+# if data directory does not exist, create it
+
+# get the list of all countries tracked by the ipdeny.com web site
+countries=$( wget -qO - https://www.ipdeny.com/ipblocks | \
+  grep \(| cut -d'(' -f2 | cut -d')' -f1 | grep -v Size | \
+  sed 's|KEELING|CC|' | sed 's|MALVINAS|FK|' | sed 's|VATICAN CITY STATE|VA|' | \
+  grep -v c | sort | tr [:upper:] [:lower:] )
+
+#-----[ functions ]-------------------------------------------------
+
+# function to get modification time of the file in log-friendly format
+get_timestamp() {
+    date -r $1 +%m/%d' '%R
+}
+
+countrycode_load() {
+  [ -n "$1" ] && firewall_ipset="$1" || exit 1
+  filename="${firewall_ipset}.zone"       # on server, files are "us.zone" etc.
+  target="http://www.ipdeny.com/ipblocks/data/countries/${filename}"
+  data_file="${data_dir}/${filename}"
+
+  # file modification time on server is preserved during wget download
+  [ -w ${data_file} ] && old_timestamp=$(get_timestamp ${data_file})
+
+  # fetch file only if newer than the version we already have
+  wget -qNP ${data_dir} ${target}
+
+  if [ "$?" -ne "0" ]; then
+      logger -p cron.err "IPSet: ${firewall_ipset} wget failed."
+      exit 1
+  fi
+
+  timestamp=$(get_timestamp ${data_file})
+
+  # compare timestamps because wget returns success even if no newer file
+  if [ "${timestamp}" != "${old_timestamp}" ]; then
+
+      temp_ipset="${firewall_ipset}_temp"
+      message "running: ipset create ${temp_ipset} ${ipset_params} ..."
+      ipset create ${temp_ipset} ${ipset_params}
+
+      while read network; do
+          message "running: ipset add ${temp_ipset} ${network}"
+          ipset add ${temp_ipset} ${network}
+      done < ${data_file}
+
+      # if ipset does not exist, create it
+      ipset create ${firewall_ipset} ${ipset_params} 2>/dev/null
+
+      # swap the temp ipset for the live one
+      ipset swap ${temp_ipset} ${firewall_ipset}
+      ipset destroy ${temp_ipset}
+
+      # if the setlist does not exist, create it
+      ipset create -exist ipcountrycodes list:set --size 256
+
+      # if the ipset is not already in the setlist, add it
+      ipset add -exist ipcountrycodes ${firewall_ipset}
+
+      # log the file modification time for use in minimizing lag in cron schedule
+      msg="IPSet: ${firewall_ipset} updated (as of: ${timestamp})."
+      message "Logging --> ${msg}"
+      logger -p cron.notice ${msg}
+  else
+      msg="IPSet: ${firewall_ipset} already up to date (as of: ${timestamp})."
+      message "Logging --> ${msg}"
+      logger -p cron.notice ${msg}
+  fi
+}
+#-----[ main script ]------------------------------------------------
+checkroot
+separator "ipset_countrycode_load-$BUILD" "$(hostname)"
+mkdir -pm 0750 ${data_dir}
+
+for c in ${countries}
+do
+  countrycode_load $c
+done

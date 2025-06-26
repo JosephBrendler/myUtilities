@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+#----[ functions ]---------------------------------
+checkroot() { if [ "$UID" -ne 0 ]; then E_message "Please run as root";
+    echo ${E_message}; exit 1; else return 0; fi; }
+
+useage() { echo "Useage: php_memory_limit [show|fix <newlimit>] ";
+           echo "   e.g. php_memory_limit fix 1G" ; exit 1 ; }
+
+#----[ local variables ]---------------------------
+newlimit="1G" # default vaule; $2 overrides, if provided
+TRUE=0; FALSE=
+#DEBUG=$TRUE
+DEBUG=$FALSE
+
+#----[ main script ]--------------------------------
+checkroot
+[ $# -gt 2 -o $# -eq 0 ] && useage
+[ $# -gt 1 -a ! "$1" == "fix" ] && useage || newlimit="$2"
+[ $# -eq 1 -a "$1" == "fix" ] && useage
+cmd="$1"
+[ ${DEBUG} ] && echo -e "cmd: [${cmd}] \tnewlimit: [${newlimit}]"
+
+# edit each file in which memory_limit is found
+while read operation
+do
+  # grep -iR returns in the format "<filename>:<matching line found>"
+  filename=$(echo $operation | cut -d':' -f1)
+  # old limit is the last space-delimited on the line
+  #   '##' = aggressively ltrim; '*' = match all; ' ' = delimiter
+  case ${cmd} in
+    "show" ) echo "$operation" ;;
+    "fix"  )
+        oldlimit=${operation##* }
+        line=$(echo $operation | cut -d':' -f2)
+        assignment=$(echo $line | cut -d' ' -f1,2)
+        [ ${DEBUG} ] && echo "file: [${filename}]" && echo "line: [${line}]" && echo "oldlimit: [${oldlimit}]"
+        # escape ';', '[' and ']' chracters
+        oldassignment=$(echo $assignment | sed 's|\;|\\\;|' | sed 's|\[|\\\[|' | sed 's|\]|\\\]|')
+        # remove semicolon comment mark to activatte assignment
+        newassignment=$(echo $assignment | sed 's|\;||' | sed 's|\[|\\\[|' | sed 's|\]|\\\]|')
+        # replace assigned value
+        oldline="${oldassignment} ${oldlimit}"
+        [ ${DEBUG} ] && echo "oldline: [${oldline}]"
+        newline="${newassignment} ${newlimit}"
+        [ ${DEBUG} ] && echo "newline: [${newline}]"
+        [ ${DEBUG} ] && echo "  prepared, escaoed newline: [${newline}]"
+        [ ${DEBUG} ] && echo -n "  Confirming new line: " && \
+            sed "s|${oldline}|${newline}|" ${filename} | grep memory_limit
+        [ ! ${DEBUG} ] && sed -i "s|${oldline}|${newline}|" ${filename}
+        ;;
+    *      ) useage ;;
+  esac
+done <<< $(grep -iR memory_limit /etc/php/ 2>/dev/null | grep -v config-archive)

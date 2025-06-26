@@ -1,0 +1,195 @@
+#!/bin/bash
+#
+#gen_admin_daily_msg_file
+#
+# Joe Brendler
+# 17 March 2009
+#
+# Purpose: perform routine system security and stability tasks
+# and provide the system administrator a concise report.
+# Portions borrowed from John Brendler's admin_daily Rev. 22 January 2008
+
+source /usr/sbin/script_header_joetoo
+
+checkshell   # reset color if this shell is not interactive
+
+current_step=0
+
+/bin/echo "Rotating previous admin daily message files..."
+gzip /var/log/admin_daily_*
+/bin/mv /var/log/admin_daily_*.gz /var/log/old_logs/
+/bin/echo
+
+SYS_DATE="$(date +%m-%d-%Y)"
+OUT_FILE=/var/log/admin_daily_"$SYS_DATE"
+
+/bin/echo "Generating SysAdmin's Daily Report ( "$OUT_FILE" )."
+/bin/echo "Redirecting stdout to $OUT_FILE with \"exec 6>&1 2>/dev/null; exec > $OUT_FILE  2>/dev/null\" Please wait..."
+exec 6>&1 2>/dev/null          # Link file descriptor #6 with stdout.
+                    # Saves stdout.
+exec > $OUT_FILE  2>/dev/null   # stdout replaced with file.
+/bin/echo "Redirected stdout to $OUT_FILE with \"exec 6>&1 2>/dev/null; exec > $OUT_FILE  2>/dev/null\" Please wait..."
+
+# ----------------------------------------------------------- #
+# All output from commands in this block sent to file $OUT_FILE.
+
+/bin/echo -e "\n\n\t\t\t\t===========================
+\t\t\t\t# SysAdmin's Daily Report #
+\t\t\t\t===========================\n"
+
+/bin/echo
+uname -a
+/bin/echo
+/bin/echo
+uptime
+/bin/echo
+
+/bin/echo $((++current_step)). Access Control:
+/bin/echo ==================
+/bin/echo
+/bin/echo Current Activity:
+/bin/echo -----------------
+/usr/bin/w
+/bin/echo
+/bin/echo Logins in the Past Day:
+/bin/echo -----------------------
+/usr/bin/lastlog -t 1
+/bin/echo
+/bin/echo Cumulative Login Failures:
+/bin/echo --------------------------
+/usr/bin/faillog -a
+/bin/echo
+/bin/echo Unlocked Accounts:
+/bin/echo ------------------
+/bin/egrep -v '.*:\*|:\!' /etc/shadow | /bin/awk -F: '{print $1}'
+
+# this is the first conditional report element; more should be this way
+if [ `/bin/grep -v ':x:' /etc/passwd | /bin/wc -l` -gt 0 ]; then
+        /bin/echo
+        /bin/echo Unshadowed Passwords:
+        /bin/echo ---------------------
+        /bin/grep -v ':x:' /etc/passwd
+else
+        /bin/echo "(No Unshadowed Passwords)"
+fi
+/bin/echo -e '\n\n'
+
+/bin/echo $((++current_step)). Runlevel Service Status:
+/bin/echo ===========================
+#/bin/rc-status -nc | /bin/awk ' /st...ed/ { printf "%-15s %s\n", $1, $3 } '
+/bin/rc-status -a
+/bin/echo
+#/bin/echo Network Time Daemon Peers:
+#/bin/echo --------------------------
+#/usr/bin/ntpq -p
+#/bin/echo -e '\n\n'
+
+/bin/echo $((++current_step)). Network Information:
+/bin/echo =======================
+/bin/echo
+/bin/echo Open Connections:
+/bin/echo -----------------
+#/bin/netstat --inet -ap
+/bin/netstat -atuep
+/bin/echo -e '\n\n'
+
+/bin/echo Interface Table:
+/bin/echo ----------------
+/bin/netstat -ia
+/bin/echo -e '\n\n'
+
+/bin/echo Multicast Group Memberships:
+/bin/echo ----------------------------
+/bin/netstat -g
+/bin/echo -e '\n\n'
+
+/bin/echo $((++current_step)). Resource Utilization:
+/bin/echo ========================
+/bin/echo
+/bin/echo Memory:
+/bin/echo -------
+/usr/bin/free -m
+/bin/echo
+/bin/echo Storage:
+/bin/echo --------
+/bin/df -hT
+/bin/echo -e '\n\n'
+
+# if distccd servce is running, show its 'recent' activity
+/bin/echo $((++current_step)). Distributed Compile Cluster Activity:
+/bin/echo ========================================
+distccd_status="$(service distccd status | awk '{print $3}')"
+/bin/echo "distccd service is: ${distccd_status}"
+[[ "${distccd_status}" == "started" ]] && /bin/echo -e "\n\n" | /usr/local/sbin/count_distcc_jobs
+/bin/echo -e '\n\n'
+
+# on my home router/firewall only, check for suspicious connections
+if [[ "$(hostname)" == "Selene" ]]
+then
+  /bin/echo $((++current_step)). Router/Firewall Foreign Network Connections:
+  /bin/echo ========================================
+  /usr/local/sbin/display_foreign_connections
+  /bin/echo -e '\n\n'
+  /bin/echo 7. Router/Firewall Potential Beacons:
+  /bin/echo ========================================
+  /usr/local/sbin/display_potential_beacons
+  /bin/echo -e '\n\n'
+  # TODO - add count of REJECT for each out- and in-bound packets
+fi
+
+# if either rootkit checking program is installed, check and show appropriate output
+rkhunter_installed="$(eix -ecI rkhunter)"
+chkrootkit_installed="$(eix -ecI chkrootkit)"
+if [[ "${rkhunter_installed}" != "No matches found" ]] || [[ "${chkrootkit_installed}" != "No matches found" ]]
+then
+  /bin/echo $((++current_step)). Check for Rootkit indications:
+  /bin/echo ========================================
+  if [[ "${chkrootkit_installed}" != "No matches found" ]]
+  then
+    /bin/echo "chkrootkit:"
+    /usr/sbin/chkrootkit | grep -v "not found" | grep -v "nothing found" | grep -v "not infected" | grep -v "nothing detected" | grep -v "nothing deleted" | grep -v "no suspect" | grep -v "not tested"
+    /bin/echo
+  fi
+  if [[ "${rkhunter_installed}" != "No matches found" ]]
+  then
+    /bin/echo "rkhunter:"
+    /usr/sbin/rkhunter --propupd | grep -v "No update"
+    /usr/sbin/rkhunter --check --report-warnings-only --verbose-logging --skip-keypress
+    /bin/echo -e '\n\n'
+  fi
+fi
+
+/bin/echo $((++current_step)). Patch Status:
+/bin/echo ================
+/bin/echo -n Synchronizing Package Database...
+#/usr/bin/nice /usr/bin/emerge-webrsync && /bin/echo " completed."
+/usr/bin/nice /usr/bin/emerge --sync --quiet && /bin/echo " completed."
+#/usr/bin/nice /usr/bin/emerge --sync && /bin/echo " completed."
+/bin/echo
+/bin/echo "Package Updates Available (emerge -puDN world):"
+/bin/echo ----------------------------------------------
+/usr/bin/nice /usr/bin/emerge -puDN --color n world
+/bin/echo
+/bin/echo Applicable Security Advisories:
+/bin/echo -------------------------------
+/usr/bin/nice /usr/bin/glsa-check -tvn all
+/bin/echo -e '\n\n'
+
+
+/bin/echo "Daily SysAdmin Run Ending... `date`"
+/bin/echo
+/bin/echo -e "\t\t\t\t==================================
+\t\t\t\t# End of SysAdmin's Daily Report #
+\t\t\t\t==================================\n\n"
+
+/usr/bin/logger -p cron.notice "gen_admin_daily_msg_file complete."
+#. /root/bin/loggit
+
+# ----------------------------------------------------------- #
+/bin/echo "Restoring stdout and closing $OUT_FILE with \"exec 1>&6 6>&-  2>/dev/null\""
+exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
+/bin/echo
+/bin/echo "== Report Complete. stdout now restored to default == "
+/bin/echo "== Report Complete. stdout restored and $OUT_FILE closed with \"exec 1>&6 6>&-  2>/dev/null\""
+exit 0
+

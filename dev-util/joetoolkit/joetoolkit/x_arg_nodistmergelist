@@ -1,0 +1,75 @@
+#!/bin/bash
+#[[ $# -gt 0 ]] && \
+#    MAKEOPTS="-j1" FEATURES=" -getbinpkg -userpriv -distcc -distcc-pump" emerge -av1 \
+#         $(echo "$@" | grep '(' | cut -d'(' -f2 | cut -d':' -f1 | \
+#         xargs qatom -F %{CATEGORY}/%{PN} $(qatom -F %{CATEGORY}/%{PN}) \
+#          )  --keep-going || \
+#    echo "Error: provide a quoted \"failed to build\" list"
+source /usr/sbin/script_header_joetoo
+BUILD=0
+
+package_env_file=/home/joe/joetoo/joetoo-base/joetoo-meta/files/etc_portage_package.env_joetoo
+add_list=()
+no_add_list=()
+
+filter() {
+    echo $(while read LINE
+      do
+         result=$( echo "${LINE}" | grep '(' | cut -d'(' -f2 | cut -d':' -f1 )
+         [[ ! -z ${result} ]] && qatom -F %{CATEGORY}/%{PN} $(qatom -F %{CATEGORY}/%{PN} ${result})
+      done  < /home/joe/temp )
+}
+
+merge() {
+  MAKEOPTS="-j1" FEATURES=" -sandbox -usersandbox -userpriv -distcc -distcc-pump" emerge -av1 --keep-going $(filter)
+}
+
+grep_item() { grep $1[[:space:]]*nodist_features.conf ${package_env_file}; }
+
+list() {
+  for x in $(filter)
+  do
+    result=$(grep_item "$x")
+    [[ -z ${result} ]] && add_list+=(${x}) || no_add_list+=(${x})
+  done
+  message "Already in ${package_env_file} --"
+  for ((i=0; i<${#no_add_list[@]}; i++))
+  do
+    echo "  ${no_add_list[i]}"
+  done
+  message "Consider adding to ${package_env_file} --"
+  for ((i=0; i<${#add_list[@]}; i++))
+  do
+    echo "  ${add_list[i]} nodist_features.conf"
+  done
+}
+
+usage() {
+  E_message "Error: place \"failed to build\" list in /home/joe/temp and run"
+  echo "  x_arg_nodistmergelist [[g]o|[m]erge|[l]ist]"
+  echo '    m = merge failed packages without distcc'
+  echo '    l = list failed packages to consider adding to package.env with nodist_features.conf'
+  echo '    g = merge and if successful, suggest what to add to package.env'
+  exit 1
+}
+
+#-----[ main script ]------------------------
+separator "x_arg_nobinmergelist-${BUILD}"
+[[ $# -ne 1 ]] && usage
+checkroot
+
+case ${1:0:1} in
+  "g" )  # go = do both
+    # attempt to merge failed packages without distcc
+    # and if this works, consider adding to package.env with nodist_features.conf
+    merge && list
+    ;;
+  "m" ) # merge
+    merge
+    ;;
+  "l" ) # list
+    list
+    ;;
+  *   )
+    usage ;;
+esac

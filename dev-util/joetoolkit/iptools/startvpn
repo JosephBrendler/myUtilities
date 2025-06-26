@@ -1,0 +1,58 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+#DEBUG="true"
+DEBUG="false"
+
+BUILD="0.1a"
+
+#----[ start main script ]-----------------------
+CLR
+CUP 2 1
+separator "startvpn-${BUILD}"
+echo
+echo -n "Stopping any existing vpn(s)..." && killall openvpn 2>/dev/null ; right_status $?
+echo
+
+#start the vpn as a daemon
+[ $# -gt 1 ] && E_message "Error: invalid arguments" && exit 1
+if [ $# -lt 1 ]
+then
+  echo -n "Please select L[ocal] or r[emote] vpn: "
+  read ans
+else
+  ans=$1
+fi
+
+while [[ ${ans:0:1} != [lLrR] ]] && [[ ! -z "${ans}" ]]
+do
+  echo -n "Please select L[ocal] or r[emote] vpn: " && read ans
+done
+
+[ "$DEBUG" == "true" ] && message "ans: $ans"
+case ${ans:0:1} in
+  "l" | "L" | "" ) message "Starting ${BYon}Local${Boff} vpn...";
+    message "Initializing ${BYon}Local${Boff} vpn..."
+    openvpn --config /etc/openvpn/local.conf --daemon;
+    cp /etc/resolv.conf /etc/resolv.conf.old
+    cp /root/bin/resolv.conf.local /etc/resolv.conf
+    ;;
+  "r" | "R" ) message "Starting ${BYon}Remote${Boff} vpn...";
+    message "Initializing ${BYon}Remote${Boff} vpn..."
+    openvpn --config /etc/openvpn/remote.conf --daemon;
+    cp /etc/resolv.conf /etc/resolv.conf.old
+    cp /root/bin/resolv.conf.remote /etc/resolv.conf
+    ;;
+esac
+message "Please wait..."
+SCP; vpn_state=""; count=0
+while [ "${vpn_state}" == "" ] && [[ $count -lt 30 ]]
+do
+  let count++
+  vpn_state=$(ifconfig | grep tun | cut -d'<' -f2 | cut -d',' -f1 )
+  RCP && echo -en "${BGon}*${Boff} Please wait (up to 30 sec) for tun0 to become active...  ${count} ${LBon}Current state: ${BYon}${vpn_state}${Boff}           "
+  sleep 1
+done
+
+echo
+message "Done. Please examine ifconfig, below:"
+ifconfig

@@ -1,0 +1,127 @@
+#!/bin/bash
+# nextcloud_upgrade
+# joe brendler 6 August 2023
+#
+source /usr/sbin/script_header_joetoo
+newversion=""
+myCloud_dir="/var/www/localhost/htdocs/myCloud/"
+old_dir=$PWD
+BUILD=0.1.3
+VERBOSE=$TRUE
+verbosity=2
+
+#-----[ variables ]-------------------
+result=""     # result of version check
+answer=""     # answer to new_prompt
+newver=""     # new version requested
+curver=""     # currently installed version (to be determined analytically)
+WEBAPP_UP=$FALSE
+OCC_UP=$FALSE
+
+#-----[ functions ]-------------------
+new_prompt()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read answer; # '=~' not in busybox
+while ! expr "${answer:0:1}" : [yYnNsS] >/dev/null;  # answer not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read answer; done; }
+
+version_check()     # check the new ($1) and currently installed versions and set external result
+{
+  newver="$1"
+  message "${BYon}Checing current version${Boff}"
+  filename=$(find ${myCloud_dir} -maxdepth 1 -iname '*nextcloud*')
+  curver=${filename##*-}  # aggressively cut everything left of the last "-" character
+  # start output comparison line with new version info
+  message_n "Requested Version: ${newver}"
+  vercomp ${newver} ${curver}; result=$?
+  # print comparison indicator (< = >)
+  echo -en " $(show_result $result)"
+  # finish output line with comparison target info
+  echo -e " ${curver} (currently installed)"
+  d_message "result: $result" 3
+}
+
+webappconfig_upgrade()
+{
+  newver="$1"
+  d_message "${BWon}About to upgrade with command:  [ ${BGon}webapp-config -d $(basename ${myCloud_dir}) -U nextcloud ${newversion} ${BWon}] ${BRon}CTRL-C to abort${Boff}" 1
+  sh_countdown 5
+  webapp-config -d $(basename ${myCloud_dir}) -U nextcloud ${newver}
+}
+
+occ_upgrade()
+{
+  cd ${myCloud_dir}
+  d_message "switched from ${old_dir} to $PWD" 2
+  d_message "do not forget to switch back to ${old_dir} when complete" 3
+  echo
+  d_message "${BWon}About to upgrade with command:  [ ${BGon}sudo -u apache php ./occ upgrade ${BWon}] ${BRon}CTRL-C to abort${Boff}" 1
+  sh_countdown 5
+  sudo -u apache php ./occ upgrade
+  cd ${old_dir}
+}
+
+double_check()
+{
+  message "${BYon}Currently configured as follows${Boff}"
+  message "${LBon} Currently installed nextcloud version.............: ${BWon}${curver}${Boff}"
+  message "${LBon} Requested new nextcloud version...................: ${BWon}${newver}${Boff}"
+  message "${LBon} WEBAPP_UP (upgrade nextcloud with webapp-config)...: $(status_color ${WEBAPP_UP})$(TrueFalse ${WEBAPP_UP})${Boff}"
+  message "${LBon} OCC_UP (upgrade installed app with occ)............: $(status_color ${OCC_UP})$(TrueFalse ${OCC_UP})${Boff}"
+  new_prompt "${BMon}Continue?${Boff}"
+}
+
+#-----[ main script ]-----------------
+separator "nextcloud_upgrade-${BUILD}"
+checkroot
+[ $# -gt 1 -o $# -eq 0 ] && echo "please provide exactly one argument (new version #)" && exit 1
+newversion="$1"
+version_check ${newversion}
+
+# configure logical flags, to proceed as directed
+case ${result} in
+  0) # =
+    answer=""
+    new_prompt "Requested version is already installed by webapp-config. Continue or skip to occ upgrade?"
+    case ${answer} in
+      [yY]*) message "Proceeding with reinstall..."; WEBAPP_UP=$TRUE; OCC_UP=$TRUE ;;
+      [nN]*) message "Exiting..."; WEBAPP_UP=$FALSE; OCC_UP=$FALSE ;;
+      [sS]*) message "Skipping webapp upgrade; continuing to occ upgrade..."; WEBAPP_UP=$FALSE; OCC_UP=$TRUE  ;;
+      *    ) E_message "Invalid answer to prompt [${answer}]; exiting..."; exit 1 ;;
+    esac
+    ;;
+  1) # >
+    message "Proceeding with both webapp-config and occ upgrades..."
+    WEBAPP_UP=$TRUE; OCC_UP=$TRUE
+    ;;
+  2) # <
+    answer=""
+    new_prompt "Are you sure you want to downgrade?"
+    case ${answer} in
+      [yY]*) message "Proceeding with downgrade..."; WEBAPP_UP=$TRUE; OCC_UP=$TRUE ;;
+      [nN]*) message "Exiting..."; WEBAPP_UP=$FALSE; OCC_UP=$FALSE ;;
+      [sS]*) message "Skipping webapp upgrade; continuing to occ upgrade..."; WEBAPP_UP=$FALSE; OCC_UP=$TRUE  ;;
+      *    ) E_message "Invalid answer to prompt [${answer}]; exiting..."; exit 1 ;;
+    esac
+    ;;
+  *) # <
+    E_message "Invalid result from version_check() [${result}]; exiting"
+    exit 1
+    ;;
+esac
+
+# double-check user comittment to contiue as directed
+answer=""
+double_check
+case ${answer} in
+  [yY]*) message "Proceeding..." ;;
+  [nNsS]*) message "Aborting at user's request..."; WEBAPP_UP=$FALSE; OCC_UP=$FALSE ;;
+  *    ) E_message "Invalid answer to prompt [${answer}]; exiting..."; exit 1 ;;
+esac
+
+# execute the selected upgrade/downgrade steps
+[[ ${WEBAPP_UP} ]] && webappconfig_upgrade ${newversion}
+[[ ${OCC_UP} ]] && occ_upgrade
+
+d_message "All done" 1
+exit 0

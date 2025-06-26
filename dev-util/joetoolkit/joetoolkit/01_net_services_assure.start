@@ -1,0 +1,113 @@
+#! /bin/bash
+# NetServiceAssurance - make sure **wifi** and dependent services have
+#   started properly. Restart wifi and then services if necessary.
+# Joe Brendler - 10 Sep 2013
+# rev 0.2 - 18 March 2014 - fixed for generic interface and list of
+#     default runlevel net dependent services
+# rev 0.4 - 7 January 2016 - mod to depend on external scripts to
+#     restart networking (interface and vpn if applicable)
+#
+# --- Source common functions and variables ----------------------
+source /usr/sbin/script_header_joetoo
+
+# --- Define local variables -----------------------------------
+BUILD="0.1.0 (20190108)"
+
+# defaults
+VERBOSE=$FALSE
+verbosity=0
+
+# This is a default value for the primary network interface
+#   (can now be assigned interactively, since -i is a valid argument)
+INTERFACE="wlan0"
+#INTERFACE="eth0"
+
+service_list="dhcpcd netmount sshd rsyncd ntp-client distccd php-fpm apache2"
+
+# default to no vpn to be restarted, can be assigned interactively with -v/|--vpn argument
+VPN=""
+#VPN="yes"
+#TO DO: currently only works for local vpn (startvpn l) -- generalize for l/r
+#       currently startvpn can't choose ssid, defaults to whatever NetworkManager started
+
+# --- function blocks ------------------------------------------
+
+status_color()
+{
+  case $1 in
+      "started" ) echo -en ${BGon} ;;
+      "stopped" ) echo -en ${BRon} ;;
+      "invalid" ) echo -en ${BRon} ;;
+      *         ) echo -en ${BYon} ;;
+  esac
+}
+
+useage()
+{
+  E_message "useage: 01_net_services_assure.start [-v|--verbose] [-V|--VPN] [-i|--interface <interface>]"
+  E_message "  note: -v|-verbose agument increments verbosity and may be repeated"
+  exit 1
+}
+
+process_arguments()
+{
+  d_message "arguments: [$@]" 2
+  d_message "arg count: [$#]" 2
+  while [ $# -gt 0 ]
+  do
+    [[ ! -z "$1" ]] && case $1 in
+      "-v"|"-verbose" ) VERBOSE=$TRUE; ((verbosity+=1));;
+      "-V"|"-VPN" ) VPN="yes";;
+      "-i"|"-interface" ) shift; INTERFACE=$1 ;;
+      * ) E_message "Error: bad argument(s)" && useage;;
+    esac
+    shift  # go on to the next argument
+  done
+}
+
+# --- main script -----------------------------------------------
+separator "01_net_services_assurance.start-${BUILD}"
+checkroot
+process_arguments $@
+
+# if wireless is not started, bump it, and wait for wireless to be connected
+interfaceStatus=$(/etc/init.d/net.${INTERFACE} status 2>&1 | cut -d " " -f 4 )
+[ "$interfaceStatus" == "" ] && interfaceStatus=invalid
+message "${INTERFACE} status: $(status_color ${interfaceStatus})${interfaceStatus}${Boff}"
+[ "$interfaceStatus" == "invalid" ] && E_message "Invalid interface [${INTERFACE}]" && useage
+
+if [ "$interfaceStatus" != "started" ]
+then
+  echo -en "\nRestarting ${INTERFACE} ..." && /usr/local/sbin/restart_wifi ${INTERFACE} ; right_status $?
+fi
+
+if [ "$VPN" == "yes" ]
+then
+  echo -en "\n(Re)starting vpn ..." && /usr/local/sbin/startvpn l ; right_status $?
+  echo -en "\nResetting /etc/resolve.conf ..." && cp /root/bin/resolv.conf.local /etc/resolv.conf ; right_status $?
+fi
+
+message "Double-checking status of other network services ..."
+for svcName in $service_list ; do
+    svcStatus=$(rc-status | grep "${svcName}" | cut -d "[" -f 2 | cut -d " " -f 3) > /dev/null
+    message "${svcName} status: $(status_color ${svcStatus})${svcStatus}${Boff}"
+    # forcefully restart svcName if necessary (i.e. only if status = "stopped" and not if status = "scheduled")
+    if [ "$svcStatus" == "stopped" ]
+    then
+        message "\nRestarting ${svcName} ... " && /etc/init.d/${svcName} restart
+    fi
+done
+
+# list all service status
+separator "rc-status"
+rc-status
+separator "rc-status boot"
+rc-status boot
+separator "rc-status sysinit"
+rc-status sysinit
+
+# pause so messages can be read by user
+#pause 5
+sh_countdown 4
+
+exit 0
