@@ -9,7 +9,7 @@
 
 #DEBUG="true"
 DEBUG="false"
-source /usr/local/sbin/script_header_brendlefly
+source /usr/sbin/script_header_joetoo
 BUILD="0.0"
 
 kern1="$1"; kern2="$2"; param="$3"

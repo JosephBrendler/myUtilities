@@ -5,7 +5,7 @@
 #     find the same config value in file 2
 #         if the values are not the same, then display file1-val <tab> file2-val
 
-source /usr/local/sbin/script_header_brendlefly
+source /usr/sbin/script_header_joetoo
 
 BUILD="0.1"
 
