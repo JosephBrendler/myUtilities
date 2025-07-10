@@ -36,10 +36,10 @@ shopt -s histappend                      # append to history, don't overwrite it
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
 rerunmsg="first-run chroot configuration not requested by presense of marker"
-[ -e /root/firstenvlogin ] && /usr/local/sbin/finalize-chroot || \
-    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/local/sbin/finalize-chroot"
-[ -e /root/firstimglogin ] && /usr/local/sbin/finalize-chroot-for-image || \
-    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/local/sbin/finalize-chroot-for-image"
+[ -e /root/firstenvlogin ] && /usr/sbin/finalize-chroot || \
+    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
+[ -e /root/firstimglogin ] && /usr/sbin/finalize-chroot-for-image || \
+    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
 
 install_my_local_ca_certificates
 
