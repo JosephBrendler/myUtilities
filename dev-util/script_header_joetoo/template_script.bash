@@ -16,10 +16,15 @@ VERBOSE=$TRUE
 verbosity=5
 PN=$(basename $0)
 
+# BPN = PN here, but it could be different for several programs using common functions
+# (e.g. dev-sbc/crossbuild-tools and its cb-mkenv, cb-mkimg, cb-mkdev tools all use
+#  BPN="crossbuild-tools" so they can all use cli with the same cb-common-functions)
+BPN=${PN}
+
 FLAGGED=$FALSE
 result=0
 
-varlist=" PN BUILD starting_step stopping_step cmdseq_statusfile"
+varlist=" PN BPN BUILD starting_step stopping_step cmdseq_statusfile"
 varlist+=" BREAK bool.EXAMPLE bool.DEFAULTS"  ## dummy options set by local cmdline_argument modules
 varlist+=" BREAK bool.INTERACTIVE bool.FLAGGED bool.VERBOSE verbosity"
 
@@ -39,6 +44,10 @@ initialize_variables() {
     # assign initial values
     message_n "Assigning PN = $(basename $0) ..."
     PN=$(basename $0) ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning BPN = ${PN} ..."
+    BPN=${PN} ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
     message_n "Assigning INTERACTIVE = \$TRUE ..."

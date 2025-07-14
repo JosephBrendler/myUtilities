@@ -134,19 +134,15 @@ HCU()    # Hide the cursor (Note: the trailing character is lowercase L)
 SCU()    # Show the cursor
 { echo -en "${CSI}?25h" && return 0 || return 1; }
 HVP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
-{
-  local row col
-  [ ! -z "$1" ] && row=$1 || row=1
-  [ ! -z "$2" ] && col=$2 || col=1
-  echo -en "${CSI}${row};${col}f" && return 0 || return 1
-}
+{ local row col ;
+  [ ! -z "$1" ] && row=$1 || row=1 ;
+  [ ! -z "$2" ] && col=$2 || col=1 ;
+  echo -en "${CSI}${row};${col}f" && return 0 || return 1 ; }
 CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
-{
-  local row col
-  [ ! -z "$1" ] && row=$1 || row=1
-  [ ! -z "$2" ] && col=$2 || col=1
-  echo -en "${CSI}${row};${col}H" && return 0 || return 1
-}
+{ local row col ;
+  [ ! -z "$1" ] && row=$1 || row=1 ;
+  [ ! -z "$2" ] && col=$2 || col=1 ;
+  echo -en "${CSI}${row};${col}H" && return 0 || return 1 ; }
 CLR()    # Clear stdout
 { echo -en "${CSI}2J" && return 0 || return 1; }
 CUU()    # Move the cursor up ($1 cells)
@@ -157,11 +153,6 @@ CUF()    # Move the cursor forward ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
 CUB()    # Move the cursor back ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
-#CPR()    # CPR [r|c] - echo # of cursor row, col, or both (w/o leading ESC[, trailing R)
-#{ QUERY="${CSI}6n"; echo -en "${QUERY}" ; read -sdR CURPOS ; case ${1:0:1} in
-#    [rR]) echo "${CURPOS:2}" | cut -d';' -f1 ;;
-#    [cC]) echo "${CURPOS:2}" | cut -d';' -f2 ;;
-#    *   ) echo "${CURPOS:2}" ;; esac ; }
 CPR()    # CPR [r|c] - echo # of cursor row, col, or both (w/o leading ESC[, trailing R)
 { QUERY="${CSI}6n"; echo -en "${QUERY}" ; read -sdR CURPOS
   IFS=';' read -ra COORDS <<< "${CURPOS:2}" ; case ${1:0:1} in
@@ -175,6 +166,7 @@ QCC()    # use silent CPR to report column
 { CPR s; echo "${COORDS[1]}" ; }
 
 # ---[ common function blocks ]------------------------------------------
+
 
 isnumber()      # test if $1 is a decimal number; return true/false
 { re='^[0-9]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
@@ -272,7 +264,7 @@ pur()           # ping ip address $1 until it is ready (0% loss of 3 packets)
   RCP; echo -en "not ready -- try: [${count}], hits: [${hit_color}${hits}${Boff}]"; let "count+=1"; sleep 1;
   done; echo; echo OK - ready now ; }
 
-sap()           # ssh after pause
+sap()           # pur and then ssh after 20s pause
 { pur $1 && echo "pausing to allow $1 to start sshd..." && sh_countdown 20 && ssh $1; }
 
 swr()           # ssh when ready (pur(), then ssh after nmap shows port)
@@ -546,10 +538,69 @@ confirm_continue_or_exit() # use prompt() to confirm user wants to continue
         * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
     esac ; return 0 ; }
 
-die()             # print message $1 and exit
+die()             # display reason with E_message and exit with status 1
 { msg="${1}" ; E_message "${msg}" ; exit 1 ; }
 
-summarize_me()    # list functions in header ("source" to employ)
+get_luks_keyfile()   # use arg1 (crypt_keydev) to identify keyfile
+{
+    # determine keydev type
+    # if it starts with "/" it is a device name
+    # if it contains "-" it may be a UUID
+    # if it does not, it may be a LABEL
+    message_n "examining crypt_keydev [ ${crypt_keydev} ] ..."
+    if [ -b ${crypt_keydev} ] ; then
+        crypt_keydev_type=devicename
+    elif echo ${crypt_keydev} | grep "-" ; then
+        crypt_keydev_type=UUID
+    else
+        crypt_keydev_type=LABEL
+    fi
+    # if it is not mounted, try to mount it
+    if [[ ! -z "$( mount | grep ${crypt_keydev_mountpoint%/} )" ]] ; then
+        echo -en " ${BGon}(mounted)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " trying to mount (${crypt_keydev_type}) [${crypt_keydev}] ..."
+        case $crypt_keydev_type in
+             "devicename" ) mount ${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             "UUID"       ) mount UUID=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+
+             "LABEL"      ) mount LABEL=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             * )  right_status 1 ; die "invalid crypt_keydev" ;;
+        esac
+    fi
+    # set keyfile pathname
+    export keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
+    return 0
+}
+
+get_luks_edev_name() # determine an edev name to use with this device
+{
+    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
+    message_n "determining edev name ..."
+    bn=$(basename ${luks_partition_device})
+    case ${bn:0:2} in
+      "sd" ) # scsi device
+        myedev=$(echo ${bn} | sed 's/^s/e/')
+        ;;
+      "nv" ) # nvme device
+        myedev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
+        ;;
+      "mm" ) # mmc device
+        myedev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
+        ;;
+      *    ) # tbd
+        echo "Error: bad luks device name [${OUTPUTDEVICE}]"
+        ;;
+    esac ; result=$?
+    export edev=${myedev}
+    return $result
+}
+
+summarize_me()       # list functions in header ("source" to employ)
 {
   echo
   separator "script_header_joetoo-$BUILD | content summary" && \

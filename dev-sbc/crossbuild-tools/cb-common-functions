@@ -14,32 +14,21 @@
 BOARD=$1
 VALID=$FALSE
 
-validate_status_file() {
-    [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
-    status_file=$1
-    d_message "status_file: [ ${status_file} ]" 3
-    status_dir=$(dirname ${status_file})
-    d_message "status_dir: [ ${status_dir} ]" 3
-    message_n "validating status_dir [${status_dir}] ..."
-    if [ ! -d ${status_dir} ] ; then
-        echo -en " (creating) ..."
-        mkdir -p ${status_dir} && right_status $? || ( right_status $? && return 1 )
-    else
-        echo -en " (valid)" ; right_status $TRUE
-    fi
-    message_n "validating status_file [${status_file}] ..."
-    if [ ! -f ${status_file} ] ; then
-        echo -en " (creating) ..."
-        touch ${status_file} && right_status $? || ( right_status $? && return 1 )
-    else
-        echo -en " (valid)" ; right_status $TRUE
-    fi
-    # final validation
-    message_n "re-verifying status_file [${status_file}] ..."
-    [ -f ${status_file} ] && result=$TRUE || result=1
-    right_status $result
-    return $result
-}
+# new_prompt() .. moved to script_header_joetoo
+# die() ......... moved to script_header_joetoo
+# confirm_continue_or_exit . moved to script_header_joetoo_extended
+# validate_status_file() ... moved to script_header_joetoo_extended
+# linear_search() .......... moved to script_header_joetoo_extended
+# run_sequence() ........... moved to script_header_joetoo_extended
+# display_configuration .... moved to script_header_joetoo_extended
+# process_cmdline .......... moved to script_header_joetoo_extended
+# process_argument ......... moved to script_header_joetoo_extended
+# process_compound_arg ..... moved to script_header_joetoo_extended
+# (note: crossbuild-tools - specific arguments moved to --
+#    local.cmdline_arguments
+#    local.cmdline_compound_arguments
+#    local.usage
+#  to be installed at /etc/crossbuild-tools/ by dev-sbc/crossbuild-tools ebuild)
 
 validate_target() {
     # TARGET = crossbuild target for image generation
@@ -326,7 +315,6 @@ validate_source() {
     fi
 }
 
-
 install_files_from_source() {
     # SOURCE = (in this context) staged data already collected to enable joetoo system image generation for this board
     SOURCE="$1"
@@ -375,24 +363,6 @@ TARGET-emerge-world() {
     return 0
 }
 
-new_prompt()        # set external variable $response based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
-while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
-
-linear_search() {  # find $2 in array $1, return index
-    # pass arguments like this usage:
-    # linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}"
-    #
-    needle="$1" ; shift ; haystack=("$@")
-#    echo "needle: ${needle}"
-#    echo "haystack length: ${#haystack[@]}"
-    for ((i=0; i<${#haystack[@]}; i++ )) ; do
-        [[ "${haystack[$i]}" == "${needle}" ]] && echo $i && return $i
-    done
-}
-
 usage-common-message() {
     echo
     message "  ${BMon}Note: exactly one <BOARD> may be specified.  Examples:${Boff}"
@@ -424,55 +394,6 @@ usage-common-message() {
     echo
     message "${BYon}Note: find additionl information at /etc/crossbuild-tools/README"
     return 0
-}
-
-run_sequence() {
-    # run the sequence of commands stored in the command_sequence array
-    # for each step, store updated status in a status file provided as arg $1
-    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (status_file) " && exit 1
-    status_file=$1
-    echo
-    separator "Running command sequence" "${PN}-${BUILD}"
-    echo
-    d_message "starting_step: [ ${starting_step} ]" 3
-    d_message "stopping_step: [ ${stopping_step} ]" 3
-    for ((step_number=${starting_step}; step_number<=${stopping_step}; step_number++))
-    do
-        separator "(${step_number}: ${command_sequence[${step_number}]})" "${PN}-${BUILD}"
-        d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
-        echo $step_number > ${status_file}
-        if [[ ${INTERACTIVE} ]] ; then
-            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
-            msg+=" ; will prompt to ${step_number}: (${msg1_sequence[${step_number}]})"
-            d_message "${msg}" 2
-            response=""
-            # confirm user is ready/wants to run the next command
-            new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step_number}]}${BMon}?${Boff}"
-        else  # automatically execute other steps for non-interactive
-            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
-            msg+=" ; will automatically ${step_number}: (${msg1_sequence[${step_number}]})"
-            d_message "${msg}" 2
-            message "${BMon}Beginning ${BGon}${command_sequence[${step_number}]}${BMon} as instructed ...${Boff}"
-            response="y"
-       fi  ## interactive
-       case $response in
-           [Yy] )  # execute this command and continue
-               message "${LBon}About to run ${BYon}${command_sequence[${step_number}]}${LBon} ...${Boff}" ; \
-               eval ${command_sequence[${step_number}]} ; result=$? ;
-               if [ ${result} -eq 0 ] ; then
-                   message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BGon}completed successfully${Boff}"
-               else
-                   E_message "${BYon}Note:${Boff} ${command_sequence[${step_number}]} ${BRon}failed${Boff}"
-               fi
-               ;;
-           [Ss] ) ;; # skip this command and continue
-           *    )  # abort due to negative response
-               message "${BRon}As instructed, not running ${BGon}${command_sequence[${step_number}]}${BRon}. Quitting...${Boff}" ; \
-               exit ;;
-        esac
-
-    done
-    echo
 }
 
 sanity_check() {
@@ -535,247 +456,6 @@ sanity_check() {
     fi
 }
 
-display_configuration()  {
-    # will pick up PN, BUILD, varlist from the environment of whatever script sources cb-common-functions
-    separator "configuration" "${PN}-${BUILD}"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-    return 0
-}
-
-process_cmdline() {
-  # process command line arguments (for now only -x/--exclude option can have argument(s))
-  arglist="$@"
-
-  last=""
-  d_message "processing command line with [ ${arglist} ]" 2
-  # shift each argument into position $1 and examine it
-  #   process the argument or processit with its own arguments
-  while [ ! -z "$1" ]
-  do
-    d_message "arg1 = [ $1 ]" 3
-    # if arg begins with a single dash, process it alone
-    if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
-      d_message "processing [ $1 ] alone as single-dash argument" 3
-      process_argument $1 $2   # incl $2 in case $1 is -t or -b
-      [[ "${1}" =~ ^(-t|-b|-o)$ ]] && shift  # extra shift to clear target, board, or outputdevice
-      shift
-    # if arg begins with a double dash, process it alone
-    elif [ "${1:0:2}" == "--" ] ; then
-      d_message "processing [ $1 ] alone as double-dash argument" 3
-      process_argument $1 $2   # incl $2 in case $1 is --target
-      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
-      shift
-    else
-      d_message "does not start with - or --" 3
-      usage; exit
-    fi
-  done
-  d_message "done with process_command_line" 2
-  return 0
-}
-
-process_argument() {
-  d_message "about to process [ $* ]" 2
-  d_message "1: [ $1 ], 2: [ $2 ]" 2
-  # process command line argument (must be one of the following)
-  [ ! -z "$1" ] && case "$1" in
-    "-"[sS] | "--status"         )
-      # display status
-      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-      read starting_step < ${mkenvstatusfile};
-      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
-      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
-      msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
-      message "${msg}"
-      exit;
-      ;;
-    "-"[rR] | "--resume"         )
-      # resume at stored step unless that is overridden by a new start # (below)
-      d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-      export RESUME=${TRUE}
-      read starting_step < ${mkenvstatusfile};
-      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
-      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-      d_message "${msg}" 2
-      ;;
-    -*[0-9]*  )
-        # currently there are double-digit steps; if the next char is also numeric, append it
-        myarg=${1:1} # drop the leading "-"
-        export RESUME=${TRUE}
-        if $(isnumber ${myarg}) && [ ${myarg} -ge 0 ] && \
-          [ ${myarg} -lt ${#command_sequence[@]} ] ; then
-            export starting_step=${myarg};
-            msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
-            msg+=" to status file [${Boff}${finishupstatusfile}${BYon}]${Boff}"
-            d_message "${msg}" 2
-            echo ${starting_step} > ${finishupstatusfile};
-            msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
-            msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-            d_message "${msg}" 2
-        else
-            # it may be a combination of numbers and letters - hand off to process_compound_arg()
-            process_compound_arg $1
-        fi
-        ;;
-    "-"[iI] | "--interactive"    )
-      # interactive
-      export INTERACTIVE=${TRUE};
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-      ;;
-    "-"[cC] | "--create"    )
-      # create
-      export CREATE=${TRUE};
-      stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
-      d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
-      ;;
-    "-"[dD] | "--destroy"    )
-      # destroy
-      export DESTROY=${TRUE};
-      stopping_step=0 ;
-      d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
-      ;;
-    "-"[nN] | "--noninteractive" )
-      # non-interactive
-      export INTERACTIVE=${FALSE}
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-      ;;
-    "-"[qQ] | "--quiet"          )
-      # decrease verbosity
-      [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
-      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
-      ;;
-    "-"[vV] | "--verbose"          )
-      # increase verbosity
-      [[ ${verbosity} -lt 6 ]] && let verbosity++
-      export VERBOSE=${TRUE}
-      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
-      ;;       # note: "numeric" args like -4 should fall through to this default
-    "-"[tT] | "--target"         )
-      # specify TARGET (next arg in $@ set)
-      export TARGET=$2
-      d_message "${BYon}set TARGET = ${TARGET}" 2
-      ;;
-    "-"[bB] | "--board"         )
-      # specify BOARD (next arg in $@ set)
-      export BOARD=$2
-      d_message "${BYon}set BOARD = ${BOARD}" 2
-      ;;
-    "-"[oO] | "--outputdevice"         )
-      # specify output device to be flashed (next arg in $@ set)
-      export OUTPUTDEVICE=$2
-      d_message "${BYon}set OUTPUTDEVICE = ${OUTPUTDEVICE}" 2
-      ;;
-    *                            )
-    process_compound_arg $1
-      ;;
-  esac
-  d_message "done with process_argument" 3
-  return 0
-}
-
-process_compound_arg()  {
-    d_message "about to process compound [ $* ]" 2
-    # must begin with a single dash
-    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-    # must not begin with two dashes (would have been picked in process_argument)
-    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-    # strip leading dash(es)
-    myargs=${1##-}
-    # handle remaining characters in sequence
-    while [ -n "${myargs}" ]
-    do
-        #handle one character at at time, from the left
-        case ${myargs:0:1} in
-            [sS] )
-                # display status
-                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-                read starting_step < ${mkenvstatusfile};
-                msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
-                msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
-                msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
-                d_message "${msg}" 2
-                exit;
-                ;;
-            [rR] )
-                # resume at stored step unless that is overridden by a new start # (below)
-                d_message "${BYon}reading status file: [ ${BWon}${mkenvstatusfile}${BYon}  ]${Boff}" 2
-                export RESUME=${TRUE}
-                read starting_step < ${mkenvstatusfile};
-                msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
-                msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-                d_message "${msg}" 2
-                ;;
-            [0-9] )
-                # currently there are double-digit steps; if the next char is also numeric, append it and "shift"
-                export RESUME=${TRUE}
-                starting_step="${myargs:0:1}";
-                if [[ "${myargs:1:1}" == [0-9] ]] ; then
-                    export starting_step="${myargs:0:2}";
-                    myargs=${myargs:1}
-                fi
-                if [ $starting_step -gt ${#command_sequence[@]} ] ; then
-                    E_message "invalid starting_step [${starting_step}]"
-                    usage
-                else
-                    msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
-                    msg+=" to status file [${Boff}${mkenvstatusfile}${BYon}]${Boff}"
-                    d_message "${msg}" 2
-                    echo ${starting_step} > ${mkenvstatusfile};
-                    msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
-                    msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
-                    d_message "${msg}" 2
-                fi
-                ;;
-            [iI] )
-                # interactive
-                export INTERACTIVE=${TRUE};
-                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-                ;;
-            [cC] )
-                # create
-                export CREATE=${TRUE};
-                export stopping_step=$(linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}")
-                d_message "${BYon}setting CREATE: $(status_color ${CREATE})$(TrueFalse ${CREATE})${Boff}" 2
-                ;;
-            [dD] )
-                # destroy
-                export DESTROY=${TRUE};
-                export stopping_step=0 ;
-                d_message "${BYon}setting DESTROY: $(status_color ${DESTROY})$(TrueFalse ${DESTROY})${Boff}" 2
-                ;;
-            [nN] )
-                # non-interactive
-                export INTERACTIVE=${FALSE}
-                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
-                ;;
-            [qQ] )
-                # decrease verbosity
-                [[ ${verbosity} -gt 0 ]] && let verbosity--
-                [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
-                d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
-                ;;
-            [vV] )
-                # increase verbosity
-                [[ ${verbosity} -lt 6 ]] && let verbosity++
-                export VERBOSE=${TRUE}
-                d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
-                ;;       # note: "numeric" args like -4 should fall through to this default
-            [oO] )
-                # specify output device to be flashed (next arg in $@ set)
-                export OUTPUTDEVICE=$2
-                d_message "${BYon}set OUTPUTDEVICE = ${OUTPUTDEVICE}" 2
-                ;;
-            *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
-        esac
-        #strip first char from myargs (i.e. "shift" one character)
-        myargs=${myargs:1}
-    done
-    d_message "done with process_compount_arg" 3
-    return 0
-}
-
 format_warning() {
     separator "(format warning)" ${PN}
     answer=""
@@ -788,19 +468,6 @@ format_warning() {
         * ) E_message "invalid response to format_warning"; exit 1 ;;
     esac
     return 0
-}
-
-confirm_continue_or_exit() {
-    answer=""
-    msg="${BYon}Do you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
-    esac
-    return 0
-
 }
 
 die() {
