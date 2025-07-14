@@ -9,6 +9,36 @@
 # note: this header expects this to be assigned already
 #script_header_installed_dir=/usr/sbin
 
+countdown() # output text message (arg $2, optional), and count-down seconds (arg $1)
+{
+  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
+  # store current minutes and seconds
+  min=10#$(date +%M) ; sec=10#$(date +%S)
+  wait_time=10#60  #default = 1 minute
+  [[ ! -z $1 ]] && wait_time="10#${1}"
+  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
+  if [[ "${wait_time}" -ge "60" ]] ; then
+    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
+  else
+    wait_min=10#0  ;  wait_sec=${wait_time}
+  fi
+  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
+  if [[ "${tgt_sec}" -ge "60" ]] ; then
+    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
+  fi
+  min="$(date +%M)"  ;  sec="$(date +%S)"
+  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+  # default message is "Pausing, ", else get from arg $2
+  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
+  while [[ "${rem}" -gt "0" ]] ; do
+    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
+    sleep 0.1
+    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
+    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+    echo -n "    $rem seconds left..."
+  done ; echo return 0
+}
+
 myBOX()     # draw an esc-seq single-line box
 {
   local i; local ULrow; local ULcol; local WT; local HT; local myBOX=""
@@ -19,11 +49,18 @@ myBOX()     # draw an esc-seq single-line box
   [[ -z $2 ]] && ULcol=$(( $(termwidth)/2 - $WT/2 )) || ULcol=$2
   [[ -z $5 ]] && FG=${WHITE} || FG=$5; [[ -z $6 ]] && BG=${BACKoff} || BG=$6
   [[ -z $7 ]] && B=${SGRoff} || B=$7
+  # begin box draw with openning escape sequence
   myBOX=${myBOX}${ESCon}
+  # draw top line with spaces, UL corner, H-lines, UR corner, <CR>
   myBOX=${myBOX}${Boff}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${UL_wall}$(repeat ${H_wall} ${WT})${UR_wall}${Boff}"\n"
-  for ((i=1;i<${HT};i++)); do myBOX=${myBOX}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${V_wall}$(repeat " " ${WT})${V_wall}${Boff}"\n"; done
+  # draw HT number of : space, V-line, space, V-line, <CR>
+  for ((i=1;i<${HT};i++)); do
+    myBOX=${myBOX}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${V_wall}$(repeat " " ${WT})${V_wall}${Boff}"\n"; done
+  # draw bottom line with spaces, LL corner, H-lines, LR corner, <CR>
   myBOX=${myBOX}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${LL_wall}$(repeat ${H_wall} ${WT})${LR_wall}${Boff}"\n"
+  # complete box draw with closing escape sequnce
   myBOX=${myBOX}${ESCoff}
+  # position curson at left of upper row inside box
   CLR; CUP ${ULrow} 1
   printf "${myBOX}"
   CUP $(termheight) 1
@@ -89,7 +126,7 @@ RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxte
 RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
 { local BG="48;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${BG};${R};${G};${B}m" ; }
 
-modular_msg() # Output modular chunks of a message within with a margin
+modular_msg()          # w/in margins, output externally assigned ${MSG} to array ${LINE[@]}
 {
 [[ $# -gt 1 ]] && E_message "Too many arguments" && exit 1
 local WT=0  ## width of box
@@ -99,8 +136,8 @@ local LENGTH=0 ## length of current line
 [[ -z $1 ]] && WT=70 || WT=$1
 WIDTH=$(($WT - 4))
 
-d_message "Box width=[${WT}]"
-d_message "Available width=[${WIDTH}]"
+d_message "Box width=[${WT}]" 3
+d_message "Available width=[${WIDTH}]" 3
 # Break the message up into appropriate width chunks, with a 2-space margin, by inserting newline character
 #   in place of appropriate spaces, or breaking words if the word itself is longer than the available width.
 #   Don't split or count length of escape sequences
@@ -124,9 +161,9 @@ echo
 
 # fill one line, one character at at time, escape sequences don't have "length" to count
 LINE[i]=""; let "LENGTH=0"  ## (re)initialize
-d_message "Now working on line $i" 1
+d_message "Now working on line $i" 3
 WORD[w]=""; let "WLEN=0"
-d_message "Now working on word $w"
+d_message "Now working on word $w" 3
 for ((c=0; c<${#MSG}; c++))
 do
   ## fill a word until you get to a space or termination of escape sequence, then if it will fit, add the word
@@ -158,12 +195,12 @@ do
       ;;
     * ) # all other characters, handle depending on status of ESFLAG
       # count the char only if not part of an esc sequence
-      if [[ ! $ESFLAG ]]; then let "WLEN+=1"; d_message "Added (non-special) char [${char}] to WORD[$w]" 3;
-      else d_message "Added (non-special) char [${char}] to escape sequence WORD[$w]" 3; fi
+      if [[ ! $ESFLAG ]]; then let "WLEN+=1"; d_message "Added (non-special) char [${char}] to WORD[$w]" 3 ;
+      else d_message "Added (non-special) char [${char}] to escape sequence WORD[$w]" 3 ; fi
       ;;
   esac
   WORD[w]+="${char}"  # add char to the current word
-  d_message_n "${BYon}>>>${Boff}  " 3 ; [[ $verbosity -ge 3 ]] && d_echo "WORD[$w]=[${WORD[w]}]"
+  d_message_n "${BYon}>>>${Boff}  " 3 ; [[ $verbosity -ge 3 ]] && d_echo "WORD[$w]=[${WORD[w]}]" 3
   d_message "ESFLAG=[$(status_color $ESFLAG)$(TrueFalse $ESFLAG)${Boff}]" 3
   d_message "EOW=[$(status_color $EOW)$(TrueFalse $EOW)${Boff}]" 3
   d_message "EOL=[$(status_color $EOL)$(TrueFalse $EOL)${Boff}]" 3
@@ -176,7 +213,7 @@ do
     then   # its added length will fit, so just add the word to the current line, and count the new length
       LINE[i]+="${WORD[w]}"
       let "LENGTH+=${WLEN}"
-      d_message "Disposed of word by adding to current line" 2
+      d_message "Disposed of word by adding to current line" 3
     elif [[ ${WLEN} -gt ${WIDTH} ]]
     then   # it is bigger than a whole line, so break it to put what will fit on the current line and put the rest on the next line
       breakpoint=$((${WIDTH} - ${LENGTH}))
@@ -184,30 +221,66 @@ do
       LEFTOVER="${WORD[w]:${breakpoint}}"
       let "LENGTH+=${breakpoint}"
       EOL=$TRUE
-      d_message "Disposed of word by breaking it at [${breakpoint}] to finish LINE[$i]; LEFTOVER=[${LEFTOVER}]" 2
+      d_message "Disposed of word by breaking it at [${breakpoint}] to finish LINE[$i]; LEFTOVER=[${LEFTOVER}]" 3
     else   # close out this line, and add this word to the *next* line
       EOL=$TRUE
       LEFTOVER="${WORD[w]}"
-      d_message "Disposed of word WORD[$w], which was too big to fit on LINE[$i] but fits the next, by deferring it; LEFTOVER=[${LEFTOVER}]" 2
+      d_message "Disposed of word WORD[$w], which was too big to fit on LINE[$i] but fits the next, by deferring it; LEFTOVER=[${LEFTOVER}]" 3
     fi
-    d_message_n "${BYon}Final word: ${Boff}" 2; d_echo "WORD[$w]=[${WORD[w]}], WLEN=[${WLEN}]"
-    d_message_n "${BYon}Current line: ${Boff}" 1; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]"
-    let "w+=1"; d_echo; d_message "Now working on word $w" 2
+    d_message_n "${BYon}Final word: ${Boff}" 3 ; d_echo "WORD[$w]=[${WORD[w]}], WLEN=[${WLEN}]" 3
+    d_message_n "${BYon}Current line: ${Boff}" 2 ; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]" 2
+    let "w+=1"; d_echo 3 ; d_message "Now working on word $w" 3
     WORD[w]=""; let "WLEN=0"; EOW=$FALSE  ## (re)initialize
   fi
   # if we filled the line, start a new one
   if [[ $EOL ]]
   then
-    d_message_n "${BMon}Final line: ${Boff}" 1; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]"
-    let "i+=1"; d_echo; d_message "Now working on line $i" 1
+    d_message_n "${BMon}Final line: ${Boff}" 2 ; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]" 2
+    let "i+=1"; d_echo 2; d_message "Now working on line $i" 2
     LINE[i]="${LEFTOVER}"; let "LENGTH=${#LEFTOVER}"; LEFTOVER=""; EOL=$FALSE  ## (re)initialize
-    d_message_n "Starting with LINE[$i]=" 1; d_echo "[${LINE[i]}], LENGTH=[${LENGTH}]"
+    d_message_n "Starting with LINE[$i]=" 2 ; d_echo "[${LINE[i]}], LENGTH=[${LENGTH}]" 2
   fi
 done
 
+# now dump the array --> do something like this in calling function (see summarize_my_extension, below)
+#d_echo "dumping array ..." 1
+#for ((i=1; i<${#LINE[@]}; i++))
+#do
+#  SCP; echo -en ${LINE[i]}; RCP; CUD 1
+#done
+
 }
 
-linear_search() {  # find $2 in array $1, return index
+validate_status_file() # validate or create command sequence status file $1
+{
+    [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
+    cmdseq_statusfile=$1
+    d_message "cmdseq_statusfile: [ ${cmdseq_statusfile} ]" 3
+    status_dir=$(dirname ${cmdseq_statusfile})
+    d_message "status_dir: [ ${status_dir} ]" 3
+    message_n "validating status_dir [${status_dir}] ..."
+    if [ ! -d ${status_dir} ] ; then
+        echo -en " (creating) ..."
+        mkdir -p ${status_dir} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    message_n "validating cmdseq_statusfile [${cmdseq_statusfile}] ..."
+    if [ ! -f ${cmdseq_statusfile} ] ; then
+        echo -en " (creating) ..."
+        touch ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    # final validation
+    message_n "re-verifying cmdseq_statusfile [${cmdseq_statusfile}] ..."
+    [ -f ${cmdseq_statusfile} ] && result=$TRUE || result=1
+    right_status $result
+    return $result
+}
+
+linear_search()        # find $2 in array $1, return index
+{
     # pass arguments like this usage: # linear_search 'cb-setup ${BOARD}' "${command_sequence[@]}"
     needle="$1" ; shift ; haystack=("$@") ;
 #    echo "needle: ${needle}" ; echo "haystack length: ${#haystack[@]}"
@@ -216,7 +289,7 @@ linear_search() {  # find $2 in array $1, return index
     done
 }
 
-bs()            # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
+bs()                   # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
 {
   # return the index number of the entry in the list, or -1 if not found
   # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
@@ -266,7 +339,7 @@ bs()            # recursive binary search for $1 target(s) from $2 start(d) to $
   let "depth-=1";  return 0
 }
 
-usage()         # explain default usage; mod with local "usage module"
+usage()                # explain default usage; mod with local "usage module"
 {
   N=$(( ${#command_sequence[@]} -1 ))
   separator "(usage)" "${PN}-${BUILD}"
@@ -299,8 +372,7 @@ usage()         # explain default usage; mod with local "usage module"
   exit 1
 }
 
-
-run_sequence()  # run start to stop steps in ${command_sequeyce[@]} and output status to $1
+run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and output status to $1
 {
     # run the sequence of commands stored in the command_sequence array
     # for each step, store updated status in a status file provided as arg $1
@@ -348,7 +420,7 @@ run_sequence()  # run start to stop steps in ${command_sequeyce[@]} and output s
     echo
 }
 
-process_cmdline() # process command line arguments
+process_cmdline()      # process command line arguments
 {
   arglist="$@"
 
@@ -380,7 +452,8 @@ process_cmdline() # process command line arguments
   return 0
 }
 
-process_argument() {
+process_argument()     # process one argument (considering the next a potential operand)
+{
   d_message "about to process [ $* ]" 2
   d_message "1: [ $1 ], 2: [ $2 ]" 2
   # process command line argument (must be one of the following)
@@ -419,7 +492,7 @@ process_argument() {
             msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
             d_message "${msg}" 2
         else
-            # it may be a combination of numbers and letters - hand off to process_compound_arg()
+            # it may be a combination of numbers and letters - hand off to process_compound_arg
             process_compound_arg $1
         fi
         ;;
@@ -439,7 +512,7 @@ process_argument() {
       [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
       d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
       ;;
-    "-"[vV] | "--verbose"          )
+    "-"[vV] | "--verbose"        )
       # increase verbosity
       [[ ${verbosity} -lt 6 ]] && let verbosity++
       export VERBOSE=${TRUE}
@@ -454,7 +527,8 @@ process_argument() {
   return 0
 }
 
-process_compound_arg()  {
+process_compound_arg() # process a compount argument
+{
     d_message "about to process compound [ $* ]" 2
     # must begin with a single dash
     [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
@@ -543,70 +617,6 @@ process_compound_arg()  {
     return 0
 }
 
-validate_status_file() # validate or create command sequence status file $1
-{
-    [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
-    cmdseq_statusfile=$1
-    d_message "cmdseq_statusfile: [ ${cmdseq_statusfile} ]" 3
-    status_dir=$(dirname ${cmdseq_statusfile})
-    d_message "status_dir: [ ${status_dir} ]" 3
-    message_n "validating status_dir [${status_dir}] ..."
-    if [ ! -d ${status_dir} ] ; then
-        echo -en " (creating) ..."
-        mkdir -p ${status_dir} && right_status $? || ( right_status $? && return 1 )
-    else
-        echo -en " (valid)" ; right_status $TRUE
-    fi
-    message_n "validating cmdseq_statusfile [${cmdseq_statusfile}] ..."
-    if [ ! -f ${cmdseq_statusfile} ] ; then
-        echo -en " (creating) ..."
-        touch ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
-    else
-        echo -en " (valid)" ; right_status $TRUE
-    fi
-    # final validation
-    message_n "re-verifying cmdseq_statusfile [${cmdseq_statusfile}] ..."
-    [ -f ${cmdseq_statusfile} ] && result=$TRUE || result=1
-    right_status $result
-    return $result
-}
-
-countdown()     # output text message (arg $2, optional), and count-down seconds (arg $1)
-{
-  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
-  # store current minutes and seconds
-  min=10#$(date +%M) ; sec=10#$(date +%S)
-  wait_time=10#60  #default = 1 minute
-  [[ ! -z $1 ]] && wait_time="10#${1}"
-  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
-  if [[ "${wait_time}" -ge "60" ]]
-  then
-    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
-  else
-    wait_min=10#0  ;  wait_sec=${wait_time}
-  fi
-  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
-  if [[ "${tgt_sec}" -ge "60" ]]
-  then
-    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
-  fi
-  min="$(date +%M)"  ;  sec="$(date +%S)"
-  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
-  # default message is "Pausing, ", else get from arg $2
-  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
-  while [[ "${rem}" -gt "0" ]]
-  do
-    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
-    sleep 0.1
-    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
-    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
-    echo -n "    $rem seconds left..."
-  done
-  echo
-
-  return 0
-}
-
 #-----[ script ]------------------------
 #LINE=("")  ## array of lines the message will be converted to
 #modular_message $@
@@ -616,8 +626,9 @@ countdown()     # output text message (arg $2, optional), and count-down seconds
 #  echo -e ${LINE[i]}
 #done
 
-summarize_my_extension()  # Summarize this script header (employ me with "source" or ".")
+summarize_my_extension()  #
 {
+  # generate text to display in an example message box
   LINE=("")
   title="$(color ${WHITE} ${BBACK} ${BOLD})script_header_joetoo_extended$(color ${WHITE} ${BBACK} 0)"
   MSG="$(color ${YELLOW} ${BBACK} ${BOLD})After sourcing $(color ${LBLUE} ${BBACK} ${BOLD})script_header_joetoo, "
@@ -625,30 +636,45 @@ summarize_my_extension()  # Summarize this script header (employ me with "source
   MSG+="extend the former's definition of $(color ${MAG} ${BBACK} ${BOLD})useful functions$(color ${WHITE} ${BBACK} ${BOLD}) "
   MSG+="to be subsequently available for use in various scripts, as described below.${Boff}"
 
-  W=70; H=8; R=$(( $(termheight)/3 - $H/2  ));  C=$(( $(termwidth)/2 - $W/2 ))
-  verbosity=0
+  # set width (W); height of box (H); rows in box (R); center-offset for box or left wall position (C)
+  #  W=70; H=8; R=$(( $(termheight)/3 - $H/2  ));  C=$(( $(termwidth)/2 - $W/2 ))
+  W=$(( $(termwidth) - 12 )); H=6; R=4;  C=$(( $(termwidth)/2 - $W/2 ))
+
+  # turn off verbosity unless testing modular_msg function
+  old_verbosity=$verbosity;  verbosity=0
+  d_message "MSG = [${MSG}]" 2
+  d_message "calling modular_msg with W=[${W}] ..." 2
+  # call modular_message to populate an array ${LINE[@]} of with MSG, using margins for width W
   modular_msg $W
+  verbosity=$old_verbosity
 
+  # now clear screen (will then start at row, col 1, 1); then draw a box to contain the message
   CLR; myBOX $R $C $W $H ${YELLOW} ${BBACK} ${BOLD}
-  CUP $(termheight) 1
 
-  CUP $(($R+1)) $(($C+4))
-  SCP; echo -en ${title}; RCP; CUD 3
+  # print a title inside the left wall, on the first line in the box
+  CUP $(termheight) 1                 # go to bottom left
+  CUP $(($R+1)) $(($C+4))             # go to 4th col inside the left wall on the first row of the box (*)
+  SCP; echo -en ${title}; RCP; CUD 3  # save cursor pos (*); print title; return to cursor pos (*); then down 3
+
+  # now output the array of lines assigned by modular_msg
   for ((i=1; i<${#LINE[@]}; i++))
   do
+    # save cursor at start (* - inside L wall, this row); print line; return (*); move down 1
     SCP; echo -en ${LINE[i]}; RCP; CUD 1
   done
-#  CUD 4
+  # silently get current row and column
+  COORDS= ; CPR s; ROW=${COORDS[0]}
+  # Print general instructions
   echo; echo; echo; echo; echo; echo
-  CUP 6 24; echo -e "${BWon}script_header_joetoo_extended${Boff}"
-  CUP 8 9; echo -e "${BYon}After sourcing ${BGon}script_header_joetoo${Boff}, ${BWon}this script ${Boff} may be "
-  CUP 9 9; echo -e "sourced, in order to extend the former's definition of ${BMon}useful${Boff}"
-  CUP 10 9; echo -e "${BMon}functions${Boff} to be subsequently available for use in various"
-  CUP 11 9; echo -e "scripts, as described below.${Boff}\n"
-  CUP 12 9; echo -e "${BYon}Note: whereas ${BGon}script_header_joetoo${BYon} can run in a minimal (ash) shell"
-  CUP 13 9; echo -e "context, ${BGon}script_header_joetoo_extended${BYon} expects a bash shell context${Boff}\n"
-  CUP $(($R+$H+5)) 1
-  grep "()" ${script_header_installed_dir%/}/script_header_joetoo_extended | grep -v "grep" && echo && \
-  CUP $(termheight) 1
-  return 0
+  CUP $((${ROW}+6)) 24; echo -e "${BWon}script_header_joetoo_extended${Boff}"
+  CUP $((${ROW}+8)) 9; echo -e "${BYon}After sourcing ${BGon}script_header_joetoo${Boff}, ${BWon}this script ${Boff} may be "
+  CUP $((${ROW}+9)) 9; echo -e "sourced, in order to extend the former's definition of ${BMon}useful${Boff}"
+  CUP $((${ROW}+10)) 9; echo -e "${BMon}functions${Boff} to be subsequently available for use in various"
+  CUP $((${ROW}+11)) 9; echo -e "scripts, as described below.${Boff}\n"
+  CUP $((${ROW}+12)) 9; echo -e "${BYon}Note: whereas ${BGon}script_header_joetoo${BYon} can run in a minimal (ash) shell"
+  CUP $((${ROW}+13)) 9; echo -e "context, ${BGon}script_header_joetoo_extended${BYon} expects a bash shell context${Boff}\n"
+  echo
+  # print summary of included functions (indent left)
+  grep "()" ${script_header_installed_dir%/}/script_header_joetoo_extended | grep -v "grep" | sed 's|^|  |'
+  echo
 }
