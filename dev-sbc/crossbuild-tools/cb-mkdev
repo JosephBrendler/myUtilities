@@ -10,6 +10,11 @@
     #    the image file is ready to be transferred to a real block device, finalized, and deployed
 
 source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
 
 #-----[ variables ]-----------------------------------------------------
 
@@ -18,10 +23,9 @@ VERBOSE=$TRUE
 verbosity=3
 PN=$(basename $0)
 
-
 response=""
 
-varlist="PN BUILD OUTPUTDEVICE BOARD TARGET TARGET_ARCH QEMU_ARCH"
+varlist="PN BPN BUILD OUTPUTDEVICE BOARD TARGET TARGET_ARCH QEMU_ARCH"
 varlist+=" layout_number"
 varlist+=" starting_step stopping_step mkdevstatusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
@@ -56,48 +60,10 @@ msg2_sequence=(
 
 #-----[ functions ]-----------------------------------------------------
 
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
-
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
 
-usage() {
-  N=$(( ${#command_sequence[@]} -1 ))
-  separator "${PN}-${BUILD}" "$(hostname)"
-  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -b|--board <BOARD> -o <OUTPUTDEVICE>${Boff}"
-  message "${BYon}Valid Options --${Boff}"
-  message "  -i | --interactive..................: run interactively; confirm execution of each step"
-  message "  -n | --noninteractive...............: run non-interactively; proceed automatically with each step"
-  message "  -s | --status.......................: return status (next step, step_number)"
-  message "  -r | --resume.......................: resume proccessing (with next step, from mkenvstatusfile)"
-  message "  -o | --outputdevice <OUTPUTDEVICE>..: specify DEVICE to be formatted and flashed"
-  message "  -b | --board <BOARD>................: specify BOARD (selects crossbuilt TARGET to use as source)"
-  message "  -v | --verbose......................: increase verbosity"
-  message "  -q | --quiet........................: decrease verbosity"
-  message "  -[0-${N}].............................: save N to status file and resume at step N"
-  echo
-  message "${BMon}Note: single-character options (except o & b) may be combined. For example -${Boff}"
-  message "  ${BGon}${PN} --verbose -nqr11 -o /dev/nvme0n1 -b bcm2712-rpi-cm5-cm5io${Boff}"
-  message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
-  message "  ${BYon}to lay out and format /dev/nvme0n1 and flash it with the contents of"
-  message "  the /usr/bcm2712-rpi-cm5-cm5io.img board image file${Boff}"
-  echo
-  message "${BMon}Other notes:${Boff}"
-  message "   - options -i (interactive) is on by default"
-  message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
-  message "   - option  -[0-${N}] sets starting_step (default 0) to the specified value"
-  message "   - exactly one valid block device may be specified (user will be prompted otherwise)"
-  message "   - ${PN} will default to a previously mounted BOARD image file, if a new one"
-  message "     is not specified on the command line; user may override with prompt response"
-  usage-common-message
-  message "${BYon}Command sequence steps:${Boff}"
-  for ((s=0; s<${#command_sequence[@]}; s++))
-  do
-    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
-  done
-  exit 1
-}
+# usage moved to script_header_joetoo_extended, which will source /etc/${BPN}/local.usage
 
 initialize_variables() {
     [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
@@ -107,6 +73,10 @@ initialize_variables() {
     FLAGGED=$FALSE
     d_message_n "sourcing BUILD ..." 2
     source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "sourcing BPN ..." 2
+    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting old_dir = $(pwd)" 2
     export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default starting_step = 0" 2
@@ -115,8 +85,6 @@ initialize_variables() {
     export stopping_step=$(( ${#command_sequence[@]} - 1 )) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default mkdevstatusfile = /root/bin/mkcrossbuilddev_status" 2
     export mkdevstatusfile="/root/bin/mkcrossbuilddev_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
-    d_message_n "setting PN = $(basename $0)" 2
-    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default layout_number = 1" 2
     layout_number=1 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default INTERACTIVE true" 2
@@ -251,6 +219,7 @@ eselect-layout() {
 
 post-flash-cleanup() {
     separator "(post-flash-cleanup)" ${PN}
+    message "${BYon}post-flash-cleanup is not implemented yet${Boff}"
     # umount outputdevice
     # umount BOARD/TARGET
     # provide parting instructions
@@ -259,29 +228,28 @@ post-flash-cleanup() {
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
-  if [ $# -eq 1 ] ; then
-    # option s (status) is the only one that can appear alone on the command line
-    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
-      E_message "invalid argument [${arglist}]"
-      usage
-    fi
-  fi
+# option s (status) is the only one that can appear alone on the command line
+if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+    E_message "invalid argument [${arglist}]"
+    usage
+fi; fi
 
-initialize_variables     # set defaults
+validate_status_file ${mkdevstatusfile} || die "failed validate_status_file ${mkdevstatusfile}"
+
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
 
 d_echo "cmdline: $*" 5
 d_echo "processing cmdline args: $@" 5
 
-msg="processing cmdline ..."
-[ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
-process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
-right_status $?
+# over-ride configuration with commandline input
+separator ${PN} "(process_cmdline)"
+process_cmdline ${@} || die "Failed to process_cmdline"
 
+validate_target ${BOARD} || die "failed to validate_target [${BOARD}]"
+display_configuration || die "failed to display_configuration"
 sanity_check || die "failed sanity_check"
-validate_target ${BOARD} || die "failed validate_target ${BOARD}"
-validate_status_file ${mkdevstatusfile} || die "failed validate_status_file ${mkdevstatusfile}"
-display_configuration || die "failed display_configuration"
-run_sequence ${mkdevstatusfile} || die "failed run_sequence"
+run_sequence ${mkdevstatusfile} || die "failed to run_sequence"
 
 echo
 cd $old_dir

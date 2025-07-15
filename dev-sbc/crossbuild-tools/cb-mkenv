@@ -20,6 +20,11 @@
 #    workflow scripts (cb-mkenv and cb-complete-image)
 
 source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
 
 #-----[ variagles ]-----------------------------------------------------
 
@@ -28,10 +33,9 @@ VERBOSE=$TRUE
 #verbosity=1
 verbosity=2
 PN=$(basename $0)
-
 response=""
 
-varlist="PN BUILD BOARD TARGET TARGET_ARCH QEMU_ARCH STAGE3_SELECTOR"
+varlist="PN BPN BUILD BOARD TARGET TARGET_ARCH QEMU_ARCH STAGE3_SELECTOR"
 varlist+=" profile_number"
 varlist+=" starting_step stopping_step mkenvstatusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
@@ -100,49 +104,10 @@ msg2_sequence=(
 
 #-----[ functions ]-----------------------------------------------------
 
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
-
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
 
-usage() {
-  N=$(( ${#command_sequence[@]} -1 ))
-  separator "${PN}-${BUILD}" "$(hostname)"
-  E_message "${BRon}Usage: ${BGon}${PN} [-[options]] -b|--board <BOARD>${Boff}"
-  message "${BYon}Valid Options --${Boff}"
-  message "  -i | --interactive......: run interactively; confirm execution of each step"
-  message "  -n | --noninteractive...: run non-interactively; proceed automatically with each step"
-  message "  -s | --status...........: return status (next step, step_number)"
-  message "  -d | --destroy..........: just clean target/board environment"
-  message "  -c | --create...........: clean,then create/populate a target/board cross-compiler and environment"
-  message "  -r | --resume...........: resume proccessing (with next step, from mkenvstatusfile)"
-  message "  -b | --board <BOARD>....: specify BOARD (selects TARGET) for crossbuild environment"
-  message "  -t | --target <TARGET> .: specify TARGET for crossbuild environment"
-  message "  -v | --verbose..........: increase verbosity"
-  message "  -q | --quiet............: decrease verbosity"
-  message "  -[0-${N}].................: save N to status file and resume at step N"
-  echo
-  message "${BMon}Note: single-character options (except b or t) may be combined. For example -${Boff}"
-  message "  ${BGon}${PN} --verbose -nqr11 -t armv6j-unknown-linux-gnueabihf${Boff}"
-  message "  ${BYon}would resume non-interactively at step 11 with normal verbosity${Boff}"
-  nessage "  ${BYon}creating a generic-armv6j board image on the selected target${Boff}"
-  echo
-  message "${BMon}Other notes:${Boff}"
-  message "   - options -i (interactive) is on by default"
-  message "   - options -c (create) and -d (destroy) are off by default and set starting_step=0"
-  message "   - option  -r (resume) sets starting_step to value in mkenvstatusfile [ $mkenvstatusfile ]"
-  message "   - option  -[0-${N}] sets starting_step to the specified value"
-  message "   - if a BOARD is specified, TARGET will be selected, overriding any -t setting"
-  message "   - if no BOARD is specified, TARGET must be, implying a generic TARGET environment"
-  usage-common-message
-  message "${BYon}Command sequence steps:${Boff}"
-  for ((s=0; s<${#command_sequence[@]}; s++))
-  do
-    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
-  done
-  exit 1
-}
+# usage() ... moved to script_header_joetoo_extended, suplemented by /etc/${BPN}/local.usage
 
 initialize_variables() {
     [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
@@ -152,6 +117,10 @@ initialize_variables() {
     FLAGGED=$FALSE
     d_message_n "sourcing BUILD ..." 2
     source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "sourcing BPN ..." 2
+    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting old_dir = $(pwd)" 2
     export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default starting_step = 0" 2
@@ -160,8 +129,6 @@ initialize_variables() {
     export stopping_step=$(( ${#command_sequence[@]} - 1 )) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default mkenvstatusfile = /root/bin/mkcrossbuildenv_status" 2
     export mkenvstatusfile="/root/bin/mkcrossbuildenv_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
-    d_message_n "setting PN = $(basename $0)" 2
-    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default INTERACTIVE true" 2
     export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default VERBOSE true" 2
@@ -180,6 +147,8 @@ initialize_variables() {
 emerge-host-world() {
     [[ $INTERACTIVE ]] && emerge_options="-uavDNgk" || emerge_options="-uvDNgk"
     emerge ${emerge_options} @world --keep-going
+    result=$?
+    return $result
 }
 
 emerge-cross-rust-std() {
@@ -208,7 +177,6 @@ get-max-profile-number() {
 
 profile_number_prompt()  {
     ps=$1; echo; echo; CUU; SCP;
-#    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
     get-max-profile-number ${BOARD} >/dev/null ; max_num=$?
     message_n "$ps [0-${max_num}]: " && read profile_number;
     isnumber $profile_number ; result=$?
@@ -351,29 +319,29 @@ wget-stage3() {
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
-  if [ $# -eq 1 ] ; then
-    # option s (status) is the only one that can appear alone on the command line
-    if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
-      E_message "invalid argument [${arglist}]"
-      usage
-    fi
-  fi
+# option s (status) is the only one that can appear alone on the command line
+if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+    E_message "invalid argument [${arglist}]"
+    usage
+fi; fi
 
-initialize_variables     # set defaults
+validate_status_file ${mkenvstatusfile} || die "Failed to validate_status_file"
+
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
 
 d_echo "cmdline: $*" 5
 d_echo "processing cmdline args: $@" 5
 
-msg="processing cmdline ..."
-[ $verbosity -lt 2 ] && message_n "${msg}" || message "${msg}"
-process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
-right_status $?
+# over-ride configuration with commandline input
+separator ${PN} "(process_cmdline)"
+process_cmdline ${@} || die "Failed to process_cmdline"
 
-sanity_check && \
-validate_target ${BOARD} && \
-validate_status_file ${mkenvstatusfile} && \
-display_configuration && \
-run_sequence ${mkenvstatusfile}
+validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
+display_configuration || die "Failed to display_configuration"
+
+sanity_check  || die "Failed sanity_check"
+run_sequence ${mkenvstatusfile} || die "Failed to run_sequence"
 
 echo
 cd $old_dir

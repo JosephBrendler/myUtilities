@@ -48,4 +48,3 @@ E_message "edit /root/.bashrc after first boot of real image, to modify prompt, 
 echo
 
 export PS1="(${QEMU_ARCH} chroot) ${PS1}"
-

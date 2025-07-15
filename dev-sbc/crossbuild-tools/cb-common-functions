@@ -14,8 +14,11 @@
 BOARD=$1
 VALID=$FALSE
 
-# new_prompt() .. moved to script_header_joetoo
-# die() ......... moved to script_header_joetoo
+# -----[changes 7/14/25 - for ver 0.6.14 ]--------------------------
+# new_prompt() .......... moved to script_header_joetoo
+# die() ................. moved to script_header_joetoo
+# get_luks_keyfile() .... moved to script_header_joetoo
+# get_luks_edev_name() .. moved to script_header_joetoo
 # confirm_continue_or_exit . moved to script_header_joetoo_extended
 # validate_status_file() ... moved to script_header_joetoo_extended
 # linear_search() .......... moved to script_header_joetoo_extended
@@ -24,11 +27,12 @@ VALID=$FALSE
 # process_cmdline .......... moved to script_header_joetoo_extended
 # process_argument ......... moved to script_header_joetoo_extended
 # process_compound_arg ..... moved to script_header_joetoo_extended
+# usage-common-message ..... moved to /etc/${BPN}/local.usage
 # (note: crossbuild-tools - specific arguments moved to --
 #    local.cmdline_arguments
 #    local.cmdline_compound_arguments
 #    local.usage
-#  to be installed at /etc/crossbuild-tools/ by dev-sbc/crossbuild-tools ebuild)
+#  to be installed at /etc/${BPN}/ by dev-sbc/crossbuild-tools ebuild)
 
 validate_target() {
     # TARGET = crossbuild target for image generation
@@ -363,39 +367,6 @@ TARGET-emerge-world() {
     return 0
 }
 
-usage-common-message() {
-    echo
-    message "  ${BMon}Note: exactly one <BOARD> may be specified.  Examples:${Boff}"
-    message "  generic-armv6j"
-    message "  generic-armv7a"
-    message "  generic-aarch64"
-    message "  bcm2708-rpi-b"
-    message "  bcm2709-rpi-2-b"
-    message "  bcm2710-rpi-3-b"
-    message "  bcm2710-rpi-3-b-plus"
-    message "  bcm2711-rpi-4-b"
-    message "  bcm2711-rpi-cm4-io"
-    message "  bcm2712-rpi-5-b"
-    message "  bcm2712-rpi-cm5-cm5io"
-    message "  rk3288-tinker-s"
-    message "  rk3399-tinker-2"
-    message "  rk3399-rock-pi-4c-plus"
-    message "  rk3588-rock-5b"
-    message "  rk3588s-orangepi-5"
-    message "  rk3588s-rock-5c"
-    message "  fsl-imx8mq-phanbell"
-    message "  meson-gxl-s905x-libretech-cc-v2"
-
-    echo
-    message "${BMon}Note: exactly one <TARGET> will be selected automatically. Examples:${Boff}"
-    message "  aarch64-unknown-linux-gnu"
-    message "  armv6j-unknown-linux-gnueabihf"
-    message "  armv7a-unknown-linux-gnueabihf"
-    echo
-    message "${BYon}Note: find additionl information at /etc/crossbuild-tools/README"
-    return 0
-}
-
 sanity_check() {
     # sanity check configuration
     FLAGGED=$FALSE
@@ -469,69 +440,3 @@ format_warning() {
     esac
     return 0
 }
-
-die() {
-    msg="${1}"
-    E_message "${msg}"
-    exit 1
-}
-
-get_luks_keyfile() {
-    # use info in arg1 (crypt_keydev) to identify keyfile
-    # determine keydev type
-    # if it starts with "/" it is a device name
-    # if it contains "-" it may be a UUID
-    # if it does not, it may be a LABEL
-    message_n "examining crypt_keydev [ ${crypt_keydev} ] ..."
-    if [ -b ${crypt_keydev} ] ; then
-        crypt_keydev_type=devicename
-    elif echo ${crypt_keydev} | grep "-" ; then
-        crypt_keydev_type=UUID
-    else
-        crypt_keydev_type=LABEL
-    fi
-    # if it is not mounted, try to mount it
-    if [[ ! -z "$( mount | grep ${crypt_keydev_mountpoint%/} )" ]] ; then
-        echo -en " ${BGon}(mounted)${Boff}"
-        right_status $TRUE
-    else
-        echo -en " trying to mount (${crypt_keydev_type}) [${crypt_keydev}] ..."
-        case $crypt_keydev_type in
-             "devicename" ) mount ${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-             "UUID"       ) mount UUID=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-
-             "LABEL"      ) mount LABEL=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
-                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
-             * )  right_status 1 ; die "invalid crypt_keydev" ;;
-        esac
-    fi
-    # set keyfile pathname
-    export keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
-    return 0
-}
-
-get_luks_edev_name() {
-    # determine an edev name to use with this device
-    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
-    message_n "determining edev name ..."
-    bn=$(basename ${luks_partition_device})
-    case ${bn:0:2} in
-      "sd" ) # scsi device
-        myedev=$(echo ${bn} | sed 's/^s/e/')
-        ;;
-      "nv" ) # nvme device
-        myedev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
-        ;;
-      "mm" ) # mmc device
-        myedev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
-        ;;
-      *    ) # tbd
-        echo "Error: bad luks device name [${OUTPUTDEVICE}]"
-        ;;
-    esac ; result=$?
-    export edev=${myedev}
-    return $result
-}
-

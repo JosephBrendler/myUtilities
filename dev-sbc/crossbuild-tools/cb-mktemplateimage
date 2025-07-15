@@ -5,38 +5,71 @@
 #
 
 source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
 VERBOSE=$TRUE
 #verbosity=2
 verbosity=3
 
 PN=$(basename $0)
 
-imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img
 
-# image and partition sizes
-image_size_mb=20480
-partition1_size_mb=512
-partition2_size_mb=$((image_size_mb - partition1_size_mb))
+#-----[ variables ]-----------------------------------------------------
 
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
+varlist="IMAGE_TYPE imagefile image_size_mb partition1_size_mb partition2_size_mb BREAK bool.VERBOSE verbosity"
+
+
+#-----[ functions ]-----------------------------------------------------
 
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
 TARGET=""
 
-usage() {
-    message "${BRon}usage: ${BGon}${PN} <s|f>${Boff}"
-    echo -e "${BYon}    [sS]: sparse | [fF]: fixed size${Boff}"
+myusage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    source /etc/${BPN}/local.usage
     exit
 }
 
-display-config() {
-    message "IMAGE_TYPE ...........: ${IMAGE_TYPE}"
-    message "imagefile ............: ${imagefile}"
-    message "image_size_mb ........: ${image_size_mb}"
-    message "partition1_size_mb ...: ${partition1_size_mb}"
-    message "partition2_size_mb ...: ${partition2_size_mb}"
+initialize_variables() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+
+    # set default values
+    FLAGGED=$FALSE
+    d_message_n "sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "sourcing BPN ..." 2
+    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+
+    d_message_n "setting default imagefile = /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img" 2
+    imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img && \
+        d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default image_size_mb = 20480" 2
+    image_size_mb=20480 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default partition1_size_mb = 512" 2
+    partition1_size_mb=512 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default partition2_size_mb = $((image_size_mb - partition1_size_mb))" 2
+    partition2_size_mb=$((image_size_mb - partition1_size_mb)) && \
+        d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default VERBOSE true" 2
+    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default verbosity = 3" 2
+    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
+    return 0
 }
 
 prepare() {
@@ -55,6 +88,7 @@ prepare() {
         E_message "Note red flags above. Please clean up before continuing"
         exit 1
     fi
+    return 0
 }
 
 mksparseimagetemplate() {
@@ -124,16 +158,20 @@ mktemplate-common() {
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
-[ $# -ne 1 ] && usage
-IMAGE_TYPE=$1
+[ $# -ne 0 ] && myusage
 
-prepare
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
+prepare || die "failed prepare()"
+display_configuration || die "failed to display_configuration"
 
-display-config
-
+# previously written to take argument 1 to be assigned to IMAGE_TYPE, but
+# cb-setup is hard-coded using "cb-mktemplateimage s" -- so hard code it
+# here instead and avoid having to accomodate in common local.usage cli options
+IMAGE_TYPE="s"
 case ${IMAGE_TYPE:0:1} in
-    [sS] ) mksparseimagetemplate ;;
-    [fF] ) mkimagetemplate ;;
+    [sS] ) mksparseimagetemplate || die "failed to mksparseimagetemplate" ;;
+    [fF] ) mkimagetemplate || die "failed to mkimagetemplate" ;;
     * ) E_message "Invalid argument [ ${IMAGE_TYPE} ]" ; usage ;;
 esac
 

@@ -5,6 +5,12 @@
 #
 
 source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
 VERBOSE=$TRUE
 #verbosity=2
 verbosity=3
@@ -32,14 +38,17 @@ hidden_varlist="crypt_passphrase luks_partition_device"
 
 initialize_variables() {
 
-    message_n "sourcing BUILD ..."
-    source /etc/crossbuild-tools/BUILD ; right_status $?
-
     message_n "sourcing cb-common-functions ..."
     source /usr/sbin/cb-common-functions ; right_status $?
 
     initialize_vars ${varlist}
     initialize_vars ${hidden_varlist}
+
+    message_n "sourcing BUILD ..."
+    source /etc/crossbuild-tools/BUILD ; right_status $?
+
+    message_n "sourcing BPN ..."
+    source /etc/crossbuild-tools/BPN ; right_status $?
 
     message_n "re-initializing VERBOSE = TRUE ..."
     VERBOSE=$TRUE ; right_status $?
@@ -81,23 +90,10 @@ initialize_variables() {
     return 0
 }
 
-usage() {
-    E_message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE> <BOARD>${Boff}"
-    echo
-    message "${PN} requires a valid (already formatted) OUTPUTDEVCE, and it also requires"
-    message "  a valid (already cross-built and mounted) BOARD as its second argument"
-    echo
-    message "${BYon}Notess:${Boff}"
-    message " ${LBon}(1) Crossbuild TARGET, BOARD, which function as de facto SOURCES here, ${Boff}"
-    message " ${LBon}    are expected to be set up prior to running ${PN}${Boff}"
-    message " ${LBon}(2) OUTPUTDEVICE functions as a defacto output target here, and it is${Boff}"
-    message " ${LBon}    expected to already be formatted, (if luks, unlocked) and${Boff}"
-    message " ${LBon}    ready to be mounted for flashing${Boff}"
-    message " ${LBon}(3) OUTPUTDEVICE's bootloader (grub menu, config.txt, joetooEnv.txt, etc)${Boff}"
-    message " ${LBon}    and /etc/fstab will need to be updated after the image is flashed to${Boff}"
-    message " ${LBon}    this new block device${Boff}"
-    usage-common-message
-    exit 1
+myusage() {
+    message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE>${Boff}"
+    source /etc/${BPN}/local.usage
+    exit
 }
 
 check-target-board-loopmount() {
@@ -203,7 +199,7 @@ prep-newroot() {
         # if we get here, it should be successfully mounted
         right_status $TRUE
     else
-        # use lsblk data to set root_dev
+        # use findmnt data to set root_dev
         eval $(findmnt -o TARGET,SOURCE -P | grep ${newroot_mountpoint})
         root_dev=${SOURCE}
         echo -e " ${BGon}yes${Boff}" ; right_status $TRUE
@@ -224,7 +220,7 @@ mount-newroot() {
     mounttherestscript="$(find ./ -iname 'mount-the-rest*' -type f -executable)" && right_status $? || \
         die "failed to find ./ -iname 'mount-the-rest*' -type f -executable"
 
-    # DANGER Will Robinson - check this first
+    # "DANGER Will Robinson" - check the resulting script builds reliably, before sourcing it
 #    exec ${mounttherestscript}
     source ${mounttherestscript}
     return 0
@@ -253,13 +249,13 @@ copy-content() {
 checkroot
 separator "$(hostname)" "${PN}"
 initialize_variables || die "failed to initialize variables"
-[ $# -ne 2 ] && usage
+[ $# -ne 2 ] && myusage
 OUTPUTDEVICE=$1
 BOARD=$2
 # board must be set in environment by calling script or manually
 d_message "about to run validate_target ${BOARD}" 3
-validate_target ${BOARD}
-validate_device ${OUTPUTDEVICE}
+validate_target ${BOARD} || die "failed to validate_target [${BOARD}]"
+validate_device ${OUTPUTDEVICE} || die "failed to validate_device [${OUTPUTDEVICE}]"
 
 message "confirming BOARD is mounted on crossbuild TARGET ..."
 check-target-board-loopmount ; result=$?
@@ -278,7 +274,7 @@ varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 # it can't get edev until it creates one, be we can get both now
 prep-newroot || die "failed to prep-newroot"
 
-display_configuration
+display_configuration || die "failed to display_configuration"
 echo
 format_warning || die "failed format warning somehow, oddly"
 

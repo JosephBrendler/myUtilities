@@ -5,6 +5,12 @@
 #
 
 source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
 VERBOSE=$TRUE
 #verbosity=2
 verbosity=3
@@ -25,14 +31,17 @@ hidden_varlist="crypt_passphrase partition_device luks_partition_device"
 
 initialize_variables() {
 
-    message_n "sourcing BUILD ..."
-    source /etc/crossbuild-tools/BUILD ; right_status $?
-
     message_n "sourcing cb-common-functions ..."
     source /usr/sbin/cb-common-functions ; right_status $?
 
     initialize_vars ${varlist}
     initialize_vars ${hidden_varlist}
+
+    message_n "sourcing BUILD ..."
+    source /etc/crossbuild-tools/BUILD ; right_status $?
+
+    message_n "sourcing BPN ..."
+    source /etc/crossbuild-tools/BPN ; right_status $?
 
     message_n "re-initializing VERBOSE = TRUE ..."
     VERBOSE=$TRUE ; right_status $?
@@ -85,7 +94,7 @@ initialize_variables() {
     return 0
 }
 
-usage() {
+myusage() {
     E_message "${BRon}usage: ${BGon}${PN} <OUTPUTDEVICE>${Boff}"
     echo
     message "${PN} requires exactly one valid device name as its only argument"
@@ -93,24 +102,12 @@ usage() {
     echo
     list_unused_disks
     echo
-    usage-common-message
+    source /etc/${BPN}/local.usage
     exit 1
 }
 
-non-stty-separator() {  # expects TERMWIDTH to be set in environment
-    local msg preface msg_len;
-    [ ! -z "$2" ] && preface="$2" || preface=$(hostname);
-    msg="${BYon}---[${BRon} $preface ${LBon}$1 ${BYon}]";
-    msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ));
-    echo -en "$msg" && echo -n $(repeat "-" $(( ${TERMWIDTH} - $(( $msg_len + ${#Boff} )) ))) && echo -e ${Boff} && return 0 || return 1
-}
-
-non-stty-right_status ()
-{
-    local msg status=$1;
-    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
-    echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1
-}
+# non-stty-separator() ...... moved to /usr/sbin/script_header_joetoo_extended
+# non-stty-right_status () ..  moved to /usr/sbin/script_header_joetoo_extended
 
 list_unused_disks() {
     # set this now because doing so will be an inappropriate use of io control for stdin during while loop's redirection for "read line"
@@ -639,7 +636,7 @@ layout_cryptsetup() {
 checkroot
 separator "$(hostname)" "${PN}"
 initialize_variables || die "failed to initialize variables"
-[ $# -ne 1 ] && usage
+[ $# -ne 1 ] && myusage
 OUTPUTDEVICE=$1
 validate_device ${OUTPUTDEVICE} || die "failed to validate device [ ${OUTPUTDEVICE} ]"
 validate_config || die "failed to validate config"
@@ -648,7 +645,7 @@ if [ $LUKS ] ; then
     finalize_config || die "failed to finalize config"
 fi
 
-display_configuration
+display_configuration || die "failed to display_configuration"
 
 format_warning || die "failed format warning somehow, oddly"
 
