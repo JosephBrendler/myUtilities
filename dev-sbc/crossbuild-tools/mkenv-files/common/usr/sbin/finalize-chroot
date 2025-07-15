@@ -8,10 +8,9 @@
 # (don't want to run this for an actual deployed image)
 # if all goes well, remove the ${firstrunmarker} file
 
-# don't run this script more than once
-# look for /root/firstlogin (which is removed upon completion of this script)
+# /root/.bashrc should ckeck existence of firstrunmarker and not normally run this script more than once
+# finalize-chroot will remove firstrunmarker upon completion 
 firstrunmarker=/root/firstenvlogin
-[ ! -e ${firstrunmarker} ] && exit 0
 
 source /usr/sbin/script_header_joetoo
 
@@ -115,9 +114,28 @@ source /etc/profile ; result=$?
 [ $result -ne 0 ] && COMPLETE=$FALSE
 right_status $result
 
+# set up gentoo signature checking with getuto
+message_n "setting up Gentoo signature checking with getuto ..."
+getuto ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
 # emerge world in chroot
-message "running emerge-chroot -uavDNgk woprld (<CTRL>-C to cancel) ..."
-emerge-chroot -uavDNgk world --keep-going
+message_n "setting up chroot_emerge ..."
+chroot_emerge="ROOT=/ CBUILD=${TARGET} \
+        PORTAGE_TMPDIR=/tmp/ DISTDIR=/var/cache/distfiles \
+        PKGDIR=/var/cache/binpkgs PORT_LOGDIR=/var/log/portage \
+        HOSTCC=${TARGET}-gcc emerge"
+emerge_opts="-uavDNgk --keep-going"
+result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+d_message "chroot_emerge = ${chroot_emerge}" 2
+d_message "emerge_opts = ${emerge_opts}" 2
+message "running \${chroot_emerge} ${emerge_opts} @world (<CTRL>-C to cancel) ..."
+eval "${chroot_emerge} ${emerge_opts} @world"  ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
 
 message_n "removing ${firstrunmarker} ..."
 rm ${firstrunmarker} ; result=$?
