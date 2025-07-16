@@ -7,86 +7,144 @@
 source /usr/sbin/script_header_joetoo
 message_n "sourcing BUILD ..."
 source /etc/crossbuild-tools/BUILD ; right_status $?
-message_n "sourcing BPN ..."
-source /etc/crossbuild-tools/BPN ; right_status $?
+#message_n "sourcing BPN ..."
+#source /etc/crossbuild-tools/BPN ; right_status $?
 source /usr/sbin/script_header_joetoo_extended
 
+#-----[ variables ]---------------------------------------------------
 VERBOSE=$TRUE
-#verbosity=2
-verbosity=3
+verbosity=2
+#verbosity=4
 
 PN=$(basename $0)
-
-message_n "sourcing /usr/sbin/cb-common-functions ..."
-source /usr/sbin/cb-common-functions ; right_status $?
 
 user=joe
 collection_directory="stuff_for_mkimg_$(hostname)"
 
 source_dirs=(
-'etc/openvpn'
-"home/${user}/.ssh"
+'/etc/openvpn'
+"/home/${user}/.ssh"
 )
 
 source_files=(
-'etc/apache2/ssl/imjoe.pem'
-'etc/apache2/ssl/*.key'
-'etc/apache2/ssl/*.crt'
-'etc/apache2/vhosts.d/00_default_ssl_vhost.conf'
-'etc/apache2/vhosts.d/00_default_vhost.conf'
-'etc/hostname'
-'etc/conf.d/hostname'
-'etc/wpa_supplicant/wpa_supplicant.conf'
-'root/.bash*'
-"home/${user}/.bash*"
+'/etc/apache2/ssl/*.key'
+'/etc/apache2/ssl/*.crt'
+'/etc/apache2/ssl/*.pem'
+'/etc/apache2/vhosts.d/00_default_ssl_vhost.conf'
+'/etc/apache2/vhosts.d/00_default_vhost.conf'
+'/etc/hostname'
+'/etc/conf.d/hostname'
+'/etc/conf.d/net'
+'/etc/conf.d/modules'
+'/etc/wpa_supplicant/wpa_supplicant.conf'
+'/root/.bashrc'
+'/root/.bash_profile'
+"/home/${user}/.bashrc"
+"/home/${user}/.bash_profile"
 )
+
+#-----[ functions ]---------------------------------------------------
 
 myusage() {
     message "${BRon}no arguments allowed${Boff}"
     exit 1
 }
 
+maybe_mkdir() {
+    # don't flag; die over error
+    my_z=$1
+    if [ ! -d /home/${user}/${collection_directory%/}/${my_z} ] ; then
+        mkdir -p /home/${user}/${collection_directory%/}/${my_z} && \
+            echo -en " (${BGon}created${Boff} dir)" || \
+            die "failed to mkdir -p /home/${user}/${collection_directory%/}/${my_z}"
+    else
+        echo -en " (dir ${BGon}exists${Boff})"
+    fi
+    return 0
+}
+
+copy_dirs() {
+    # flag, but don't die over error
+    for ((i=0; i<${#source_dirs[@]}; i++)); do
+        message_n "copying ${BMon}dir${BYon} ${source_dirs[$i]}${Boff} content"
+        z=$(echo ${source_dirs[$i]} | sed 's|^/||')
+        maybe_mkdir "${z}"
+        echo -en " copying ..."
+        if [[ ${VERBOSE} ]] && [ ${verbosity} -gt 3 ] ; then
+            cp -av ${source_dirs[$i]%/}/* /home/${user}/${collection_directory%/}/${z}/
+        else
+            cp -a ${source_dirs[$i]%/}/* /home/${user}/${collection_directory%/}/${z}/
+        fi
+        result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+    done
+    return 0
+}
+
+copy_files() {
+    # flag, but don't die over error
+    for source_file in ${source_files[@]}; do
+        message_n "copying ${LBon}file${Boff} ${source_file}"
+        z=$(dirname ${source_file} | sed 's|^/||')
+        maybe_mkdir "${z}"
+        echo -en " copying ..."
+        if [[ ${VERBOSE} ]] && [ ${verbosity} -gt 3 ] ; then
+            cp -av ${source_file} /home/${user}/${collection_directory%/}/${z}/
+        else
+            cp -a ${source_file} /home/${user}/${collection_directory%/}/${z}/
+        fi
+        result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
+    done
+    return 0
+}
+
+maybe_create_collection_directory() {
+    # don't flag; die over error
+    message "maybe creating collection directory"
+    message_n "  collection directory: [${collection_directory}]"
+    if [ -d /home/${user}/${collection_directory} ] ; then
+        echo -en " (${BGon}exists${Boff})"
+        right_status $TRUE
+    else
+        mkdir /home/${user}/${collection_directory} && result=$? && \
+            echo -en " (${BGon}created${Boff})" && right_status $result || \
+            die "failed to mkdir ${collection_directory} "
+    fi
+    return 0
+}
+
+change_ownership_to_user() {
+    message_n "setting ownership of collection_directory to user: ${user} ..."
+    chown -R ${user}:${user} /home/${user}/${collection_directory} && \
+        right_status $? || \
+        die "failed to chown -R ${user}:${user} /home/${user}/${collection_directory}"
+}
+
 collect-sensitive() {
     FLAGGED=$FALSE
     message "running collect-sensitive()"
-    old_dir=$(pwd)
-    cd /home/${user}
-    message "now working in ${BMon}$(pwd)${Boff}"
-    message_n "creating collection directory [${collection_directory}]"
-    [ ! -d ${collection_directory} ] && mkdir -p ${collection_directory} ; result=$?
-    right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
-    cd ${collection_directory}
-    message "now working in ${BMon}$(pwd)${Boff}"
 
-    for ((i=0; i<${#source_dirs[@]}; i++)); do
-        message_n "copying ${source_dirs[$i]} content"
-        [ ! -d ./${source_dirs[$i]} ] && mkdir -p ./${source_dirs[$i]}
-        cp -a /${source_dirs[$i]}/* ./${source_dirs[$i]}/
-        result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
-    done
+    maybe_create_collection_directory
 
-    for ((i=0; i<${#source_files[@]}; i++)); do
-        message_n "copying ${source_files[$i]}"
-        z=$(dirname ${source_files[$i]})
-        [ ! -d ./${z} ] && mkdir -p ./${z}
-        cp -a /${source_files[$i]} ./${source_files[$i]}
-        result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
-    done
+    copy_dirs
 
-    message "please inspect results ..."
-    tree -a
+    copy_files
+
+    change_ownership_to_user
+
+    message "please inspect results in /home/${user}/${collection_directory} ..."
+    tree -a /home/${user}/${collection_directory}
     echo
 
-    cd ${old_dir}
-    message "now working in previous directory ${BMon}$(pwd)${Boff}"
     [[ $FLAGGED ]] && return 1 || return 0
 }
 
 #-----[ main script ]---------------------------------------------
 checkroot
-separator "($(hostname))" "${PN}"
+separator "${PN}-${BUILD}" "($(hostname))"
 [ $# -ne 0 ] && myusage
 
-collect-sensitive || die "failed to collect-sensitive"
+collect-sensitive && \
+    message "${PN} ${BGon}complete${Boff}" || \
+    die "$PN} finished with errors (see above)"
 
 exit 0
