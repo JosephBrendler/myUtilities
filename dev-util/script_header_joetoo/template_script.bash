@@ -79,8 +79,8 @@ initialize_variables() {
     starting_step=0 ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning stopping_step = \${#command_sequence[@]} ..."
-    stopping_step=${#command_sequence[@]} ; result=$? ; right_status $result
+    message_n "Assigning stopping_step = \${#command_sequence[@]} - 1 ..."
+    stopping_step=$(( ${#command_sequence[@]} - 1 )) ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
     message_n "Assigning cmdseq_statusfile = /root/test_status ..."
@@ -110,10 +110,20 @@ sanity_check() {
 checkroot
 separator ${PN} $(hostname)
 
-validate_status_file $cmdseq_statusfile || die "Failed to validate_status_file"
+
+# basic common approach -
+# initialize variables (local function)
+# validate_status_file  (script_header_joetoo_extended)
+# process_cmdline (script_header_joetoo_extended)
+# local validation, configuration, and variable assignment (local function(s))
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# run_sequence (script_header_joetoo_extended)
 
 # initialize variables and set default values
 initialize_variables || die "Failed to initialize_variables"
+
+validate_status_file $cmdseq_statusfile || die "Failed to validate_status_file"
 
 # over-ride configuration with commandline input
 separator ${PN} "(process_cmdline)"
@@ -129,5 +139,3 @@ run_sequence $cmdseq_statusfile || die "Failed to run_sequence"
 
 message "${PN} Complete"
 echo
-
-
