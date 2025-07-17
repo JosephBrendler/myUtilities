@@ -1,3 +1,88 @@
+# to edit all package.use files
+for x in $( echo $(joetoo-sbc-list | grep -v '\[') $(echo "generic-aarch64 generic-armv7a generic-armv6j generic-amd64")); do 
+   sed -i 's|^>=sys-devel/gcc|#sys-devel/gcc|' mkenv-files/$x/etc/portage/package.use/joetoo ; 
+done
+
+# make a whole batch of new make.conf files
+for x in $( echo $(joetoo-sbc-list | grep -v '\[') $(echo "generic-aarch64 generic-armv7a generic-armv6j generic-amd64")); do 
+  sudo ./cb-assemble-make-conf $x; 
+done
+
+# to deploy all those new make.conf files
+for x in $( echo $(joetoo-sbc-list | grep -v '\[') $(echo "generic-aarch64 generic-armv7a generic-armv6j generic-amd64")); do 
+  target="mkenv-files/${x}/etc/portage/make.conf" ; 
+  z=$(dirname ${target}); 
+  [ ! -d ${z} ] && mkdir -p ${z}; 
+  cp make-conf-files/make.conf.${x} ${target}; 
+done
+
+for x in $(find ./ -iname '15_G*' -printf '%f\n'); 
+do new=$(echo $x | sed "s|^15|16|"); 
+echo; echo "x: $x  new: $new"; 
+mv -v $x $new; 
+done
+
+
+while read board; do echo; echo ${board}; 
+LINE="$(grep '^COMMON_FLAGS=' /home/joe/myUtilities/dev-sbc/crossbuild-tools/mkenv-files/${board}/etc/portage/make.conf)"; 
+echo $LINE > 2_COMMON_FLAGS_${board} ; 
+done <<< $(joetoo-sbc-list | grep -v '\[')
+
+while read board; do echo; echo ${board}; 
+LINE="$(grep '^MAKEOPTS=' /home/joe/myUtilities/dev-sbc/crossbuild-tools/mkenv-files/${board}/etc/portage/make.conf)"; 
+echo $LINE | sed 's|33|17|' > 3_MAKEOPTS_${board}; 
+done <<< $(joetoo-sbc-list | grep -v '\[')
+
+
+rm Manifest 
+sed -i 's|if ! "${model}" == "domU" ;|if [[ ! "${model}" == "domU" ]] ;|' *.ebuild
+pkgdev manifest -f
+big-git-rm-add-list-handler
+git commit -m "bugfix template ebuild"
+git push origin master
+
+
+
+#   fsl-imx8mq-phanbell ........: Tailor for TinkerEdgeT/CoralDev (armv8/64)
+#   meson-gxl-s905x-libretech-cc-v2 ...: Tailor for SweetPotato (armv8/64)
+
+
+#      -meson-gxl-s905x-libretech-cc-v2 -fsl-imx8mq-phanbell
+
+
+# no stable nextcloud available for arm64
+www-apps/nextcloud ~arm64
+
+myusage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    source /etc/${BPN}/local.usage
+    exit
+}
+
+source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
+while read board; do echo $board; done <<< $(joetoo-sbc-list | grep -v '\[')
+
+while read board; do
+  echo; echo $board; 
+  cp -av ${board}/etc/portage/make.conf ${board}/etc/portage/make.conf.crossbuild ;
+done <<< $(joetoo-sbc-list | grep -v '\[')
+
+# basic common approach - 
+# initialize variables (local function)
+# validate_status_file  (script_header_joetoo_extended)
+# process_cmdline (script_header_joetoo_extended)
+# validate_target which must follow process_cmdline (cb-common-functions)
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# run_sequence (script_header_joetoo_extended)
+
+
 rm Manifest 
 sed -i 's|if ! "${model}" == "domU" ;|if [[ ! "${model}" == "domU" ]] ;|' *.ebuild
 pkgdev manifest -f

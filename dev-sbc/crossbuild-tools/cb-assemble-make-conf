@@ -1,39 +1,53 @@
 #!/bin/bash
-# template script employing script_header_joetoo (extended)
+# assemble a make.conf file
 
 # source headers
 #script_header_installed_dir=./         ## only when testing, pre-ebuild
 script_header_installed_dir=/usr/sbin   # this is where it should be installed
 source ${script_header_installed_dir%/}/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
 source ${script_header_installed_dir%/}/script_header_joetoo_extended
 
 # only needed for testing sources pending package build
 #script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
 
 #-----[ variables ]------------------------------------------------------
-cmdseq_statusfile=/root/cmdseq_status
 VERBOSE=$TRUE
-verbosity=5
+verbosity=3
 PN=$(basename $0)
 
-# BPN = PN here, but it could be different for several programs using common functions
-# (e.g. dev-sbc/crossbuild-tools and its cb-mkenv, cb-mkimg, cb-mkdev tools all use
-#  BPN="crossbuild-tools" so they can all use cli with the same cb-common-functions)
-BPN=${PN}
-
-FLAGGED=$FALSE
-result=0
-
-varlist=" PN BPN BUILD starting_step stopping_step cmdseq_statusfile"
-varlist+=" BREAK bool.EXAMPLE bool.DEFAULTS"  ## dummy options set by local cmdline_argument modules
-varlist+=" BREAK bool.INTERACTIVE bool.FLAGGED bool.VERBOSE verbosity"
+varlist=" PN BUILD"
+varlist+=" BREAK BOARD TARGET TARGET_ARCH QEMU_ARCH TUPLE1"
+varlist+=" MAKE_CONF_PARTS_DIR user DRAFT_FILE OUT_FILE"
+varlist+=" BREAK bool.FLAGGED bool.VERBOSE verbosity"
 
 hidden_varlist="result response answer "
 
-command_sequence=('echo "this"' 'echo "is line 2"' 'echo "and line 3"')
-msg1_sequence=('echo "this"' 'echo "is line 2"' 'echo "and line 3"')
-
 #-----[ functions ]------------------------------------------------------
+
+message_n "sourcing cb-common-functions ..."
+source /usr/sbin/cb-common-functions ; right_status $?
+TARGET=""
+
+# override usage in script_header_joetoo and local.usage in crossbuild-tools
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    echo
+    message "${BYon} joetoo-supported SBC board list:${Boff}"
+    while read board; do
+        echo -e "     ${LBon}${board}${Boff}"
+    done <<< $(joetoo-sbc-list | grep -v '\[')
+    echo
+    message "${BYon}${PN} also supports:"
+    for board in generic-aarch64 generic-armv7a generic-armv6j generic-amd64; do
+        echo -e "     ${LBon}${board}${Boff}"
+    done
+    echo
+    exit 1
+}
 
 initialize_variables() {
     # use script_header_joetoo functions
@@ -42,40 +56,49 @@ initialize_variables() {
 
     FLAGGED=$FALSE
     # assign initial values
-    message_n "Assigning PN = $(basename $0) ..."
+    message_n "Re-assigning PN = $(basename $0) ..."
     PN=$(basename $0) ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning BPN = ${PN} ..."
-    BPN=${PN} ; result=$? ; right_status $result
+    message_n "sourcing BUILD ..."
+    source /etc/crossbuild-tools/BUILD
+    result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning INTERACTIVE = \$TRUE ..."
-    INTERACTIVE=$TRUE ; result=$? ; right_status $result
+    message_n "sourcing BPN ..."
+    source /etc/crossbuild-tools/BPN
+    result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning VERBOSE = \$TRUE ..."
-    VERBOSE=$TRUE ; result=$? ; right_status $result
+    message_n "Re-assigning BOARD = \$1 [$1] ..."
+    export BOARD=${myBOARD} ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning verbosity = 3 ..."
-    verbosity=3 ; result=$? ; right_status $result
+    message_n "Re-assigning VERBOSE = \$TRUE ..."
+    export VERBOSE=$TRUE ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning BUILD = 0.1 ..."
-    BUILD=0.1 ; result=$? ; right_status $result
+    message_n "Re-assigning verbosity = 3 ..."
+    export verbosity=3 ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning starting_step = 0 ..."
-    starting_step=0 ; result=$? ; right_status $result
+    message_n "Re-assigning user = joe ..."
+    export user="joe" ; result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning stopping_step = \${#command_sequence[@]} ..."
-    stopping_step=${#command_sequence[@]} ; result=$? ; right_status $result
+    message_n "Assigning MAKE_CONF_PARTS_DIR = /home/${user}/myUtilities/dev-sbc/crossbuild-tools/make-conf-parts ..."
+    export MAKE_CONF_PARTS_DIR="/home/${user}/myUtilities/dev-sbc/crossbuild-tools/make-conf-parts"
+    result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
-    message_n "Assigning cmdseq_statusfile = /root/test_status ..."
-    cmdseq_statusfile=/root/test_status ; result=$? ; right_status $result
+    message_n "Assigning DRAFT_FILE = /tmp/draft-make-conf/make.conf.draft_${BOARD} ..."
+    export DRAFT_FILE="/tmp/draft-make-conf/make.conf.draft_${BOARD}"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning OUT_FILE = /home/${user}/myUtilities/dev-sbc/crossbuild-tools/make-conf-files/make.conf.${BOARD} ..."
+    export OUT_FILE="/home/${user}/myUtilities/dev-sbc/crossbuild-tools/make-conf-files/make.conf.${BOARD}"
+    result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
     [ $FLAGGED ] && return 1 || return 0
@@ -97,26 +120,294 @@ sanity_check() {
     return 0
 }
 
+add-part() {
+    # $1 is the input file path
+    INFILE=$1
+    while read -r LINE; do
+        echo "${LINE}" >> "${DRAFT_FILE}"
+    done < "${INFILE}"
+    return $?
+}
+
+create-draft-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "initializing draft make.conf file ..."
+    z=$(dirname "${DRAFT_FILE}")
+    export DRAFT_DIR="${z}"
+    if [ -d "${z}" ] ; then
+        echo -en " (dir ${BGon}exists${Boff})"
+    else
+        mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
+    fi && \
+    if [ -e "${DRAFT_FILE}" ] ; then
+        rm "${DRAFT_FILE}" || die "failed to rm ${DRAFT_FILE}"
+    fi
+    touch "${DRAFT_FILE}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-heading() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding heading ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/01_heading-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-COMMON_FLAGS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding COMMON_FLAGS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/02_COMMON_FLAGS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-CFLAGS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding CFLAGS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/03_CFLAGS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-CHOST() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding CHOST ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/04_CHOST-${TUPLE1}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MAKEOPTS_header() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MAKEOPTS_header ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/05_MAKEOPTS_header-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MAKEOPTS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MAKEOPTS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/06_MAKEOPTS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-ACCEPT_KEYWORDS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding ACCEPT_KEYWORDS for ${TUPLE1} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/07_ACCEPT_KEYWORDS-${TUPLE1}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-ACCEPT_LICENSE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding ACCEPT_LICENSE ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/08_ACCEPT_LICENSE-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-FEATURES() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding FEATURES ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/09_FEATURES-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-DIRS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding DIRS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/10_DIRS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-LANGUAGE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding LANGUAGE ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/11_LANGUAGE-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-INPUT_DEVICES() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding INPUT_DEVICES for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/12_INPUT_DEVICES_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-VIDEO_CARDS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding VIDEO_CARDS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/13_VIDEO_CARDS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-INSTALL_MASK() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding INSTALL_MASK ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/14_INSTALL_MASK-common"
+    result=$? ; right_status $result ; return $result
+}
+
+
+add-USE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+
+    response=""
+    while [[ ! "${response}" == [yYsS] ]] ; do
+        echo
+	echo -e "${BGon}*${Boff} Is this a (h)eadless server or a (d)esktop system?"
+        echo -en "(Enter [h|d]<return> or just <return> and then select \"no\" (n) to exit): "
+        read systype
+        message_n "${BYon}you responded "
+        case ${systype:0:1} in
+            [hH] ) systype="headless"; echo -e "${LBon}${systype}${Boff}" ;;
+            [dD] ) systype="desktop"; echo -e "${LBon}${systype}${Boff}" ;;
+            * ) echo -e "${systype}, which is interpreted as intent to exit; do you want to continue instead?" ;
+                confirm_continue_or_exit ;
+                systype="headless"; echo -e "default (${LBon}${systype}${BYon}) chosen${Boff}"
+        esac
+        new_prompt "${BYon}is this correct?${Boff} (y: yes; n: try again; s: exit)"
+    done
+    if [[ ! "${response}" == [yY] ]] ; then
+        die "system type ${systype} chosen but then rejected; exiting as instructed"
+    else
+        message_n "adding  USE flags for ${systype} ..."
+        add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+        add-part "${MAKE_CONF_PARTS_DIR%/}/15_USE-${systype}"
+        result=$? ; right_status $result ; return $result
+    fi
+}
+
+add-GRUB_PLATFORMS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding GRUB_PLATFORMS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/16_GRUB_PLATFORMS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MIRRORS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MIRRORS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/17_MIRRORS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+review-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    separator ${PN} "(review draft)"
+    cat "${DRAFT_FILE}"
+    separator ${PN} "(review draft)"
+    message "please review output between \"(review draft)\" separators above"
+    echo
+}
+
+post-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    MSG="${BYon}Are you satisfied with the above? --\nWould you like to copy the draft (${BMon}${DRAFT_FILE}${BYon})\n"
+    MSG+="to final (${LBon}${OUT_FILE}${BYon})?\n${Boff}"
+    MSG+="(${BGon}y${Boff}: yes, write final; ${BRon}n|s${Boff}: no, exit ${PN})"
+    new_prompt "$MSG"
+    if [[ "${response:0:1}" == [yY] ]] ; then
+        message_n "copying draft"
+        z=$(dirname "${OUT_FILE}")
+        if [ -d "${z}" ] ; then
+            echo -en " (dir ${BGon}exists${Boff})"
+        else
+            mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
+        fi && \
+        if [ -e "${OUT_FILE}" ] ; then
+            new_prompt "${OUT_FILE} already exists; overwrite?"
+            if [[ "${response:0:1}" == [yY] ]] ; then
+                cp -a "${DRAFT_FILE}" "${OUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
+            else
+                die "exiting on negative response"
+            fi
+        else
+            cp -a "${DRAFT_FILE}" "${OUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
+        fi
+        right_status $result ; return $result
+    else
+        return 1
+    fi
+}
+
+
 #-----[ main script ]----------------------------------------------------
 checkroot
 separator ${PN} $(hostname)
+[ $# -ne 1 ] && usage
+myBOARD=$1
 
-validate_status_file $cmdseq_statusfile || die "Failed to validate_status_file"
+# basic common approach -
+# initialize variables (local function)
+# local validation, configuration, and variable assignment (local function(s))
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# do local parts
 
 # initialize variables and set default values
 initialize_variables || die "Failed to initialize_variables"
 
-# over-ride configuration with commandline input
-separator ${PN} "(process_cmdline)"
-process_cmdline $@  || die "Failed to process_cmdline"
+# local validation, configuration, and variable assignment (local function(s))
+# work-around 1 for generic-amd64, for now
+if [[ ${BOARD} == "generic-amd64" ]] ; then
+    TARGET=x86_64-pc-linux-gnu
+    TARGET_ARCH=amd64
+    QEMU_ARCH=x86_64
+#    STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+    profile_number=21
+    VALID=$TRUE
+else
+    validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
+fi
+
+# identify TUPLE1 - used to pick CFLAGS, etc
+message_n "extracting TUPLE1 from TARGET ..."
+# work-around 2 for generic-amd64, for now
+if [[ ${BOARD} == "generic-amd64" ]] ; then
+    TUPLE1="amd64"
+else
+    TUPLE1=$(echo "${TARGET}" | cut -d'-' -f1) result=$?
+fi
+[ $result -eq 0 ] && echo -en " (${TUPLE1})" || echo -en " (failed)"
+right_status $result
 
 display_configuration || die "Failed to display_configuration"
+confirm_continue_or_exit
 
 # sanity check configuration
-sanity_check || die "Failed sanity_check"
+#sanity_check || die "Failed sanity_check"
 
-# use script_header_joetoo_extended (bash) functions
-run_sequence $cmdseq_statusfile || die "Failed to run_sequence"
+separator ${PN} "(build make.conf)"
+create-draft-file || die "failed to create-draft-file"
+add-heading || die "failed to add-heading"
+add-COMMON_FLAGS || die "failed to add-COMMON_FLAGS"
+add-CFLAGS || die "failed to add-CFLAGS"
+add-CHOST || die "failed to add-CHOST"
+add-MAKEOPTS_header || die "failed to add-MAKEOPTS_header"
+add-MAKEOPTS || die "failed to add-MAKEOPTS"
+add-ACCEPT_KEYWORDS || die "failed to add-ACCEPT_KEYWORDS"
+add-ACCEPT_LICENSE || die "failed to add-ACCEPT_LICENSE"
+add-FEATURES || die "failed to add-FEATURES"
+add-DIRS || die "failed to add-DIRS"
+add-LANGUAGE || die "failed to add-LANGUAGE"
+add-INPUT_DEVICES || die "failed to add-INPUT_DEVICES"
+add-VIDEO_CARDS || die "failed to add-VIDEO_CARDS"
+add-INSTALL_MASK || die "failed to add-INSTALL_MASK"
+add-USE || die "failed to add-USE"
+add-GRUB_PLATFORMS || die "failed to add-GRUB_PLATFORMS"
+add-MIRRORS || die "failed to add-MIRRORS"
+review-file || die "failed to review-file"
+post-file || die "failed to post-file"
 
 message "${PN} Complete"
 echo
