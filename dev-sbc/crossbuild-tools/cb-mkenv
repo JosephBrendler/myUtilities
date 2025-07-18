@@ -54,6 +54,7 @@ command_sequence=(
 'eselect-profile'
 'cb-quickpkg-toolchain ${BOARD}'
 'cb-populate-target ${BOARD}'
+'symlink-repos'
 'TARGET-emerge-system'
 'TARGET-emerge-world'
 'cb-buildtarget-qemu ${BOARD}'
@@ -74,6 +75,7 @@ msg1_sequence=(
 'eselect a profile'
 'create crossbuild toolchain binary packages with quickpgk'
 'populate configs in crossbuild target environment'
+'symlink repositories'
 '${TARGET}-emerge @system set'
 '${TARGET}-emerge @world set'
 'build qemu binary for ${TARGET}'
@@ -94,6 +96,7 @@ msg2_sequence=(
 'eselecting profile'
 'creating crossbuild toolchain binary packages with quickpgk'
 'populating configs in crossbuild target environment'
+'symlinking repositories'
 '${TARGET}-emerging @system set'
 '${TARGET}-emerging @world set'
 'building qemu binary for ${TARGET}'
@@ -158,6 +161,80 @@ emerge-cross-rust-std() {
     return 0
 }
 
+symlink-repos() {
+    # for a simple crossbuild environment, we can just use the CHOST's repos
+    # (we don't need to take up extra storage with what would be redundant
+    #  data if our use case is simple crossbuilding or binhosting)
+    for x in gentoo joetoo; do
+        VALID_LINK=$FALSE
+        # check them first
+        repo=/usr/${TARGET}/var/db/repos/${x}
+	message_n "checking repo ${repo}"
+        if [ -e ${repo} ] ; then
+            # ${repo} already exists - is it a link or a directory?
+            if [ -L ${repo} ] ; then
+                # ${repo} is a link path - is it valid?
+                echo -en " (${BGon}link${Boff}"
+                target_path=$(readlink -f "$repo")
+                if [[ "${target_path}" == "/var/db/repos/${x}" ]] ; then
+                    echo -en " ${BGon}validated${Boff})"
+                    right_status $TRUE
+                    VALID_LINK=$TRUE
+                else
+                    echo -en " ${BRon}invalid${Boff})"
+                    right_status 1
+                fi
+            elif [ -d ${repo} ] ; then
+                # ${repo} (not a link), but is a directory - is it empty? (maybe relevant)
+                echo -en " (${BRon}dir${Boff}"
+                if [ -z "$(ls -A ${repo})" ] ; then
+                    # empty
+                    echo -en " empty)"
+                    right_status 1
+                else
+                    # not empty
+                    echo -en " ${BMon}not${Boff} empty)"
+                    right_status 1
+                    # die here so we don't have to use rm -r to remove blindly below
+                    # what might be an invalid link pointing to something important
+                    die "repo $x is a non-empty directory; please resolve this before resuming ${PN}"
+                fi
+            else
+                # ${repo} exists but is neither link nor directory, so it is invalid
+                echo -en " (exists; ${BRon}not link/dir: invalid${Boff})"
+                right_status 1
+            fi
+            # if not valid, ask if user wants to remove the existing dir/link
+            if [ ! $VALID_LINK ] ; then
+                MSG="${BYon}Do you want to remove the invalid link/dir?${Boff}\n"
+                MSG+="( y: yes, remove it; n|s: no, exit program )"
+                new_prompt "${MSG}"
+                if [[ "${response}" == [yY] ]] ;then
+                    message_n "removing existing ${repo} ..."
+                    # use %/ and don't use -r here to avoid removing
+                    # important data from a non-empty directory, or
+                    # what might be an invalid link pointing to something important
+                    rm -r ${repo%/} 2>/dev/null && right_status $? || die "failed to remove existing repo"
+                else
+                    die "not removing existing repo; exiting as instructed"
+                fi
+            fi
+        else
+            # repo does not exist
+            echo -en " (does not exist)"
+            right_status $TRUE
+        fi
+        # if we got here, repo is either already valid or does not (or no longer) exist(s)
+        # create the link for it if not already valid
+        if [ ! $VALID_LINK ] ; then
+            message_n "creating symlink for /var/db/repos/${x}"
+            ln -s /var/db/repos/${x} /usr/${TARGET}/var/db/repos/${x} && \
+                right_status $? || die "failed to create $x repo"
+        fi
+    done
+    return 0
+}
+
 get-max-profile-number() {
     BOARD=$1
     validate_target ${BOARD} # set TARGET, TARGET_ARCH just in case not already set
@@ -192,6 +269,7 @@ eselect-profile() {
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
     d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
     if [[ $INTERACTIVE ]] ; then
+        message "${BMon}Note: carefully examine your selected profile ${BYon}(e.g. merged vs split-usr)${Boff}"
         msg="${BYon}Would you like to select a diffeeent profile?\n"
         msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
         response="" ; new_prompt "${msg}"
