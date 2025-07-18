@@ -21,8 +21,10 @@ PN=$(basename $0)
 
 varlist=" PN BUILD"
 varlist+=" BREAK BOARD TARGET TARGET_ARCH QEMU_ARCH TUPLE1"
-varlist+=" MAKE_CONF_PARTS_DIR user DRAFT_FILE OUT_FILE"
-varlist+=" BREAK bool.FLAGGED bool.VERBOSE verbosity"
+varlist+=" BREAK config_file bool.INTERACTIVE SYS_TYPE"
+varlist+=" ENV_TYPE lv.OUT_FILE bool.OVER_WRITE lv.FINAL_OUTPUT_FILE"
+varlist+=" BREAK MAKE_CONF_PARTS_DIR user lv.DRAFT_FILE"
+varlist+=" bool.FLAGGED bool.VERBOSE verbosity"
 
 hidden_varlist="result response answer "
 
@@ -65,8 +67,23 @@ initialize_variables() {
     result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
+    message_n "Assigning config_file = /etc/crossbuild-tools/cb-assemble-make-conf.conf ..."
+    config_file="/etc/crossbuild-tools/cb-assemble-make-conf.conf"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing ${config_file} ..."
+    source "${config_file}"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
     message_n "Re-assigning BOARD = \$1 [$1] ..."
     export BOARD=${myBOARD} ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning FINAL_OUTPUT_FILE = \${OUT_FILE}.\${SYS_TYPE}.\${ENV_TYPE}.\${BOARD}"
+    export FINAL_OUTPUT_FILE="${OUT_FILE}.${SYS_TYPE}.${ENV_TYPE}.${BOARD}"
+    result=$? ; right_status $result
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
 
     message_n "Re-assigning VERBOSE = \$TRUE ..."
@@ -111,7 +128,12 @@ sanity_check() {
     separator ${PN} "(sanity check)"
     # put some code here to catch dumb stuff like cmdline option assignments that should
     # be mutually exclusive
-    [ ! $INTERACTIVE ] && [ $EXAMPLE ] && E_message "(demonstration) INTERACTIVE and EXAMPLE should NOT both be TRUE; quitting" && return 1
+    [[ "${SYS_TYPE:0:1}" != [hH] ]] && [[ "${SYS_TYPE:0:1}" != [dD] ]] && \
+        die "invalid SYS_TYPE [${SYS_TYPE}] ; please correct this in ${config_file}"
+    [[ "${ENV_TYPE:1:1}" != [rR] ]] && [[ "${ENV_TYPE:0:1}" != [hH] ]] && \
+        die "invalid ENV_TYPE [${ENV_TYPE}] ; please correct this in ${config_file}"
+    # don't need to sanity check OUT_FILE - if the dirname does not exist, we create it
+    # and if the file already exists, and OVER_WRITE=$FALSE, we get user to confirm
     return 0
 }
 
@@ -165,9 +187,10 @@ add-CFLAGS() {
 
 add-CHOST() {
     d_message "inside ${FUNCNAME[0]}" 4
-    message_n "adding CHOST ..."
+    message_n "adding CHOST for ${TUPLE1} ${ENV_TYPE} ..."
+    # append the version for both TUPLE1 (i.e. arch) and ENV_TYPE (crossbuild/chroot) version of this
     add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
-    add-part "${MAKE_CONF_PARTS_DIR%/}/04_CHOST-${TUPLE1}"
+    add-part "${MAKE_CONF_PARTS_DIR%/}/04_CHOST-${TUPLE1}.${ENV_TYPE}"
     result=$? ; right_status $result ; return $result
 }
 
@@ -254,30 +277,11 @@ add-INSTALL_MASK() {
 add-USE() {
     d_message "inside ${FUNCNAME[0]}" 4
 
-    response=""
-    while [[ ! "${response}" == [yYsS] ]] ; do
-        echo
-	echo -e "${BGon}*${Boff} Is this a (h)eadless server or a (d)esktop system?"
-        echo -en "(Enter [h|d]<return> or just <return> and then select \"no\" (n) to exit): "
-        read systype
-        message_n "${BYon}you responded "
-        case ${systype:0:1} in
-            [hH] ) systype="headless"; echo -e "${LBon}${systype}${Boff}" ;;
-            [dD] ) systype="desktop"; echo -e "${LBon}${systype}${Boff}" ;;
-            * ) echo -e "${systype}, which is interpreted as intent to exit; do you want to continue instead?" ;
-                confirm_continue_or_exit ;
-                systype="headless"; echo -e "default (${LBon}${systype}${BYon}) chosen${Boff}"
-        esac
-        new_prompt "${BYon}is this correct?${Boff} (y: yes; n: try again; s: exit)"
-    done
-    if [[ ! "${response}" == [yY] ]] ; then
-        die "system type ${systype} chosen but then rejected; exiting as instructed"
-    else
-        message_n "adding  USE flags for ${systype} ..."
-        add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
-        add-part "${MAKE_CONF_PARTS_DIR%/}/15_USE-${systype}"
-        result=$? ; right_status $result ; return $result
-    fi
+    message_n "adding  USE flags for ${SYS_TYPE} ${ENV_TYPE} ..."
+    # append the version for both SYS_TYPE (headless/desktop) and ENV_TYPE (crossbuild/chroot) version of this
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/15_USE-${SYS_TYPE}.${ENV_TYPE}"
+    result=$? ; right_status $result ; return $result
 }
 
 add-GRUB_PLATFORMS() {
@@ -296,43 +300,29 @@ add-MIRRORS() {
     result=$? ; right_status $result ; return $result
 }
 
-review-file() {
-    d_message "inside ${FUNCNAME[0]}" 4
-    separator ${PN} "(review draft)"
-    cat "${DRAFT_FILE}"
-    separator ${PN} "(review draft)"
-    message "please review output between \"(review draft)\" separators above"
-    echo
-}
-
 post-file() {
     d_message "inside ${FUNCNAME[0]}" 4
-    MSG="${BYon}Are you satisfied with the above? --\nWould you like to copy the draft (${BMon}${DRAFT_FILE}${BYon})\n"
-    MSG+="to final (${LBon}${OUT_FILE}${BYon})?\n${Boff}"
-    MSG+="(${BGon}y${Boff}: yes, write final; ${BRon}n|s${Boff}: no, exit ${PN})"
-    new_prompt "$MSG"
-    if [[ "${response:0:1}" == [yY] ]] ; then
-        message_n "copying draft"
-        z=$(dirname "${OUT_FILE}")
+    PROCEED=$TRUE
+    message_n "copying draft"
+    if [ -e "${OUT_FILE}" ] && [ ! ${OVER_WRITE} ] ; then
+        # same-named file already exists, and OVER_WRITE=$FALSE, so confirm with user before writing
+        echo  # was otherwise waiting from message_n above
+        message "${OUT_FILE}"
+        new_prompt "already exists; overwrite?"
+        [[ "${response:0:1}" != [yY] ]] && PROCEED=$FALSE
+    fi
+    if [ ${PROCEED} ] ; then
+        z=$(dirname "${FINAL_OUTPUT_FILE}")
+        # create directory if needed
         if [ -d "${z}" ] ; then
             echo -en " (dir ${BGon}exists${Boff})"
         else
             mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
-        fi && \
-        if [ -e "${OUT_FILE}" ] ; then
-            new_prompt "${OUT_FILE} already exists; overwrite?"
-            if [[ "${response:0:1}" == [yY] ]] ; then
-                cp -a "${DRAFT_FILE}" "${OUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
-            else
-                die "exiting on negative response"
-            fi
-        else
-            cp -a "${DRAFT_FILE}" "${OUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
         fi
-        right_status $result ; return $result
-    else
-        return 1
+        # copy file to final
+        cp -a "${DRAFT_FILE}" "${FINAL_OUTPUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
     fi
+    right_status $result ; return $result
 }
 
 
@@ -377,7 +367,10 @@ fi
 right_status $result
 
 display_configuration || die "Failed to display_configuration"
-confirm_continue_or_exit
+echo
+message "NOTE: $(status_color ${INTERACTIVE})INTERACTIVE${Boff}, ${LBon}SYS_TYPE${Boff}, ${LBon}ENV_TYPE${Boff}, ${LBon}OUT_FILE${Boff}, and $(status_color ${OVER_WRITE})OVER_WRITE${Boff} are configured"
+message "(and may be modified) in ${config_file}"
+[ $INTERACTIVE ] && confirm_continue_or_exit
 
 # sanity check configuration
 #sanity_check || die "Failed sanity_check"
@@ -401,7 +394,6 @@ add-INSTALL_MASK || die "failed to add-INSTALL_MASK"
 add-USE || die "failed to add-USE"
 add-GRUB_PLATFORMS || die "failed to add-GRUB_PLATFORMS"
 add-MIRRORS || die "failed to add-MIRRORS"
-review-file || die "failed to review-file"
 post-file || die "failed to post-file"
 
 message "${PN} Complete"
