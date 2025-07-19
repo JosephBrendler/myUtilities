@@ -27,6 +27,138 @@ usage() {
     exit
 }
 
+validate-repo-mountpoints() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    # validate mountpoints for host's repositories, so we can share them
+    # with this "minimal" image file structure
+    # (i.e. replace links, if found, and warn regarding populated repo directories)
+    for x in gentoo joetoo; do
+        VALID_MOUNTPOINT=$FALSE
+        # check them first
+        repo=/usr/${TARGET}/var/db/repos/${x}
+        message "checking repo ${repo}"
+        if [ -e ${repo} ] ; then
+            # ${repo} already exists - is it a link or a directory?
+            if [ -L ${repo} ] ; then
+                # ${repo} is a link path - carefully remove it (not the target it points to)
+                echo -en " (${BRon}link${Boff}"
+                rm ${repo%/} && echo -en " ${BGon}removed${Boff})" || die "failed to remove link"
+                # replace with empty directory (valid mountpoint)
+                mkdir ${repo} >/dev/null 2>/dev/null && echo -en "(${BGon}dir created${Boff})" || die "failed to create mountpoint"
+                VALID_MOUNTPOINT=$TRUE
+                right_status $TRUE
+            elif [ -d ${repo} ] ; then
+                # ${repo} is a directory - is it empty?
+                echo -en " (${BGon}dir${Boff}"
+                if [ -z "$(ls -A ${repo})" ] ; then
+                    # empty
+                    echo -en " ${BGon}empty)${Boff}"
+                    VALID_MOUNTPOINT=$TRUE
+                else
+                    # not empty
+                    echo -en " ${BMon}not${Boff} empty)"
+                    # die here so we don't have to use rm -r to remove blindly below
+                    # what might be an invalid link pointing to something important
+                    die "repo $x is a non-empty directory; please resolve this before resuming ${PN}"
+                fi
+                # if we got here, repo was either (or now is) and empty directory (valid mount point)
+                right_status $TRUE
+            else
+                # ${repo} exists but is neither link nor directory, so it is invalid
+                echo -en " (exists; ${BRon}not link/dir: invalid${Boff})"
+                right_status 1
+                die "repo $x is some kind of non-link/dir file; please resolve this before resuming ${PN}"
+            fi
+        else
+            # repo does not exist - create empty directory (valid mountpoint)
+            echo -en " (does not exist)"
+            mkdir ${repo} >/dev/null 2>/dev/null && echo -en " (${BGon}dir created${Boff})" || die "failed to create mountpoint"
+            VALID_MOUNTPOINT=$TRUE
+            right_status $TRUE
+        fi
+        # if we got here, repo already was, or now is, an empty directory (valid mountpoint) - mount it
+# NO - let mount-everything mount it later
+#        if [ $VALID_MOUNTPOINT ] ; then
+#            message_n "mounting /var/db/repos/${x} on mountpoint: ${repo}"
+#            mount /var/db/repos/${x} ${repo%/}/ >/dev/null 2>&1 && \
+#                right_status $? || die "failed to mount host repo on ${repo}"
+#        fi
+    done
+    return 0
+}
+
+validate-dirlist() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    dirlist="proc dev usr/src/linux lib/modules sys tmp dev/pts"
+
+    # ensure all the needed filesystem structures are present
+    for x in ${dirlist}
+    do
+        message_n "examining $x"
+        if [ ! -d $x ] ; then
+          echo -en " (does not exist)"
+          mkdir -p $x >/dev/null 2>/dev/null && echo -en " (${BGon}created${Boff})" || die "failed to mkdir -pv $x"
+        else
+          echo -en " (${BGon}exists${Boff})"
+        fi
+        right_status $TRUE
+    done
+    return 0
+}
+
+mount-everything() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    message_n "mounting proc for chroot target ..."
+    mount -t proc none /usr/${TARGET}/proc >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount /proc"
+    message_n "mounting dev for chroot target ..."
+    mount -o bind /dev /usr/${TARGET}/dev >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount /dev"
+    message_n "mounting var/db/repos/joetoo for chroot target ..."
+    mount -o bind /var/db/repos/joetoo /usr/${TARGET}/var/db/repos/joetoo >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount host repo joetoo"
+    message_n "mounting var/db/repos/gentoo for chroot target ..."
+    mount -o bind /var/db/repos/gentoo /usr/${TARGET}/var/db/repos/gentoo >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount host repo gentoo"
+    message_n "mounting usr/src/linux for chroot target ..."
+    mount -o bind /home/joe/raspi-sources/linux /usr/${TARGET}/usr/src/linux >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount host kernel sources"
+    message_n "mounting lib/modules for chroot target ..."
+    mount -o bind /lib/modules /usr/${TARGET}/lib/modules >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount host modules"
+    message_n "mounting sys for chroot target ..."
+    mount -o bind /sys /usr/${TARGET}/sys >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount /sys"
+    message_n "copying /etc/resolv.conf for chroot target ..."
+    cp /etc/resolv.conf /usr/${TARGET}/etc/resolv.conf >/dev/null 2>&1 && \
+        right_status $? || die "failed to copy resolv.conf"
+    #mount -o bind /tmp tmp
+    #mount -o bind /dev/pts dev/pts #only for X
+    return 0
+}
+
+umount-everything() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    #umount /usr/${TARGET}/dev/pts
+    #umount /usr/${TARGET}/tmp
+    FLAGGED=$FALSE
+    message_n "un-mounting sys from chroot target ..."
+    umount /usr/${TARGET}/sys && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting lib/modules from chroot target ..."
+    umount /usr/${TARGET}/lib/modules && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting usr/src/linux from chroot target ..."
+    umount /usr/${TARGET}/usr/src/linux && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting var/db/repos/gentoo from chroot target ..."
+    umount /usr/${TARGET}/var/db/repos/gentoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting var/db/repos/joetoo from chroot target ..."
+    umount /usr/${TARGET}/var/db/repos/joetoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting dev from chroot target ..."
+    umount /usr/${TARGET}/dev && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    message_n "un-mounting proc from chroot target ..."
+    umount /usr/${TARGET}/proc && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    [ $FLAGGED ] && return 1 || return 0
+}
+
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
@@ -34,78 +166,30 @@ separator ${PN} $(hostname)
 BOARD=$1
 validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
 
-old_dir="$(pwd)"
-cd /usr/${TARGET}
-message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
-
-message_n "restarting qemu-binfmt ..."
-/etc/init.d/qemu-binfmt restart && right_status $? || ( right_status $? && exit 1 )
+message "restarting qemu-binfmt ..."
+/etc/init.d/qemu-binfmt restart || die "failed to restart qemu-binfmt"
 
 # Next two lines are optional.
 # (Activate if the qemu-wrapper is used. Check that the wrapper location corresponds with the call at the end of line 2!)
 #echo '-1' > /proc/sys/fs/binfmt_misc/arm #deregister wrong arm
 #echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\x00\xff\xfe\xff\xff\xff:/usr/local/bin/qemu-wrapper:' > /proc/sys/fs/binfmt_misc/register
 
-dirlist="proc dev var/db/repos/gentoo var/db/repos/joetoo \
-  var/db/repos/crossdev usr/src/linux lib/modules sys tmp dev/pts"
+old_dir="$(pwd)"
+cd /usr/${TARGET}
+message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
 
-# ensure all the needed filesystem structures are present
-for x in ${dirlist}
-do
-  if [ ! -d $x ] ; then
-    E_message_n "directory $x does not exist; creating it ..."
-    mkdir -pv $x && right_status $? || ( right_status $? && exit 1 )
-  else
-    echo "directory $x already exists"
-    echo "skipping mkdir"
-  fi
-done
+validate-repo-mountpoints || die "failed to validate-repo-mountpoints"
 
-message_n "mounting proc for chroot target ..."
-mount -t proc none proc && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting dev for chroot target ..."
-mount -o bind /dev dev && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting var/db/repos/joetoo for chroot target ..."
-mount -o bind /var/db/repos/joetoo var/db/repos/joetoo && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting var/db/repos/gentoo for chroot target ..."
-mount -o bind /var/db/repos/gentoo var/db/repos/gentoo && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting var/db/repos/crossdev for chroot target ..."
-mount -o bind /var/db/repos/crossdev var/db/repos/crossdev && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting usr/src/linux for chroot target ..."
-mount -o bind /home/joe/raspi-sources/linux usr/src/linux && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting lib/modules for chroot target ..."
-mount -o bind /lib/modules lib/modules && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting sys for chroot target ..."
-mount -o bind /sys sys && right_status $? || ( right_status $? && exit 1 )
-message_n "copying /etc/resolv.conf for chroot target ..."
-cp /etc/resolv.conf etc/resolv.conf && right_status $? || ( right_status $? && exit 1 )
-#mount -o bind /tmp tmp
-#mount -o bind /dev/pts dev/pts #only for X
+validate-dirlist || die "failed to validate-dirlist"
+
+mount-everything || die "faailed to mount-everything"
  
 chroot . /bin/bash --login
  
-#umount dev/pts
-#umount tmp
-FLAGGED=$FALSE
-message_n "un-mounting sys from chroot target ..."
-umount sys && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting lib/modules from chroot target ..."
-umount lib/modules && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting usr/src/linux from chroot target ..."
-umount usr/src/linux && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting var/db/repos/crossdev from chroot target ..."
-umount var/db/repos/crossdev && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting var/db/repos/gentoo from chroot target ..."
-umount var/db/repos/gentoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting var/db/repos/joetoo from chroot target ..."
-umount var/db/repos/joetoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting dev from chroot target ..."
-umount dev && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting proc from chroot target ..."
-umount proc && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-[[ "$FLAGGED" == "$TRUE" ]] && ( E_message "failed clean exit; note red flags above" && exit 1 )
-
 echo
 cd $old_dir
 message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+
+umount-everything || die "failed to umount-everything and clean exit; note red flags above"
+
 exit 0

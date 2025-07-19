@@ -35,9 +35,9 @@ verbosity=2
 PN=$(basename $0)
 response=""
 
-varlist="PN BPN BUILD BOARD TARGET TARGET_ARCH QEMU_ARCH STAGE3_SELECTOR"
-varlist+=" profile_number"
-varlist+=" starting_step stopping_step mkenvstatusfile"
+varlist="PN BPN BUILD BREAK BOARD TARGET TARGET_ARCH QEMU_ARCH STAGE3_SELECTOR"
+varlist+=" default_profile LLVM_TARGET"
+varlist+=" BREAK starting_step stopping_step mkenvstatusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" bool.CREATE bool.DESTROY"
 varlist+=" BREAK bool.VERBOSE verbosity old_dir"
@@ -59,6 +59,8 @@ command_sequence=(
 'TARGET-emerge-world'
 'cb-buildtarget-qemu ${BOARD}'
 'emerge-host-world'
+'prepare-cross-rust'
+'rebuild-rust-and-llvm'
 'emerge-cross-rust-std'
 'cb-chroot-target ${BOARD}'
 )
@@ -80,6 +82,8 @@ msg1_sequence=(
 '${TARGET}-emerge @world set'
 'build qemu binary for ${TARGET}'
 'restore host with emerge -uavDNgk @world'
+'prepare to build cross-${TARGET}/rust-std'
+'rebuild rust and llvm with new configuration if changed'
 'emerge cross-${TARGET}/rust-std'
 'chroot into new ${TARGET} environment'
 )
@@ -101,6 +105,8 @@ msg2_sequence=(
 '${TARGET}-emerging @world set'
 'building qemu binary for ${TARGET}'
 'restoring host with emerge -uavDNgk @world'
+'preparing to build cross-${TARGET}/rust-std'
+'rebuilding rust and llvm with new configuration if changed'
 'emerging cross-${TARGET}/rust-std'
 'chrooting into new ${TARGET} environment'
 )
@@ -124,6 +130,8 @@ initialize_variables() {
     PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "sourcing BPN ..." 2
     source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "sourcing cb-common-functions ..." 2
+    source /usr/sbin/cb-common-functions && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting old_dir = $(pwd)" 2
     export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default starting_step = 0" 2
@@ -148,16 +156,111 @@ initialize_variables() {
 }
 
 emerge-host-world() {
-    [[ $INTERACTIVE ]] && emerge_options="-uavDNgk" || emerge_options="-uvDNgk"
-    emerge ${emerge_options} @world --keep-going
-    result=$?
+    options="--update --verbose --deep --newuse --getbinpkg --usepkg --keep-going"
+    [ $INTERACTIVE ] && options+=" --ask"
+    emerge @world ${options} ; result=$?
     return $result
 }
 
 emerge-cross-rust-std() {
-    # this doesn't work yet
-#    emerge -av cross-${TARGET}/rust-std
-    E_message "emerge -av cross-${TARGET}/rust-std doesn't work... skip for now"
+    # build cross-${TARGET}/rust-std
+    options="--verbose --getbinpkg --usepkg"
+    [ $INTERACTIVE ] && options+=" --ask"
+    emerge cross-${TARGET}/rust-std ${options} ; result=$?
+    return $result
+}
+
+rebuild-rust-and-llvm() {
+    # rebuild rust and llvm with the new configuration, if it changed
+    if [ $RUST_LLVM_CHANGE_FLAG ] ; then
+        # configuration changed - rebuild
+        message "${BYon}rust/llvm configuration ${BMon}changed -- rebuilding${Boff}"
+        options="--update --verbose --deep --newuse --getbinpkg --usepkg"
+        [ $INTERACTIVE ] && options+=" --ask"
+        emerge @world ${options} ; result=$?
+    else
+        # configuration unchanged - just continue
+        message "${BYon}rust/llvm configuration ${BGon}unchanged -- continuing${Boff}"
+        right_status $TRUE
+        result=0
+    fi
+    return $result
+}
+
+prepare-cross-rust() {
+    # Some packages (such as gnome-base/librsvg) depend on a rust cross toolchain
+    # so build the rust cross toolchain
+
+    # change this if we have to modify the system
+    export RUST_LLVM_CHANGE_FLAG=$FALSE
+
+    # verify that USE flag "dev-lang/rust rust-src" is in CHOST's package.use
+    host_package_use="/etc/portage/package.use/joetoo"
+    message_n "looking for \"dev-lang/rust rust-src\" in ${host_package_use}"
+    if grep -qF -- "dev-lang/rust rust-src" "${host_package_use}" ; then
+        echo -en " (${BGon}found${Boff}))"
+    else
+        echo -en " (${BRon}not found${Boff}))"
+        echo -e "\ndev-lang/rust rust-src" >> "${host_package_use}" || die "failed to append rust-src use flag"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # verify or correct LLVM_TARGETS in CHOST's make.conf
+    # not sure this is really necessary -- all targets may be unconditionally enabled in llvm-core/llvm(?)
+    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 -- news regarding adjustment of profiles' package.use.force --
+        # Michał Górny <mgorny@gentoo.org> (2021-11-04)
+        # Enable all LLVM targets unconditionally.  Unfortunately, disabling
+        # targets tend to break reverse dependencies (e.g. Rust) and we are yet
+        # to find a clean way of resolving that.  Compared to the damage
+        # potential, the increase of build time is a minor problem.  Users who
+        # really insist of building a smaller system can un-force the flags
+        # at their own responsibility.
+    # see more in footnote at the bottom of this file
+    # anyway, do this for now
+    # if make.conf doesn't contain LLVM_TARGETS, then add them
+    host_make_conf="/etc/portage/make.conf"
+    message "examining LLVM_TARGETS in ${host_make_conf}"
+    message_n "looking for ${LLVM_TARGET}"
+    if grep -qF "LLVM_TARGETS=" "${host_make_conf}" ; then
+        # make.conf contains an assigment for LLVM_TARGETS - is this board's target in it?
+        source "${host_make_conf}"  # activate the current assignemt so we can check it
+        if [[ "${LLVM_TARGETS}" == *"${LLVM_TARGET}"* ]] ; then
+            # our target is already included
+            echo -en " (${BGon}found${Boff})"
+        else
+            echo -en " (${BRon}not found${Boff})"
+            echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" && \
+                echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.conf"
+            export RUST_LLVM_CHANGE_FLAG=$TRUE
+        fi
+    else
+        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
+        echo -en " (${BRon}not found${Boff})"
+        echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" && \
+            echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.conf"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # now validate or create /etc/portage/env/dev-lang/rust
+    # (should be installed by this package's ebuild)
+    message_n "examining /etc/portage/env/dev-lang/rust"
+    if [ -e /etc/portage/env/dev-lang/rust ] ; then
+        echo -en " (${BGon}found${Boff})"
+    else
+        # not found - create
+        echo -en " (${BRon}not found${Boff})"
+        CONTENT="RUST_CROSS_TARGETS=(\n"
+        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
+        CONTENT+=" )"
+        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust && \
+            echo -en "(${BGon}created${Boff})" || die "failed to create /etc/portage/env/dev-lang/rust"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
     return 0
 }
 
@@ -165,6 +268,10 @@ symlink-repos() {
     # for a simple crossbuild environment, we can just use the CHOST's repos
     # (we don't need to take up extra storage with what would be redundant
     #  data if our use case is simple crossbuilding or binhosting)
+    # we could alternatively mount the host's repositories on empty target repo-named directories,
+    # (that is what cb-chroot-target has to do), but we only link for now
+    # because it is a simpler "lighter" approach to sharing the host's repos
+    # for cross-building only (not for chroot)
     for x in gentoo joetoo; do
         VALID_LINK=$FALSE
         # check them first
@@ -264,14 +371,14 @@ profile_number_prompt()  {
 }
 
 eselect-profile() {
-    message "setting default profile ..."
-    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
+    message "setting profile ..."
+    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${default_profile}
     ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
     d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
     if [[ $INTERACTIVE ]] ; then
         message "${BMon}Note: carefully examine your selected profile ${BYon}(e.g. merged vs split-usr)${Boff}"
-        msg="${BYon}Would you like to select a diffeeent profile?\n"
-        msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
+        msg="${BYon}Would you like to select a different profile?\n"
+        msg+="${BWon}( y: yes select new | s: no; continue with default | n: no; exit )${Boff}"
         response="" ; new_prompt "${msg}"
     else
         response="s"  # keep default profile and continue
@@ -434,3 +541,35 @@ echo
 cd $old_dir
 d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
 exit 0
+
+# Footnotes regarding LLVM_TARGETS --
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/base/package.use.force
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_AArch64 llvm_targets_AMDGPU               <=== NOTE AArch64
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_ARM llvm_targets_AVR llvm_targets_BPF     <=== NOTE ARM
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_Hexagon llvm_targets_Lanai
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_MSP430 llvm_targets_Mips
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_NVPTX llvm_targets_PowerPC
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_RISCV llvm_targets_Sparc
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_SystemZ llvm_targets_WebAssembly
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_X86 llvm_targets_XCore                    <=== NOTE X86
+    #    >=llvm-core/clang-14 llvm_targets_VE
+    #    >=llvm-core/clang-16 llvm_targets_LoongArch
+    #    >=llvm-core/clang-20 llvm_targets_SPIRV
+    #
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/amd64/package.use.force
+    #    dev-lang/rust llvm_targets_X86
+    #    dev-ml/llvm llvm_targets_X86
+    #    llvm-core/clang llvm_targets_X86
+    #    llvm-core/llvm llvm_targets_X86
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/arm64/package.use.force
+    #    dev-lang/rust llvm_targets_AArch64
+    #    dev-ml/llvm llvm_targets_AArch64
+    #    llvm-core/clang llvm_targets_AArch64
+    #    llvm-core/llvm llvm_targets_AArch64
+    #
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/arm/package.use.force
+    #    dev-lang/rust llvm_targets_ARM
+    #    dev-ml/llvm llvm_targets_ARM
+    #    llvm-core/clang llvm_targets_ARM
+    #    llvm-core/llvm llvm_targets_ARM
+
