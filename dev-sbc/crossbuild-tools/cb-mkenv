@@ -52,12 +52,12 @@ command_sequence=(
 'untar-stage3'
 'create-new-cross-compiler'
 'eselect-profile'
-'cb-quickpkg-toolchain ${BOARD}'
 'cb-populate-target ${BOARD}'
+'quickpkg-toolchain'
 'symlink-repos'
 'TARGET-emerge-system'
 'TARGET-emerge-world'
-'cb-buildtarget-qemu ${BOARD}'
+'buildtarget-qemu'
 'emerge-host-world'
 'prepare-cross-rust'
 'rebuild-rust-and-llvm'
@@ -75,7 +75,6 @@ msg1_sequence=(
 'extract stage3 from tar.xz archive'
 'create new cross compiler'
 'eselect a profile'
-'create crossbuild toolchain binary packages with quickpgk'
 'populate configs in crossbuild target environment'
 'symlink repositories'
 '${TARGET}-emerge @system set'
@@ -98,7 +97,6 @@ msg2_sequence=(
 'extracting stage3 from tar.xz archive'
 'creating new cross compiler'
 'eselecting profile'
-'creating crossbuild toolchain binary packages with quickpgk'
 'populating configs in crossbuild target environment'
 'symlinking repositories'
 '${TARGET}-emerging @system set'
@@ -319,6 +317,33 @@ prepare-cross-rust() {
     return 0
 }
 
+buildtarget-qemu() {
+    # this used to be a separate script cb-buildtarget-qemu
+    old_dir="$(pwd)"
+    cd /usr/${TARGET}
+    message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
+
+    [[ $INTERACTIVE ]] && emerge_options="-av1" || emerge_options="-v1"
+
+    message "building qemu for ${TARGET} ..."
+    FEATURES="-getbinpkg" QEMU_USER_TARGETS="${QEMU_ARCH}" QEMU_SOFTMMU_TARGETS="${QEMU_ARCH}" \
+        USE="static-user -plugins static-libs" emerge ${emerge_options} --buildpkg qemu || \
+            die "failed to build qemu for ${TARGET}"
+    right_status $TRUE
+
+    message "installing qemu binary in ${TARGET} ..."
+    ROOT=/usr/${TARGET}/ emerge ${emerge_options} --usepkgonly --nodeps qemu || \
+        die "failed to build (install) qemu binary in ${TARGET}" \
+    right_status $TRUE
+
+    # cross-rust setup has been relocated to step 16 in cb-mkenv
+
+    echo
+    cd $old_dir
+    message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+    return 0
+}
+
 symlink-repos() {
     # for a simple crossbuild environment, we can just use the CHOST's repos
     # (we don't need to take up extra storage with what would be redundant
@@ -394,6 +419,26 @@ symlink-repos() {
                 right_status $? || die "failed to create $x repo"
         fi
     done
+    return 0
+}
+
+quickpkg-toolchain() {
+    # build binary packages for each of the cross-toolchain programs (used to be separate script cb-quickpkg-toolchain
+
+    toolchain=(
+    'gcc'
+    'glibc'
+    'binutils'
+    'linux-headers'
+    )
+
+    FLAGGED=$FALSE
+    for tool in ${toolchain[@]}; do
+        message "  building (quickpkg) binary package for ${LBon}cross-${TARGET}/${tool}${Boff}"
+        quickpkg --include-unmodified-config=y cross-${TARGET}/${tool} && right_status $? \
+        || ( right_status $? && FLAGGED=$TRUE )
+    done
+    [ $FLAGGED ] && die "failed binary package build; note red flags above"
     return 0
 }
 
