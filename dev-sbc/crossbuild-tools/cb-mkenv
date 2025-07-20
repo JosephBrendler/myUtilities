@@ -63,6 +63,8 @@ command_sequence=(
 'rebuild-rust-and-llvm'
 'emerge-cross-rust-std'
 'cb-chroot-target ${BOARD}'
+'cb-umount ${BOARD}'
+'stockpile-env'
 )
 
 msg1_sequence=(
@@ -76,6 +78,7 @@ msg1_sequence=(
 'create new cross compiler'
 'eselect a profile'
 'populate configs in crossbuild target environment'
+'run quickpkg-toolchain'
 'symlink repositories'
 '${TARGET}-emerge @system set'
 '${TARGET}-emerge @world set'
@@ -85,6 +88,8 @@ msg1_sequence=(
 'rebuild rust and llvm with new configuration if changed'
 'emerge cross-${TARGET}/rust-std'
 'chroot into new ${TARGET} environment'
+'un-mount BOARD image'
+'add image to crossbuild environment stockpile'
 )
 
 msg2_sequence=(
@@ -98,6 +103,7 @@ msg2_sequence=(
 'creating new cross compiler'
 'eselecting profile'
 'populating configs in crossbuild target environment'
+'running quickpkg-toolchain'
 'symlinking repositories'
 '${TARGET}-emerging @system set'
 '${TARGET}-emerging @world set'
@@ -107,6 +113,8 @@ msg2_sequence=(
 'rebuilding rust and llvm with new configuration if changed'
 'emerging cross-${TARGET}/rust-std'
 'chrooting into new ${TARGET} environment'
+'un-mounting BOARD image'
+'adding image to crossbuild environment stockpile'
 )
 
 #-----[ functions ]-----------------------------------------------------
@@ -151,6 +159,34 @@ initialize_variables() {
         message "initialization complete"
         return 0
     fi
+}
+
+stockpile-env() {
+    # (should be run after finalize-chroot and cb-umount have both completed)
+    # copy the completed ${BOARD}.img file so it can be used as a minimal
+    # start point for development of multle different individual systems
+    # and/or as a distcc-cross-build or binary package server on this or
+    # some other CHOST (save file as ${BOARD}.env
+
+    stockpile=/home/joe/sbc-stockpile
+
+    # create stockpile directory if it doesn't exist
+    message_n "examining stockpile"
+    if [ ! -d ${stockpile} ] ; then
+        echo -en " (${BRon}not found${Boff})"
+        mkdir -p ${stockpile} && \
+            echo -en " (${BGon}created${Boff})" || die "failed to create stockpile"
+    else
+        echo -en " (${BGon}found${Boff})"
+    fi
+    right_status $TRUE
+
+    # copy /usr/${BOARD}.img to ${stockpile}/${BOARD}.env
+    message_n "stockpiling as ${BOARD}.env"
+    cp /usr/${BOARD}.img ${stockpile%/}/${BOARD}.env && \
+        echo -en " (${BGon}copied${Boff})" || die "failed copy to stockpile"
+    right_status $TRUE
+    return 0
 }
 
 emerge-host-world() {
