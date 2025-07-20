@@ -50,8 +50,6 @@ command_sequence=(
 'set-timezone'
 'set-hostname'
 'remove-kernelsources-mountpoint'
-'prep-eix-db-dir'
-'sync-repo gentoo'
 'sync-repo joetoo'
 'add-user'
 'fix-inittab'
@@ -59,14 +57,16 @@ command_sequence=(
 'make-mountpoints'
 'chroot_emerge-world'
 'run-dispatch-conf'
-'emerge-depclean'
-'revdep_rebuild'
-'eclean-up'
 'add-default-runlevel-services'
 'setup-clock'
 'install-boot-firmware'
 'display-next-steps'
 )
+
+# don't do these until AFTER fully deployed (the CHOSTs qemu is needed in this system, but not its dependencies)
+#'emerge-depclean'
+#'revdep_rebuild'
+#'eclean-up'
 
 msg1_sequence=(
 'validate prerequisites'
@@ -75,8 +75,6 @@ msg1_sequence=(
 'set timezone'
 'set hostname'
 'remove kernel sources mountpoint'
-'prepare eix database directory'
-'sync repo gentoo'
 'sync repo joetoo'
 'add user'
 'fix inittab'
@@ -84,9 +82,6 @@ msg1_sequence=(
 'make mountpoints'
 'chroot_emerge world'
 'run dispatch-conf'
-'run emerge --depclean'
-'run revdep-rebuild'
-'run eclean-dist and -pkg'
 'add default runlevel services'
 'set up clock'
 'install boot firmware'
@@ -100,8 +95,6 @@ msg2_sequence=(
 'setting timezone'
 'setting hostname'
 'removing kernel sources mountpoint'
-'prepare eix database directory'
-'syncing repo gentoo'
 'syncing repo joetoo'
 'adding user'
 'fixing inittab'
@@ -109,9 +102,6 @@ msg2_sequence=(
 'making mountpoints'
 'emerging(-chroot) world'
 'running dispatch-conf'
-'run emerge --depclean'
-'run revdep-rebuild'
-'run eclean-dist and -pkg'
 'adding default runlevel services'
 'setting up clock'
 'installing boot firmware'
@@ -273,36 +263,79 @@ set-timezone() {
 }
 
 set-hostname() {
-#  set hostname
+    MSG="${BYon}Please verify or (re)set the hostname for this system${Boff}"
+    message $MSG
+    MSG="  ${BMon}Note:${Boff} If you are providing apache ssl or openvpn keys\n"
+    MSG+="  via the /etc/crossbuild-tools/mkimg-files/ structure of this build,\n"
+    MSG+="  then they must correspond to this hostname\n"
+    echo -e "${MSG}"
+    HAVE_CANDIDATE=$FALSE
+    message_n "checking /etc/hostname"
+    #  check hostname (/etc/hostname first, then /etc/conf.d/hostname and confirm or change
+    if [ -f /etc/hostname ] ; then
+        echo -e " (${BGon}exists${Boff})" ; right_status $TRUE
+        # /etc/hostname exists -- check it (read only first word of /etc/hostname)
+        IFS=' ' read -a myarray < /etc/hostname ; candidate=${myarray[0]}
+        [ ! -z "${candidate}" ] && HAVE_CANDIDATE=$TRUE
+    else
+        # /etc/hostname does not exist; chech /etc/conf.d/hostname
+        echo -e " (${BRon}does not exist${Boff})" ; right_status 1
+        message_n "checking /etc/conf.d/hostname"
+        if [ -f /etc/conf.d/hostname ] ; then
+            echo -e " (${BGon}exists${Boff})" ; right_status $TRUE
+            eval "$(grep '^hostname=' /etc/conf.d/hostname | sed 's|hostname|candidate|')"
+            [ ! -z "${candidate}" ] && HAVE_CANDIDATE=$TRUE
+        else
+            echo -e " (${BRon}does not exist${Boff})" ; right_status 1
+            # rare - same implication as neither of the above setting HAVE_CANDIDATE
+        fi
+    fi
+    if [ $HAVE_CANDIDATE ] ; then
+        message "candidate hosthame: [ ${candidate} ]"
+    else
+        echo
+        message "Neither /etc/hostname nor /etc/conf.d/hostname appears to contain"
+        message_n "a candidate hostname.  ${BYon}Please choose and enter a hostname here:${Boff} "
+        IFS=' ' read -a myarray ; candidate=${myarray[0]}  # use only the first word of input
+        message "candidate hosthame: [ ${candidate} ]"
+    fi
+    # now validate this candidate hostname with the user
     response=""
-    message "${BYon}Please identify the hostname for this system${Boff}"
-    message "${BMon}Note:${Boff} If you are providing apache ssl or openvpn keys"
-    message "via the /etc/crossbuild-tools/mkimg-files/ structure of this build,"
-    message "then they must correspond to this hostname"
+    new_prompt "${BYon}is this correct?${BWon} (y: yes; n: no, try again; s: exit program) "
     echo
     while [[ ! "${response}" == [yYsS] ]] ; do
-        echo -en "${BGon}*${Boff} set hostname for this image: "
-        read candidate
-        message "you responded [ ${candidate} ]"
-        new_prompt "is this correct?"
+        message_n "${BYon}Please choose and enter a hostname here:${Boff} "
+        IFS=' ' read -a myarray ; candidate=${myarray[0]} # use only the first word of input
+        message "candidate hosthame: [ ${candidate} ]"
+        new_prompt "${BYon}is this correct?${BWon} (y: yes; n: no, try again; s: skip for now) "
     done
     if [[ "${response}" == [yY] ]] ; then
         message_n "setting hostname: ${candidate}"
-        echo "${candidate}" > /etc/hostname
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+        echo "${candidate}" > /etc/hostname && \
+            echo -en " ${BGon}(success)${Boff}" || die "failed to set hostname"
+            right_status $TRUE
     else
         E_message "candidate hostname provided, then rejected"
         message "please make a note to manually run the following command when you have time --"
         message "    ${BBon}echo ${BYon}<hostname> ${BGon}> ${Boff}/etc/hostname"
-        return 2
+        return 1
     fi
+    return 0
 }
 
 remove-kernelsources-mountpoint() {
-     [ -d /usr/src/linux ] && rm -r /usr/src/linux ; result=$?
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result && return 0) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    message_n "removing kernel sources mountpoint to install symlink"
+    [ -d /usr/src/linux ] && rm -r /usr/src/linux ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -en " ${BGon}(success)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status 1
+        FLAGGED=$TRUE
+        return 1
+    fi
+    return 0
 }
 
 prep-eix-db-dir() {
@@ -313,15 +346,27 @@ prep-eix-db-dir() {
     if [ ! -d /var/cache/eix ] ; then
         echo -en " (creating)"
         mkdir -p /var/cache/eix/ ; result=$?
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+        if [ $result -eq 0 ] ; then
+            echo -en " ${BGon}(success)${Boff}"
+            right_status $TRUE
+        else
+            echo -en " ${BRon}(fail)${Boff}"
+            right_status 1
+            SOFARSOGOOD=$FALSE
+        fi
     else
         echo -en " (found)" ; right_status $TRUE
     fi
     message_n "setting permissions for /var/cache/eix"
     chown portage:portage /var/cache/eix ; result=$?
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+    if [ $result -eq 0 ] ; then
+        echo -en " ${BGon}(success)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status 1
+        SOFARSOGOOD=$FALSE
+    fi
     [[ $SOFARSOGOOD ]] && return 0 || ( FLAGGED=$TRUE && return 1)
 }
 
@@ -487,7 +532,9 @@ run-dispatch-conf() {
     return $result
 }
 
-emerge-depclean() {
+DISABLED_emerge-depclean() {   # DISABLED_ - see qemu note below cmdsequence assignment block
+    # we're still running in a qemu-chroot, so protect qemu before running depclean (for now)
+    # (also need to add remove qemu from world file to next steps)
     message "about to run emerge --depclean"
     emerge --depclean ; result=$?
     [ $result -eq 0 ] && message "emerge-depclean ${BGon}succeeded${Boff}" || \
@@ -495,7 +542,7 @@ emerge-depclean() {
     return $result
 }
 
-revdep_rebuild() {
+DISABLED_revdep_rebuild() {
     message "about to run revdep-rebuild"
     revdep-rebuild ; result=$?
     [ $result -eq 0 ] && message "revdep-rebuild ${BGon}succeeded${Boff}" || \
@@ -503,7 +550,7 @@ revdep_rebuild() {
     return $result
 }
 
-eclean-up() {
+DISABLED_eclean-up() {
     message "about to run eclean-dist -d"
     eclean-dist -d ; result1=$?
     [ $result1 -eq 0 ] && message "eclean-dist -d ${BGon}succeeded${Boff}" || \
@@ -618,10 +665,11 @@ display-next-steps() {
 checkroot
 separator "(starting)" "${PN}"
 # option s (status) is the only one that can appear alone on the command line
-if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
-    E_message "invalid argument [${arglist}]"
-    usage
-fi; fi
+#if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+#    E_message "invalid argument [${arglist}]"
+#    usage
+#fi; fi
+# no - this script does not require a -b ${BOARD} argument, so -r and -2 are both valid single arg cases...
 
 # based on basic common approach -
 # initialize variables (local function)
@@ -657,6 +705,15 @@ d_echo "processing cmdline args: $@" 5
 separator ${PN} "(process_cmdline)"
 process_cmdline $@  || die "Failed to process_cmdline"
 
+# need to sync repo in order to have a valid profile with which to get-target, get-check-config, etc
+build-chroot_emerge-command ;  result=$?
+[ $result -eq 0 ] && message "build-chroot_emerge-command returned ${BGon}success${Boff}" || \
+    ( E_message "build-chroot_emerge-command returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+separator ${PN} "(prep-eix-db-dir)"
+prep-eix-db-dir || die "failed to prep-eix-db-dir"
+separator ${PN} "(sync-repo gentoo)"
+sync-repo gentoo || die "failed to sync-repo gentoo"
+
 # take note but don't die over these
 get-target ;  result=$?
 [ $result -eq 0 ] && message "get-target returned ${BGon}success${Boff}" || \
@@ -665,10 +722,6 @@ get-target ;  result=$?
 get-check-config ;  result=$?
 [ $result -eq 0 ] && message "get-check-config returned ${BGon}success${Boff}" || \
     ( E_message "get-check-config returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
-
-build-chroot_emerge-command ;  result=$?
-[ $result -eq 0 ] && message "build-chroot_emerge-command returned ${BGon}success${Boff}" || \
-    ( E_message "build-chroot_emerge-command returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
 
 display_configuration ;  result=$?
 [ $result -eq 0 ] && message "display_configuration returned ${BGon}success${Boff}" || \
