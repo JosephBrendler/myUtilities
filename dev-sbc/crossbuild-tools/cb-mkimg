@@ -6,13 +6,13 @@
 
     # pre-requisite: cb-mkenv has been fully completed, with possible exception of its chroot step
     # this script expects --
-    #    a working image file is set up and mounted on the appropriate target directory (cb-setup)
-    #    the image file has stage3 already extracted, and a working crossdev crosscompile (cb-mkenv)
-    #    the image has been populated with joetoo cross-build configs (cb-populate-target)
-    #    ${TARGET}-emerge has been run for both @system and @world sets (cb-mkenv)
-    #    the image has a working qemu, for qemu-chroot (cb-buildtarget-qemu)
-    # It is not necessary for the cb-mkenv's chroot step and subsequent native chroot-emerge @world
-    # to have been done.  We'll re-do that here, after establishing actual repositories for the image
+    #    NO image file(s) are mounted
+    #    a completed ${BOARD}.img crossbuild environment image file is available
+    #        the image file has stage3 already extracted, and a working crossdev crosscompile (cb-mkenv)
+    #        the image has been populated with joetoo cross-build configs (cb-populate-target)
+    #        ${TARGET}-emerge has been run for both @system and @world sets (cb-mkenv)
+    #        the image has a working qemu, for qemu-chroot (cb-buildtarget-qemu)
+    #        Note: completed environment does not have its own repositories
 
 # Note: as of build 0.1.4, these additional functions were moved to cb-common-functions:
 #    sanity_check() display_configuration(), process_cmdline(),
@@ -45,8 +45,8 @@ PN=$(basename $0)
 response=""
 
 varlist="PN BPN BUILD BOARD TARGET TARGET_ARCH QEMU_ARCH"
-varlist+=" profile_number"
-varlist+=" starting_step stopping_step mkimgstatusfile"
+varlist+=" LLVM_TARGET default_profile"
+varlist+=" BREAK starting_step stopping_step mkimgstatusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" BREAK bool.VERBOSE verbosity old_dir"
 
@@ -55,21 +55,32 @@ varlist+=" BREAK bool.VERBOSE verbosity old_dir"
 #    basic finalize-chroot script provided for cb-mkenv)
 
 command_sequence=(
+'cb-mount ${BOARD}'
 'validate-image'
 'cb-populate-image ${BOARD}'
 'cb-chroot-target-image ${BOARD}'
-)
+'save-hostname'
+'cb-umount ${BOARD}'
+'stockpile-img')
 
 msg1_sequence=(
+'mount BOARD image on TARGET'
 'validate image construction and assembly'
 'repopulate image additional content'
 'cb-chroot into target image ${BOARD}'
+'save hostname for use in stockpile image name'
+'un-mount BOARD image'
+'add image to deployable image stockpile'
 )
 
 msg2_sequence=(
+'mounting BOARD image on TARGET'
 'validating image construction and assembly'
 'repopulating image additional content'
 'cb-chrooting into target image ${BOARD}'
+'saving hostname for use in stockpile image name'
+'un-mounting BOARD image'
+'adding image to deployable image stockpile'
 )
 
 #-----[ functions ]-----------------------------------------------------
@@ -172,6 +183,50 @@ validate-image() {
         message "by the finalize-chroot-for-image script upon first login with"
         message "cb-chroot-target-image, which is the last stop in workflow of this script (cb-mkimg)"
     fi
+    return 0
+}
+
+save-hostname() {
+    # (must be done after finalize-chroot-for-image but before cb-umount)
+    # save the hostame before un-mounting the image
+    # we'll need it to name the stockpiled image file
+    message_n "reading hostname"
+    read HN < /usr/${TARGET}/etc/hostname && \
+        echo -en " (${HN})" || die "failed to read hostname"
+    right_status $TRUE
+    export my_hostname="${HN}"
+}
+
+stockpile-img() {
+    # (should be run after finalize-chroot-for-image and cb-umount have both completed)
+    # copy the completed ${BOARD}.img file so it can be used as a deployable
+    # start point for development of the scpecific system for which it was created
+    # receive hostname as $1
+
+    stockpile=/home/joe/sbc-stockpile
+
+    # use my_hostname to create output filename
+    message_n "assigning stockpile output filename"
+    outfile="${BOARD}_${my_hostname}.img" && \
+        echo -en " (${BGon}ok${Boff})" || die "failed to assign stockpile filename"
+    right_status $TRUE
+
+    # create stockpile directory if it doesn't exist
+    message_n "examining stockpile"
+    if [ ! -d ${stockpile} ] ; then
+        echo -en " (${BRon}not found${Boff})"
+        mkdir -p ${stockpile} && \
+            echo -en " (${BGon}created${Boff})" || die "failed to create stockpile"
+    else
+        echo -en " (${BGon}found${Boff})"
+    fi
+    right_status $TRUE
+
+    # copy /usr/${BOARD}.img to ${stockpile}/${BOARD}.env
+    message_n "stockpiling as ${outfile}"
+    cp /usr/${BOARD}.img ${stockpile%/}/${outfile} && \
+        echo -en " (${BGon}copied${Boff})" || die "failed copy to stockpile"
+    right_status $TRUE
     return 0
 }
 
