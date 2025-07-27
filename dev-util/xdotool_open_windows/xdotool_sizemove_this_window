@@ -10,23 +10,52 @@ X1="1%"
 Y1="5%"
 X2="51%"
 LR="L"
+PN=$(basename $0)
 
 user=joe
 
 current_window=""
+
+config_dir="/etc/xdotool_open_windows"
+config_file="${config_dir}/xdotool_open_windows.conf"
+build_file=$"${config_dir}/BUILD"
+logFile="/home/${user}/xdotool_open_windows.log"
+
 VERBOSE=$TRUE
 #VERBOSE=$FALSE
 verbosity=1
 
+varlist="width height X1 Y1 X2 LR X current_window BREAK bool.VERBOSE verbosity"
+
 #------[ over-ride defaults ]----------------------------------------
 # load custom configuration, if it exists
-[[ -f ./xdotool_open_windows.conf ]] && source ./xdotool_open_windows.conf
-[[ -f /etc/xdotool_open_windows.conf ]] && source /etc/xdotool_open_windows.conf
+message_n "sourcing config_file: ${config_file} ..."
+[[ -f ${config_file} ]] || die "${config_file} does not exist"
+source ${config_file} || die "failed to source ${config_file}"
+right_status $?
+
+message_n "sourcing build_file: ${build_file} ..."
+[[ -f ${build_file} ]] || die "${build_file} does not exist"
+source ${build_file} || die "failed to source ${build_file}"
+right_status $?
 
 #------[ function blocks ]-------------------------------------------
 usage() {
-E_message "Usage: mw L|l|R|r [<width>] [<height>]"
-exit
+separator "${PN}-${BUILD}" "(usage)"
+E_message "${BWon}Usage: mw l|L|r|R [<width>%] [<height>%]${Boff}"
+E_message "(assuming alias mw='xdotool_sizemove_this_window' has been assigned)"
+E_message "${BYon}you ${BMon}must${BYon} specify l|r${Boff} (left or right) --"
+E_message "  this terminal will be moved to that side of the screen."
+E_message "  (i.e. to X, Y coordinates configured in config_file:"
+E_message "   ${config_file})"
+E_message "${BYon}you ${BMon}may${BYon} also specify the width and height${Boff} for the moved terminal screen"
+E_message "  (width and/or height may be specified as pixels or as percent relative"
+E_message "   to pixel size of the current screen)"
+primary_monitor=$(xrandr | grep 'primary' | awk '{print $1}')
+resolution=$(xrandr | grep '\*+' | awk '{print $1}')
+E_message "${BWon}current resolution of primary monitory (${Bon}${primary_monitor}${BWon}): ${BGon}${resolution}${Boff}"
+echo
+exit 1
 }
 
 find_current_window() {
@@ -35,30 +64,13 @@ find_current_window() {
   echo ${current_window}
 }
 
-old_find_current_window() {
-  window_list=($(xdotool search --any lxterminal 2>/dev/null))
-  window_list+=($(xdotool search --any UXTerm 2>/dev/null))
-  message_n "Finding current terminal window among: " && echo ${window_list[@]}
-  for win in ${window_list[@]}
-  do
-    desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
-    message_n "Examining window [ $win ] on desktop [ $desktop ] ... "
-    if [[ $desktop -eq -1 ]]
-    then
-      message "Found current terminal window [ $win ] on desktop [ $desktop ]"
-      current_window=$win
-      return 0
-    fi
-    message "If you are reading this, I didn't find the current terminal window :-( "
-  done
-}
-
 process_cmdline() {
   # cmdline args, if present are, in order
   # $1 [which terminal on desktop [L|r]
   # $2 [width]
   # $3 [height]
-  d_message "processing command line [$@]"
+  cmdline="$@"
+  d_message "processing command line: ${cmdline}" 3
   idx=0
   while [ $# -gt 0 ]
   do
@@ -72,36 +84,32 @@ process_cmdline() {
     esac
     shift
   done
+  d_message "done processing command line" 3
 }
 
 show_config() {
-  message "${BWon}width..........: ${LBon}$width${Boff}"
-  message "${BWon}height.........: ${LBon}$height${Boff}"
-  message "${BWon}X1.............: ${LBon}$X1${Boff}"
-  message "${BWon}Y1.............: ${LBon}$Y1${Boff}"
-  message "${BWon}X2.............: ${LBon}$X2${Boff}"
-  message "${BWon}LR.............: ${LBon}$LR${Boff}"
-  message "${BWon}current_window.: ${LBon}${current_window}${Boff}"
-  message "${BWon}VERBOSE........: $(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}"
-  message "${BWon}verbosity......: ${LBon}${verbosity}${Boff}"
-
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
 }
 
 #------[ main script ]-----------------------------------------------
-separator "xdotool_sizemove_this_window"
+separator "${PN}-${BUILD}" "$(hostname)"
 #checkroot
-checknotroot
-d_message "cmdline: $@" 1
-d_message "\$#: [$#]"
+checknotroot && message "checknotroot: ${BGon}OK${Boff}" || die "failed checknotroot"
+cmdline="$@"
+d_message "cmdline: ${cmdline}" 3
+d_message "\$#: [$#]" 3
 find_current_window
-[ $# -gt 0 ] && process_cmdline $@
-[ $VERBOSE ] && show_config
+[ $# -gt 0 ] && process_cmdline ${cmdline}
 
 case $LR in
-  [Ll]) X="${X1}";;
-  [Rr]) X="${X2}";;
-  *   ) E_message "Error in variable LR [$LR]"; exit;;
+  [lL]) X="${X1}";;
+  [rR]) X="${X2}";;
+  *   ) E_message "Error in variable LR [$LR]"; usage;;
 esac
+
+[ $VERBOSE ] && show_config
+
 message "moving window [${current_window}] to position [$X $Y1] ..."
 xdotool windowmove ${current_window} $X $Y1
 message "resizing window [${current_window}] to size [$width $height] ..."
