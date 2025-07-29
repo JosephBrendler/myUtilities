@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# cb-umount-binhost   (c) joe.brendler  2025-2072
+# un-mount a crossbuild environment binhost image file from its associated MOUNTPOINT
+#
+
+source /usr/sbin/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+
+PN=$(basename $0)
+
+stockpile_dir=/home/joe/sbc-stockpile
+
+message_n "sourcing cb-common-functions ..."
+source /usr/sbin/cb-common-functions ; right_status $?
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    smaller_script_common_usage_message
+    exit 1
+}
+
+get_mountpoint() {
+    # inspect for loop devices attached to BOARD image file
+    message_n "identifying loop_dev attached to ${stockpile_dir%/}/${BOARD}.env ..."
+    export loop_dev=$(losetup -a | grep "${stockpile_dir%/}/${BOARD}.env" | cut -d':' -f1) && \
+        echo -en " (${LBon}${loop_dev}${Boff})" || die "Failed to determine loop_dev"
+    right_status $TRUE
+    message_n "identifying mountpoint for loop_dev ..."
+#    export MOUNTPOINT=$(mount | grep $loop_dev | head -n1 | awk '{print $3}') && \
+    export MOUNTPOINT=$(findmnt -n -S ${loop_dev}p2 -o TARGET) && \
+        echo -en " (${LBon}${MOUNTPOINT}${Boff})" || die "Failed to determine MOUNTPOINT"
+    right_status $TRUE
+    return 0
+}
+
+umount-binhost-board-from-mountpoint() {
+    # inspect target (mount point) - is anything mounted? (un-mount)
+    if [ ! -z "$(findmnt -n -M ${MOUNTPOINT})" ] ; then
+        # something is mounted - un-mount it
+        E_message "${BYon}the following devices are mounted on ${MOUNTPOINT} --${Boff}"
+        mount | grep "on ${MOUNTPOINT}" | sed 's|^|    |'
+        message_n "running umount -R ${MOUNTPOINT} ..."
+        umount -R ${MOUNTPOINT} && right_status $? || die "failed to umount -R ${MOUNTPOINT}"
+    else
+        message "nothing is mounted on ${MOUNTPOINT} ; continuing"
+    fi
+    # detach the loop device from image file
+    if [ -n "${loop_dev}" ] ; then
+        message_n "detaching ${loop_dev} ..."
+        losetup -d ${loop_dev} && right_status $? || die "failed to losetup -d ${loop_dev}"
+    else
+        message "no loop device is attached to /usr/${BOARD}.img ; continuing"
+    fi
+    return 0
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator "(${BOARD})" "${PN}"
+[ $# -ne 1 ] && usage
+BOARD=$1
+validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
+get_mountpoint ${BOARD} || die "Failed to get_mountpoint ${BOARD}"
+
+old_dir="$(pwd)"
+cd $(dirname ${MOUNTPOINT}) || die "Failed to change director to parent of mountpoint [${MOUNTPOINT}]"
+message "now working in parent of crossbuild binhost MOUNTPOINT directory: [${Mon}$(pwd)${Boff}]"
+
+umount-binhost-board-from-mountpoint
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0
