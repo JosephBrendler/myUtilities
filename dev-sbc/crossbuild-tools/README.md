@@ -117,6 +117,7 @@ Currently, the following BOARDs are supported:
     rk3588s-orangepi-5
     rk3588s-rock-5c
     meson-gxl-s905x-libretech-cc-v2
+    meson-g12b-a311d-libretech-cc
     fsl-imx8mq-phanbell
 
 These boards use the following TARGET systems,
