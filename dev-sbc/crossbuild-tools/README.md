@@ -116,9 +116,10 @@ Currently, the following BOARDs are supported:
     rk3588-rock-5b
     rk3588s-orangepi-5
     rk3588s-rock-5c
-    meson-gxl-s905x-libretech-cc-v2
-    meson-g12b-a311d-libretech-cc
     fsl-imx8mq-phanbell
+    meson-gxl-s905x-libretech-cc-v2
+    meson-sm1-s905d3-libretech-cc
+    meson-g12b-a311d-libretech-cc
 
 These boards use the following TARGET systems,
 each of which can be linked to only one BOARD environment at a time
