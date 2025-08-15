@@ -1,0 +1,109 @@
+#!/bin/bash
+# tarup - (c) joe brendler 2025-2055
+# create a tar archive with version-upgraded filename
+#
+source /usr/sbin/script_header_joetoo
+
+PN=$(basename $0)
+
+separator ${PN} $(hostname)
+
+taroptions="-cvjpf"
+current_version_numbers=( 0 0 0 )
+new_version_numbers=()
+latest_tarball_version=""
+new_tarball_version=""
+output_tarball_filename=""
+
+#-----[ functions ]--------------------------------------------------
+usage() {
+    E_message "${BGon}usage: ${PN} <SOURCE_DIR> [-major|-minor]${Boff}"
+    message "${BYon}Notes:${Boff}"
+    message "${LBon}(1)${Boff} ${BMon}SOURCE_DIR${Boff} must be a directory (containing a package's sources)"
+    message "${LBon}(2)${Boff} only one of the semantic versioning format numbers will be incremented"
+    message "    automatically (major.minor.patch)"
+    message "${LBon}(3)${BWon} upgrade type [-pa|ma|mi] is optional${Boff}"
+    message "  -pa[tch] optionally indicates a patch upgrade (${BWon}default${Boff})"
+    message "  -ma[jor] optionally indicates a major upgrade"
+    message "  -mi[nor] optionally indicates a minor upgrade"
+    exit 1
+}
+
+get-current-version() {
+    # find tarballs matching the name of SOURCE_DIR
+    tarball_versions=( $(find ./ -name "${SOURCE_DIR}*.tbz2" -printf '%f\n' | \
+        sed "s|^${SOURCE_DIR}-||" | \
+        sed "s|.tbz2$||" | \
+        sort -rV) )    # reverse-order version sort
+    # identify the latest version
+    latest_tarball_version="${tarball_versions[0]}"
+    message "current version: ${latest_tarball_version}"
+    # split version into ( major minor patch )
+    IFS='.' read -ra current_version_numbers <<< $latest_tarball_version
+    # Reset IFS to its default value
+    IFS=$' \t\n'
+    message "  current major: ${current_version_numbers[0]}"
+    message "  current minor: ${current_version_numbers[1]}"
+    message "  current patch: ${current_version_numbers[2]}"
+}
+
+get-new-version() {
+    # increment the version number appropriately
+    case ${UPGRADE} in
+        "major" )
+            # increment major number and reset minor patch number to 0
+            new_version_numbers[0]="$(( ${current_version_numbers[0]} + 1 ))"
+            new_version_numbers[1]="0"
+            new_version_numbers[2]="0"
+            ;;
+        "minor" )
+            # increment minor number and reset patch number to 0
+            new_version_numbers[0]="${current_version_numbers[0]}"
+            new_version_numbers[1]="$(( ${current_version_numbers[1]} + 1 ))"
+            new_version_numbers[2]="0"
+            ;;
+        "patch" )
+            # just increment patch number
+            new_version_numbers[0]="${current_version_numbers[0]}"
+            new_version_numbers[1]="${current_version_numbers[1]}"
+            new_version_numbers[2]="$(( ${current_version_numbers[2]} + 1 ))"
+            ;;
+        * )  E_message "invalid UPGRADE type [${UPGRADE}]" && exit ;;
+    esac
+    message "  new major: ${new_version_numbers[0]}"
+    message "  new minor: ${new_version_numbers[1]}"
+    message "  new patch: ${new_version_numbers[2]}"
+    new_tarball_version="${new_version_numbers[0]}.${new_version_numbers[1]}.${new_version_numbers[2]}"
+    message "new version: ${new_tarball_version}"
+}
+
+
+#-----[ main script ]------------------------------------------------
+checknotroot
+
+[ $# -eq 0 ] && E_message "SOURCE_DIR not specified" && usage
+[ $# -gt 2 ] && E_message "invalid arguments" && usage
+[ ! -d "$1" ] && E_message "SOURCE_DIR: [$1] does not exist" && usage || SOURCE_DIR="$1"
+
+if [ $# -eq 2 ] ; then
+    [[ "${2:0:1}" != "-" ]] && E_message "prefix option with \"-|\"" && usage
+    case ${2:1:2} in
+        "ma" ) UPGRADE="major"; message "initiating major upgrade ..." ;;
+        "mi" ) UPGRADE="minor"; message "initiating minor upgrade ..." ;;
+        "pa" ) UPGRADE="patch"; message "initiating patch upgrade ..." ;;
+        *    ) E_message "invalid option: [$2]"; usage ;;
+    esac
+else
+    UPGRADE="patch"; message "initiating patch upgrade (as default) ..."
+fi
+
+get-current-version
+get-new-version
+
+output_tarball_filename="${SOURCE_DIR}-${new_tarball_version}.tbz2"
+
+msg="${BYon}About to run command:\n${Boff}"
+msg+="    ${BGon}tar ${taroptions} ${output_tarball_filename} ${SOURCE_DIR}${Boff}"
+message "${msg}"
+confirm_continue_or_exit
+tar "${taroptions}" "${output_tarball_filename}" "${SOURCE_DIR}"
