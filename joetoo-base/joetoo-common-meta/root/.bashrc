@@ -5,7 +5,6 @@
 # that can't tolerate any output.  So make sure this doesn't display
 # anything or bad things will happen !
 
-
 # Test for an interactive shell.  There is no need to set anything
 # past this point for scp and rcp, and it's important to refrain from
 # outputting anything in those cases.
@@ -13,7 +12,6 @@ if [[ $- != *i* ]] ; then
 	# Shell is non-interactive.  Be done now!
 	return
 fi
-
 
 # start keychain and point it at private keys to be cached
 #/usr/bin/keychain ~/.ssh/id_rsa
@@ -54,3 +52,17 @@ shopt -s histappend                      # append to history, don't overwrite it
 # Save and reload the history after each command finishes
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
+#-----[ crossbuild chroot section ]----------------------------------------------------
+source /etc/bash/bashrc.d/emerge-chroot
+source /root/.cb-config   # assigns BOARD, TARGET, TARGET_ARCH, QEMU_ARCH
+rerunmsg="first-run chroot configuration not requested by presense of marker"
+[ -e /root/firstenvlogin ] && /usr/sbin/finalize-chroot || \
+    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
+[ -e /root/firstimglogin ] && /usr/sbin/finalize-chroot-for-image || \
+    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
+install_my_local_ca_certificates
+echo
+E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
+echo
+export PS1="(${QEMU_ARCH} chroot) ${PS1}"
+#-----[ edit/comment-out after system deployment ]-------------------------------------
