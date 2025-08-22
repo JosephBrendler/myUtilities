@@ -128,7 +128,7 @@ RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxte
 
 modular_msg()          # w/in margins, output externally assigned ${MSG} to array ${LINE[@]}
 {
-[[ $# -gt 1 ]] && E_message "Too many arguments" && exit 1
+[[ $# -gt 1 ]] && E_message "Too many arguments" && E_message "exiting process [$$]" && exit 1
 local WT=0  ## width of box
 local WIDTH=0 ## width between box margins
 local LENGTH=0 ## length of current line
@@ -368,7 +368,7 @@ usage()                # explain default usage; mod with local "usage module"
   do
     echo -e "    ${LBon}${s}: ${msg1_sequence[$s]}${Boff}"
   done
-  exit 1
+  E_message "exiting process [$$]" && exit 1
 }
 
 display_configuration() # use get_longest and display_vars to display ${varlist}
@@ -385,7 +385,7 @@ run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and o
 {
     # run the sequence of commands stored in the command_sequence array
     # for each step, store updated status in a status file provided as arg $1
-    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (cmdseq_statusfile) " && exit 1
+    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (cmdseq_statusfile) " && E_message "exiting process [$$]" && exit 1
     cmdseq_statusfile=$1 ; echo ; separator "${PN}-${BUILD}" "(running command sequence)" ; echo
     d_message "starting_step: [ ${starting_step} ]" 3
     d_message "stopping_step: [ ${stopping_step} ]" 3
@@ -423,7 +423,7 @@ run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and o
                ;;
            *    )  # abort due to negative response
                d_message "${BRon}As instructed, not running ${BGon}${command_sequence[${step}]}${BRon}. Quitting...${Boff}" 1 ; \
-               exit ;;
+               E_message "exiting process [$$]" && exit ;;
         esac
     done
     echo
@@ -435,6 +435,7 @@ process_cmdline()      # process command line arguments
 
   last=""
   d_message "processing command line with [ ${arglist} ]" 2
+  d_message "my PID: $$" 5
   # shift each argument into position $1 and examine it
   #   process the argument or processit with its own arguments
   while [ ! -z "$1" ]
@@ -454,7 +455,7 @@ process_cmdline()      # process command line arguments
       shift
     else
       d_message "does not start with - or --" 3
-      usage; exit
+      usage; E_message "exiting process [$$]" && exit
     fi
   done
   d_message "done with process_command_line" 2
@@ -465,6 +466,7 @@ process_argument()     # process one argument (considering the next a potential 
 {
   d_message "about to process [ $* ]" 2
   d_message "1: [ $1 ], 2: [ $2 ]" 2
+  d_message "my PID: $$" 5
   # process command line argument (must be one of the following)
   [ ! -z "$1" ] && case "$1" in
     "-"[sS] | "--status"         )
@@ -475,7 +477,7 @@ process_argument()     # process one argument (considering the next a potential 
       msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
       message "${msg}"
-      exit;
+      E_message "exiting process [$$]" && exit;
       ;;
     "-"[rR] | "--resume"         )
       # resume at stored step unless that is overridden by a new start # (below)
@@ -529,7 +531,11 @@ process_argument()     # process one argument (considering the next a potential 
       ;;       # note: "numeric" args like -4 should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg $1 ;;")
-      [ -f /etc/${BPN}/local.cmdline_arguments ] && source /etc/${BPN}/local.cmdline_arguments || process_compound_arg $1
+      if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
+          source /etc/${BPN}/local.cmdline_arguments
+      else
+          process_compound_arg $1
+      fi
       ;;
   esac
   d_message "done with process_argument" 3
@@ -539,10 +545,11 @@ process_argument()     # process one argument (considering the next a potential 
 process_compound_arg()    # process a compount argument
 {
     d_message "about to process compound [ $* ]" 2
+    d_message "my PID: $$" 5
     # must begin with a single dash
-    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && E_message "exiting process [$$]" && exit 1
     # must not begin with two dashes (would have been picked in process_argument)
-    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && E_message "exiting process [$$]" && exit 1
     # strip leading dash(es)
     myargs=${1##-}
     # handle remaining characters in sequence
@@ -558,7 +565,7 @@ process_compound_arg()    # process a compount argument
                 msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
                 msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
                 d_message "${msg}" 2
-                exit;
+                E_message "exiting process [$$]" && exit;
                 ;;
             [rR] )
                 # resume at stored step unless that is overridden by a new start # (below)
@@ -614,9 +621,12 @@ process_compound_arg()    # process a compount argument
                 ;;       # note: "numeric" args like -4 should fall through to this default
             *   )
                 # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage ;;")
-                [ -f /etc/${BPN}/local.cmdline_compound_arguments ] && \
-                    source /etc/${BPN}/local.cmdline_compound_arguments || \
-                    ( E_message "${E_BAD_ARGS}" && usage )
+                if [ -f /etc/${BPN}/local.cmdline_compound_arguments ] ;then
+                    source /etc/${BPN}/local.cmdline_compound_arguments
+                else
+                    E_message "${E_BAD_ARGS}"
+                    usage
+                fi
                 ;;
         esac
         #strip first char from myargs (i.e. "shift" one character)
@@ -633,8 +643,8 @@ confirm_continue_or_exit() # present prompt/warning and confirm user wants to co
     prompt "${msg}"
     case ${answer:0:1} in
         [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
+        [nN] ) E_message "Negative response from user; quitting"; E_message "exiting process [$$]" && exit 1 ;;
+        * ) E_message "invalid response to confirm_continue_or_exit"; E_message "exiting process [$$]" && exit 1 ;;
     esac
     return 0
 }
