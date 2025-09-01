@@ -114,7 +114,9 @@ Currently, the following BOARDs are supported:
     rk3399-tinker-2
     rk3399-rock-pi-4c-plus
     rk3588-rock-5b
+    rk3588-radxa-rock-5b+
     rk3588s-orangepi-5
+    rk3588s-orangepi-5b
     rk3588s-rock-5c
     fsl-imx8mq-phanbell
     meson-gxl-s905x-libretech-cc-v2
