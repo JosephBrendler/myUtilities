@@ -3,7 +3,9 @@ source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_extended
 source /usr/sbin/cb-common-functions
 PN=$(basename $0)
-build_host="gmki91:/home/joe/"
+user=joe
+collection_directory="/home/${user}/collect-layout-data"
+build_host="gmki91:/home/${user}/"
 
 #-----[ functions ]-----------------------------------------------------------------------
 
@@ -73,6 +75,16 @@ case $medium in
     *            ) die "invalid medium [$medium]" ;;
 esac
 
+message_n "validating collection_directory ..."
+if [ -d ${collection_directory} ] ; then
+     echo -en " (${BGon}exists${Boff})"
+else
+     echo -en " (${BRon}not found${Boff})"
+     mkdir -p ${collection_directory} || die "failed to mkdir -p ${collection_directory}"
+     echo -en " (${BGon}created${Boff})"
+fi
+right_status $?
+
 answer=""
 prompt "is this a luks layout?"
 expr "${answer:0:1}" : [yY] > /dev/null && ENC="luks" || ENC="plain"
@@ -81,17 +93,20 @@ message "about to collect sfdisk, blkid, and lsblk data"
 confirm_continue_or_exit
 
 message_n "collecting sfdisk data ..."
-sfdisk -d ${DEVICE} > sfdisk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect sfdisk data"
+sfdisk -d ${DEVICE} > ${collection_directory%/}/sfdisk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect sfdisk data"
 right_status $?
 
 message_n "collecting blkid data ..."
-blkid | grep $(echo ${DEVICE} | sed 's|^/dev/||') > blkid.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect blkid data"
+blkid | grep $(echo ${DEVICE} | sed 's|^/dev/||') > ${collection_directory%/}/blkid.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect blkid data"
 right_status $?
 
 message_n "collecting lsblk data ..."
-lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS ${DEVICE} > lsblk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect lsblk data"
+lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS ${DEVICE} > ${collection_directory%/}/lsblk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect lsblk data"
 right_status $?
 
 message "about to transfer data to build host [${build_host}]"
-scp *.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
+scp ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
 message "${BGon}Done${Boff}"
+
+message_n "changing ownership of collected files ..."
+chown ${user}:${user} *.
