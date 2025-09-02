@@ -1,121 +1,134 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_extended
-source /usr/sbin/cb-common-functions
 PN=$(basename $0)
-user=joe
-collection_directory="/home/${user}/collect-layout-data"
-build_host="gmki91:/home/${user}/"
+
+varlist="root_dev root_dev_type root_dev_disk root_dev_part bool.LUKS root_dev_crypt BREAK user collection_directory build_host BOARD DEVICE DEVTYPE ENC"
 
 #-----[ functions ]-----------------------------------------------------------------------
 
-list_used_disks() {
-    # set this now because doing so will be an inappropriate use of io control for stdin during whi>
-    TERMWIDTH=$(termwidth)
-    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
-    while read line ; do
-        # use eval to interpret the -P pairs as variable assignments
-        eval ${line}
-        if [[ "${TYPE}" == "disk" ]] ; then
-            # look for disks with no children (TYPE crypt, part, lvm) mounted
-            candidate_name=$NAME ; candidate_type=$TYPE
-            INUSE=$FALSE
-            message_n "checking ${candidate_type} ${candidate_name} ..."
-            while read innerline; do
-                eval ${innerline}
-                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
-                    INUSE=$TRUE
-                fi
-            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
-            if [[ ! $INUSE ]] ; then
-                echo -en "${BRon}(not in use) ${BWon}/dev/${candidate_name}${Boff}"
-                non-stty-right_status 1
-            else
-                echo -en "${BGon}(in use) ${BMon}/dev/${candidate_name}${Boff}"
-                non-stty-right_status 0
-                lsblk /dev/${candidate_name} | sed 's|^|    |'
-            fi
-        fi
-    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
-    return 0
-}
-
 usage() {
-    E_message "usage: ${PN} <BOARD> <DEVICE>"
     echo
-    message "${BYon}  BOARD: one of these --${Boff}"
+    E_message "usage: ${PN} <BOARD>"
+    echo
+    message "${BYon}where BOARD is one of these --${Boff}"
     joetoo-sbc-list | sed 's|^|    |'
     echo
-    message "${BYon}  DEVICE: e.g. /dev/mmcblk0 or /dev/nvme0n1 or /dev/sda${Boff}"
-    message "  ${BMon}Here are candidates --${Boff}"
-    list_used_disks
-    echo
+    exit 1
 }
 
+initialize-variables() {
+    # null-initialize variables
+    initialize_vars ${varlist}
 
-validate_source_device() {
-    # SOURCE_DEVICE = physical block device to which crossbuilt image will be copied/flashed/deployed
-    [ $# -ne 1 ] && E_message "Error: must specify source DEVICE" && return 1
-    SOURCE_DEVICE=$1
-    message_n "validating existence of source DEVICE: [ ${SOURCE_DEVICE} ] ..."
-    if [ -b ${SOURCE_DEVICE} ] ; then
-        right_status $TRUE
-        message "running fdisk -l ${SOURCE_DEVICE} ..."
-        fdisk -l ${SOURCE_DEVICE} | sed 's|^|    |'
+    # (re)set default values
+    PN=$(basename $0)
+    user=joe
+    collection_directory="/home/${user}/collect-layout-data"
+    build_host="gmki91:/home/${user}/"
+    VERBOSE=$TRUE
+    verbosity=2
+    BOARD=${myBOARD}
+}
+
+collect_root_dev_data() {
+    # identify the device that is mounted at root /
+    root_dev=$(findmnt -lno SOURCE /) || die "failed to set root_dev"
+
+    # determine the type of this device (disk, part, crypt, lvm ...)
+    eval $(lsblk -P -o NAME,TYPE,MOUNTPOINTS $root_dev) && root_dev_type=$TYPE || die "failed to set root_dev_type"
+
+    # determine the disk that this device is part of (sda, mmcblk0, nvme0n1 ...)
+    # (this is what we will collect layout data from)
+    root_dev_disk=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "disk"' | awk '{print $1}')  || die "failed to set root_dev_disk"
+
+    # determine the partition name of root_dev (will be the same as root_dev if root_dev_type = part)
+    root_dev_part=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "part"' | awk '{print $1}') || die "failed to set root_dev_part"
+    # determine if root_dev_part is formatted for LUKS encryption
+    LUKS=$FALSE; [[ $(blkid  /dev/$root_dev_part | grep -i luks) ]] && LUKS=$TRUE
+
+    # if LUKS, determine the name of the encrypted LUKS container
+    if [ $LUKS ] ; then
+        root_dev_crypt=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "crypt"' | awk '{print $1}') || die "failed to set root_dev_crypt"
     else
-        right_status 1
-        E_message "no such block device found for [ ${SOURCE_DEVICE} ]"
-        exit 1
+        root_dev_crypt="N/A" || die "failed to set root_dev_type to N/A"
     fi
-    message_n "validating in-use status of source DEVICE ..."
-    if [[ $(lsblk -l ${SOURCE_DEVICE} 2>/dev/null) ]] ; then
-        right_status $TRUE
-        message "running lsblk -l  ${SOURCE_DEVICE} ..."
-        lsblk -l ${SOURCE_DEVICE}  | sed 's|^|    |'
+
+    # set DEVICE
+    DEVICE="/dev/${root_dev_disk}"
+
+    # set ENC
+    if [ $LUKS ] ; then
+        ENC="luks" || die "failed to set ENC = luks"
     else
-        right_status 1
-        E_message "block device is not in use (no mountpoints)"
-        exit 1
+        ENC="plain" || die "failed to set ENC = plain"
     fi
+
+    # set DEVTYPE
+    medium=${DEVICE:5:3}
+    case $medium in
+        "sd"[a-zA-Z] ) DEVTYPE="usb" ;;
+        "mmc"        ) DEVTYPE="mmc" ;;
+        "nvm"        ) DEVTYPE="nvme" ;;
+        *            ) die "invalid medium [$medium]" ;;
+    esac || die "failed to set DEVTYPE for medim [${medium}]"
+
+    d_echo "" 3
+    d_message "root_dev: ${root_dev}" 3
+    d_message "root_dev_type: ${root_dev_type}" 3
+    d_message "root_dev_disk: ${root_dev_disk}" 3
+    d_message "root_dev_part: ${root_dev_part}" 3
+    d_message "root_dev_crypt: ${root_dev_crypt}" 3
+    d_message "DEVICE: ${DEVICE}" 3
+    d_message "medium: ${medium}" 3
+    d_message "DEVTYPE: ${DEVTYPE}" 3
+    d_echo "" 3
+
     return 0
+}
+
+display-config() {
+    longest=$(get_longest ${varlist})
+    display_configuration ${longest} ${varlist}
+    echo
+    return 0
+}
+
+validate_collection_directory() {
+    if [ -d ${collection_directory} ] ; then
+         echo -en " (${BGon}exists${Boff})"
+    else
+         echo -en " (${BRon}not found${Boff})"
+         mkdir -p ${collection_directory} || die "failed to mkdir -p ${collection_directory}"
+         echo -en " (${BGon}created${Boff})"
+    fi
+    right_status $TRUE
+    return 0
+}
+
+validate_board() {
+    [[ $(joetoo-sbc-list | grep ${BOARD}) ]] && return 0 || return 1
 }
 
 #-----[ main script ]-----------------------------------------------------------------------
 checkroot
 separator $(hostname) ${PN}
-[ $# -ne 2 ] && usage
-BOARD="$1"
-DEVICE="$2"
+[ $# -ne 1 ] && usage
+myBOARD="$1"
+
+# initialize and set defaults
+initialize-variables || die "failed to initialize-variables"
 
 message_n "validating BOARD [${BOARD}]..."
-validate_target ${BOARD} || die "failed to validate_target [${BOARD}]"
+validate_board || die "failed to validate_target [${BOARD}]"
 right_status $?
-
-message "validating DEVICE [${DEVICE}] ..."
-validate_source_device ${DEVICE} || die "failed to validate device [ ${DEVICE} ]"
-right_status $?
-
-medium=${DEVICE:5:3}
-case $medium in
-    "sd"[a-zA-Z] ) DEVTYPE="usb" ;;
-    "mmc"        ) DEVTYPE="mmc" ;;
-    "nvm"        ) DEVTYPE="nvme" ;;
-    *            ) die "invalid medium [$medium]" ;;
-esac
 
 message_n "validating collection_directory ..."
-if [ -d ${collection_directory} ] ; then
-     echo -en " (${BGon}exists${Boff})"
-else
-     echo -en " (${BRon}not found${Boff})"
-     mkdir -p ${collection_directory} || die "failed to mkdir -p ${collection_directory}"
-     echo -en " (${BGon}created${Boff})"
-fi
-right_status $?
+validate_collection_directory || die "failed to validate_collection_directory"
 
-answer=""
-prompt "is this a luks layout?"
-expr "${answer:0:1}" : [yY] > /dev/null && ENC="luks" || ENC="plain"
+collect_root_dev_data || die "failed to collect_root_dev_data"
+
+display-config || die "failed to display-config"
 
 message "about to collect sfdisk, blkid, and lsblk data"
 confirm_continue_or_exit
@@ -136,7 +149,13 @@ message_n "changing ownership of collected files ..."
 chown -R ${user}:${user} ${collection_directory%/} || die "failed to change ownership"
 right_status $?
 
+echo
+message "${PN} produced these output files --"
+ls -al ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} | sed 's|^|    |'
 
-message "about to transfer data to build host [${build_host}]"
+message "about to transfer these files to build_host [${build_host}]"
+confirm_continue_or_exit
 sudo -u ${user} scp ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
-message "${BGon}Done${Boff}"
+
+echo
+message "${BWon}${PN} ${BGon}Done${Boff}"
