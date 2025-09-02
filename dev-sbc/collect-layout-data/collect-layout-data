@@ -9,7 +9,7 @@ build_host="gmki91:/home/${user}/"
 
 #-----[ functions ]-----------------------------------------------------------------------
 
-list_unused_disks() {
+list_used_disks() {
     # set this now because doing so will be an inappropriate use of io control for stdin during whi>
     TERMWIDTH=$(termwidth)
     # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
@@ -28,12 +28,12 @@ list_unused_disks() {
                 fi
             done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
             if [[ ! $INUSE ]] ; then
-                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
-                non-stty-right_status $TRUE
-                lsblk /dev/${candidate_name} | sed 's|^|    |'
-            else
-                echo -en "${BRon}(in use)${Boff}"
+                echo -en "${BRon}(not in use) ${BWon}/dev/${candidate_name}${Boff}"
                 non-stty-right_status 1
+            else
+                echo -en "${BGon}(in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status 0
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
             fi
         fi
     done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
@@ -48,8 +48,36 @@ usage() {
     echo
     message "${BYon}  DEVICE: e.g. /dev/mmcblk0 or /dev/nvme0n1 or /dev/sda${Boff}"
     message "  ${BMon}Here are candidates --${Boff}"
-    list_unused_disks
+    list_used_disks
     echo
+}
+
+
+validate_source_device() {
+    # SOURCE_DEVICE = physical block device to which crossbuilt image will be copied/flashed/deployed
+    [ $# -ne 1 ] && E_message "Error: must specify source DEVICE" && return 1
+    SOURCE_DEVICE=$1
+    message_n "validating existence of source DEVICE: [ ${SOURCE_DEVICE} ] ..."
+    if [ -b ${SOURCE_DEVICE} ] ; then
+        right_status $TRUE
+        message "running fdisk -l ${SOURCE_DEVICE} ..."
+        fdisk -l ${SOURCE_DEVICE} | sed 's|^|    |'
+    else
+        right_status 1
+        E_message "no such block device found for [ ${SOURCE_DEVICE} ]"
+        exit 1
+    fi
+    message_n "validating in-use status of source DEVICE ..."
+    if [[ $(lsblk -l ${SOURCE_DEVICE} 2>/dev/null) ]] ; then
+        right_status $TRUE
+        message "running lsblk -l  ${SOURCE_DEVICE} ..."
+        lsblk -l ${SOURCE_DEVICE}  | sed 's|^|    |'
+    else
+        right_status 1
+        E_message "block device is not in use (no mountpoints)"
+        exit 1
+    fi
+    return 0
 }
 
 #-----[ main script ]-----------------------------------------------------------------------
@@ -64,7 +92,7 @@ validate_target ${BOARD} || die "failed to validate_target [${BOARD}]"
 right_status $?
 
 message "validating DEVICE [${DEVICE}] ..."
-validate_device ${DEVICE} || die "failed to validate device [ ${DEVICE} ]"
+validate_source_device ${DEVICE} || die "failed to validate device [ ${DEVICE} ]"
 right_status $?
 
 medium=${DEVICE:5:3}
@@ -104,9 +132,11 @@ message_n "collecting lsblk data ..."
 lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS ${DEVICE} > ${collection_directory%/}/lsblk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect lsblk data"
 right_status $?
 
-message "about to transfer data to build host [${build_host}]"
-scp ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
-message "${BGon}Done${Boff}"
-
 message_n "changing ownership of collected files ..."
-chown ${user}:${user} *.
+chown -R ${user}:${user} ${collection_directory%/} || die "failed to change ownership"
+right_status $?
+
+
+message "about to transfer data to build host [${build_host}]"
+sudo -u ${user} scp ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
+message "${BGon}Done${Boff}"
