@@ -1,0 +1,97 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_extended
+source /usr/sbin/cb-common-functions
+PN=$(basename $0)
+build_host="gmki91:/home/joe/"
+
+#-----[ functions ]-----------------------------------------------------------------------
+
+list_unused_disks() {
+    # set this now because doing so will be an inappropriate use of io control for stdin during whi>
+    TERMWIDTH=$(termwidth)
+    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
+    while read line ; do
+        # use eval to interpret the -P pairs as variable assignments
+        eval ${line}
+        if [[ "${TYPE}" == "disk" ]] ; then
+            # look for disks with no children (TYPE crypt, part, lvm) mounted
+            candidate_name=$NAME ; candidate_type=$TYPE
+            INUSE=$FALSE
+            message_n "checking ${candidate_type} ${candidate_name} ..."
+            while read innerline; do
+                eval ${innerline}
+                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
+                    INUSE=$TRUE
+                fi
+            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
+            if [[ ! $INUSE ]] ; then
+                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status $TRUE
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
+            else
+                echo -en "${BRon}(in use)${Boff}"
+                non-stty-right_status 1
+            fi
+        fi
+    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
+    return 0
+}
+
+usage() {
+    E_message "usage: ${PN} <BOARD> <DEVICE>"
+    echo
+    message "${BYon}  BOARD: one of these --${Boff}"
+    joetoo-sbc-list | sed 's|^|    |'
+    echo
+    message "${BYon}  DEVICE: e.g. /dev/mmcblk0 or /dev/nvme0n1 or /dev/sda${Boff}"
+    message "  ${BMon}Here are candidates --${Boff}"
+    list_unused_disks
+    echo
+}
+
+#-----[ main script ]-----------------------------------------------------------------------
+checkroot
+separator $(hostname) ${PN}
+[ $# -ne 2 ] && usage
+BOARD="$1"
+DEVICE="$2"
+
+message_n "validating BOARD [${BOARD}]..."
+validate_target ${BOARD} || die "failed to validate_target [${BOARD}]"
+right_status $?
+
+message "validating DEVICE [${DEVICE}] ..."
+validate_device ${DEVICE} || die "failed to validate device [ ${DEVICE} ]"
+right_status $?
+
+medium=${DEVICE:5:3}
+case $medium in
+    "sd"[a-zA-Z] ) DEVTYPE="usb" ;;
+    "mmc"        ) DEVTYPE="mmc" ;;
+    "nvm"        ) DEVTYPE="nvme" ;;
+    *            ) die "invalid medium [$medium]" ;;
+esac
+
+answer=""
+prompt "is this a luks layout?"
+expr "${answer:0:1}" : [yY] > /dev/null && ENC="luks" || ENC="plain"
+
+message "about to collect sfdisk, blkid, and lsblk data"
+confirm_continue_or_exit
+
+message_n "collecting sfdisk data ..."
+sfdisk -d ${DEVICE} > sfdisk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect sfdisk data"
+right_status $?
+
+message_n "collecting blkid data ..."
+blkid | grep $(echo ${DEVICE} | sed 's|^/dev/||') > blkid.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect blkid data"
+right_status $?
+
+message_n "collecting lsblk data ..."
+lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS ${DEVICE} > lsblk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect lsblk data"
+right_status $?
+
+message "about to transfer data to build host [${build_host}]"
+scp *.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
+message "${BGon}Done${Boff}"
