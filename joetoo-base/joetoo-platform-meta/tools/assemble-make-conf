@@ -1,0 +1,657 @@
+#!/bin/bash
+# assemble a make.conf file for a joetoo system
+
+# source headers
+#script_header_installed_dir=./         ## only when testing, pre-ebuild
+script_header_installed_dir=/usr/sbin   # this is where it should be installed
+source ${script_header_installed_dir%/}/script_header_joetoo
+
+package_source_dir=/home/joe/myUtilities/joetoo-base/joetoo-platform-meta
+tool_dir=${package_source_dir%/}/tools
+
+message_n "sourcing BUILD ..."
+source ${package_source_dir%/}/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source ${package_source_dir%/}/BPN ; right_status $?
+source ${script_header_installed_dir%/}/script_header_joetoo_extended
+
+# only needed for testing sources pending package build
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+
+#-----[ variables ]------------------------------------------------------
+VERBOSE=$TRUE
+verbosity=1
+PN=$(basename $0)
+myCONFIG=""
+config_dir="${tool_dir%/}/assemble-make-conf-configs/"
+
+varlist=" PN BUILD"
+varlist+=" BREAK BOARD TARGET TARGET_ARCH QEMU_ARCH TUPLE1"
+varlist+=" BREAK lv.config_file bool.INTERACTIVE SYS_TYPE"
+varlist+=" ENV_TYPE lv.OUT_FILE bool.OVER_WRITE"
+varlist+=" BREAK lv.tool_dir lv.package_source_dir lv.MAKE_CONF_PARTS_DIR user lv.DRAFT_FILE"
+varlist+=" bool.FLAGGED bool.VERBOSE verbosity"
+
+hidden_varlist="result response answer "
+
+#-----[ functions ]------------------------------------------------------
+
+#message_n "sourcing cb-common-functions ..."
+#source /usr/sbin/cb-common-functions ; right_status $?
+#TARGET=""
+
+# override usage in script_header_joetoo and local.usage in crossbuild-tools
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD> <CONFIG>${Boff}"
+    echo
+    message "${BYon}  BOARD must be one of the following --${Boff}"
+    joetoo-sbc-list | sed 's|^|    |'
+    echo
+    message "${BYon}  CONFIG must be one of the following --${Boff}"
+    for conf in $(find ${config_dir%/}/ -name 'assemble-make-conf*.conf' -printf '%f\n'); do
+        echo -e "    ${conf}"
+    done
+    echo
+    message "${BMon}  which can be found/edited in ${LBon}${config_dir}${Boff}"
+    exit 1
+}
+
+initialize_variables() {
+    # use script_header_joetoo functions
+    initialize_vars ${varlist}
+    initialize_vars ${hidden_varlist}
+
+    FLAGGED=$FALSE
+    # assign initial values
+    message_n "Re-assigning PN = $(basename $0) ..."
+    PN=$(basename $0) ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning package_source_dir = /home/joe/myUtilities/joetoo-base/joetoo-platform-meta ..."
+    export package_source_dir=/home/joe/myUtilities/joetoo-base/joetoo-platform-meta
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning tool_dir = ${package_source_dir%/}/tools ..."
+    export tool_dir=${package_source_dir%/}/tools ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing BUILD ..."
+    source ${package_source_dir%/}/BUILD
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing BPN ..."
+    source ${package_source_dir%/}/BPN
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning VERBOSE = \$TRUE ..."
+    export VERBOSE=$TRUE ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    # note: ordered this way, config file can override verbosity
+    message_n "Re-assigning verbosity = 1 ..."
+    export verbosity=1 ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning config_file"
+    [ -f "${config_dir%/}/${myCONFIG}" ] && \
+        config_file="${config_dir%/}/${myCONFIG}" || \
+        die "config_file [${config_dir%/}/${myCONFIG}] does not exist"
+    echo -en " (${myCONFIG})"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing ${config_file} ..."
+    source "${config_file}"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning BOARD = ${myBOARD} ..."
+    export BOARD=${myBOARD} ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning user = joe ..."
+    export user="joe" ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning MAKE_CONF_PARTS_DIR = ${tool_dir%/}/make-conf-parts ..."
+    export MAKE_CONF_PARTS_DIR="${tool_dir%/}/make-conf-parts"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning DRAFT_FILE = /tmp/draft-make-conf/make.conf.draft_${BOARD} ..."
+    export DRAFT_FILE="/tmp/draft-make-conf/make.conf.draft_${BOARD}"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning OUT_FILE = ${package_source_dir%/}/make_conf/make.conf.\${SYS_TYPE}.\${ENV_TYPE}.\${BOARD}"
+    export OUT_FILE="${package_source_dir%/}/make_conf/make.conf.${SYS_TYPE}.${ENV_TYPE}.${BOARD}"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    [ $FLAGGED ] && return 1 || return 0
+}
+
+display_configuration() {
+    separator ${PN} "(display configuration)"
+    # use script_header_joetoo functions
+    longest=$(get_longest ${varlist})
+    display_vars $longest ${varlist} || return 1
+    return 0
+}
+
+validate_board() {
+    # look for a match in joetoo-sbc-list
+    candidates=( $(joetoo-sbc-list | grep ${BOARD} | awk '{print $1}') )
+    if [ ${#candidates[@]} -gt 0 ] ; then
+        # make sure it's an exact match, not just a subsring similarity (maybe multiple candidates)
+        for ((i=0; i<${#candidates[@]}; i++)) ; do
+            [[ "${BOARD}" == "${candidates[$i]}" ]] && return 0  # exact match
+        done
+    else
+        # empty string means no match at all
+        E_message "BOARD [$BOARD] is not currently supported"
+    fi
+    # return failure if it exhausted the list of candidates, no match, and got here
+    return 1
+}
+
+# this is a copy of a function in dev-sbc/crossbuild-tools cb-common-functions
+# included here so we don't have to depend on the whole dev-sbc/crossbuild-tools
+# package or duplicate the whole cb-common-functions file in this package
+validate_target() {
+    # TARGET = crossbuild target for image generation
+    [ $# -ne 1 ] && E_message "Error: must specify BOARD" && return 1
+    BOARD=$1
+    d_message "validating BOARD: [ ${BOARD} ]" 3
+    case $BOARD in
+        "generic-amd64"         )
+            TARGET=x86_64-pc-linux-gnu
+            TARGET_ARCH=amd64
+            QEMU_ARCH=x86_64
+            STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"
+            default_profile="default/linux/amd64/23.0"
+            LLVM_TARGET="X86-64"
+            VALID=$TRUE ;;
+        "generic-armv6j"         )
+            TARGET=armv6j-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv6j_hf"
+            LLVM_TARGET="ARM"
+            VALID=$TRUE ;;
+        "generic-armv7a"         )
+            TARGET=armv7a-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv7a_hf"
+            LLVM_TARGET="ARM"
+            VALID=$TRUE ;;
+        "generic-aarch64"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "bcm2708-rpi-b"          )
+            TARGET=armv6j-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv6j_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv6j_hf"
+            LLVM_TARGET="ARM"
+            VALID=$TRUE ;;
+        "bcm2709-rpi-2-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv7a_hf"
+            LLVM_TARGET="ARM"
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b"        )
+            TARGET=armv7a-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv7a_hf"
+            LLVM_TARGET="ARM"
+            VALID=$TRUE ;;
+        "bcm2710-rpi-3-b-plus"   )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "bcm2711-rpi-4-b"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "bcm2711-rpi-cm4-io"     )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "bcm2712-rpi-5-b"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "bcm2712-rpi-cm5-cm5io"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3288-tinker-s"        )
+            TARGET=armv7a-unknown-linux-gnueabihf
+            TARGET_ARCH=arm
+            QEMU_ARCH=arm
+            STAGE3_SELECTOR="stage3-armv7a_hardfp-openrc-[0-9]"
+            default_profile="default/linux/arm/23.0/armv7a_hf"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3399-tinker-2"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3399-rock-pi-4c-plus" )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3588-rock-5b"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3588-radxa-rock-5b+"  )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3588s-orangepi-5"     )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3588s-orangepi-5b"    )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "rk3588s-rock-5c"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "fsl-imx8mq-phanbell"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "meson-gxl-s905x-libretech-cc-v2"        )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "meson-g12b-a311d-libretech-cc"          )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        "meson-sm1-s905d3-libretech-cc"          )
+            TARGET=aarch64-unknown-linux-gnu
+            TARGET_ARCH=arm64
+            QEMU_ARCH=aarch64
+            STAGE3_SELECTOR="stage3-arm64-openrc-[0-9]"
+            default_profile="default/linux/arm64/23.0"
+            LLVM_TARGET="AArch64"
+            VALID=$TRUE ;;
+        *                        )
+            VALID=$FALSE ;;
+    esac
+
+    if [[ $VALID ]] ; then
+        echo
+        d_message "BOARD ...........: ${BOARD}" 3
+        d_message "TARGET ..........: ${TARGET}" 3
+        d_message "TARGET_ARCH .....: ${TARGET_ARCH}" 3
+        d_message "QEMU_ARCH .......: ${QEMU_ARCH}" 3
+        d_message "default_profile..: ${default_profile}" 3
+        d_message "LLVM_TARGET......: ${LLVM_TARGET}" 3
+        d_message "${BGon}[valid target]${Boff}" 2
+    else
+        E_message "${BRon}[invalid target]${Boff}"
+        # run the usage() function
+        ## *** of whatever script sourced this function ***
+        usage
+    fi
+    echo
+    return 0
+}
+
+sanity_check() {
+    separator ${PN} "(sanity check)"
+    # put some code here to catch dumb stuff like cmdline option assignments that should
+    # be mutually exclusive
+    # ensure SYS is either headless(h) or desktop(d)
+    [[ "${SYS_TYPE:0:1}" != [hH] ]] && [[ "${SYS_TYPE:0:1}" != [dD] ]] && \
+        die "invalid SYS_TYPE [${SYS_TYPE}] ; please correct this in ${config_file}"
+    # ensure ENV is either crossbuild(r) or chroot(h)
+    [[ "${ENV_TYPE:1:1}" != [rR] ]] && [[ "${ENV_TYPE:1:1}" != [hH] ]] && \
+        die "invalid ENV_TYPE [${ENV_TYPE}] ; please correct this in ${config_file}"
+    # don't need to sanity check OUT_FILE - if the dirname does not exist, we create it
+    # and if the file already exists, and OVER_WRITE=$FALSE, we get user to confirm
+    return 0
+}
+
+add-part() {
+    # $1 is the input file path
+    INFILE=$1
+    while read -r LINE; do
+        echo "${LINE}" >> "${DRAFT_FILE}"
+    done < "${INFILE}"
+    return $?
+}
+
+create-draft-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "initializing draft make.conf file ..."
+    z=$(dirname "${DRAFT_FILE}")
+    export DRAFT_DIR="${z}"
+    if [ -d "${z}" ] ; then
+        echo -en " (dir ${BGon}exists${Boff})"
+    else
+        mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
+    fi && \
+    if [ -e "${DRAFT_FILE}" ] ; then
+        rm "${DRAFT_FILE}" || die "failed to rm ${DRAFT_FILE}"
+    fi
+    touch "${DRAFT_FILE}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-heading() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding heading ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/01_heading-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-COMMON_FLAGS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding COMMON_FLAGS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/02_COMMON_FLAGS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-CFLAGS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding CFLAGS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/03_CFLAGS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-CHOST() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding CHOST for ${TUPLE1} ${ENV_TYPE} ..."
+    # append the version for both TUPLE1 (i.e. arch) and ENV_TYPE (crossbuild/chroot) version of this
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/04_CHOST-${TUPLE1}.${ENV_TYPE}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MAKEOPTS_header() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MAKEOPTS_header ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/05_MAKEOPTS_header-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MAKEOPTS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MAKEOPTS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/06_MAKEOPTS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-ACCEPT_KEYWORDS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding ACCEPT_KEYWORDS for ${TUPLE1} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/07_ACCEPT_KEYWORDS-${TUPLE1}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-ACCEPT_LICENSE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding ACCEPT_LICENSE ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/08_ACCEPT_LICENSE-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-FEATURES() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding FEATURES ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/09_FEATURES-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-DIRS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding DIRS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/10_DIRS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-LANGUAGE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding LANGUAGE ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/11_LANGUAGE-common"
+    result=$? ; right_status $result ; return $result
+}
+
+add-INPUT_DEVICES() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding INPUT_DEVICES for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/12_INPUT_DEVICES_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-VIDEO_CARDS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding VIDEO_CARDS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/13_VIDEO_CARDS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-INSTALL_MASK() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding INSTALL_MASK ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/14_INSTALL_MASK-common"
+    result=$? ; right_status $result ; return $result
+}
+
+
+add-USE() {
+    d_message "inside ${FUNCNAME[0]}" 4
+
+    message_n "adding  USE flags for ${SYS_TYPE} ${ENV_TYPE} ..."
+    # append the version for both SYS_TYPE (headless/desktop) and ENV_TYPE (crossbuild/chroot) version of this
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/15_USE-${SYS_TYPE}.${ENV_TYPE}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-GRUB_PLATFORMS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding GRUB_PLATFORMS for ${BOARD} ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/16_GRUB_PLATFORMS_${BOARD}"
+    result=$? ; right_status $result ; return $result
+}
+
+add-MIRRORS() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "adding MIRRORS ..."
+    add-part "${MAKE_CONF_PARTS_DIR%/}/00_BLANK_LINE" && \
+    add-part "${MAKE_CONF_PARTS_DIR%/}/17_MIRRORS-common"
+    result=$? ; right_status $result ; return $result
+}
+
+post-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    PROCEED=$TRUE
+    message_n "copying draft"
+    if [ -e "${OUT_FILE}" ] && [ ! ${OVER_WRITE} ] ; then
+        # same-named file already exists, and OVER_WRITE=$FALSE, so confirm with user before writing
+        echo  # was otherwise waiting from message_n above
+        message "${OUT_FILE}"
+        new_prompt "already exists; overwrite?"
+        [[ "${response:0:1}" != [yY] ]] && PROCEED=$FALSE
+    fi
+    if [ ${PROCEED} ] ; then
+        z=$(dirname "${OUT_FILE}")
+        # create directory if needed
+        if [ -d "${z}" ] ; then
+            echo -en " (dir ${BGon}exists${Boff})"
+        else
+            mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
+        fi
+        # copy file to final
+        cp -a "${DRAFT_FILE}" "${OUT_FILE}" && result=$? && echo -en "(copied)" || die "failed to copy draft to final"
+    fi
+    right_status $result ; return $result
+}
+
+
+#-----[ main script ]----------------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+[ $# -ne 2 ] && usage
+myBOARD=$1
+myCONFIG=$2
+
+# basic common approach -
+# initialize variables (local function)
+# local validation, configuration, and variable assignment (local function(s))
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# do local parts
+
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
+
+# local validation, configuration, and variable assignment (local function(s))
+if ! $(validate_board) ; then E_message "Failed to validate_board"; usage; fi
+validate_target ${BOARD} || die "failed to validate_target"
+
+# identify TUPLE1 - used to pick CFLAGS, etc
+message_n "extracting TUPLE1 from TARGET ..."
+# work-around 2 for generic-amd64, for now
+if [[ ${BOARD} == "generic-amd64" ]] ; then
+    TUPLE1="amd64"
+else
+    TUPLE1=$(echo "${TARGET}" | cut -d'-' -f1) result=$?
+fi
+[ $result -eq 0 ] && echo -en " (${TUPLE1})" || echo -en " (failed)"
+right_status $result
+
+display_configuration || die "Failed to display_configuration"
+echo
+msg="NOTE: $(status_color ${INTERACTIVE})INTERACTIVE${Boff}, ${LBon}SYS_TYPE${Boff}"
+msg+=", ${LBon}ENV_TYPE${Boff}, ${LBon}OUT_FILE${Boff}"
+msg+=", and $(status_color ${OVER_WRITE})OVER_WRITE${Boff} are configured"
+message "${msg}\n(and may be modified) in ${config_file}"
+# sanity check configuration
+sanity_check || die "Failed sanity_check"
+echo
+[ $INTERACTIVE ] && confirm_continue_or_exit
+echo
+
+separator ${PN} "(build make.conf)"
+create-draft-file || die "failed to create-draft-file"
+add-heading || die "failed to add-heading"
+add-COMMON_FLAGS || die "failed to add-COMMON_FLAGS"
+add-CFLAGS || die "failed to add-CFLAGS"
+add-CHOST || die "failed to add-CHOST"
+add-MAKEOPTS_header || die "failed to add-MAKEOPTS_header"
+add-MAKEOPTS || die "failed to add-MAKEOPTS"
+add-ACCEPT_KEYWORDS || die "failed to add-ACCEPT_KEYWORDS"
+add-ACCEPT_LICENSE || die "failed to add-ACCEPT_LICENSE"
+add-FEATURES || die "failed to add-FEATURES"
+add-DIRS || die "failed to add-DIRS"
+add-LANGUAGE || die "failed to add-LANGUAGE"
+add-INPUT_DEVICES || die "failed to add-INPUT_DEVICES"
+add-VIDEO_CARDS || die "failed to add-VIDEO_CARDS"
+add-INSTALL_MASK || die "failed to add-INSTALL_MASK"
+add-USE || die "failed to add-USE"
+add-GRUB_PLATFORMS || die "failed to add-GRUB_PLATFORMS"
+add-MIRRORS || die "failed to add-MIRRORS"
+post-file || die "failed to post-file"
+
+message "${PN} Complete"
+echo
+
+
