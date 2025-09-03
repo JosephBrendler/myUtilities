@@ -1,0 +1,311 @@
+#!/bin/bash
+# fix a raw sfdisk layout to make it usable as a template for other devices
+
+# source headers
+#script_header_installed_dir=./         ## only when testing, pre-ebuild
+script_header_installed_dir=/usr/sbin   # this is where it should be installed
+source ${script_header_installed_dir%/}/script_header_joetoo
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source ${script_header_installed_dir%/}/script_header_joetoo_extended
+
+# only needed for testing sources pending package build
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+
+#-----[ variables ]------------------------------------------------------
+VERBOSE=$TRUE
+verbosity=3
+PN=$(basename $0)
+
+varlist=" PN BPN BUILD"
+varlist+=" IN_FILE DRAFT_DIR DRAFT_FILE OUT_DIR OUT_FILE"
+varlist+=" BOARD DEVTYPE ENC"
+varlist+=" BREAK bool.FLAGGED bool.VERBOSE verbosity"
+
+hidden_varlist="result response answer "
+
+#-----[ functions ]------------------------------------------------------
+
+message_n "sourcing cb-common-functions ..."
+source /usr/sbin/cb-common-functions ; right_status $?
+TARGET=""
+
+# override usage in script_header_joetoo and local.usage in crossbuild-tools
+usage() {
+    message "${BRon}usage: ${BGon}${PN} /path/to/file${Boff}"
+    echo
+    message "${BYon}  sfdisk script files  are named like this --"
+    message "${LBon}  sfdisk.<BOARD>.<DEVTYPE>.<ENC>${Boff}"
+    echo
+    message "${BYon}  BOARD: must be one of the following --"
+    joetoo-sbc-list | sed 's|^|    |'
+    echo
+    message "${BYon}  DEVTYPE: Device type must be one of mmc|usb|nvme${Boff}"
+    message "${BYon}  ENC: Encryption must be one of luks|plain${Boff}"
+    exit 1
+}
+
+initialize_variables() {
+    # use script_header_joetoo functions
+    initialize_vars ${varlist}
+    initialize_vars ${hidden_varlist}
+
+    FLAGGED=$FALSE
+    # assign initial values
+    message_n "Re-assigning PN = $(basename $0) ..."
+    PN=$(basename $0) ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing BUILD ..."
+    source /etc/crossbuild-tools/BUILD
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "sourcing BPN ..."
+    source /etc/crossbuild-tools/BPN
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning IN_FILE = ${myINFILE} ..."
+    export IN_FILE="${myINFILE}" ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning DRAFT_FILE = /tmp/draft-sfdisk-script/$(basename ${IN_FILE}).draft ..."
+    export DRAFT_FILE="/tmp/draft-sfdisk-script/$(basename ${IN_FILE}).draft"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning OUT_DIR = /home/joe/myUtilities/dev-sbc/crossbuild-tools/cb-layout-device-sfdisk-templates"
+    export OUT_DIR="/home/joe/myUtilities/dev-sbc/crossbuild-tools/cb-layout-device-sfdisk-templates"
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning OUT_FILE = $(basename $IN_FILE).template ..."
+    export OUT_FILE="$(basename ${IN_FILE}).template" ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning VERBOSE = \$TRUE ..."
+    export VERBOSE=$TRUE ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Re-assigning verbosity = 3 ..."
+    export verbosity=3 ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    [ $FLAGGED ] && return 1 || return 0
+}
+
+display_configuration() {
+    separator ${PN} "(display configuration)"
+    # use script_header_joetoo functions
+    longest=$(get_longest ${varlist})
+    display_vars $longest ${varlist} || return 1
+    return 0
+}
+
+sanity_check() {
+    separator ${PN} "(sanity check)"
+    if [[ "$DEVTYPE" == @(mmc|usb|nvme) ]] ; then
+	d_message "DEVTYPE: $DEVTYPE is ${BGon}sane${Boff}" 2
+    else
+	d_message "DEVTYPE: $DEVTYPE is ${BRon}NOT sane${Boff}" 2
+        return 1
+    fi
+    if [[ "$ENC" == @(luks|plain) ]] ; then
+	d_message "ENC: $ENC is ${BGon}sane${Boff}" 2
+    else
+	d_message "ENC: $ENC is ${BRon}NOT sane${Boff}" 2
+        return 1
+    fi
+    if [ -e ${IN_FILE} ] ; then
+	d_message "IN_FILE: $IN_FILE ${BGon}exists${Boff}" 2
+    else
+	d_message "IN_FILE: $IN_FILE ${BRon}does not exist${Boff}" 2
+        return 1
+    fi
+    # put some code here to catch dumb stuff like cmdline option assignments that should
+    # be mutually exclusive
+    return 0
+}
+
+create-draft-file() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    message_n "initializing draft sfdisk script file ..."
+    z=$(dirname "${DRAFT_FILE}")
+    export DRAFT_DIR="${z}"
+    if [ -d "${z}" ] ; then
+        echo -en " (dir ${BGon}exists${Boff})"
+    else
+        mkdir -p "${z}" && echo -en " (${BMon}created${Boff} dir)" || die "failed to mkdir -p ${z}"
+    fi && \
+    if [ -e "${DRAFT_FILE}" ] ; then
+        rm "${DRAFT_FILE}" || die "failed to rm ${DRAFT_FILE}"
+    fi
+    touch "${DRAFT_FILE}"
+    result=$? ; right_status $result ; return $result
+}
+
+edit-script() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    # the input file path IN_FILE and output path DRAFT_FILE are already assigned
+
+    # initialize draft script
+    echo -n "" > ${DRAFT_FILE}
+    # get the partition count so we can keep track and remove size from the last
+    P_COUNT=$(grep -c '^/dev/' ${IN_FILE}) || die "failed to determine P_COUNT"
+    d_message "Note: P_COUNT = $P_COUNT partitions"
+
+    p_line_count=0
+    while read -r LINE; do
+        edit-line "${LINE}" || die "failed to edit-line"
+    done < "${IN_FILE}"
+    return $?
+}
+
+edit-line() {
+    # comment out label-id, last-lba assignments in header
+    # edit each partition line to remove UUID, and if last then remove size
+    myLINE="$1"
+#    line_start=${myLINE%%:*}
+    line_start="$(echo ${myLINE} | cut -d':' -f1)"
+    line_end="$(echo ${myLINE} | cut -d':' -f2)"
+    case ${line_start} in
+        "" ) # ignore blank lines; copy to script
+            echo "${myLINE}" >> ${DRAFT_FILE} || die "failed to append blank line to draft script"
+            d_message "appended blank line to draft script" 3
+            ;;
+        "label"|"device"|"first-lba"|"sector-size"|"unit" ) # leave these alone
+            echo "${myLINE}" >> ${DRAFT_FILE} || die "failed to append line to draft script"
+            d_message "appended $line_start line to draft script" 3
+            ;;
+        "label-id"|"last-lba" ) # comment these out
+            echo "#${myLINE}" >> ${DRAFT_FILE} || die "failed to append commented line to draft script"
+            d_message "appended commented $line_start line to draft script" 3
+            ;;
+        "/dev/"* ) # these are partition lines
+            # increment partition line counter so we know when we are at the last one
+            let p_line_count=$(( $p_line_count + 1 ))
+            # include but comment out the original line
+            echo "#${myLINE}" >> ${DRAFT_FILE} || die "failed to append commented original partition line to draft script"
+            d_message "appended commented original partition line to draft script" 3
+            # the rest of the line is comma-separated key= value pairs; examine each
+            # remove UUID values
+            # remove the size of the last partition so script will fill the device
+            IFS=','
+            read -r -a lineparts <<< "${line_end}" || die "failed to read lineparts"
+            unset IFS
+            myNEWLINE="${line_start} :"
+            # reassign line_start for so it makes sense in output
+            line_start="partition format"
+            for ((i=0; i<${#lineparts[@]}; i++)) ; do
+                key="$(echo ${lineparts[$i]} | cut -d'=' -f1)"
+                val="$(echo ${lineparts[$i]} | cut -d'=' -f2)"
+                case ${key} in
+                    "start" ) # include these as-is
+                        myNEWLINE+=" ${lineparts[$i]}," || die "failed to append linepart [${lineparts[$i]}] to myNEWLINE"
+                        d_message "appended linepart [${lineparts[$i]}] to myNEWLINE"
+                        ;;
+                    "size" ) # inlude this unless this is the last partition
+                        if [ $p_line_count -eq $P_COUNT ] ; then
+                            myNEWLINE+=" size= ," || die "failed to append null size to myNEWLINE"
+                            d_message "appended null size to myNEWLINE for last partition"
+                        else
+                            myNEWLINE+=" ${lineparts[$i]}," || die "failed to append size to myNEWLINE"
+                            d_message "appended size to myNEWLINE"
+                        fi
+                        ;;
+                    "type" ) # include these as-is (but drop the trailing comma since this is now the last field)
+                        myNEWLINE+=" ${lineparts[$i]}" || die "failed to append linepart [${lineparts[$i]}] to myNEWLINE"
+                        d_message "appended linepart [${lineparts[$i]}] to myNEWLINE"
+                        ;;
+                    "uuid" ) # remove uuid so script will assign new random one
+                        d_message "ignoring uuid so script will assign a new random one"
+                        ;;
+                    * )  die "invalid key [${key}] in partition format line" ;;
+                esac
+            done
+            # now append the newly rewritten line to the draft script
+            echo "${myNEWLINE}" >> ${DRAFT_FILE} || die "failed to append line to draft script"
+            d_message "appended $line_start line to draft script" 3
+            ;;
+        * ) die "invalid line_start [${line_start}]" ;;
+    esac
+    return 0
+}
+
+parse-argument() {
+    d_message "inside ${FUNCNAME[0]}" 4
+    arg=$(basename $1)
+    IFS='.'
+    read -r -a argparts <<< "${arg}" || die "failed to read argparts"
+    unset IFS
+    BOARD=${argparts[1]}
+    DEVTYPE=${argparts[2]}
+    ENC=${argparts[3]}
+    d_message "BOARD: $BOARD" 2
+    d_message "DEVTYPE: $DEVTYPE" 2
+    d_message "ENC: $ENC" 2
+    return 0
+}
+
+show-draft() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "inside ${FUNCNAME[0]}" 4
+    cat ${DRAFT_FILE} | sed 's|^|    |'
+    echo
+}
+
+move-draft-to-output() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "inside ${FUNCNAME[0]}" 4
+    mv -v "${DRAFT_FILE}" "${OUT_DIR%/}/${OUT_FILE}"
+    echo
+}
+
+#-----[ main script ]----------------------------------------------------
+checkroot
+separator $(hostname) ${PN}
+[ $# -ne 1 ] && usage
+myINFILE="$1"
+
+# basic common approach -
+# initialize variables (local function)
+# local validation, configuration, and variable assignment (local function(s))
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# do local parts
+
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
+
+# parse command line argument to assign BOARD, DEVTYPE, ENC
+parse-argument ${myINFILE} || die "Failed to parse-argument"
+
+# local validation, configuration, and variable assignment (local function(s))
+#else
+    validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
+#fi
+
+# create draft output file (and assign its path and name)
+create-draft-file || die "failed to create-draft-file"
+
+display_configuration || die "Failed to display_configuration"
+echo
+
+# sanity check configuration - do this after display_configuration so user can see problems
+sanity_check || die "Failed sanity_check"
+
+separator ${PN} "(build draft sfdisk script)"
+edit-script || die "failed to edit-script"
+
+show-draft || die "failed to show-draft"
+move-draft-to-output || die "failed to move-draft-to-output"
+
+message "${PN} Complete"
+echo
+# unset again just in case
+unset IFS
+
+
