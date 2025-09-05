@@ -4,7 +4,7 @@
 # ver 13 May 2024 - generalize to set both chip, line for each led
 # ver 29 May 2024 - yellow svc led off = good; make checks option in .conf
 #
-# Note gpioset syntax:  gpioset -c <chip#> -t<toggleduration> <line#>=0 (off; =1 for on)
+# Note gpioset syntax:  gpioset -d push-pull -c <chip#> -t<toggleduration> <line#>=0 (off; =1 for on)
 # Convention:  GPIOH_XN is chip=H and line= 8*X + N
 #
 TRUE=0
@@ -16,11 +16,12 @@ VPN_LED=(2 9)         # GPIO2_B1 pin 3 (VPN LED)(green)
 SVC_LED=(2 10)        # GPIO2_B2 pin 5 (Services LED)(yellow)
 TEMP_LED=(0 8)        # GPIO0_B0 pin 7 (Temp LED)(red)
 
-blinkwait=0.05        # s wait during fluttler blink
+#blinkwait=0.05        # s wait during fluttler blink
+blinkwait=1           # s wait during fluttler blink
 #wait_time=2          # s wait for ping
 wait_time=30          # s wait for ping
 
-BLINKS=5              # how many times to blink
+BLINKS=3              # how many times to blink
 
 vpn_server_ip="192.168.63.1"
 vpn_status_file="/root/bin/vpn_status"
@@ -55,18 +56,18 @@ CHECKTEMP=$TRUE
 #-----[ functions ]---------------------------------------------
 
 light_off() {
-  gpioset -c${1} -t0 ${2}=0
+  gpioset -d push-pull -c${1} -t0 ${2}=0
 }
 
 light_on() {
-  gpioset -c${1} -t0 ${2}=1
+  gpioset -d push-pull -c${1} -t0 ${2}=1
 }
 
 blink_light() {
-  # blink LED
-  for ((i=0;i<${BLINKS};i++))       # blink on/off 5 times, quickly
+  # blink LED off(even)/on(odd), BLINKS times, quickly
+  for ((i=0; i<$(( ${BLINKS} * 2 )); i++))
   do
-    gpioset -c${1} -t0 ${2}=$(( $(( 1 + $i )) % 2 ))
+    gpioset -d push-pull -c${1} -t0 ${2}=$(( ${i} % 2 ))
     sleep ${blinkwait}
   done
 }
@@ -118,6 +119,7 @@ check_vpn() {
     esac
   fi
   echo "done"
+  [[ ${VPN_OK} ]] && return 0 || return 1
 }
 
 restart_vpn() {
@@ -165,12 +167,14 @@ check_svc() {
     [[ $VERBOSE ]] && [[ verbosity -ge 3 ]] && \
       /usr/bin/logger -p cron.notice "${PROG_NAME} success -- Result: all services are started"
     light_off ${SVC_LED[${chip}]} ${SVC_LED[${line}]}
+    return 1
   else
     [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
       /usr/bin/logger -p cron.notice "${PROG_NAME} service failure -- Result: ${result}"
     light_on ${SVC_LED[${chip}]} ${SVC_LED[${line}]}
   fi
   echo "done"
+  return 0
 }
 
 check_temp() {
@@ -190,13 +194,14 @@ check_temp() {
     [[ $VERBOSE ]] && [[ verbosity -ge 2 ]] && \
       /usr/bin/logger -p cron.notice "${PROG_NAME} temp check failure -- CPU Temp: ${int_temp} C [ > threshold: ${temp_threshold} C ]"
     light_on ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]}
+    return 1
   else
     [[ $VERBOSE ]] && [[ verbosity -ge 3 ]] && \
       /usr/bin/logger -p cron.notice "${PROG_NAME} temp check success -- CPU Temp: ${int_temp} C [ < threshold: ${temp_threshold} C ]"
     light_off ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]}
   fi
   echo "done"
-
+  return 0
 }
 
 #-----[ main script ]-----------------------
@@ -205,17 +210,20 @@ light_off ${VPN_LED[${chip}]} ${VPN_LED[${line}]}
 light_off ${SVC_LED[${chip}]} ${SVC_LED[${line}]}
 light_off ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]}
 
-[ $CHECKVPN ] && check_vpn || \
-    ( blink_light ${VPN_LED[${chip}]} ${VPN_LED[${line}]} && \
-      light_on ${VPN_LED[${chip}]} ${VPN_LED[${line}]} )
+if [ $CHECKVPN ] ; then
+    blink_light ${VPN_LED[${chip}]} ${VPN_LED[${line}]}
+    check_vpn
+fi
 
-[ $CHECKSVC ] && check_svc || \
-    ( blink_light ${SVC_LED[${chip}]} ${SVC_LED[${line}]} && \
-      light_on ${SVC_LED[${chip}]} ${SVC_LED[${line}]} )
+if [ $CHECKSVC ] ;then
+    blink_light ${SVC_LED[${chip}]} ${SVC_LED[${line}]}
+    check_svc
+fi
 
-[ $CHECKTEMP ] && check_temp || \
-    ( blink_light ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]} && \
-      light_on ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]} )
+if [ $CHECKTEMP ] ; then
+    blink_light ${TEMP_LED[${chip}]} ${TEMP_LED[${line}]}
+    check_temp
+fi
 
 [[ $VERBOSE ]] && [[ verbosity -ge 1 ]] && \
     /usr/bin/logger -p cron.notice "${PROG_NAME} complete"
