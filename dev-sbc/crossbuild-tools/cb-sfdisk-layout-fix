@@ -189,7 +189,7 @@ edit-line() {
             let p_line_count=$(( $p_line_count + 1 ))
             # include but comment out the original line
             echo "#${myLINE}" >> ${DRAFT_FILE} || die "failed to append commented original partition line to draft script"
-            d_message "appended commented original partition line to draft script" 3
+            d_message "p${p_line_count}: appended commented original partition line to draft script" 3
             # the rest of the line is comma-separated key= value pairs; examine each
             # remove UUID values
             # remove the size of the last partition so script will fill the device
@@ -199,29 +199,30 @@ edit-line() {
             myNEWLINE="${line_start} :"
             # reassign line_start for so it makes sense in output
             line_start="partition format"
+            linepartcount=$(( ${#lineparts[@]} - 1 ))   # index from 0 so it matches $i below
             for ((i=0; i<${#lineparts[@]}; i++)) ; do
                 key="$(echo ${lineparts[$i]} | cut -d'=' -f1)"
                 val="$(echo ${lineparts[$i]} | cut -d'=' -f2)"
                 case ${key} in
-                    "start" ) # include these as-is
-                        myNEWLINE+=" ${lineparts[$i]}," || die "failed to append linepart [${lineparts[$i]}] to myNEWLINE"
-                        d_message "appended linepart [${lineparts[$i]}] to myNEWLINE"
+                    "start"|"type"|"name"|"bootable" ) # include these as-is
+                        myNEWLINE+=" ${lineparts[$i]}" || die "failed to append linepart [${lineparts[$i]}] to myNEWLINE"
+                        [ $i -ne ${linepartcount} ] && myNEWLINE+=","  # add a comma field separator if this is not the last linepart
+                        d_message "p${p_line_count} (${i}/${linepartcount}): added linepart [${lineparts[$i]}] to myNEWLINE"
                         ;;
-                    "size" ) # inlude this unless this is the last partition
+                    "size" ) # inlude size value unless this is the last partition (ok to fill disk)
                         if [ $p_line_count -eq $P_COUNT ] ; then
-                            myNEWLINE+=" size= ," || die "failed to append null size to myNEWLINE"
-                            d_message "appended null size to myNEWLINE for last partition"
+                            myNEWLINE+=" size= " || die "failed to append null size to myNEWLINE"
+                            [ $i -ne ${linepartcount} ] && myNEWLINE+=","  # add a comma field separator if this is not the last linepart
+                            d_message "p${p_line_count} (${i}/${linepartcount}): added null size to myNEWLINE for last partition"
                         else
-                            myNEWLINE+=" ${lineparts[$i]}," || die "failed to append size to myNEWLINE"
-                            d_message "appended size to myNEWLINE"
+                            myNEWLINE+=" ${lineparts[$i]}" || die "failed to append size to myNEWLINE"
+                            [ $i -ne ${linepartcount} ] && myNEWLINE+=","  # add a comma field separator if this is not the last linepart
+                            d_message "p${p_line_count} (${i}/${linepartcount}): added linepart [${lineparts[$i]}] to myNEWLINE"
                         fi
                         ;;
-                    "type" ) # include these as-is (but drop the trailing comma since this is now the last field)
-                        myNEWLINE+=" ${lineparts[$i]}" || die "failed to append linepart [${lineparts[$i]}] to myNEWLINE"
-                        d_message "appended linepart [${lineparts[$i]}] to myNEWLINE"
-                        ;;
                     "uuid" ) # remove uuid so script will assign new random one
-                        d_message "ignoring uuid so script will assign a new random one"
+                        d_message "p${p_line_count} (${i}/${linepartcount}): ignoring uuid so script will assign a new random one"
+                        linepartcount=$(( ${linepartcount} - 1 ))  # decrement so as to avoid comma after last linepart
                         ;;
                     * )  die "invalid key [${key}] in partition format line" ;;
                 esac
