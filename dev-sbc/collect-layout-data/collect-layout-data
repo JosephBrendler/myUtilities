@@ -14,7 +14,29 @@ usage() {
     message "${BYon}where BOARD is one of these --${Boff}"
     joetoo-sbc-list | sed 's|^|    |'
     echo
+    message "(and BOARD will now be determined analytically)"
     exit 1
+}
+
+determine-board() {
+    message_n "looking up machine ..."
+    machine=$(uname -m) || die "failed to look up machine"
+    echo -en " (${machine})"; right_status $TRUE
+
+    if [[ "${machine}" == "x86_64" ]] ; then
+        message_n "assigning BOARD ..."
+        BOARD="generic-amd64"
+        echo -en " (${BOARD})"; right_status $TRUE
+    else
+        message_n "looking up /proc/device-tree/model ..."
+        model="$(tr -d '\0' < /proc/device-tree/model)" || die "failed to look up model"
+        echo -en " (${model})"; right_status $TRUE
+
+        message_n "looking up BOARD ..."
+        BOARD="$(joetoo-sbc-list | grep "${model}" | awk '{print $1}')"  || \
+            die "failed to look up BOARD"
+        echo -en " (${BOARD})"; right_status $TRUE
+    fi
 }
 
 initialize-variables() {
@@ -28,7 +50,7 @@ initialize-variables() {
     build_host="gmki91:/home/${user}/"
     VERBOSE=$TRUE
     verbosity=2
-    BOARD=${myBOARD}
+#    BOARD=${myBOARD}     # now set by determine-board()
 }
 
 collect_root_dev_data() {
@@ -113,11 +135,13 @@ validate_board() {
 #-----[ main script ]-----------------------------------------------------------------------
 checkroot
 separator $(hostname) ${PN}
-[ $# -ne 1 ] && usage
-myBOARD="$1"
+[ $# -ne 0 ] && usage
+#myBOARD="$1"
 
 # initialize and set defaults
 initialize-variables || die "failed to initialize-variables"
+
+determine-board || die "failed to determine BOARD"
 
 message_n "validating BOARD [${BOARD}]..."
 validate_board || die "failed to validate_target [${BOARD}]"
