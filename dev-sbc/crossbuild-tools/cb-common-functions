@@ -41,7 +41,8 @@ validate_target() {
     # TARGET = crossbuild target for image generation
     [ $# -ne 1 ] && E_message "Error: must specify BOARD" && return 1
     BOARD=$1
-    d_message "validating BOARD: [ ${BOARD} ]" 3
+    separator "${PN}" "(validate_target)"
+    d_message "validating BOARD and target for BOARD: [ ${BOARD} ]" 3
     case $BOARD in
         "generic-amd64"         )
             TARGET=x86_64-pc-linux-gnu
@@ -240,7 +241,6 @@ validate_target() {
     esac
 
     if [[ $VALID ]] ; then
-        echo
         d_message "BOARD ...........: ${BOARD}" 3
         d_message "TARGET ..........: ${TARGET}" 3
         d_message "TARGET_ARCH .....: ${TARGET_ARCH}" 3
@@ -262,7 +262,7 @@ validate_device() {
     # OUTPUTDEVICE = physical block device to which crossbuilt image will be copied/flashed/deployed
     [ $# -ne 1 ] && E_message "Error: must specify OUTPUTDEVICE" && return 1
     OUTPUTDEVICE=$1
-    separator "(validate_device)" ${PN}
+    separator "${PN}" "(validate_device)"
     message_n "validating OUTPUTDEVICE: [ ${OUTPUTDEVICE} ] ..."
     if [ -b ${OUTPUTDEVICE} ] ; then
         right_status $TRUE
@@ -274,14 +274,18 @@ validate_device() {
         exit 1
     fi
     # check if any part of this device is mounted - un-mount before continuing
-    # first unmount anything mounted to lvm in luks
+
+    # (1) first unmount anything mounted to lvm in luks
     # note:  | sed 's|\\x0a| |' substitutes a space for the escaped newline
-    #     control charackter in multiple mountpoints in lsblk -P output
+    #     control character in multiple mountpoints in lsblk -P output
     while read line; do
-        # echo -n $line
+        # read a line from lsblk output (see below)
         if [[ ! -z $(echo $line) ]] ; then
-           eval "${line}" # will set NAME,TYPE, and MOUNTPOINTS
+           # use the line to assign NAME, TYPE, MOUNTPOINTS
+           eval "${line}"
            d_message "${TYPE}: $NAME  MOUNTPOINTS: ${MOUNTPOINTS}" 2
+
+           # (1.1) If this device appears to be mounted, check and if so try to unmount it
            if [[ ! -z ${MOUNTPOINTS} ]] ; then
                for x in ${MOUNTPOINTS}; do
                    # if it is in fact still mounted, unmount it
@@ -295,10 +299,11 @@ validate_device() {
            else
                d_message "no MOUNTPOINTS for TYPE [$TYPE] NAME [$NAME]" 2
            fi
-           # get volume group name and fs_name for this LV (for joetoo standard lv naming)
+
+           # (1.2) get volume group name and fs_name for this LV (for joetoo standard lv naming)
            VG=$(echo $NAME | cut -d'-' -f1)
            fs_name=$(echo $NAME | cut -d'-' -f2)
-           # turn off swap, if it is turn on for this LV
+           # (1.3) turn off swap, if it is turn on for this LV
            if [[ "${fs_name}" == "swap" ]] && \
               [[ ! -z "$(swapon --noheadings --show | grep ${NAME})" ]] ; then
                swapoff /dev/mapper/${NAME} && message "successfully ran swapoff /dev/mapper/${NAME}" || \
@@ -306,14 +311,14 @@ validate_device() {
            fi
         fi
     done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "lvm" | sed 's|\\x0a| |')
-    # next, release the volume group's LVs
+    # (2) next, release the volume group's LVs (ignore if no actual VG)
     if [[ ! -z $(lsblk ${OUTPUTDEVICE} | grep lvm) ]] ; then
         vgchange -an ${VG} >/dev/null && message "successfully ran vgchange -an ${VG} >/dev/null" || \
             die "failed to run vgchange -an ${VG} >/dev/null"
     else
-        d_message "no LVs active in VG [${VG}]" 2
+        [ ! -z "${VG}" ] && d_message "no LVs active in VG [${VG}]" 2
     fi
-    # next, close any luks cyprt device
+    # (3) next, close any luks cyprt device
     while read line ; do
         if [[ ! -z $(echo $line) ]] ; then
             eval "${line}"
@@ -322,7 +327,7 @@ validate_device() {
                 die "failed to run cryptsetup luksClose ${NAME}"
         fi
     done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "crypt" | sed 's|\\x0a| |')
-    # finally, unmount any mounted regular partitions
+    # (4) finally, unmount any mounted regular partitions
     while read line ; do
         if [[ ! -z $(echo $line) ]] ; then
             eval "${line}"
@@ -338,6 +343,9 @@ validate_device() {
         fi
     done <<< $(lsblk -y -b ${OUTPUTDEVICE} -o NAME,TYPE,MOUNTPOINTS -P | grep "part" | sed 's|\\x0a| |')
 
+    # If we made it here without choking, then return success
+    d_message "${BGon}[valid device]${Boff}" 2
+    echo
     return 0
 }
 
@@ -525,11 +533,19 @@ sanity_check() {
 }
 
 format_warning() {
-    separator "(format warning)" ${PN}
+    separator "${PN}" "(format warning)"
     answer=""
-    msg="${BYon}Warning:${BRon} this process will destroy all data on device [ ${OUTPUTDEVICE} ]\n"
-    msg+="${BWon}Are you sure you want to continue?"
-    prompt "${msg}"
+    msg="   ${BRon}Warning:${BYon} this process will destroy all data on device [ ${BRon}${OUTPUTDEVICE}${BYon} ]\n${Boff}"
+    # estimate message() function left side padding
+    message_func_pad=4
+    # adjust for non-printing chars and message() padding
+    msg_width=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BYon} + ${#BRon} + ${#Boff})) - $message_func_pad ))
+    msg_banner="${BMon}$(repeat '*' ${msg_width})\n${Boff}"
+    msg+="   ${BYon}Warning:${BRon} this process will destroy all data on device [ ${BYon}${OUTPUTDEVICE}${BRon} ]\n${Boff}"
+    msg+="   ${BRon}Warning:${BYon} this process will destroy all data on device [ ${BRon}${OUTPUTDEVICE}${BYon} ]\n${Boff}"
+    msg2="   ${BWon}Are you sure you want to continue?"
+    echo
+    prompt "${msg_banner}${msg}${BGon} * ${msg_banner}${msg2}"
     case ${answer:0:1} in
         [yY] ) message "Affirmative response from user; continuing" ;;
         [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;

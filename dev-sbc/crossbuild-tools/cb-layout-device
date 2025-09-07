@@ -5,10 +5,13 @@
 #
 
 source /usr/sbin/script_header_joetoo
+export LC_NUMERIC="en_US.UTF-8"
+
+config_dir="/etc/crossbuild-tools"
 message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
+source ${config_dir%/}/BUILD ; right_status $?
 message_n "sourcing BPN ..."
-source /etc/crossbuild-tools/BPN ; right_status $?
+source ${config_dir%/}/BPN ; right_status $?
 source /usr/sbin/script_header_joetoo_extended
 
 VERBOSE=$TRUE
@@ -19,93 +22,18 @@ verbosity=3
 
 PN=$(basename $0)
 
-varlist="BOARD OUTPUTDEVICE"
-varlist+=" MiB"
-varlist+=" configfile DEV_HOSTNAME bool.LUKS"
+varlist="OUTPUTDEVICE BOARD MEDIUM ENCRYPTION bool.LUKS"
+varlist+=" DEV_HOSTNAME BREAK config_dir configfile"
 varlist+=" crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
-varlist+=" root_vg root_dev_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
+varlist+=" BREAK sfdisk_template_dir blkid_template_dir lsblk_template_dir"
+varlist+=" sfdisk_template blkid_template lsblk_template"
+varlist+=" BREAK sfdisk_head_label sfdisk_head_unit sfdisk_head_first_lba sfdisk_head_sector_size partition_count"
+varlist+=" BREAK root_vg root_dev_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
 varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 
 hidden_varlist="crypt_passphrase"
 
 #-----[ functions ]-------------------------------------------------------------------------
-
-initialize_variables() {
-
-    message_n "sourcing cb-common-functions ..."
-    source /usr/sbin/cb-common-functions ; right_status $?
-
-    initialize_vars ${varlist}
-    initialize_vars ${hidden_varlist}
-
-    message_n "sourcing BUILD ..."
-    source /etc/crossbuild-tools/BUILD ; right_status $?
-
-    message_n "sourcing BPN ..."
-    source /etc/crossbuild-tools/BPN ; right_status $?
-
-    message_n "re-initializing VERBOSE = TRUE ..."
-    VERBOSE=$TRUE ; right_status $?
-    message_n "re-initializing verbosity = 3 ..."
-    verbosity=3 ;  right_status $?
-
-    # "source" the template files to read some global variables
-    #     medium (mmc, usb, nvme)
-    #     encryption (plain, luks)
-    #     disk label (dos/gpt)
-    #     unit (sectors)
-    #     sector-size (512)
-    #     partition-count
-    #     for each partition (label, type, mountpoint, luks?)
-    #     LUKS (bool)
-    #         PVname, VGname, LVnames()
-    #         for each LV (name, size, mountpoint)
-
-    # maybe optional config file for -
-    #     DEV_HOSTNAME (can get from .img file)
-    #     crypt_keydev
-    #     crypt_passphrase
-    # all the other data from old config file is in sfdisk, blkid, and lsblk template files
-    message_n "initializing configfile = /etc/crossbuild-tools/cb-layout-device.conf"
-    configfile=/etc/crossbuild-tools/cb-layout-device.conf  ; right_status $?
-
-    message_n "sourcing cb-layout-device.conf ..."
-    if [ -e ${configfile} ] ; then
-        source ${configfile} ; result=$?
-        if [ $result -eq 0 ] ; then
-            right_status $TRUE
-        else
-            right_status 1
-            die "failed to source ${configfile}"
-        fi
-    else
-        right_status 1
-        die "${configfile} does not exist"
-    fi
-
-    message_n "initializing crypt_keydev_mountpoint = /mnt/key ..."
-    crypt_keydev_mountpoint=/mnt/key ; right_status $?
-
-    message_n "initializing root_dev_mountpoint = /mnt/gentoo ..."
-    root_dev_mountpoint="/mnt/gentoo" ; right_status $?
-
-    message_n "initializing mounttherestscript = ${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME} ..."
-    mounttherestscript="${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
-
-    message_n "initializing chrootprepscript = ${root_dev_mountpoint%/}/chroot-prep ..."
-    chrootprepscript="${root_dev_mountpoint%/}/chroot-prep" ; right_status $?
-
-    message_n "initializing chrootcommandsfile = ${root_dev_mountpoint%/}/chroot-commands ..."
-    chrootcommandsfile="${root_dev_mountpoint%/}/chroot-commands" ; right_status $?
-
-    message_n "initializing default LUKS = FALSE ..."
-    LUKS=$FALSE ; right_status $?
-
-    message_n "initializing default OUTPUTDEVICE NULL ..."
-    OUTPUTDEVICE="" ; right_status $?
-
-    return 0
-}
 
 usage() {
     E_message "${BRon}usage: ${BGon}${PN} <BOARD> <OUTPUTDEVICE>${Boff}"
@@ -123,7 +51,273 @@ usage() {
 }
 
 # non-stty-separator() ...... moved to /usr/sbin/script_header_joetoo_extended
-# non-stty-right_status () ..  moved to /usr/sbin/script_header_joetoo_extended
+# non-stty-right_status () .. moved to /usr/sbin/script_header_joetoo_extended
+
+initialize_variables() {
+
+    message_n "sourcing cb-common-functions ..."
+    source /usr/sbin/cb-common-functions ; right_status $?
+
+    initialize_vars ${varlist}
+    initialize_vars ${hidden_varlist}
+
+    message_n "re-assigning config_dir = /etc/crossbuild-tools"
+    config_dir="/etc/crossbuild-tools" ; right_status $?
+
+    message_n "sourcing BUILD ..."
+    source ${config_dir%/}/BUILD ; right_status $?
+
+    message_n "sourcing BPN ..."
+    source ${config_dir%/}/BPN ; right_status $?
+
+    message_n "re-initializing VERBOSE = TRUE ..."
+    VERBOSE=$TRUE ; right_status $?
+    message_n "re-initializing verbosity = 3 ..."
+    verbosity=3 ;  right_status $?
+
+    message_n "initializing default LUKS = FALSE ..."
+    LUKS=$FALSE ; right_status $?
+
+    message_n "initializing partition_count = 0 ..."
+    partition_count=0 ; right_status $?
+
+    message_n "assigning BOARD from command line ..."
+    BOARD="${myBOARD}" ; right_status $?
+
+    message_n "assigning OUTPUTDEVICE from command line ..."
+    OUTPUTDEVICE="${myOUTPUTDEVICE}" ; right_status $?
+
+    # config file sets MEDIUM and LUKS,
+    # and it optionally sets DEV_HOSTNAME, crypt_keydev, crypt_passphrase
+    # all the other data from old config file is in sfdisk, blkid, and lsblk template files
+    message_n "assigning configfile = cb-layout-device.conf"
+    configfile="cb-layout-device.conf"  ; right_status $?
+
+    message_n "sourcing config file cb-layout-device.conf ..."
+    if [ -e ${config_dir%/}/${configfile} ] ; then
+        source ${config_dir%/}/${configfile} ; result=$?
+        if [ $result -eq 0 ] ; then
+            right_status $TRUE
+        else
+            right_status 1
+            die "failed to source ${configfile}"
+        fi
+    else
+        right_status 1
+        die "${configfile} does not exist"
+    fi
+
+    if [[ $LUKS ]] ; then
+        message_n "assigning ENCRYPTION = luks , per config file ..."
+        ENCRYPTION="luks" ; right_status $?
+    else
+        message_n "assigning ENCRYPTION = plain , per config file ..."
+        ENCRYPTION="plain" ; right_status $?
+    fi
+
+    # initialize sfdisk_ blkid_ and lsblk_template with BOARD and info from config file (medium, LUKS)
+    message_n "assigning sfdisk_template_dir = cb-layout-device-sfdisk-templates ..."
+    sfdisk_template_dir="cb-layout-device-sfdisk-templates" ; right_status $?
+
+    message_n "assigning blkid_template_dir = cb-layout-device-blkid-templates ..."
+    blkid_template_dir="cb-layout-device-blkid-templates" ; right_status $?
+
+    message_n "assigning lsblk_template_dir = cb-layout-device-lsblk-templates ..."
+    lsblk_template_dir="cb-layout-device-lsblk-templates" ; right_status $?
+
+    message_n "assigning sfdisk_template = sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    sfdisk_template="sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
+    message_n "assigning blkid_template = blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    blkid_template="blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
+    message_n "assigning lsblk_template = lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    lsblk_template="lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
+    # initialize luks keying device mountpoint
+    message_n "assigning crypt_keydev_mountpoint = /mnt/key ..."
+    crypt_keydev_mountpoint=/mnt/key ; right_status $?
+
+    # initialize root_dev_mountpoint and related variables
+    message_n "assigning root_dev_mountpoint = /mnt/gentoo ..."
+    root_dev_mountpoint="/mnt/gentoo" ; right_status $?
+
+    message_n "assigning mounttherestscript = ${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME} ..."
+    mounttherestscript="${root_dev_mountpoint%/}/mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
+
+    message_n "assigning chrootprepscript = ${root_dev_mountpoint%/}/chroot-prep ..."
+    chrootprepscript="${root_dev_mountpoint%/}/chroot-prep" ; right_status $?
+
+    message_n "assigning chrootcommandsfile = ${root_dev_mountpoint%/}/chroot-commands ..."
+    chrootcommandsfile="${root_dev_mountpoint%/}/chroot-commands" ; right_status $?
+
+    return 0
+}
+
+source_templates() {
+    # "source" the template files to read some global variables
+    #     medium (mmc, usb, nvme)
+    #     encryption (plain, luks)
+    #     disk label (dos/gpt)
+    #     unit (sectors)
+    #     sector-size (512)
+    #     partition-count
+    #     for each partition (label, type, mountpoint, luks?)
+    #     LUKS (bool)
+    #         PVname, VGname, LVnames()
+    #         for each LV (name, size, mountpoint)
+    separator "${PN}" "(sourcing templates)"
+    d_message "in ${FUNCNAME[0]}" 5
+
+    template_varlist="" # each ingest adds to this
+
+    # (1) ingest sfdisk_template
+    message_n "checking sfdisk_template ..."
+    [ -f "${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template}" ] && \
+        right_status $? || die "sfdisk_template does not exist"
+        ingest_sfdisk_template || die "failed to ingest_sfdisk_template"
+
+    # (2) ingest blkid_template
+    message_n "checking blkid_template ..."
+    [ -f "${config_dir%/}/${blkid_template_dir%/}/${blkid_template}" ] && \
+        right_status $? || die "blkid_template does not exist"
+        ingest_blkid_template || die "failed to ingest_blkid_template"
+
+    # (3) ingest lsblk_template
+    message_n "checking lsblk_template ..."
+    [ -f "${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template}" ] && \
+        right_status $? || die "lsblk_template does not exist"
+        ingest_lsblk_template || die "failed to ingest_lsblk_template"
+
+    # display variables added by templates
+    separator ${PN} "(template_varlist)"
+    d_message "template_varlist: ${template_varlist}" 5
+    longest=0
+    longest=$(get_longest ${template_varlist}) ; d_message "longest: $longest" 5
+    template_varlist=$(for x in ${template_varlist}; do echo $x; done | sort)
+    display_vars $longest ${template_varlist}
+}
+
+ingest_sfdisk_template() {
+    # read sfdisk template line by line using info left of delimiter ':' to identify each line
+    # ignore comments with grep -v '^#'; ignore blank lines with grep ':'
+    # assign values, count partitions ; extra echo to trim whitespace
+    # assume only one line for each header setting (label, unit, first-lba, sector-size, device, etc)
+    message_n "ingesting sfdisk_template"
+    d_echo "" 5
+    while read LINE ; do
+        d_message "${LBon}reading LINE:${Boff} $LINE" 5
+        var=$(echo $(echo $LINE | cut -d':' -f1)) ; d_message "var: $var" 5
+        val=$(echo $(echo $LINE | cut -d':' -f2)) ; d_message "val: $val" 5
+        case ${var} in
+            "label"        ) sfdisk_head_label="${val}" ; template_varlist+=" sfdisk_head_label" ;;
+            "unit"         ) sfdisk_head_unit="${val}" template_varlist+=" sfdisk_head_unit" ;;
+            "first-lba"    ) sfdisk_head_first_lba="${val}" template_varlist+=" sfdisk_head_first_lba" ;;
+            "sector-size"  ) sfdisk_head_sector_size="${val}" template_varlist+=" sfdisk_head_sector_size" ;;
+            "device"       ) d_message "ignoring device line" 5 ;;
+            "/dev/"*       )
+                let partition_count+=1
+                p_num=$(right_most ${var}) ; d_message "p_num: $p_num" 5
+                part_vals=()  # (re)initialize
+                IFS=',' read -r -a part_vals <<<"${val}" ; unset IFS # just want TYPE, for help formatting
+                d_message "part_vals count: ${#part_vals[@]}" 5
+                [ $verbosity -ge 5 ] && echo -e  "${BGon} * ${Boff}part_vals: ${part_vals[@]}"
+                for ((i=0; i<${#part_vals[@]}; i++)); do
+                    partvar=$(echo $(echo ${part_vals[$i]} | cut -d'=' -f1)) ; d_message "partvar: $partvar" 5
+                    partval=$(echo $(echo ${part_vals[$i]} | cut -d'=' -f2)) ; d_message "partval: $partval" 5
+                    eval "sfdisk_p${p_num}_${partvar}=${partval}" ; d_message "assigned sfdisk_p${p_num}_${partvar}=${partval}" 5
+                    template_varlist+=" sfdisk_p${p_num}_${partvar}"
+                done
+                ;;
+
+            *              ) die "invalid var [${var}] in sfdisk_template input LINE" ;;
+        esac
+    done <<< "$( grep ':' ${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template} | grep -v '^#')"
+    right_status $?
+    return 0
+}
+
+ingest_blkid_template() {
+    # read blkid template line by line using info left of delimiter ':' to identify each line
+    # ignore comments with grep -v '^#'; ignore blank lines with grep ':'
+    # verify partition_count; assign values for each partition pn_LABEL, pn_TYPE
+    message_n "ingesting blkid_template"
+    d_echo "" 5
+    p_count=0  # verify against partition_count
+    while read LINE ; do
+        let p_count+=1 ; d_message "p_count: $p_count" 5
+        d_message "${LBon}reading LINE:${Boff} $LINE" 5
+        var=$(echo $(echo $LINE | cut -d':' -f1)) ; d_message "var: $var" 5
+        val=$(echo $(echo $LINE | cut -d':' -f2)) ; d_message "val: $val" 5
+        p_num=$(right_most ${var}) ; d_message "p_num: $p_num" 5
+        LABEL=""; TYPE="" # (re)initialize
+        eval "${val}"  # assign LABEL, TYPE, etc
+        eval "blkid_p${p_num}_LABEL=${LABEL}" ; d_message "assigned blkid_p${p_num}_LABEL=${LABEL}" 5
+        eval "blkid_p${p_num}_TYPE=${TYPE}" ; d_message "assigned blkid_p${p_num}_TYPE=${TYPE}" 5
+        template_varlist+=" blkid_p${p_num}_LABEL blkid_p${p_num}_TYPE"
+    done <<< "$( grep ':' ${config_dir%/}/${blkid_template_dir%/}/${blkid_template} | grep -v '^#')"
+    right_status $?
+    [ $p_count -ne $partition_count ] && die "blkid partition count does not match sfdisk partition count"
+    return 0
+}
+
+ingest_lsblk_template() {
+    # read blkid template line by line using info left of delimiter ':' to identify each line
+    # (there should not be any comments or blank lines to ignore)
+    # ignore the first (column names) line wth grep -v '^NAME'
+    # verify partition_count; assign values for each partition pn_LABEL, pn_TYPE
+    # assume only one "disk" line and if luks, only one "crypt" line (for now)
+    # assume template was created by collect-layout-data tool
+    # (which formats its output to include just these columns - NAME,SIZE,TYPE,MOUNTPOINTS)
+    message_n "ingesting blkid_template"
+    d_echo "" 5
+    p_count=0  # verify against partition_count
+    lv_count=0
+    while read LINE ; do
+        eval "$(echo $LINE | awk '{ print "NAME="$1 " SIZE="$2 " TYPE="$3 " MOUNTPOINTS="$4 }')"
+        case $TYPE in
+            "crypt" )
+                lsblk_crypt_NAME=$NAME ; lsblk_crypt_SIZE=$SIZE
+                d_message "lsblk_crypt_NAME: $lsblk_crypt_NAME" 5
+                d_message "lsblk_crypt_SIZE: $lsblk_crypt_SIZE" 5
+                template_varlist+=" lsblk_crypt_NAME lsblk_crypt_SIZE"
+                ;;
+            "disk"  )
+                lsblk_disk_NAME=$NAME ; lsblk_disk_SIZE=$SIZE
+                d_message "lsblk_disk_NAME: $lsblk_disk_NAME" 5
+                d_message "lsblk_disk_SIZE: $lsblk_disk_SIZE" 5
+                template_varlist+=" lsblk_disk_NAME lsblk_disk_SIZE"
+                ;;
+            "lvm"   )
+                let lv_count+=1 ; d_message "lv_count: $lv_count" 5
+                eval "lsblk_lv${lv_count}_NAME=$NAME"
+                eval "lsblk_lv${lv_count}_SIZE=$SIZE"
+                eval "lsblk_lv${lv_count}_MOUNTPOINTS=$MOUNTPOINTS"
+                d_message "assigned lsblk_lv${lv_count}_NAME=$NAME" 5
+                d_message "assigned lsblk_lv${lv_count}_SIZE=$SIZE" 5
+                d_message "assigned lsblk_lv${lv_count}_MOUNTPOINTS=$MOUNTPOINTS" 5
+                template_varlist+=" lsblk_lv${lv_count}_NAME lsblk_lv${lv_count}_SIZE lsblk_lv${lv_count}_MOUNTPOINTS"
+                ;;
+            "part"  )
+                let p_count+=1 ; d_message "p_count: $p_count" 5
+                eval "lsblk_p${p_count}_NAME=$NAME"
+                eval "lsblk_p${p_count}_SIZE=$SIZE"
+                eval "lsblk_p${p_count}_MOUNTPOINTS=$MOUNTPOINTS"
+                d_message "assigned lsblk_p${p_count}_NAME=$NAME" 5
+                d_message "assigned lsblk_p${p_count}_SIZE=$SIZE" 5
+                d_message "assigned lsblk_p${p_count}_MOUNTPOINTS=$MOUNTPOINTS" 5
+                template_varlist+=" lsblk_p${p_count}_NAME lsblk_p${p_count}_SIZE lsblk_p${p_count}_MOUNTPOINTS"
+                ;;
+            *       ) die "invalid TYPE [${TYPE}] in lsblk_template input LINE" ;;
+        esac
+    done <<< "$( grep -v '^NAME' ${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template})"
+    right_status $?
+    lsblk_lv_count=${lv_count}
+    template_varlist+=" lsblk_lv_count"
+    [ $p_count -ne $partition_count ] && die "lsblk partition count does not match sfdisk partition count"
+    return 0
+}
+
 
 list_unused_disks() {
     # set this now because doing so will be an inappropriate use of io control for stdin during while loop's redirection for "read line"
@@ -156,78 +350,136 @@ list_unused_disks() {
     return 0
 }
 
+set-crypt_keydev() {
+#  set crypt_passphrase
+    response=""
+    msg="${BYon}Please provide a crypt_keydev identifier for this system${Boff}\n"
+    msg+="  (${BMon}This will be used to encrypt data in the luks container${Boff})"
+    msg+="  please identify how I should recognize the device --\n"
+    msg+="    by name (e.g. /dev/sda1)\n"
+    msg+="    by UUID (e.g. AB94-DF90\n"
+    msg+="or by label (e.g. KEY or CARD)\n"
+    message ${msg}
+    E_message "${BMon}if you skip this step, external device keying will not be enabled${Boff}"
+    echo
+    response="n"
+    while [[ "${response:0:1}" == [nN] ]] ; do
+        echo -en " ${BGon}*${Boff} Enter crypt_keydev selector: "
+        read candidate ; echo
+        new_prompt "You entered crypt_keydev = ${candidate} ; is this correct?"
+    done
+    message_n "setting crypt_keydev ..."
+    export crypt_keydev="${candidate}" || die "failed to assign crypt_keydev"
+    echo -e -n " ${BGon}(success)${Boff}" ; right_status $TRUE
+    return 0
+}
+
 set-crypt_passphrase() {
 #  set crypt_passphrase
     response=""
-    message "${BYon}Please provide the crypt_passphrase for this system${Boff}"
-    message "${BMon}This will be used in formatting luks-encrypted partition(s)${Boff}"
+    message "${BYon}You must provide a crypt_passphrase for this system${Boff}"
+    message "  (${BMon}This will be used in formatting luks-encrypted partition(s)${Boff})"
     echo
-    echo -en " ${BGon}*${Boff} Enter crypt_passphrase: "
-    read -s candidate1 ; echo
-    echo -en " ${BGon}*${Boff} re-enter to confirm crypt_passphrase: "
-    read -s candidate2 ; echo
-    if [[ "${candidate1}" == "${candidate2}" ]] ; then
-        message_n "setting crypt_passphrase ..."
-        export crypt_passphrase="${candidate1}" ; result=$? && \
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && return 1 )
-    else
-        die "candidate crypt_passphrases did not match"
-    fi
+    candidate1=X ; candidate2=Z
+    while [[ "${candidate1}" != "${candidate2}" ]] ; do
+        echo -en " ${BGon}*${Boff} Enter crypt_passphrase: "
+        read -s candidate1 ; echo
+        echo -en " ${BGon}*${Boff} Re-enter to confirm crypt_passphrase: "
+        read -s candidate2 ; echo
+        [[ "${candidate1}" != "${candidate2}" ]] && E_message "${BRon}candidate passphrases do not match${Boff}"
+    done || die "failed while trying to get crypt_passphrase"
+    message_n "setting that crypt_passphrase ..."
+    export crypt_passphrase="${candidate1}" || die "failed to set crypt_passphrase"
+    echo -en " ${BGon}(success)${Boff}" ; right_status $TRUE
     return 0
 }
 
 set-DEV_HOSTNAME() {
-#  set DEV_HOSTNAME
-    response=""
+    #  set DEV_HOSTNAME
     message "${BYon}Please provide the hostname for this system${Boff}"
-    message "${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff}"
+    message "  (${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff})"
+    E_message "${BMon}if you skip this step, the default [demobox] will be used"
     echo
-    while [[ ! "${response}" == [yYsS] ]] ; do
+    response="n"
+    while [[ "${response:0:1}" == [nN] ]] ; do
         echo -en "${BGon}*${Boff} set hostname for this system: "
         read candidate
         message "you responded [ ${candidate} ]"
         new_prompt "is this correct?"
     done
-    if [[ "${response}" == [yY] ]] ; then
-        message_n "setting DEV_HOSTNAME: ${candidate}"
-        export DEV_HOSTNAME="${candidate}" ; result=$? && \
-        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && return 1 )
-    else
-        die "candidate hostname provided, then rejected"
-    fi
+    message_n "setting DEV_HOSTNAME"
+    case "${response:0:1}" in
+        [yY] ) export DEV_HOSTNAME="${candidate}" ;;
+        [sS] ) export DEV_HOSTNAME="demobox" ;;
+        *    ) die "invalid response to hostname query"
+    esac
+    echo -n " (${DEV_HOSTNAME})"
+    right_status $r$TRUE
     return 0
 }
 
-finalize_config() {
-    separator "(finalize_config)" ${PN}
-    # this function only runs for LUKS, so sanity check that
-    if [ ${#partition_list[@]} -eq 1 ] ; then
-        E_message "luks format is requested, but there is only 1 partition defined"
-        die "invalid partition configuration for luks"
+luks_config() {
+    separator "${PN}" "(luks_config)"
+    # (1) this function only runs for LUKS, so sanity check that
+    message_n "sanity-checking luks format request"
+    if [ ${partition_count} -le 1 ] ; then
+        echo -e -n " (${BRon}only ${partition_count} partition(s) defined${Boff})" ; right_status 1
+        die "invalid partition configuration for joetoo use of luks container"
     else
-        d_message "luks format requested; and more than 1 partition: ok" 3
+        echo -e -n " (${#partition_list[@]} partitions defined)" ; right_status $TRUE
     fi
-    # check/get DEV_HOSTNAME
+    # (2) check/get DEV_HOSTNAME
+    message_n "checking if hostname is assigned"
     if [ -z $DEV_HOSTNAME ] ; then
-        msg="DEV_HOSTNAME is unset; please provide one"
+        # todo - see if /usr/${TARGET} is mounted and if hostname can be retrieved from /etc/hostname first
+        # then prompt for it if not
+        echo -e " (DEV_HOSTNAME ${BRon}unset${Boff})"
         set-DEV_HOSTNAME
         d_message "DEV_HOSTNAME: $DEV_HOSTNAME" 3
     else
-        d_message "DEV_HOSTNAME already assigned" 3
+        echo -e -n " (DEV_HOSTNAME: $DEV_HOSTNAME)" ; right_status $TRUE
     fi
-    # now that it has been checked, use DEV_HOSTNAME to set root_vg
+    # (3) now that it has been checked, use DEV_HOSTNAME to set root_vg
     export root_vg="vg_${DEV_HOSTNAME}"
 
     # check/get luks passphrase
+    message_n "checking if crypt_passphrase is assigned"
     if [ -z $crypt_passphrase ] ; then
-        msg="crypt_passphrase is unset; please provide one"
+        echo -e " (crypt_passphrase ${BRon}unset${Boff})"
         set-crypt_passphrase
 ###        d_message "crypt_passphrase: $crypt_passphrase"
     else
-        d_message "crypt_passphrase already set" 3
+        echo -e -n " (crypt_passphrase ${BGon}set${Boff})" ; right_status $TRUE
     fi
+    # (4) if crypt_keydev is set, use it to get keyfile
+    message_n "checking for keying device crypt_keydev"
+    if [ -z $crypt_keydev ] ; then
+        # otherwise, scan for default crypt_keydev and if found, use that to set keyfile
+        echo -e -n " (${BRon}unset${Boff}, scanning)"
+        eval $(lsblk -P -o NAME,LABEL,MOUNTPOINTS | grep 'LABEL="KEY"')
+        if [ -z $NAME ] ; then
+            echo " (not found)"
+            set-crypt_keydev
+            d_message "crypt_keydev is now set [${crypt_keydev}]" 3
+        else
+            crypt_keydev="/dev/${NAME}"
+            echo -n " (scanned: ${crypt_keydev})" ; right_status $TRUE
+        fi
+    else
+        echo -n " (alreaady assigned: ${crypt_keydev})"  ; right_status $TRUE
+    fi
+    # mount crypt_keydev, verify keyfile exists, assign keyfile variable
+    get_luks_keyfile || die "failed to get_luks_keyfile"
+    # (5) validate keyfile, which should be assigned now
+    message_n "validating keyfile"
+    if [ -f ${keyfile} ] ; then
+        echo -e -n " (${keyfile})" ; right_status $TRUE
+    else
+        echo -e -n " (${BRon}${keyfile} does not exist${Boff})" ; right_status 1
+        die "keyfile pathname is assigned, but the file does not exist"
+    fi
+    # if we made it this far and did not choke, return success
+    return 0
 }
 
 layout_partitions() {
@@ -235,21 +487,85 @@ layout_partitions() {
     d_message "in ${FUNCNAME[0]}" 3
     # calculate disk size in MiB
     #  (to-do: use this for relative layout sizing on device or arbitrary size)
+    # LC_NUMERIC is set to en_US.UTF-8 at the top
     disksize_bytes=$(fdisk -l ${OUTPUTDEVICE} | head -n1 | awk '{print $5}')
-    d_message "disksize_bytes: $disksize_bytes" 3
-    disksize_mb=$(( $disksize_bytes / $((1024 * 1024)) ))
-    d_message "disksize_mb: $disksize_mb" 3
+    d_message "disksize_bytes: $disksize_bytes ($(printf "%'d\n" $disksize_bytes) bytes)" 3
+    disksize_MiB=$(( $disksize_bytes / $((1024 * 1024)) ))
+    d_message "disksize_MiB: $disksize_MiB ($(printf "%'d\n" $disksize_MiB) MiB)" 3
+#    d_echo $(printf "%'d\n" $disksize_bytes) 3
+#    d_echo $(printf "%'d\n" $disksize_MiB) 3
 
     # use sfdisk script to lay out partitions
-
+    message "About to run sfdisk script to replicate template layout on OUTPUTDEVICE [$OUTPUTDEVICE]"
+    confirm_continue_or_exit
+    sfdisk ${OUTPUTDEVICE} < ${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template} || \
+        die "sfdisk script failed"
     return 0
 }
 
 format_partitions() {
     separator "(format_partitions)" ${PN}
     d_message "in ${FUNCNAME[0]}" 3
+    # read blktype as first 2 chars of text to the right of right-most / (e.g. sd in /dev/sdc)
+    blkname=${OUTPUTDEVICE##*/}; blktype=${blkname:0:2} ; echo ${blktype}
+    case ${blktype} in
+        "sd" ) p_prefix="";; # e.g. /dev/sdc
+        "mm" ) p_prefix="p" ;; # e.g. /dev/mmcblk0
+        "nv" ) p_prefix="p" ;; # e.g. /dev/nvme0n1
+    esac
 
-    # use blkid template to format partitions
+    # use blkid template data (already ingested) to format partitions
+    for ((i=1; i<${partition_count}; i++)) ; do
+        # determine the partition name on the new device
+        # use TYPE in formatted lablk -o output to filter on partition (ignore disk) lines with grep 'part'
+        # use PARTN to identify THIS partition number in column 3 of formated -o output with awk
+#        p_name="$(lsblk -nlo NAME,TYPE,PARTN ${OUTPUTDEVICE} | grep 'part' | awk -v var="${i}" '$3 == var {print}' | cut -d' ' -f1)"
+#        p_dev_name="/dev/${p_name}"
+        p_dev_name="${OUTPUTDEVICE}${p_prefix}${i}"
+        d_message "i: $i" 4
+        d_message "p_dev_name: $p_dev_name" 4
+
+        eval "myType=\${blkid_p${i}_TYPE}"
+        eval "myLabel=\${blkid_p${i}_LABEL}"
+        case ${myType} in
+            ""            )
+                d_message "skipping un-typed/un-formatted partition [${p_dev_name}]" 1
+                ;;
+            "vfat"        )
+                # example mkfs.vfat -F 32 -n efi_fs /dev/sdc2
+                myCmd="mkfs.vfat -F 32"
+                [ ! -z "${myLabel}" ] && myCmd+=" -n ${myLabel}"
+                myCmd+=" ${p_dev_name} >/dev/null 2>/dev/null"
+                d_message_n "running [${myCmd}] ..." 1
+                eval "${myCmd}" || die "failed to format ${p_dev_name}"
+                d_right_status $? 1
+                ;;
+            "ext2"        )
+                # example mkfs.ext2 -L boot_fs /dev/sdc1
+                myCmd="mkfs.ext2"
+                [ ! -z "${myLabel}" ] && myCmd+=" -L ${myLabel}"
+                myCmd+=" ${p_dev_name} >/dev/null 2>/dev/null"
+                d_message_n "running [${myCmd}] ..." 1
+                eval "${myCmd}" || die "failed to format ${p_dev_name}"
+                d_right_status $? 1
+                ;;
+            "ext4"        )
+                # example mkfs.ext4 -L root_fs /dev/sdc2
+                myCmd="mkfs.ext4"
+                [ ! -z "${myLabel}" ] && myCmd+=" -L ${myLabel}"
+                myCmd+=" ${p_dev_name} >/dev/null 2>/dev/null"
+                d_message_n "running [${myCmd}] ..." 1
+                eval "${myCmd}" || die "failed to format ${p_dev_name}"
+                d_right_status $? 1
+                ;;
+            "crypto_LUKS" )
+                [ ! $LUKS ]] && die "crypto_LUKS format requested but LUKS is FALSE; => fix templates"
+                # call layout-luks-lvm to finish this
+                message "placeholder for calling layout-luks-lvm..."
+                ;;
+            *             ) die "invalid partition type in blkid_template input" ;;
+        esac
+    done
 
     return 0
 
@@ -259,6 +575,8 @@ layout_cryptsetup() {
     ERROR=$FALSE
     separator "(layout_cryptsetup)" ${PN}
     d_message "in ${FUNCNAME[0]}" 3
+
+    return 1  # for now
 
     # use lsblk template to identify luks partition (last "part") and container "crypt" names
 
@@ -277,43 +595,49 @@ layout_cryptsetup() {
 
 }
 
+sanity_check() {
+    # check for insane or stupid stuff
+    [ $partition_count -gt 9 ] && die "invalid partition_count; ${PN} supports up to 9"
+
+    return 0
+}
+
 #-----[ main script ]---------------------------------------------
 checkroot
 separator "$(hostname)" "${PN}"
-initialize_variables || die "failed to initialize variables"
 [ $# -ne 2 ] && usage
-BOARD=$1
-OUTPUTDEVICE=$2
+myBOARD=$1
+myOUTPUTDEVICE=$2
+initialize_variables || die "failed initialize_variables"
 
 # validate BOARD, assign TARGET, ARCH. etc.
-validate_target ${BOARD} || die "failed to validate_target ${BOARD}"
+validate_target ${BOARD} || die "failed validate_target ${BOARD}"
 
 # validate OUTPUTDEVICE
 validate_device ${OUTPUTDEVICE} || die "failed to validate device [ ${OUTPUTDEVICE} ]"
 
-# todo - select template from those available for BOARD (e.g. mmc.plain or nvme.luks)
-select_template || die "failed to select_template"
-
-# don't use configs - just select template (e.g. mmc.plain or nvme.luks)
+# choice of config file selects templates (e.g. mmc.plain or nvme.luks)
 # todo: validate all three template parts (sfdisk, blkid, lsblk)
 # number of partitions; partition type vs format; device size; partition sizes
-validate_templates || die "failed to validate config"
+source_templates || die "failed source_templates"
 
 if [ $LUKS ] ; then
-    # todo: break this into logical parts as separate functions
     # validate luks container (appropriate partition, size)
     # set device hostname (for vg naming)
     # set luks pashphrase
-    finalize_config || die "failed to finalize config"
+    # id and mount luks keying device and assign keyfile
+    luks_config || die "failed luks_config"
 fi
 
 display_configuration || die "failed to display_configuration"
 
-format_warning || die "failed format warning somehow, oddly"
+sanity_check || die "fained sanity_check"
 
-layout_partitions || die "failed to layout partitions"
+format_warning || die "failed format_warning somehow, oddly"
 
-format_partitions || die "failed to format partitions"
+layout_partitions || die "failed layout_partitions"
+
+format_partitions || die "failed format_partitions"
 
 [ $LUKS ] && layout_cryptsetup || message "no luks layout requested; skipping"
 
