@@ -22,15 +22,18 @@ verbosity=3
 
 PN=$(basename $0)
 
-varlist="OUTPUTDEVICE BOARD MEDIUM ENCRYPTION bool.LUKS"
-varlist+=" DEV_HOSTNAME BREAK config_dir configfile"
-varlist+=" crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
-varlist+=" BREAK sfdisk_template_dir blkid_template_dir lsblk_template_dir"
+varlist="DEVICE_DATA OUTPUTDEVICE BOARD MEDIUM ENCRYPTION bool.LUKS"
+varlist+=" disksize_bytes ez_disksize_bytes disksize_MiB ez_disksize_MiB MiB GiB"
+varlist+=" swap_size DEV_HOSTNAME"
+varlist+=" BREAK CONFIG_DATA config_dir configfile"
+varlist+=" BREAK TEMPLATE_DATA sfdisk_template_dir blkid_template_dir lsblk_template_dir"
 varlist+=" sfdisk_template blkid_template lsblk_template"
-varlist+=" BREAK sfdisk_head_label sfdisk_head_unit sfdisk_head_first_lba sfdisk_head_sector_size"
+varlist+=" sfdisk_head_label sfdisk_head_unit sfdisk_head_first_lba sfdisk_head_sector_size"
 varlist+=" p_prefix partition_count"
-varlist+=" BREAK root_vg root_dev_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
-varlist+=" BREAK bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
+varlist+=" BREAK CRYPT_DATA crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
+varlist+=" luks_partition_device edev"
+varlist+=" BREAK ROOT_DATA root_vg root_dev_mountpoint mounttherestscript chrootprepscript chrootcommandsfile"
+varlist+=" BREAK PROGRAM_DATA boot.INTERACTIVE bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 
 hidden_varlist="crypt_passphrase"
 
@@ -71,6 +74,9 @@ initialize_variables() {
     message_n "sourcing BPN ..."
     source ${config_dir%/}/BPN ; right_status $?
 
+    message_n "initializing INTERACTIVE = TRUE ..."
+    INTERACTIVE=$TRUE ; right_status $?
+
     message_n "re-initializing VERBOSE = TRUE ..."
     VERBOSE=$TRUE ; right_status $?
     message_n "re-initializing verbosity = 3 ..."
@@ -88,7 +94,7 @@ initialize_variables() {
     message_n "assigning OUTPUTDEVICE from command line ..."
     OUTPUTDEVICE="${myOUTPUTDEVICE}" ; right_status $?
 
-    # config file sets MEDIUM and LUKS,
+    # config file sets MEDIUM and LUKS, as well as INTERACTIVE, VERBOSE, verbosity
     # and it optionally sets DEV_HOSTNAME, crypt_keydev, crypt_passphrase
     # all the other data from old config file is in sfdisk, blkid, and lsblk template files
     message_n "assigning configfile = cb-layout-device.conf"
@@ -163,22 +169,73 @@ initialize_variables() {
     echo -n " p_prefix = $p_prefix ..."
     right_status $result
 
+    # initialize display_configuration section headings
+    message_n "assigning DEVICE_DATA section heading"
+    DEVICE_DATA="see below" ; right_status $?
+
+    message_n "assigning CONFIG_DATA section heading"
+    CONFIG_DATA="see below" ; right_status $?
+
+    message_n "assigning TEMPLATE_DATA section heading"
+    TEMPLATE_DATA="see below" ; right_status $?
+
+    message_n "assigning CRYPT_DATA section heading"
+    CRYPT_DATA="see below" ; right_status $?
+
+    message_n "assigning ROOT_DATA section heading"
+    ROOT_DATA="see below" ; right_status $?
+
+    message_n "assigning PROGRAM_DATA section heading"
+    PROGRAM_DATA="see below" ; right_status $?
+
+    message_n "assigning MiB = 1024 * 1024"
+    MiB=$((1024*1024)) ; right_status $?
+
+    message_n "assigning GiB = 1024 * MiB"
+    GiB=$((1024*${MiB})) ; right_status $?
+
+    # calculate disk size in MiB; LC_NUMERIC is set to en_US.UTF-8 at the top
+    message_n "calculating disksize_bytes"
+    disksize_bytes=$(fdisk -l ${OUTPUTDEVICE} | head -n1 | awk '{print $5}') || \
+        die "failed to calculate disksize_bytes"
+    echo -e -n " ($disksize_bytes)" ; right_status $?
+
+    message_n "calculating disksize_MiB"
+    disksize_MiB=$(( $disksize_bytes / $((1024 * 1024)) )) || \
+        die "failed to calculate disksize_MiB"
+    echo -e -n " ($disksize_MiB)" ; right_status $?
+
+    message_n "calculating disksize_GiB"
+    disksize_GiB=$(( $disksize_bytes / $((1024 * ${MiB})) )) || \
+        die "failed to calculate disksize_GiB"
+    echo -e -n " ($disksize_GiB)" ; right_status $?
+
+    message_n "calculating ez_disksize_bytes"
+    ez_disksize_bytes="$(printf "%'d\n" $disksize_bytes) bytes" || \
+        die "failed to calculate ez_disksize_bytes"
+    echo -e -n " ($ez_disksize_bytes)" ; right_status $?
+
+    message_n "calculating ez_disksize_MiB"
+    ez_disksize_MiB="$(printf "%'d\n" $disksize_MiB) MiB" || \
+        die "failed to calculate ez_disksize_MiB"
+    echo -e -n " ($ez_disksize_MiB)" ; right_status $?
+
+    message_n "calculating ez_disksize_GiB"
+    ez_disksize_GiB="$(printf "%'d\n" $disksize_GiB) MiB" || \
+        die "failed to calculate ez_disksize_GiB"
+    echo -e -n " ($ez_disksize_GiB)" ; right_status $?
+
+    # calculate appropriate SWAP size
+    message_n "calculating appropriate swap_size"
+    calculate_appropriate_swap || die "failed to calculate swap_size"
+    echo -e -n " ($swap_size)" ; right_status $?
+
     return 0
 }
 
 source_templates() {
-    # "source" the template files to read some global variables
-    #     medium (mmc, usb, nvme)
-    #     encryption (plain, luks)
-    #     disk label (dos/gpt)
-    #     unit (sectors)
-    #     sector-size (512)
-    #     partition-count
-    #     for each partition (label, type, mountpoint, luks?)
-    #     LUKS (bool)
-    #         PVname, VGname, LVnames()
-    #         for each LV (name, size, mountpoint)
-    separator "${PN}" "(sourcing templates)"
+    # "source" the template files to read some global variables not set in configs
+    separator ${PN} "(${FUNCNAME[0]})"
     d_message "in ${FUNCNAME[0]}" 5
 
     template_varlist="" # each ingest adds to this
@@ -200,14 +257,32 @@ source_templates() {
     [ -f "${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template}" ] && \
         right_status $? || die "lsblk_template does not exist"
         ingest_lsblk_template || die "failed to ingest_lsblk_template"
+    # (4) display_template_varlist
+    display_template_varlist || die "failed to display_template_varlist"
 
+    # (5) set luks_partition_devise (so it can be used and displayed in config)
+    # luks_partition_device= (last on OUTPUTDEVICE)
+    # example /dev/sdc4 or /dev/mmcblk1p4 or /dev/nvme0n1p4
+    message_n "assigning luks_partition_device = ${OUTPUTDEVICE}${p_prefix}${partition_count}"
+    luks_partition_device="${OUTPUTDEVICE}${p_prefix}${partition_count}" || \
+        die "failed to set luks_partition_device"
+    right_status $?
+    # (6) set luks container name - get_luks_edev_name operates on luks_partition_device and sets edev
+    message_n "assigning luks container name (edev ="
+    get_luks_edev_name || die "failed to get_luks_edev_name"
+    echo -n " ${edev})" ; right_status $?
+
+}
+
+display_template_varlist() {
     # display variables added by templates
-    separator ${PN} "(template_varlist)"
+    separator ${PN} "(${FUNCNAME[0]})"
     d_message "template_varlist: ${template_varlist}" 5
     longest=0
     longest=$(get_longest ${template_varlist}) ; d_message "longest: $longest" 5
     template_varlist=$(for x in ${template_varlist}; do echo $x; done | sort)
     display_vars $longest ${template_varlist}
+    return 0
 }
 
 ingest_sfdisk_template() {
@@ -430,8 +505,10 @@ set-DEV_HOSTNAME() {
     return 0
 }
 
-luks_config() {
-    separator "${PN}" "(luks_config)"
+luks_lvm_config() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
+
     # (1) this function only runs for LUKS, so sanity check that
     message_n "sanity-checking luks format request"
     if [ ${partition_count} -le 1 ] ; then
@@ -440,6 +517,7 @@ luks_config() {
     else
         echo -e -n " (${#partition_list[@]} partitions defined)" ; right_status $TRUE
     fi
+
     # (2) check/get DEV_HOSTNAME
     message_n "checking if hostname is assigned"
     if [ -z $DEV_HOSTNAME ] ; then
@@ -451,6 +529,7 @@ luks_config() {
     else
         echo -e -n " (DEV_HOSTNAME: $DEV_HOSTNAME)" ; right_status $TRUE
     fi
+
     # (3) now that it has been checked, use DEV_HOSTNAME to set root_vg
     export root_vg="vg_${DEV_HOSTNAME}"
 
@@ -463,6 +542,7 @@ luks_config() {
     else
         echo -e -n " (crypt_passphrase ${BGon}set${Boff})" ; right_status $TRUE
     fi
+
     # (4) if crypt_keydev is set, use it to get keyfile
     message_n "checking for keying device crypt_keydev"
     if [ -z $crypt_keydev ] ; then
@@ -482,6 +562,7 @@ luks_config() {
     fi
     # mount crypt_keydev, verify keyfile exists, assign keyfile variable
     get_luks_keyfile || die "failed to get_luks_keyfile"
+
     # (5) validate keyfile, which should be assigned now
     message_n "validating keyfile"
     if [ -f ${keyfile} ] ; then
@@ -491,31 +572,153 @@ luks_config() {
         die "keyfile pathname is assigned, but the file does not exist"
     fi
 
-    # set luks partition (last on OUTPUTDEVICE): example /dev/sdc4 or /dev/mmcblk1p4 or /dev/nvme0n1p4
-    luks_partition_device="${OUTPUTDEVICE}${p_prefix}${partition_count}"
-    # set luks container name - get_luks_edev_name operates on luks_partition_device and sets edev
-    get_luks_edev_name ; d_message "edev: $edev" 4
-
-    # these don't need to be initialized (already done) but set here and then can be used in display_config
-    # set luks partition (last on OUTPUTDEVICE): example /dev/sdc4 or /dev/mmcblk1p4 or /dev/nvme0n1p4
-    varlist+=" BREAK luks_partition_device edev"
+    # (6) set luks partition and container names
+    # luks_partition_device and edev now set in initialization
 
     # if we made it this far and did not choke, return success
     return 0
 }
 
+
+calculate_lv_sizes() {
+    # build "lookup table" to properly size LVs for this device
+    # moved calc of disksize and swap_size to initialization
+    # if disk size is < 200G use mini-luks format
+    if [ $disksize_MiB -lt $(( 200 * ${GiB} )) ] ; then
+        # use mini-luks format (root, usr, and swap LVs only)
+        # swap_size already set
+        # use actual disk size to scale-map usr_size from 9G (min) to 15G (preferred) between 32G and 200G disk-size range
+        d_message_n "mapping usr_lv_size for small disk" 4
+        usr_lv_size="$(map-scale-linear ${disksize_GiB} 9 15 32 200 1)G" || \
+            die "failed to set usr_lv_size for small disk"
+        echo -e -n " (${usr_lv_size})" ; d_right_status $? 4
+        # allocate whatever is left to the root LV
+        d_message_n "setting root_lv_size for small disk" 4
+        root_lv_size="$(( ${disksize_GiB} - ${swap_size} - ${usr_lv_size}))G" || \
+            die "failed to set root_lv_size for small disk"
+        echo -e -n " (${root_lv_size})" ; d_right_status $? 4
+    else
+        # otherwise use standard LVs with size appropriate for this disk
+        # swap_size already set
+        # set root usr var opt to standard sizes
+        d_message_n "setting standard size for root LV" 4
+        root_lv_size="10G" || die "failed to set root_lv_size for large disk"
+        echo -e -n " (${root_lv_size})" ; d_right_status $? 4
+
+        d_message_n "setting standard size for usr LV"
+        usr_lv_size="75G" || die "failed to set usr_lv_size for large disk"
+        echo -e -n " (${usr_lv_size})" ; d_right_status $? 4
+
+       d_message_n "setting standard size for var LV"
+        var_lv_size="75G" || die "failed to set var_lv_size for large disk"
+        echo -e -n " (${var_lv_size})" ; d_right_status $? 4
+
+        d_message_n "setting standard size for opt LV"
+        opt_lv_size="5G" || die "failed to set opt_lv_size for large disk"
+        echo -e -n " (${opt_lv_size})" ; d_right_status $? 4
+
+        # set ( home tmp srv ) by mapping to reference range
+        # use template lv size  to scale-map this lv_size
+        #     from range (200G to actual template disk size)
+        #     to range (200G this disk-size)
+        # get template_crypt_size from already-ingested data
+        template_crypt_size=$(convert_size_to_GiB ${lsblk_crypt_SIZE}) || die "failed to set template_crypt_size"
+        # get this_crypt_size from lsblk *** must be done AFTER luks
+        this_crypt_size=$(convert_size_to_GiB $(lsblk -lno NAME,SIZE,TYPE ${OUTPUTDEVICE} | grep crypt | awk '{print $2}')) || \
+            die "failed to set this_crypt_size"
+        d_message "template_crypt_size: $template_crypt_size" 4
+        d_message "this_crypt_size: $this_crypt_size" 4
+        # for home, tmp, srv - allocate proportionally (this_lv:this_crypt :: template_lv:template_crypt)
+        for lv_name in home tmp srv; do
+            # look up the size of this LV in lsblk template; drop the trailing G (or other alpha char)
+            templage_lv_size=$(grep 'lvm' ${config_dir%/}/${lsblk_template_dir}/${lsblk_template} | grep ${lv_name} | awk '{print $2}' | sed 's|[kKmMgG]$||')
+            d_message "${lv_name} templage_lv_size: ${templage_lv_size}" 4
+            # calculate the proportional size for this LV
+            converted_size="$(map-scale-linear ${templage_lv_size} 200 ${template_crypt_size} 200 ${this_crypt_size} 1)G" || \
+                die "failed to calculate converted_size"
+            eval "${lv_name}_lv_size=${converted_size}" || die "failed to set ${lv_name}_lv_size"
+            d_message "${lv_name}_lv_size: $(eval echo \${${lv_name}_lv_size})" 4
+        done
+        # space will be allocated for "extra" LV *after* other LVs have actually been created/formatted
+    fi
+
+    # if we made it this far and did not choke, return success
+    return 0
+}
+
+convert_size_to_GiB() {
+    # convert size ($1) to GiB
+    local scale=${2:-1}  # set scale to 1 if not supplied on command line as $2
+    # read input_size and convert to GiB if needed
+    local units=$(right_most ${input_size})
+    local val=${input_size%${units}}
+    case ${units} in
+        [tT]  ) gibval=$(echo "scale=$scale; (($val * 1024))" | bc -l) ;;
+        [gG]  ) gibval=$val ;;
+        [mM]  ) gibval=$(echo "scale=$scale; (( $val / 1024.0 ))" | bc -l) ;;
+        [kK]  ) gibval=$(echo "scale=$scale; (( $val / ${MiB} ))" | bc -l) ;;
+        [0-9] )
+            # no units provided
+            val=${input_size}
+            gibval=$(echo "scale=$scale; (( $val / ${GiB} ))" | bc -l) ;;
+        *     ) die "invalid units in convert_size_to_GiB"
+    esac
+    echo ${gibval}
+}
+
+
+map-scale-linear() {
+    ! isnumber $1 && echo "invalid map_val for ${FUNCNAME[0]}"
+    ! isnumber $2 && echo "invalid from_lower bound for ${FUNCNAME[0]}"
+    ! isnumber $3 && echo "invalid from_upper bound for ${FUNCNAME[0]}"
+    ! isnumber $4 && echo "invalid to_lower bound for ${FUNCNAME[0]}"
+    ! isnumber $5 && echo "invalid to_upper bound for ${FUNCNAME[0]}"
+    [ ! -z "$6" ] && ! isnumber $6 && echo "invalid scale for ${FUNCNAME[0]}"
+    local map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
+    local scale=${6:-1} # Set default scale to 1 if not provided
+
+ local result=$(echo "scale=$scale; \
+    (($map_val - $from_lower) / ($from_upper - $from_lower)) * ($to_upper - $to_lower) + $to_lower" | bc -l)
+  echo "$result"
+}
+
+calculate_appropriate_swap() {
+    # calculate appropriate swap size for this board
+    # Gentoo rule: MEM<=2G swap=2*MEM; 2G<MEM<6G swap=MEM+2G; MEM>=6G swap=8G
+    # joetoo rule: min swap=4G; 2G<MEM<6G swap=MEM+2G; MEM>=6G swap=8G
+    # assume no hibernation in joetoo systems (would need swap>=MEM even in big systems)
+    case ${BOARD} in
+        "bcm2712-rpi-cm5-cm5io"            ) swap_size="8G" ;; # 8G RAM
+        "bcm2712-rpi-5-b"                  ) swap_size="8G" ;; # 8G RAM
+        "bcm2711-rpi-cm4-io"               ) swap_size="8G" ;; # 4G or 8GRAM
+        "bcm2711-rpi-4-b"                  ) swap_size="8G" ;; # 4G or 8G RAM
+        "bcm2710-rpi-3-b-plus"             ) swap_size="6G" ;; # 4G RAM
+        "bcm2710-rpi-3-b"                  ) swap_size="4G" ;; # 1G RAM
+        "bcm2709-rpi-2-b"                  ) swap_size="4G" ;; # 1G RAM
+        "bcm2708-rpi-b"                    ) swap_size="4G" ;; # 500M RAM
+        "rk3288-tinker-s"                  ) swap_size="4G" ;; # 2G RAM
+        "rk3399-rock-pi-4c-plus"           ) swap_size="6G" ;; # 4G RAM
+        "rk3399-tinker-2"                  ) swap_size="4G" ;; # 2G RAM
+        "rk3588-rock-5b"                   ) swap_size="8G" ;; # 8G RAM
+        "rk3588-radxa-rock-5b+"            ) swap_size="8G" ;; # 8G+ RAM
+        "rk3588s-orangepi-5"               ) swap_size="8G" ;; # 15G RAM
+        "rk3588s-orangepi-5b"              ) swap_size="8G" ;; # 15G RAM
+        "rk3588s-rock-5c"                  ) swap_size="8G" ;; # 15G RAM
+        "fsl-imx8mq-phanbell"              ) swap_size="4G" ;; # 1G or 2G RAM
+        "meson-gxl-s905x-libretech-cc-v2"  ) swap_size="4G" ;; # 2G RAM (sweet potato)
+        "meson-sm1-s905d3-libretech-cc"    ) swap_size="6G" ;; # 4G RAM (solitude)
+        "meson-g12b-a311d-libretech-cc"    ) swap_size="4G" ;; # 6G RAM (alta)
+        "generic-armv6j"                   ) swap_size="8G" ;; # assume >8G RAM
+        "generic-armv7a"                   ) swap_size="8G" ;; # assume >8G RAM
+        "generic-aarch64"                  ) swap_size="8G" ;; # assume >8G RAM
+        "generic-amd64"                    ) swap_size="8G" ;; # assume >8G RAM
+        *                                  ) die "invalid board in SWAP size calculation"
+    esac
+}
+
 layout_partitions() {
-    separator "(layout_partitions)" ${PN}
-    d_message "in ${FUNCNAME[0]}" 3
-    # calculate disk size in MiB
-    #  (to-do: use this for relative layout sizing on device or arbitrary size)
-    # LC_NUMERIC is set to en_US.UTF-8 at the top
-    disksize_bytes=$(fdisk -l ${OUTPUTDEVICE} | head -n1 | awk '{print $5}')
-    d_message "disksize_bytes: $disksize_bytes ($(printf "%'d\n" $disksize_bytes) bytes)" 3
-    disksize_MiB=$(( $disksize_bytes / $((1024 * 1024)) ))
-    d_message "disksize_MiB: $disksize_MiB ($(printf "%'d\n" $disksize_MiB) MiB)" 3
-#    d_echo $(printf "%'d\n" $disksize_bytes) 3
-#    d_echo $(printf "%'d\n" $disksize_MiB) 3
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
 
     # use sfdisk script to lay out partitions
     message "About to run sfdisk script to replicate template layout on OUTPUTDEVICE [$OUTPUTDEVICE]"
@@ -526,8 +729,8 @@ layout_partitions() {
 }
 
 format_partitions() {
-    separator "(format_partitions)" ${PN}
-    d_message "in ${FUNCNAME[0]}" 3
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
 
     # use blkid template data (already ingested) to format partitions
     for ((i=1; i<${partition_count}; i++)) ; do
@@ -574,9 +777,11 @@ format_partitions() {
                 d_right_status $? 1
                 ;;
             "crypto_LUKS" )
+                # set traps for mis-use of this type
                 [ ! $LUKS ]] && die "crypto_LUKS format requested but LUKS is FALSE; => fix templates"
-                # call layout_cryptsetup to finish this
-                layout_cryptsetup || die "failed layout_cryptsetup"
+                [ ! $i -eq $partition_count ] && die "crypto_LUKS format requested but this is not the last partition; => fix templates"
+                # ignore this here - call layout_cryptsetup_lvm separately from main script
+                d_message "skipping ${myType} typed partition [${p_dev_name}] for now"
                 ;;
             *             ) die "invalid partition type in blkid_template input" ;;
         esac
@@ -586,11 +791,11 @@ format_partitions() {
 
 }
 
-layout_cryptsetup() {
-    separator ${PN} "(layout_cryptsetup)"
-    d_message "in ${FUNCNAME[0]}" 3
+layout_cryptsetup_lvm() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
 
-    # luks_partition_device and edev were set in luks_config (and shown in display_configuration)
+    # luks_partition_device and edev were set in luks_lvm_config (and shown in display_configuration)
 
     # dd random data to the luks "part" name
     myCmd="dd if=/dev/urandom of=${luks_partition_device} bs=4M status=progress"
@@ -611,13 +816,13 @@ layout_cryptsetup() {
     esac
 
     # run cryptsetup luksFormat (provide passphrase it will ask for)
-    d_message "about to use passphrase to run cryptsetup -q luksFormat ${luks_partition_device}" 3
+    d_message "using passphrase to run cryptsetup -q luksFormat ${luks_partition_device}" 3
     message_n "formatting luks_partition_device [${luks_partition_device}] ..."
     eval "echo -n ${crypt_passphrase} | cryptsetup -q luksFormat ${luks_partition_device}"
     result=$? ; right_status $result ; [ $result -eq 0 ] || die "cryptsetup failed to luksFormat ${luks_partition_device}"
 
     # run cryptsetup luksAddKey (should already be mounted) (provide passphrase it will ask for)
-    message_n "about to use passphrase to add keyfile with cryptsetup luksAddKey ${luks_partition_device} ${keyfile} ..."
+    message_n "using passphrase to add keyfile with cryptsetup luksAddKey ${luks_partition_device} ${keyfile} ..."
     eval "echo -n ${crypt_passphrase} | cryptsetup luksAddKey ${luks_partition_device} ${keyfile}"
     result=$? ; right_status $result ; [ $result -eq 0 ] || die "cryptsetup failed to luksAddKey ${luks_partition_device} ${keyfile}"
 
@@ -638,41 +843,81 @@ layout_cryptsetup() {
         die "failed to vgcreate vg_${DEV_HOSTNAME} /dev/mapper/${edev} >/dev/null"
     right_status $TRUE
 
+    # if disk size is < 200G use mini-luks format, otherwise,
+
     # use lsblk "lvm" lines (already ingested) to create and format logical volumes (LVs)
     # (these are named root, usr, var, opt, tmp, home, srv, swap, etc)
-    for ((i=1; i<=${lv_count}; i++)); do
-        echo "i: $i"
-        eval "echo \${lsblk_lv${i}_NAME} | cut -d'-' -f2"
-        LVM_name=$(eval "echo \${lsblk_lv${i}_NAME} | cut -d'-' -f2")
+    # use algorithm to properly size the volumes for this device
 
-#        eval "LVM_name=$(echo \${lsblk_lv${i}_NAME} | cut -d '-' -f2)"
-        eval "LVM_size=$(echo \${lsblk_lv${i}_SIZE})"
-        d_message "LVM_name: $LVM_name" 4
-        d_message "LVM_size: $LVM_size" 4
-        # todo - adjust LV sizes for aggregate VG difference relative to template
+    # ignore the lvx_SIZE from lsblk template data (use lookup)
+    # if disk size is < 200G use mini-luks format
+    if [ $disksize_MiB -lt $(( 200 * ${GiB} )) ] ; then
+        # use mini-luks format (root, usr, and swap LVs only)
+        LVM_list="root usr swap" # save "extra" for later
+        d_message "small disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
+    else
+        # otherwise use standard LVs with size appropriate for this disk
+        LVM_list="root usr var opt swap home tmp srv" # save "extra" for later
+        d_message "large disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
+    fi
+
+    for LVM_name in ${LVM_list}; do
+        eval "LVM_size=$(echo \${LVM_name}_lv_size)"
+        d_message "LVM_name: $LVM_name" 5
+        d_message "LVM_size: $LVM_size" 5
         message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
         lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
         right_status $TRUE
+
         message_n "formatting LV vg_${DEV_HOSTNAME}-${LVM_name}"
         if [[ "${LVM_name}" == "swap" ]] ; then
-            mkswap -L "swap_fs" /dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name} || \
+            mkswap -L "swap_fs" /dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name} 2>/dev/null >/dev/null || \
                 die "failed to mkswap"
             right_status $TRUE
         else
-            mkfs.ext4 -L "${LVM_name}_fs" "/dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name}" || \
+            mkfs.ext4 -L "${LVM_name}_fs" "/dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name}" 2>/dev/null >/dev/null || \
                 die "failed to mkfs.ext4 for vg_${DEV_HOSTNAME}-${LVM_name}"
             right_status $TRUE
         fi
     done
-    message "done creating all LVs"
+
+    # now that space for other LVs has been allocated, allocate whatever is left to "extra" LV
+    # (MUST be done after other space is already allocated for vgs to report what is available)
+    remaining_space=$(vgs --noheadings --units G  -o vg_free vg_george)
+    extra_lv_size=$(convert_size_to_GiB ${remaining_space} 1)
+    # now create/format "extra"
+    LVM_name="extra"
+    # get size
+    eval "LVM_size=$(echo \${LVM_name}_lv_size)"
+    # lvcreate
+    message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
+        lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
+            die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
+        right_status $TRUE
+    # format
+    message_n "formatting LV vg_${DEV_HOSTNAME}-${LVM_name}"
+    mkfs.ext4 -L "${LVM_name}_fs" "/dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name}" 2>/dev/null >/dev/null || \
+        die "failed to mkfs.ext4 for vg_${DEV_HOSTNAME}-${LVM_name}"
+    right_status $TRUE
+
+    message "done creating/formatting all LVs"
 
     # if we made it this far and did not choke, return success
     return 0
 }
 
-#mount_and_populate_root_and_boot() {
-#    # mount the new root device
+mount_and_populate_root_and_boot() {
+    # mount and minimally populate the new root device
+    # Things to make (based on layout, UUIDs, etc)
+    #     create fstab?
+    #     create boot config (joetooEnv.txt/boot.cmd or cmdline.txt/config.txt)
+    #     link from /var/www to /var/srv
+    #     mount-the-rest.hostname script
+    #     chroot-prep script and chroot-commands text file
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
+
 #    message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
 #    mount /dev/mapper/vg_${DEV_HOSTNAME}-root ${root_dev_mountpoint} ; right_status $?
 ##    cd ${root_dev_mountpoint}
@@ -751,7 +996,7 @@ layout_cryptsetup() {
 #    [ $ERROR ] && return 1
 #    return 0
 #
-#}
+}
 
 sanity_check() {
     # check for insane or stupid stuff
@@ -784,7 +1029,7 @@ if [ $LUKS ] ; then
     # set device hostname (for vg naming)
     # set luks pashphrase
     # id and mount luks keying device and assign keyfile
-    luks_config || die "failed luks_config"
+    luks_lvm_config || die "failed luks_lvm_config"
 fi
 
 display_configuration || die "failed to display_configuration"
@@ -797,13 +1042,17 @@ layout_partitions || die "failed layout_partitions"
 
 format_partitions || die "failed format_partitions"
 
+if [ $LUKS ] ; then
+   layout_cryptsetup_lvm || die "failed layout_cryptsetup_lvm"
+else
+    message "luks lvm layout not requested; skipping"
+fi
+
 #mount_and_populate_root_and_boot || die "failed mount_and_populate_root_and_boot"
 
-[ $LUKS ] && layout_cryptsetup || message "no luks layout requested; skipping"
-
 message "layout complete"
-message "${BYon}Hint:  use ${BGon}cb-flash-device <BOARD> <OUTPUTDEVICE>${Boff}"
-message "        to populate the new device with data from a"
-message "        mounted crossbuild target image file"
+message "${BYon}Note: you can use ${BGon}cb-flash-device <BOARD> <OUTPUTDEVICE>${Boff}"
+message "        to load the new device with data from a"
+message "        mounted (cross)build-target image file"
 
 exit 0
