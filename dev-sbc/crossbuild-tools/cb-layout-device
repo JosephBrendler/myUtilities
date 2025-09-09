@@ -6,6 +6,7 @@
 
 source /usr/sbin/script_header_joetoo
 export LC_NUMERIC="en_US.UTF-8"
+declare -A lv_size  # user later, for size of LVs (root, usr, var, opt, home, tmp, srv, extra, swap)
 
 config_dir="/etc/crossbuild-tools"
 message_n "sourcing BUILD ..."
@@ -225,9 +226,17 @@ initialize_variables() {
         die "failed to calculate ez_disksize_GiB"
     echo -e -n " ($ez_disksize_GiB)" ; right_status $?
 
+    # initialize lv_size associative array
+    for x in root usr var opt home tmp srv swap extra; do
+        message_n "initializing lv_size[${x}]"
+        lv_size["${x}"]="0" || die "failed to initialize lv_size[${x}] = 0"
+        echo -e -n " (${lv_size[${x}]})" ; right_status $?
+    done
+
     # calculate appropriate SWAP size
     message_n "calculating appropriate swap_size"
     calculate_appropriate_swap || die "failed to calculate swap_size"
+    swap_size="${lv_size[swap]}"
     echo -e -n " ($swap_size)" ; right_status $?
 
     return 0
@@ -581,63 +590,89 @@ luks_lvm_config() {
 
 
 calculate_lv_sizes() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 4
+
     # build "lookup table" to properly size LVs for this device
     # moved calc of disksize and swap_size to initialization
     # if disk size is < 200G use mini-luks format
-    if [ $disksize_MiB -lt $(( 200 * ${GiB} )) ] ; then
+    if [ $(( $disksize_MiB * $MiB )) -lt $(( 200 * ${GiB} )) ] ; then
         # use mini-luks format (root, usr, and swap LVs only)
         # swap_size already set
         # use actual disk size to scale-map usr_size from 9G (min) to 15G (preferred) between 32G and 200G disk-size range
         d_message_n "mapping usr_lv_size for small disk" 4
-        usr_lv_size="$(map-scale-linear ${disksize_GiB} 9 15 32 200 1)G" || \
-            die "failed to set usr_lv_size for small disk"
-        echo -e -n " (${usr_lv_size})" ; d_right_status $? 4
+        result=0
+        map-scale-linear ${disksize_GiB} 9 15 32 200 1 || \
+            die "failed to map-scale lv_size[usr] for small disk"
+        lv_size[usr]="${result}G"
+        echo -e -n " (${lv_size[usr]})" ; d_right_status $? 4
         # allocate whatever is left to the root LV
         d_message_n "setting root_lv_size for small disk" 4
-        root_lv_size="$(( ${disksize_GiB} - ${swap_size} - ${usr_lv_size}))G" || \
-            die "failed to set root_lv_size for small disk"
-        echo -e -n " (${root_lv_size})" ; d_right_status $? 4
+        lv_size[root]="$(( ${disksize_GiB} - ${swap_size} - ${usr_lv_size}))G" || \
+            die "failed to set lv_size[root] for small disk"
+        echo -e -n " (${lv_size[root]})" ; d_right_status $? 4
     else
         # otherwise use standard LVs with size appropriate for this disk
         # swap_size already set
         # set root usr var opt to standard sizes
+        d_message "setting LV sizes for large disk" 4
         d_message_n "setting standard size for root LV" 4
-        root_lv_size="10G" || die "failed to set root_lv_size for large disk"
-        echo -e -n " (${root_lv_size})" ; d_right_status $? 4
+        lv_size[root]="10G" || die "failed to set lv_size[root] for large disk"
+        echo -e -n " (${lv_size[root]})" ; d_right_status $? 4
 
         d_message_n "setting standard size for usr LV"
-        usr_lv_size="75G" || die "failed to set usr_lv_size for large disk"
-        echo -e -n " (${usr_lv_size})" ; d_right_status $? 4
+        lv_size[usr]="75G" || die "failed to set lv_size[usr] for large disk"
+        echo -e -n " (${lv_size[usr]})" ; d_right_status $? 4
 
        d_message_n "setting standard size for var LV"
-        var_lv_size="75G" || die "failed to set var_lv_size for large disk"
-        echo -e -n " (${var_lv_size})" ; d_right_status $? 4
+        lv_size[var]="75G" || die "failed to set lv_size[var] for large disk"
+        echo -e -n " (${lv_size[var]})" ; d_right_status $? 4
 
         d_message_n "setting standard size for opt LV"
-        opt_lv_size="5G" || die "failed to set opt_lv_size for large disk"
-        echo -e -n " (${opt_lv_size})" ; d_right_status $? 4
+        lv_size[opt]="5G" || die "failed to set lv_size[var] for large disk"
+        echo -e -n " (${lv_size[opt]})" ; d_right_status $? 4
 
         # set ( home tmp srv ) by mapping to reference range
         # use template lv size  to scale-map this lv_size
         #     from range (200G to actual template disk size)
         #     to range (200G this disk-size)
+
+        gibval=0
+        convert_size_to_GiB "123T" 2 ; echo "gibval: $gibval"
+
         # get template_crypt_size from already-ingested data
-        template_crypt_size=$(convert_size_to_GiB ${lsblk_crypt_SIZE}) || die "failed to set template_crypt_size"
-        # get this_crypt_size from lsblk *** must be done AFTER luks
-        this_crypt_size=$(convert_size_to_GiB $(lsblk -lno NAME,SIZE,TYPE ${OUTPUTDEVICE} | grep crypt | awk '{print $2}')) || \
-            die "failed to set this_crypt_size"
+        d_message "lsblk_crypt_SIZE: ${lsblk_crypt_SIZE}"
+        result=0
+        convert_size_to_GiB "${lsblk_crypt_SIZE}" 1 || die "failed convert_size_to_GiB lsblk_crypt_SIZE"
+        template_crypt_size=${gibval}
         d_message "template_crypt_size: $template_crypt_size" 4
+
+        # get this_crypt_size from lsblk *** must be done AFTER luksFormat
+        lookup_size=$(lsblk -lno NAME,SIZE,TYPE ${OUTPUTDEVICE} | grep crypt | awk '{print $2}') || \
+            die "failed to look up lsblk crypt size"
+        d_message "lsblk lookup crypt_size: $lookup_size" 4
+        result=0
+        convert_size_to_GiB ${lookup_size} || die "failed convert_size_to_GiB lookup_size"
+        this_crypt_size=${gibval}
         d_message "this_crypt_size: $this_crypt_size" 4
+
         # for home, tmp, srv - allocate proportionally (this_lv:this_crypt :: template_lv:template_crypt)
         for lv_name in home tmp srv; do
-            # look up the size of this LV in lsblk template; drop the trailing G (or other alpha char)
-            templage_lv_size=$(grep 'lvm' ${config_dir%/}/${lsblk_template_dir}/${lsblk_template} | grep ${lv_name} | awk '{print $2}' | sed 's|[kKmMgG]$||')
-            d_message "${lv_name} templage_lv_size: ${templage_lv_size}" 4
+            # look up the size of this LV in lsblk template; then convert to GiB
+            template_lv_lookup=$(grep 'lvm' ${config_dir%/}/${lsblk_template_dir}/${lsblk_template} | grep ${lv_name} | awk '{print $2}') || \
+                die "failed to get template_lv_lookup"
+            d_message "${lv_name} template_lv_lookup: ${template_lv_lookup}" 4
+            result=0
+            convert_size_to_GiB ${template_lv_lookup} || die "failed convert_size_to_GiB template_lv_lookup"
+            template_lv_size=${gibval}
+            d_message "${lv_name} template_lv_size: ${template_lv_size}" 4
             # calculate the proportional size for this LV
-            converted_size="$(map-scale-linear ${templage_lv_size} 200 ${template_crypt_size} 200 ${this_crypt_size} 1)G" || \
+            result=0
+            map-scale-linear ${template_lv_size} 200 ${template_crypt_size} 200 ${this_crypt_size} 1 || \
                 die "failed to calculate converted_size"
-            eval "${lv_name}_lv_size=${converted_size}" || die "failed to set ${lv_name}_lv_size"
-            d_message "${lv_name}_lv_size: $(eval echo \${${lv_name}_lv_size})" 4
+            converted_size="${result}"
+            lv_size[${lv_name}]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
+            d_message "lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
         done
         # space will be allocated for "extra" LV *after* other LVs have actually been created/formatted
     fi
@@ -648,38 +683,47 @@ calculate_lv_sizes() {
 
 convert_size_to_GiB() {
     # convert size ($1) to GiB
-    local scale=${2:-1}  # set scale to 1 if not supplied on command line as $2
+    input_size=$1
+    scale=${2:-1}  # set scale to 1 if not supplied on command line as $2
     # read input_size and convert to GiB if needed
-    local units=$(right_most ${input_size})
-    local val=${input_size%${units}}
+    units=$(right_most ${input_size})
+#    units=$(echo ${input_size} | rev | cut -c1)
+    val=${input_size%${units}}
+#    d_message "input_size: $input_size" 5
+#    d_message "scale: $scale" 5
+#    d_message "units: $units" 5
+#    d_message "val: $val" 5
     case ${units} in
-        [tT]  ) gibval=$(echo "scale=$scale; (($val * 1024))" | bc -l) ;;
-        [gG]  ) gibval=$val ;;
-        [mM]  ) gibval=$(echo "scale=$scale; (( $val / 1024.0 ))" | bc -l) ;;
-        [kK]  ) gibval=$(echo "scale=$scale; (( $val / ${MiB} ))" | bc -l) ;;
+        [tT]  ) gibval=$(echo "scale=$scale; (($val * 1024))" | bc -l) && return 0 ;;
+        [gG]  ) gibval=$val && return 0 ;;
+        [mM]  ) gibval=$(echo "scale=$scale; (( $val / 1024.0 ))" | bc -l) && return 0 ;;
+        [kK]  ) gibval=$(echo "scale=$scale; (( $val / ${MiB} ))" | bc -l) && return 0 ;;
         [0-9] )
             # no units provided
             val=${input_size}
-            gibval=$(echo "scale=$scale; (( $val / ${GiB} ))" | bc -l) ;;
-        *     ) die "invalid units in convert_size_to_GiB"
+            gibval=$(echo "scale=$scale; (( $val / ${GiB} ))" | bc -l) && return 0 ;;
+        *     ) E_message "invalid units in convert_size_to_GiB"
     esac
-    echo ${gibval}
+    # if we got here, one of the avove failed to return 0
+    E_message "looks like a failure to convert_size_to_GiB"
+    return 1
 }
 
-
 map-scale-linear() {
-    ! isnumber $1 && echo "invalid map_val for ${FUNCNAME[0]}"
-    ! isnumber $2 && echo "invalid from_lower bound for ${FUNCNAME[0]}"
-    ! isnumber $3 && echo "invalid from_upper bound for ${FUNCNAME[0]}"
-    ! isnumber $4 && echo "invalid to_lower bound for ${FUNCNAME[0]}"
-    ! isnumber $5 && echo "invalid to_upper bound for ${FUNCNAME[0]}"
+    # these inputs can be float, so they won't pass isnumber test
+#    ! isnumber $1 && echo "invalid map_val for ${FUNCNAME[0]}"
+#    ! isnumber $2 && echo "invalid from_lower bound for ${FUNCNAME[0]}"
+#    ! isnumber $3 && echo "invalid from_upper bound for ${FUNCNAME[0]}"
+#    ! isnumber $4 && echo "invalid to_lower bound for ${FUNCNAME[0]}"
+#    ! isnumber $5 && echo "invalid to_upper bound for ${FUNCNAME[0]}"
     [ ! -z "$6" ] && ! isnumber $6 && echo "invalid scale for ${FUNCNAME[0]}"
     local map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
     local scale=${6:-1} # Set default scale to 1 if not provided
 
- local result=$(echo "scale=$scale; \
-    (($map_val - $from_lower) / ($from_upper - $from_lower)) * ($to_upper - $to_lower) + $to_lower" | bc -l)
-  echo "$result"
+#  local result=$(echo "scale=$scale; \
+    result=$(echo "scale=$scale; \
+        (($map_val - $from_lower) / ($from_upper - $from_lower)) * ($to_upper - $to_lower) + $to_lower" | bc -l)
+#  echo "$result"
 }
 
 calculate_appropriate_swap() {
@@ -687,33 +731,36 @@ calculate_appropriate_swap() {
     # Gentoo rule: MEM<=2G swap=2*MEM; 2G<MEM<6G swap=MEM+2G; MEM>=6G swap=8G
     # joetoo rule: min swap=4G; 2G<MEM<6G swap=MEM+2G; MEM>=6G swap=8G
     # assume no hibernation in joetoo systems (would need swap>=MEM even in big systems)
+    d_message "looking up appropriate swap size for BOARD [$BOARD]" 5
     case ${BOARD} in
-        "bcm2712-rpi-cm5-cm5io"            ) swap_size="8G" ;; # 8G RAM
-        "bcm2712-rpi-5-b"                  ) swap_size="8G" ;; # 8G RAM
-        "bcm2711-rpi-cm4-io"               ) swap_size="8G" ;; # 4G or 8GRAM
-        "bcm2711-rpi-4-b"                  ) swap_size="8G" ;; # 4G or 8G RAM
-        "bcm2710-rpi-3-b-plus"             ) swap_size="6G" ;; # 4G RAM
-        "bcm2710-rpi-3-b"                  ) swap_size="4G" ;; # 1G RAM
-        "bcm2709-rpi-2-b"                  ) swap_size="4G" ;; # 1G RAM
-        "bcm2708-rpi-b"                    ) swap_size="4G" ;; # 500M RAM
-        "rk3288-tinker-s"                  ) swap_size="4G" ;; # 2G RAM
-        "rk3399-rock-pi-4c-plus"           ) swap_size="6G" ;; # 4G RAM
-        "rk3399-tinker-2"                  ) swap_size="4G" ;; # 2G RAM
-        "rk3588-rock-5b"                   ) swap_size="8G" ;; # 8G RAM
-        "rk3588-radxa-rock-5b+"            ) swap_size="8G" ;; # 8G+ RAM
-        "rk3588s-orangepi-5"               ) swap_size="8G" ;; # 15G RAM
-        "rk3588s-orangepi-5b"              ) swap_size="8G" ;; # 15G RAM
-        "rk3588s-rock-5c"                  ) swap_size="8G" ;; # 15G RAM
-        "fsl-imx8mq-phanbell"              ) swap_size="4G" ;; # 1G or 2G RAM
-        "meson-gxl-s905x-libretech-cc-v2"  ) swap_size="4G" ;; # 2G RAM (sweet potato)
-        "meson-sm1-s905d3-libretech-cc"    ) swap_size="6G" ;; # 4G RAM (solitude)
-        "meson-g12b-a311d-libretech-cc"    ) swap_size="4G" ;; # 6G RAM (alta)
-        "generic-armv6j"                   ) swap_size="8G" ;; # assume >8G RAM
-        "generic-armv7a"                   ) swap_size="8G" ;; # assume >8G RAM
-        "generic-aarch64"                  ) swap_size="8G" ;; # assume >8G RAM
-        "generic-amd64"                    ) swap_size="8G" ;; # assume >8G RAM
+        "bcm2712-rpi-cm5-cm5io"            ) lv_size[swap]="8G" ;; # 8G RAM
+        "bcm2712-rpi-5-b"                  ) lv_size[swap]="8G" ;; # 8G RAM
+        "bcm2711-rpi-cm4-io"               ) lv_size[swap]="8G" ;; # 4G or 8GRAM
+        "bcm2711-rpi-4-b"                  ) lv_size[swap]="8G" ;; # 4G or 8G RAM
+        "bcm2710-rpi-3-b-plus"             ) lv_size[swap]="6G" ;; # 4G RAM
+        "bcm2710-rpi-3-b"                  ) lv_size[swap]="4G" ;; # 1G RAM
+        "bcm2709-rpi-2-b"                  ) lv_size[swap]="4G" ;; # 1G RAM
+        "bcm2708-rpi-b"                    ) lv_size[swap]="4G" ;; # 500M RAM
+        "rk3288-tinker-s"                  ) lv_size[swap]="4G" ;; # 2G RAM
+        "rk3399-rock-pi-4c-plus"           ) lv_size[swap]="6G" ;; # 4G RAM
+        "rk3399-tinker-2"                  ) lv_size[swap]="4G" ;; # 2G RAM
+        "rk3588-rock-5b"                   ) lv_size[swap]="8G" ;; # 8G RAM
+        "rk3588-radxa-rock-5b+"            ) lv_size[swap]="8G" ;; # 8G+ RAM
+        "rk3588s-orangepi-5"               ) lv_size[swap]="8G" ;; # 15G RAM
+        "rk3588s-orangepi-5b"              ) lv_size[swap]="8G" ;; # 15G RAM
+        "rk3588s-rock-5c"                  ) lv_size[swap]="8G" ;; # 15G RAM
+        "fsl-imx8mq-phanbell"              ) lv_size[swap]="4G" ;; # 1G or 2G RAM
+        "meson-gxl-s905x-libretech-cc-v2"  ) lv_size[swap]="4G" ;; # 2G RAM (sweet potato)
+        "meson-sm1-s905d3-libretech-cc"    ) lv_size[swap]="6G" ;; # 4G RAM (solitude)
+        "meson-g12b-a311d-libretech-cc"    ) lv_size[swap]="4G" ;; # 6G RAM (alta)
+        "generic-armv6j"                   ) lv_size[swap]="8G" ;; # assume >8G RAM
+        "generic-armv7a"                   ) lv_size[swap]="8G" ;; # assume >8G RAM
+        "generic-aarch64"                  ) lv_size[swap]="8G" ;; # assume >8G RAM
+        "generic-amd64"                    ) lv_size[swap]="8G" ;; # assume >8G RAM
         *                                  ) die "invalid board in SWAP size calculation"
     esac
+    d_message "lv_size[swap] = ${lv_size[swap]}" 5
+    return 0
 }
 
 layout_partitions() {
@@ -850,8 +897,10 @@ layout_cryptsetup_lvm() {
     # use algorithm to properly size the volumes for this device
 
     # ignore the lvx_SIZE from lsblk template data (use lookup)
+    calculate_lv_sizes || die "failed to calculate_lv_sizes"
+
     # if disk size is < 200G use mini-luks format
-    if [ $disksize_MiB -lt $(( 200 * ${GiB} )) ] ; then
+    if [ $(( $disksize_MiB * $MiB )) -lt $(( 200 * ${GiB} )) ] ; then
         # use mini-luks format (root, usr, and swap LVs only)
         LVM_list="root usr swap" # save "extra" for later
         d_message "small disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
@@ -861,10 +910,17 @@ layout_cryptsetup_lvm() {
         d_message "large disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
     fi
 
+    d_message "here are the assigned lv_size values" 5
     for LVM_name in ${LVM_list}; do
-        eval "LVM_size=$(echo \${LVM_name}_lv_size)"
+        d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
+    done
+
+    for LVM_name in ${LVM_list}; do
+        LVM_size=${lv_size[${LVM_name}]}
+
         d_message "LVM_name: $LVM_name" 5
         d_message "LVM_size: $LVM_size" 5
+        d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
         message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
         lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
@@ -885,14 +941,15 @@ layout_cryptsetup_lvm() {
     # now that space for other LVs has been allocated, allocate whatever is left to "extra" LV
     # (MUST be done after other space is already allocated for vgs to report what is available)
     remaining_space=$(vgs --noheadings --units G  -o vg_free vg_george)
-    extra_lv_size=$(convert_size_to_GiB ${remaining_space} 1)
+    gibval=0
+    convert_size_to_GiB ${remaining_space} 1 ; lv_size[extra]=${gibval}
+    d_message "extra_lv_size: $extra_lv_size" 5
+
     # now create/format "extra"
     LVM_name="extra"
-    # get size
-    eval "LVM_size=$(echo \${LVM_name}_lv_size)"
     # lvcreate
     message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
-        lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
+        lvcreate -L ${lv_size[extra]} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
         right_status $TRUE
     # format
