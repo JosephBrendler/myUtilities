@@ -604,8 +604,7 @@ calculate_lv_sizes() {
         # new_usr:9::disk_MiB:32 or map 9 (0-32) to (0-disk_MiB) but cap at 15
         d_message_n "mapping usr_lv_size for small disk" 4
         result=0
-#        map-scale-linear ${disksize_GiB} 9 15 32 200 1 || \
-        map-scale-linear 9 0 32 0 ${disksize_GiB} 1 || \
+        map 9 0 32 0 ${disksize_GiB} 1 || \
             die "failed to map-scale lv_size[usr] for small disk"
         lv_size[usr]="${result}G"
         echo -e -n " (${lv_size[usr]})" ; d_right_status $? 4
@@ -671,9 +670,14 @@ calculate_lv_sizes() {
             d_message "${lv_name} template_lv_size: ${template_lv_size}" 4
             # calculate the proportional size for this LV
             result=0
-            map-scale-linear ${template_lv_size} 0 ${template_crypt_size} 0 ${this_crypt_size} 1 || \
+            used=$(echo "scale=1; ${lv_size[root]} + ${lv_size[usr]} + ${lv_size[var]} + ${lv_size[opt]} + ${lv_size[swap]}" | bc -l)
+            template_remainder=$(echo "scale=1; ${template_crypt_size} - ${used}" | bc -l)
+            this_remainder=$(echo "scale=1; ${this_crypt_size} - ${used}" | bc -l)
+            # allocate the same fraction of space as was allocated in the part of the template not allocated to fixed-size partitions
+            # (scale up/down depending on relative size of template and this disk)
+            map ${template_lv_size} 0 ${template_remainder} 0 ${this_remainder} 1 || \
                 die "failed to calculate converted_size"
-            converted_size="${result}G"
+            converted_size="${result}G"  # add the "G" for sake of lvcreate -L
             lv_size[${lv_name}]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
             d_message "lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
         done
@@ -710,23 +714,6 @@ convert_size_to_GiB() {
     # if we got here, one of the avove failed to return 0
     E_message "looks like a failure to convert_size_to_GiB"
     return 1
-}
-
-map-scale-linear() {
-    # these inputs can be float, so they won't pass isnumber test
-#    ! isnumber $1 && echo "invalid map_val for ${FUNCNAME[0]}"
-#    ! isnumber $2 && echo "invalid from_lower bound for ${FUNCNAME[0]}"
-#    ! isnumber $3 && echo "invalid from_upper bound for ${FUNCNAME[0]}"
-#    ! isnumber $4 && echo "invalid to_lower bound for ${FUNCNAME[0]}"
-#    ! isnumber $5 && echo "invalid to_upper bound for ${FUNCNAME[0]}"
-    [ ! -z "$6" ] && ! isnumber $6 && echo "invalid scale for ${FUNCNAME[0]}"
-    local map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
-    local scale=${6:-1} # Set default scale to 1 if not provided
-
-#  local result=$(echo "scale=$scale; \
-    result=$(echo "scale=$scale; \
-        (($map_val - $from_lower) / ($from_upper - $from_lower)) * ($to_upper - $to_lower) + $to_lower" | bc -l)
-#  echo "$result"
 }
 
 calculate_appropriate_swap() {
