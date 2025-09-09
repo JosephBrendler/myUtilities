@@ -599,10 +599,13 @@ calculate_lv_sizes() {
     if [ $(( $disksize_MiB * $MiB )) -lt $(( 200 * ${GiB} )) ] ; then
         # use mini-luks format (root, usr, and swap LVs only)
         # swap_size already set
-        # use actual disk size to scale-map usr_size from 9G (min) to 15G (preferred) between 32G and 200G disk-size range
+        # use actual disk size to scale-map usr_size
+        # from 9G (min) to 15G (preferred) between 32G and 200G disk-size range
+        # new_usr:9::disk_MiB:32 or map 9 (0-32) to (0-disk_MiB) but cap at 15
         d_message_n "mapping usr_lv_size for small disk" 4
         result=0
-        map-scale-linear ${disksize_GiB} 9 15 32 200 1 || \
+#        map-scale-linear ${disksize_GiB} 9 15 32 200 1 || \
+        map-scale-linear 9 0 32 0 ${disksize_GiB} 1 || \
             die "failed to map-scale lv_size[usr] for small disk"
         lv_size[usr]="${result}G"
         echo -e -n " (${lv_size[usr]})" ; d_right_status $? 4
@@ -668,9 +671,9 @@ calculate_lv_sizes() {
             d_message "${lv_name} template_lv_size: ${template_lv_size}" 4
             # calculate the proportional size for this LV
             result=0
-            map-scale-linear ${template_lv_size} 200 ${template_crypt_size} 200 ${this_crypt_size} 1 || \
+            map-scale-linear ${template_lv_size} 0 ${template_crypt_size} 0 ${this_crypt_size} 1 || \
                 die "failed to calculate converted_size"
-            converted_size="${result}"
+            converted_size="${result}G"
             lv_size[${lv_name}]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
             d_message "lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
         done
@@ -942,7 +945,7 @@ layout_cryptsetup_lvm() {
     # (MUST be done after other space is already allocated for vgs to report what is available)
     remaining_space=$(vgs --noheadings --units G  -o vg_free vg_george)
     gibval=0
-    convert_size_to_GiB ${remaining_space} 1 ; lv_size[extra]=${gibval}
+    convert_size_to_GiB ${remaining_space} 1 ; lv_size[extra]="${gibval}G"
     d_message "extra_lv_size: $extra_lv_size" 5
 
     # now create/format "extra"
