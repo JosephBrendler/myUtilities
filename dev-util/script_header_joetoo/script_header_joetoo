@@ -223,12 +223,28 @@ de_echo()       # echo -e all but last (level) argument if IAW verbosity
   E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
   [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo -e $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
 
-status_color()  # emit escape seq for color per arg $1 (T/F Y/N 1/0)
-{ case $1 in "1"|[yY]*|[tT]*|"up"|$TRUE   ) echo -en ${BGon};;
-             "0"|[nN]*|[fF]*|"down"|$FALSE) echo -en ${BRon};; *) echo -en ${BYon};; esac ; }
+d_do()          # conditionally execute properly escaped $@, IAW verbosity
+{ input="$@"; set $input; bw_input=$(echo $@ | rev) ;
+level=$(echo $bw_input | cut -d' ' -f1) ; cmd=$(echo $bw_input | cut -d' ' -f2- | rev ) ;
+# echo "level: $level"; echo "cmd: $cmd";
+if ! isnumber $level ; then E_message "final arg must be decimal verbosity level" ;
+elif [[ $VERBOSE ]] && [[ $verbosity -ge $level ]] ; then eval "${cmd}" ;
+else echo ; fi ; }
+
+debug_do()      # conditionally execute properly escaped $1, IAW verbosity
+{ [ $VERBOSE ] && [[ $verbosity -ge $2 ]] && eval "$1" ; }
+
+status_color()  # emit escape seq for color per arg $1
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -en ${BGon};;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -en ${BRon};;
+           *) echo -en ${BYon};; esac ; }
 
 TrueFalse()     # echo "True" or "False", depending on truth of arg $1
-{  [[ $1 ]] && echo -en "True" || echo -en "False" ; }
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -n "True" ;;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -n "False" ;;
+           *) echo -en "unset" ;; esac ; }
 
 prompt()        # set external variable $answer based on reponse to prompt $1
 { ps=$1; echo; echo; CUU; SCP; message_n "$ps [Y/n]: " && read answer; # '=~' not in busybox
@@ -655,7 +671,11 @@ summarize_me()       # list functions in header ("source" to employ)
   msg="${msg}${BGon}\$(${BBon}TrueFalse \\\"${BRon}\$VERBOSE${BBon}\\\"" && \
   msg="${msg}${BGon})${BYon}\"${BGon}; ${BBon}echo${Boff}" && echo -e "${msg}" && \
   echo && \
-  message "  ${BYon}VERBOSE is currently "$(status_color "$VERBOSE")$(TrueFalse "$VERBOSE") && echo && \
+  cmd="${BGon}message${BWon} \"  \${BYon}VERBOSE is currently \$(${BGon}status_color ${BRon}\$VERBOSE)${BWon}\$(${BGon}TrueFalse ${BRon}\$VERBOSE${BWon})\${Boff}\"${Boff}"
+  message "About to run ${cmd}"
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}" && echo && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
   message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 1${Boff}  " && \
   vercomp 1 1; echo -e "$(show_result $?)" && \
   message_n "${BYon}Compare version number ${BWon}2 ${BYon}to${BWon} 1${Boff}  " && \
@@ -672,10 +692,28 @@ summarize_me()       # list functions in header ("source" to employ)
   vercomp 1.0 1.0-r10; echo -e "$(show_result $?)" && \
   message_n "${BYon}Compare version number ${BWon}3.4 ${BYon}to${BWon} 3.4-r2${Boff}  " && \
   vercomp 3.4 3.4-r2; echo -e "$(show_result $?)" && echo && \
-  message "  ${BYon}About to run:\n        ${BBon}sh_countdown ${Boff}6 ${BGon}&& \\ ${Boff}" && \
-  echo -e "        ${BBon}message_n${Boff} "'"\\nFinishing with status of summarization --->" '"${BGon}; ${BBon}right_status ${BRon}"'$?'"${BGon}; ${BBon}echo${Boff}" && \
+  message "${BYon}Conditionally execute \$@ IAW verbosity (3) with ${BGon}d_do ${Boff}echo \"line 1.1\" \\; echo \"line 1.2\" 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  d_do echo "line 1.1" \; echo "line 1.2" 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message "${BYon}Conditionally execute \$1 IAW verbosity (3) with ${BGon}debug_do ${Boff}'echo \"line 2.1\" ; echo \"line 2.2\"' 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  debug_do 'echo "line 2.1" ; echo "line 2.2"' 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && echo && \
+  message "${BYon}Map input value 16 from input range 10-30 to output range 10-100 (scale to one decimal point) with ${BGon}map${Boff} 16 10 30 10 100 1" && \
+  map 16 10 30 10 100 1 && echo "result: $result" && echo && \
+  message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}() and ${BGon}TrueFalse${Boff}() --" && \
+  for x in y Y t T up n N f F down 0 1 z "" ; do message "  ${BWon}testing: [${LBon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}" ; done && \
+  message "  ${BWon}testing: [${LBon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}" && \
+  message "  ${BWon}testing: [${LBon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}" && \
+  E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && echo && \
+  msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${Boff}" && \
+  msg+="${BBon}message_n${Boff} \"" && \
+  msg+='\\n' && \
+  msg+="Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  message "${msg}" && \
   echo && \
-  sh_countdown 6 && \
+  sh_countdown 3 && \
   message_n "\nFinishing with status of summarization --->" ; right_status $?; echo
 
   return 0
