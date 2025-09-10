@@ -492,11 +492,31 @@ set-crypt_passphrase() {
 
 set-DEV_HOSTNAME() {
     #  set DEV_HOSTNAME
-    message "${BYon}Please provide the hostname for this system${Boff}"
+    [ -z ${DEV_HOSTNAME} ] && DEV_HOSTNAME="demobox"
+    [ -f /usr/${TARGET}/etc/hostname ] && read -r candidate2 < /usr/${TARGET}/etc/hostname
+    message "${BYon}Please select a hostname for this system${Boff}"
     message "  (${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff})"
-    E_message "${BMon}if you skip this step, the default [demobox] will be used"
+    message "  ${BYon}currently, DEV_HOSTNAME = [ $DEV_HOSTNAME ]"
+    if [ ! -z ${candidate2} ] ; then
+        E_message "${BMon}However, a (cross)build image is mounted at /usr/${TARGET}${Boff}"
+        message "   ${BMon}and it's /etc/hostname contains \"${LBon}${candidate2}${BMon}\"${Boff}"
+        message "   ${BYon}Type (s)kip if you want to use that hostname instead${Boff}"
+    else
+        candidate2="${DEV_HOSTNAME}"
+        E_message "${BYon}Type (s)kip if you want to use that hostname${Boff}"
+    fi
     echo
     response="n"
+    msg="${BYon}Would you like to select a different hostname for this system?\n${Boff}"
+    msg+="(${BWon}y:${LBon} yes, select new ;"
+    msg+=" ${BWon}s:${LBon} skip, accept [${Boff}$DEV_HOSTNAME${LBon}] ;"
+    msg+=" ${BWon}n:${LBon} no, exit program${Boff})"
+    new_prompt "${msg}"
+    case ${response:0:1} in
+        [nN] ) die "aborting program as instructed" ;;
+        [yY] ) message "affirmative response; continuing"; response="n" ;;
+        [sS] ) candidate="${candidate2}" ; response="y" ;;
+    esac
     while [[ "${response:0:1}" == [nN] ]] ; do
         echo -en "${BGon}*${Boff} set hostname for this system: "
         read candidate
@@ -504,13 +524,8 @@ set-DEV_HOSTNAME() {
         new_prompt "is this correct?"
     done
     message_n "setting DEV_HOSTNAME"
-    case "${response:0:1}" in
-        [yY] ) export DEV_HOSTNAME="${candidate}" ;;
-        [sS] ) export DEV_HOSTNAME="demobox" ;;
-        *    ) die "invalid response to hostname query"
-    esac
-    echo -n " (${DEV_HOSTNAME})"
-    right_status $r$TRUE
+    export DEV_HOSTNAME="${candidate}" || die "failed to set DEV_HOSTNAME"
+    echo -n " (${DEV_HOSTNAME})" ; right_status $TRUE
     return 0
 }
 
@@ -528,16 +543,7 @@ luks_lvm_config() {
     fi
 
     # (2) check/get DEV_HOSTNAME
-    message_n "checking if hostname is assigned"
-    if [ -z $DEV_HOSTNAME ] ; then
-        # todo - see if /usr/${TARGET} is mounted and if hostname can be retrieved from /etc/hostname first
-        # then prompt for it if not
-        echo -e " (DEV_HOSTNAME ${BRon}unset${Boff})"
-        set-DEV_HOSTNAME
-        d_message "DEV_HOSTNAME: $DEV_HOSTNAME" 3
-    else
-        echo -e -n " (DEV_HOSTNAME: $DEV_HOSTNAME)" ; right_status $TRUE
-    fi
+    set-DEV_HOSTNAME
 
     # (3) now that it has been checked, use DEV_HOSTNAME to set root_vg
     export root_vg="vg_${DEV_HOSTNAME}"
@@ -598,6 +604,8 @@ calculate_lv_sizes() {
     # if disk size is < 200G use mini-luks format
     if [ $(( $disksize_MiB * $MiB )) -lt $(( 200 * ${GiB} )) ] ; then
         # use mini-luks format (root, usr, and swap LVs only)
+        LVM_list="root usr swap" # save "extra" for later
+        d_message "small disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
         # swap_size already set
         # use actual disk size to scale-map usr_size
         # from 9G (min) to 15G (preferred) between 32G and 200G disk-size range
@@ -615,6 +623,8 @@ calculate_lv_sizes() {
         echo -e -n " (${lv_size[root]})" ; d_right_status $? 4
     else
         # otherwise use standard LVs with size appropriate for this disk
+        LVM_list="root usr var opt swap home tmp srv" # save "extra" for later
+        d_message "large disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
         # swap_size already set
         # set root usr var opt to standard sizes
         d_message "setting LV sizes for large disk" 4
@@ -634,17 +644,19 @@ calculate_lv_sizes() {
         lv_size[opt]="5G" || die "failed to set lv_size[var] for large disk"
         echo -e -n " (${lv_size[opt]})" ; d_right_status $? 4
 
+        d_message_n "reporting size already allocated for swap LV"
+        echo -e -n " (${lv_size[swap]})" ; d_right_status $? 4
+
         # set ( home tmp srv ) by mapping to reference range
         # use template lv size  to scale-map this lv_size
         #     from range (200G to actual template disk size)
         #     to range (200G this disk-size)
 
-        gibval=0
-        convert_size_to_GiB "123T" 2 ; echo "gibval: $gibval"
+        gibval=0 # (re)initialize
+#        convert_size_to_GiB "123T" 2 ; echo "gibval: $gibval"
 
         # get template_crypt_size from already-ingested data
         d_message "lsblk_crypt_SIZE: ${lsblk_crypt_SIZE}"
-        result=0
         convert_size_to_GiB "${lsblk_crypt_SIZE}" 1 || die "failed convert_size_to_GiB lsblk_crypt_SIZE"
         template_crypt_size=${gibval}
         d_message "template_crypt_size: $template_crypt_size" 4
@@ -653,10 +665,25 @@ calculate_lv_sizes() {
         lookup_size=$(lsblk -lno NAME,SIZE,TYPE ${OUTPUTDEVICE} | grep crypt | awk '{print $2}') || \
             die "failed to look up lsblk crypt size"
         d_message "lsblk lookup crypt_size: $lookup_size" 4
-        result=0
         convert_size_to_GiB ${lookup_size} || die "failed convert_size_to_GiB lookup_size"
         this_crypt_size=${gibval}
         d_message "this_crypt_size: $this_crypt_size" 4
+        # calculate the amount of disk allocated to fixed-size volumes
+        used=0
+        for x in root usr var opt swap; do
+            d_message_n "used: $used" 5
+            # drop the trailing "G" on the size
+            x_size=$(echo ${lv_size[${x}]} | sed 's|G$||')
+            echo -e -n "; ${x}_size: ${x_size}" 5
+            used=$(echo "scale=1; $used + ${x_size=}" | bc -l)
+            echo "; accumulated, now with $x: $used" 5
+        done
+        d_message "used: $used" 5
+        # calculate the amount remaining for non-fixed size volumes in both the template and this disk
+        template_remainder=$(echo "scale=1; ${template_crypt_size} - ${used}" | bc -l)
+        d_message "template_remainder: $template_remainder" 5
+        this_remainder=$(echo "scale=1; ${this_crypt_size} - ${used}" | bc -l)
+        d_message "this_remainder: $this_remainder" 5
 
         # for home, tmp, srv - allocate proportionally (this_lv:this_crypt :: template_lv:template_crypt)
         for lv_name in home tmp srv; do
@@ -664,22 +691,18 @@ calculate_lv_sizes() {
             template_lv_lookup=$(grep 'lvm' ${config_dir%/}/${lsblk_template_dir}/${lsblk_template} | grep ${lv_name} | awk '{print $2}') || \
                 die "failed to get template_lv_lookup"
             d_message "${lv_name} template_lv_lookup: ${template_lv_lookup}" 4
-            result=0
             convert_size_to_GiB ${template_lv_lookup} || die "failed convert_size_to_GiB template_lv_lookup"
             template_lv_size=${gibval}
             d_message "${lv_name} template_lv_size: ${template_lv_size}" 4
             # calculate the proportional size for this LV
-            result=0
-            used=$(echo "scale=1; ${lv_size[root]} + ${lv_size[usr]} + ${lv_size[var]} + ${lv_size[opt]} + ${lv_size[swap]}" | bc -l)
-            template_remainder=$(echo "scale=1; ${template_crypt_size} - ${used}" | bc -l)
-            this_remainder=$(echo "scale=1; ${this_crypt_size} - ${used}" | bc -l)
-            # allocate the same fraction of space as was allocated in the part of the template not allocated to fixed-size partitions
+           # allocate the same fraction of space as was allocated in the part of the template not allocated to fixed-size volumes
             # (scale up/down depending on relative size of template and this disk)
+            result=0
             map ${template_lv_size} 0 ${template_remainder} 0 ${this_remainder} 1 || \
                 die "failed to calculate converted_size"
             converted_size="${result}G"  # add the "G" for sake of lvcreate -L
             lv_size[${lv_name}]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
-            d_message "lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
+            d_message "new lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
         done
         # space will be allocated for "extra" LV *after* other LVs have actually been created/formatted
     fi
@@ -692,6 +715,7 @@ convert_size_to_GiB() {
     # convert size ($1) to GiB
     input_size=$1
     scale=${2:-1}  # set scale to 1 if not supplied on command line as $2
+    gibval=0  #initialize
     # read input_size and convert to GiB if needed
     units=$(right_most ${input_size})
 #    units=$(echo ${input_size} | rev | cut -c1)
@@ -840,7 +864,11 @@ layout_cryptsetup_lvm() {
     msg+="(you can safely skip this step if you have done it before)\n"
     msg+="(y: yes; s: skip; n: exit program)"
     response=""
-    new_prompt "${msg}"
+    if [ $INTERACTIVE ] ; then
+        new_prompt "${msg}"
+    else
+        response="y"
+    fi
     case ${response:0:1} in
         [yY] )
             format_warning || die "failed format_warning somehow"
@@ -887,18 +915,8 @@ layout_cryptsetup_lvm() {
     # use algorithm to properly size the volumes for this device
 
     # ignore the lvx_SIZE from lsblk template data (use lookup)
+    # will use small-disk layout for < 200G
     calculate_lv_sizes || die "failed to calculate_lv_sizes"
-
-    # if disk size is < 200G use mini-luks format
-    if [ $(( $disksize_MiB * $MiB )) -lt $(( 200 * ${GiB} )) ] ; then
-        # use mini-luks format (root, usr, and swap LVs only)
-        LVM_list="root usr swap" # save "extra" for later
-        d_message "small disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
-    else
-        # otherwise use standard LVs with size appropriate for this disk
-        LVM_list="root usr var opt swap home tmp srv" # save "extra" for later
-        d_message "large disk [$ez_disksize_MiB] LVM_list: $LVM_list" 4
-    fi
 
     d_message "here are the assigned lv_size values" 5
     for LVM_name in ${LVM_list}; do
@@ -907,9 +925,7 @@ layout_cryptsetup_lvm() {
 
     for LVM_name in ${LVM_list}; do
         LVM_size=${lv_size[${LVM_name}]}
-
-        d_message "LVM_name: $LVM_name" 5
-        d_message "LVM_size: $LVM_size" 5
+        d_message "LVM_name: $LVM_name ; LVM_size: $LVM_size" 5
         d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
         message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
         lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
@@ -930,16 +946,20 @@ layout_cryptsetup_lvm() {
 
     # now that space for other LVs has been allocated, allocate whatever is left to "extra" LV
     # (MUST be done after other space is already allocated for vgs to report what is available)
-    remaining_space=$(vgs --noheadings --units G  -o vg_free vg_george)
-    gibval=0
-    convert_size_to_GiB ${remaining_space} 1 ; lv_size[extra]="${gibval}G"
-    d_message "extra_lv_size: $extra_lv_size" 5
-
+    # (note that --units G will result in "G" appended to size value --> ok for use in lvcreate -L)
+    # (HOWEVER, vgs reports G as multiples of 1000 and g as multiples of 1024, whereas lvcreate
+    #  treats both as representing multiples of 1024, so we CANNOT use the vgs --units G number as
+    # input to lvcreate for this final volume - there won't be space left; we have to use "--units g")
+    unused=$(vgs --noheadings --units g  -o vg_free vg_${DEV_HOSTNAME})
+    d_message "unused: $unused" 5
+    convert_size_to_GiB ${unused} 1  # scale to 1 digit after decimal to ensure space (round down)
+    lv_size[extra]="${gibval}G"   # append G so lvcreate will treat as GiB (mult. of 1024)
     # now create/format "extra"
     LVM_name="extra"
+    d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
     # lvcreate
-    message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
-        lvcreate -L ${lv_size[extra]} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
+    message_n "creating LV ${LVM_name} with size ${lv_size[${LVM_name}]} on VG vg_${DEV_HOSTNAME}"
+        lvcreate -L ${lv_size[${LVM_name}]} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
         right_status $TRUE
     # format
@@ -1048,7 +1068,7 @@ mount_and_populate_root_and_boot() {
 sanity_check() {
     # check for insane or stupid stuff
     [ $partition_count -gt 9 ] && die "invalid partition_count; ${PN} supports up to 9"
-
+    [ $disksize_bytes -lt $((32 * $GiB)) ] && die "rejecting device with less than 32GiB space"
     return 0
 }
 
