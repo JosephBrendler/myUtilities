@@ -153,17 +153,6 @@ CUF()    # Move the cursor forward ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
 CUB()    # Move the cursor back ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
-CPR()    # CPR [r|c] - echo # of cursor row, col, or both (w/o leading ESC[, trailing R)
-{ QUERY="${CSI}6n"; echo -en "${QUERY}" ; read -sdR CURPOS
-  IFS=';' read -ra COORDS <<< "${CURPOS:2}" ; case ${1:0:1} in
-    [rR]) echo "${COORDS[0]}" | cut -d';' -f1 ;; # report row
-    [cC]) echo "${COORDS[1]}" | cut -d';' -f2 ;; # report col
-    [sS]) :  ;;                                  # be silent
-    *   ) echo "${COORDS[@]}" ;; esac ; }        # report both
-QCR()    # use silent CPR to report row
-{ CPR s; echo "${COORDS[0]}" ; }
-QCC()    # use silent CPR to report column
-{ CPR s; echo "${COORDS[1]}" ; }
 
 # ---[ common function blocks ]------------------------------------------
 
@@ -172,9 +161,6 @@ isnumber()      # test if $1 is a decimal number; return true/false
 
 ishex()         # test if $1 is a hexadecimal number; return true/false
 { re='^[0-9a-fA-F]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
-
-isfloat()       # test if $1 is a floating point number; return true/false
-{ inputstring="$1" ; [[ "$inputstring" =~ ^[+-]?([0-9]*\.)?[0-9]+([eE][+-]?[0-9]+)?$ ]] && return $TRUE || return $FALSE ; }
 
 checkroot()     # Run as root, of course.
 { if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
@@ -263,42 +249,6 @@ new_prompt()    # set external variable $response based on reponse to prompt $1
 while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
 do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
 RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
-
-map()           # linearly map input number from input range to output range
-{ # trap non-numeric input
-! isfloat $1 && E_message "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
-! isfloat $2 && E_message "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
-! isfloat $3 && E_message "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
-! isfloat $4 && E_message "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
-! isfloat $5 && E_message "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
-[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
- map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
- scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
-# trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
-(( $(echo "$map_val < $from_lower" | bc -l) )) || \
-    (( $(echo "$map_val > $from_upper" | bc -l) )) && \
-    E_message "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
-
-# trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
-#[ $to_upper -lt $to_lower ] && E_message "invalid input range [ $to_upper - $to_lower ]" && return 1
-#[ $from_upper -lt $from_lower ] && E_message "invalid input range [ $from_upper - $from_lower ]" && return 1
-# initialize result variable
-result=999999
-# calculate scaling factor
- from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
- to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l)
- from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
- map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
-# ratio > 1 means scaling up to a "wider" range (even if lower numbers)
-# ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
-
-# scale the input offset against the output range
- to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
-
-# now offset (above the to_lower bound) the scaled number into the output range
-result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
-return 0
-}
 
 right_most() {  # echo the right-most character in a string variable $1
 mystring=$1 ; echo ${mystring#${mystring%?}} ; }
@@ -700,17 +650,15 @@ summarize_me()       # list functions in header ("source" to employ)
   OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
   debug_do 'echo "line 2.1" ; echo "line 2.2"' 2 && \
   VERBOSE=$OLDVERBOSE && verbosity=$oldv && echo && \
-  message "${BYon}Map input value 16 from input range 10-30 to output range 10-100 (scale to one decimal point) with ${BGon}map${Boff} 16 10 30 10 100 1" && \
-  map 16 10 30 10 100 1 && echo "result: $result" && echo && \
   message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}() and ${BGon}TrueFalse${Boff}() --" && \
   for x in y Y t T up n N f F down 0 1 z "" ; do message "  ${BWon}testing: [${LBon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}" ; done && \
   message "  ${BWon}testing: [${LBon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}" && \
   message "  ${BWon}testing: [${LBon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}" && \
   E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && echo && \
   msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${Boff}" && \
-  msg+="${BBon}message_n${Boff} \"" && \
-  msg+='\\n' && \
-  msg+="Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  msg="${msg}${BBon}message_n${Boff} \"" && \
+  msg="${msg}"'\\n' && \
+  msg="${msg}Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
   message "${msg}" && \
   echo && \
   sh_countdown 3 && \
