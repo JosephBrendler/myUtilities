@@ -53,6 +53,7 @@ shopt -s histappend                      # append to history, don't overwrite it
 export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 
 #-----[ crossbuild chroot section ]----------------------------------------------------
+install_my_local_ca_certificates
 source /etc/bash/bashrc.d/emerge-chroot
 source /root/.cb-config   # assigns BOARD, TARGET, TARGET_ARCH, QEMU_ARCH
 rerunmsg="first-run chroot configuration not requested by presense of marker"
@@ -60,9 +61,17 @@ rerunmsg="first-run chroot configuration not requested by presense of marker"
     echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
 [ -e /root/firstimglogin ] && /usr/sbin/finalize-chroot-for-image || \
     echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
-install_my_local_ca_certificates
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
 echo
 export PS1="(${QEMU_ARCH} chroot) ${PS1}"
 #-----[ edit/comment-out after system deployment ]-------------------------------------
+
+#export XDG_RUNTIME_DIR=/tmp/xdg/$USER
+if test -z "${XDG_RUNTIME_DIR}"; then
+  export XDG_RUNTIME_DIR=/tmp/xdg/"${UID}"-xdg-runtime-dir
+    if ! test -d "${XDG_RUNTIME_DIR}"; then
+        mkdir -p "${XDG_RUNTIME_DIR}"
+        chmod 0700 "${XDG_RUNTIME_DIR}"
+    fi
+fi
