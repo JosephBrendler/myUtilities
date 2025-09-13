@@ -153,20 +153,8 @@ CUF()    # Move the cursor forward ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
 CUB()    # Move the cursor back ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
-CPR()    # CPR [r|c] - echo # of cursor row, col, or both (w/o leading ESC[, trailing R)
-{ QUERY="${CSI}6n"; echo -en "${QUERY}" ; read -sdR CURPOS
-  IFS=';' read -ra COORDS <<< "${CURPOS:2}" ; case ${1:0:1} in
-    [rR]) echo "${COORDS[0]}" | cut -d';' -f1 ;; # report row
-    [cC]) echo "${COORDS[1]}" | cut -d';' -f2 ;; # report col
-    [sS]) :  ;;                                  # be silent
-    *   ) echo "${COORDS[@]}" ;; esac ; }        # report both
-QCR()    # use silent CPR to report row
-{ CPR s; echo "${COORDS[0]}" ; }
-QCC()    # use silent CPR to report column
-{ CPR s; echo "${COORDS[1]}" ; }
 
 # ---[ common function blocks ]------------------------------------------
-
 
 isnumber()      # test if $1 is a decimal number; return true/false
 { re='^[0-9]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
@@ -175,10 +163,10 @@ ishex()         # test if $1 is a hexadecimal number; return true/false
 { re='^[0-9a-fA-F]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
 
 checkroot()     # Run as root, of course.
-{ if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; exit 1; else return 0; fi; }
+{ if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
 
 checknotroot()  # Run as not root, of course.
-{ if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; exit 1; else return 0; fi; }
+{ if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
 
 checkboot()     # check to see if /boot is a mountpoint and is properly mounted
 { [[ -z $(grep '[[:space:]]/boot[[:space:]]' /etc/fstab | grep -v '^#') ]] && return 2  # not supposed to be a mountpoint
@@ -221,12 +209,28 @@ de_echo()       # echo -e all but last (level) argument if IAW verbosity
   E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
   [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo -e $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
 
-status_color()  # emit escape seq for color per arg $1 (T/F Y/N 1/0)
-{ case $1 in "1"|[yY]*|[tT]*|"up"|$TRUE   ) echo -en ${BGon};;
-             "0"|[nN]*|[fF]*|"down"|$FALSE) echo -en ${BRon};; *) echo -en ${BYon};; esac ; }
+d_do()          # conditionally execute properly escaped $@, IAW verbosity
+{ input="$@"; set $input; bw_input=$(echo $@ | rev) ;
+level=$(echo $bw_input | cut -d' ' -f1) ; cmd=$(echo $bw_input | cut -d' ' -f2- | rev ) ;
+# echo "level: $level"; echo "cmd: $cmd";
+if ! isnumber $level ; then E_message "final arg must be decimal verbosity level" ;
+elif [[ $VERBOSE ]] && [[ $verbosity -ge $level ]] ; then eval "${cmd}" ;
+else echo ; fi ; }
+
+debug_do()      # conditionally execute properly escaped $1, IAW verbosity
+{ [ $VERBOSE ] && [[ $verbosity -ge $2 ]] && eval "$1" ; }
+
+status_color()  # emit escape seq for color per arg $1
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -en ${BGon};;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -en ${BRon};;
+           *) echo -en ${BYon};; esac ; }
 
 TrueFalse()     # echo "True" or "False", depending on truth of arg $1
-{  [[ $1 ]] && echo -en "True" || echo -en "False" ; }
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -n "True" ;;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -n "False" ;;
+           *) echo -en "unset" ;; esac ; }
 
 prompt()        # set external variable $answer based on reponse to prompt $1
 { ps=$1; echo; echo; CUU; SCP; message_n "$ps [Y/n]: " && read answer; # '=~' not in busybox
@@ -245,6 +249,12 @@ new_prompt()    # set external variable $response based on reponse to prompt $1
 while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
 do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
 RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+
+right_most() {  # echo the right-most character in a string variable $1
+mystring=$1 ; echo ${mystring#${mystring%?}} ; }
+# echo ${mystring:$((${#mystring}-1)):1};        # other way 1
+# echo ${mystring} | sed "s|${mystring:0:-1}||"  # other way 2
+# echo ${mystring} | rev | cut -c 1 ; }          # other way 3
 
 alpha_words()   # alphabetize the words in a quoted input string
 { echo $(for x in $@; do echo $x; done | sort -db ) ; }
@@ -573,7 +583,7 @@ get_luks_keyfile()   # use arg1 (crypt_keydev) to identify keyfile
 get_luks_edev_name() # determine an edev name to use with this device
 {
     # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
-    message_n "determining edev name ..."
+    d_message_n "determining edev name ..." 3
     bn=$(basename ${luks_partition_device})
     case ${bn:0:2} in
       "sd" ) # scsi device
@@ -586,9 +596,10 @@ get_luks_edev_name() # determine an edev name to use with this device
         myedev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
         ;;
       *    ) # tbd
-        echo "Error: bad luks device name [${OUTPUTDEVICE}]"
+        d_echo "" 3 ; d_E_message "Error: bad luks device name [${OUTPUTDEVICE}]" 3
         ;;
     esac ; result=$?
+    d_echo " (${myedev})" 3 ; d_right_status $result 3
     export edev=${myedev}
     return $result
 }
@@ -610,7 +621,11 @@ summarize_me()       # list functions in header ("source" to employ)
   msg="${msg}${BGon}\$(${BBon}TrueFalse \\\"${BRon}\$VERBOSE${BBon}\\\"" && \
   msg="${msg}${BGon})${BYon}\"${BGon}; ${BBon}echo${Boff}" && echo -e "${msg}" && \
   echo && \
-  message "  ${BYon}VERBOSE is currently "$(status_color "$VERBOSE")$(TrueFalse "$VERBOSE") && echo && \
+  cmd="${BGon}message${BWon} \"  \${BYon}VERBOSE is currently \$(${BGon}status_color ${BRon}\$VERBOSE)${BWon}\$(${BGon}TrueFalse ${BRon}\$VERBOSE${BWon})\${Boff}\"${Boff}"
+  message "About to run ${cmd}"
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}" && echo && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
   message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 1${Boff}  " && \
   vercomp 1 1; echo -e "$(show_result $?)" && \
   message_n "${BYon}Compare version number ${BWon}2 ${BYon}to${BWon} 1${Boff}  " && \
@@ -627,10 +642,26 @@ summarize_me()       # list functions in header ("source" to employ)
   vercomp 1.0 1.0-r10; echo -e "$(show_result $?)" && \
   message_n "${BYon}Compare version number ${BWon}3.4 ${BYon}to${BWon} 3.4-r2${Boff}  " && \
   vercomp 3.4 3.4-r2; echo -e "$(show_result $?)" && echo && \
-  message "  ${BYon}About to run:\n        ${BBon}sh_countdown ${Boff}6 ${BGon}&& \\ ${Boff}" && \
-  echo -e "        ${BBon}message_n${Boff} "'"\\nFinishing with status of summarization --->" '"${BGon}; ${BBon}right_status ${BRon}"'$?'"${BGon}; ${BBon}echo${Boff}" && \
+  message "${BYon}Conditionally execute \$@ IAW verbosity (3) with ${BGon}d_do ${Boff}echo \"line 1.1\" \\; echo \"line 1.2\" 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  d_do echo "line 1.1" \; echo "line 1.2" 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message "${BYon}Conditionally execute \$1 IAW verbosity (3) with ${BGon}debug_do ${Boff}'echo \"line 2.1\" ; echo \"line 2.2\"' 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  debug_do 'echo "line 2.1" ; echo "line 2.2"' 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && echo && \
+  message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}() and ${BGon}TrueFalse${Boff}() --" && \
+  for x in y Y t T up n N f F down 0 1 z "" ; do message "  ${BWon}testing: [${LBon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}" ; done && \
+  message "  ${BWon}testing: [${LBon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}" && \
+  message "  ${BWon}testing: [${LBon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}" && \
+  E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && echo && \
+  msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${Boff}" && \
+  msg="${msg}${BBon}message_n${Boff} \"" && \
+  msg="${msg}"'\\n' && \
+  msg="${msg}Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  message "${msg}" && \
   echo && \
-  sh_countdown 6 && \
+  sh_countdown 3 && \
   message_n "\nFinishing with status of summarization --->" ; right_status $?; echo
 
   return 0

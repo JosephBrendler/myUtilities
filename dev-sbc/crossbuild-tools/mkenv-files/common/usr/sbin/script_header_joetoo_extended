@@ -9,6 +9,60 @@
 # note: this header expects this to be assigned already
 #script_header_installed_dir=/usr/sbin
 
+# CPR, QCR, and QCC moved here due to ash-incompatibility (uses bash array and ${var:n} form)
+CPR()       # CPR [r|c] - echo # of cursor row, col, or both (w/o leading ESC[, trailing R)
+{ QUERY="${CSI}6n"; echo -en "${QUERY}" ; read -sdR CURPOS
+  IFS=';' read -ra COORDS <<< "${CURPOS:2}" ; case ${1:0:1} in
+    [rR]) echo "${COORDS[0]}" | cut -d';' -f1 ;; # report row
+    [cC]) echo "${COORDS[1]}" | cut -d';' -f2 ;; # report col
+    [sS]) :  ;;                                  # be silent
+    *   ) echo "${COORDS[@]}" ;; esac ; }        # report both
+QCR()       # use silent CPR to report row
+{ CPR s; echo "${COORDS[0]}" ; }
+QCC()       # use silent CPR to report column
+{ CPR s; echo "${COORDS[1]}" ; }
+
+# isfloat moved here due to ash-incompatibility (uses regec compare =~)
+isfloat()       # test if $1 is a floating point number; return true/false
+{ inputstring="$1" ; [[ "$inputstring" =~ ^[+-]?([0-9]*\.)?[0-9]+([eE][+-]?[0-9]+)?$ ]] && return $TRUE || return $FALSE ; }
+
+# isfloat moved here due to ash-incompatibility (uses isfloat())
+map()           # linearly map input number from input range to output range
+{ # trap non-numeric input  
+! isfloat $1 && E_message "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
+! isfloat $2 && E_message "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
+! isfloat $3 && E_message "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
+! isfloat $4 && E_message "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
+! isfloat $5 && E_message "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
+[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1  
+ map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
+ scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
+# trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
+(( $(echo "$map_val < $from_lower" | bc -l) )) || \
+    (( $(echo "$map_val > $from_upper" | bc -l) )) && \
+    E_message "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
+  
+# trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
+#[ $to_upper -lt $to_lower ] && E_message "invalid input range [ $to_upper - $to_lower ]" && return 1
+#[ $from_upper -lt $from_lower ] && E_message "invalid input range [ $from_upper - $from_lower ]" && return 1
+# initialize result variable  
+result=999999
+# calculate scaling factor
+ from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
+ to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l) 
+ from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
+ map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
+# ratio > 1 means scaling up to a "wider" range (even if lower numbers)
+# ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
+
+# scale the input offset against the output range
+ to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
+
+# now offset (above the to_lower bound) the scaled number into the output range
+result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
+return 0
+}
+
 countdown() # output text message (arg $2, optional), and count-down seconds (arg $1)
 {
   # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
@@ -128,7 +182,7 @@ RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxte
 
 modular_msg()          # w/in margins, output externally assigned ${MSG} to array ${LINE[@]}
 {
-[[ $# -gt 1 ]] && E_message "Too many arguments" && exit 1
+[[ $# -gt 1 ]] && E_message "Too many arguments" && E_message "exiting process [$$]" && exit 1
 local WT=0  ## width of box
 local WIDTH=0 ## width between box margins
 local LENGTH=0 ## length of current line
@@ -251,7 +305,12 @@ done
 
 }
 
-validate_status_file() # validate or create command sequence status file $1
+non-stty-right_status() # w TERWIDTH set, output status at right margin
+{ local msg status=$1;
+  [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}No ${BBon}]${Boff}";
+  echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
+
+validate_status_file()  # validate or create command sequence status file $1 
 {
     [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
     cmdseq_statusfile=$1
@@ -268,7 +327,8 @@ validate_status_file() # validate or create command sequence status file $1
     message_n "validating cmdseq_statusfile [${cmdseq_statusfile}] ..."
     if [ ! -f ${cmdseq_statusfile} ] ; then
         echo -en " (creating) ..."
-        touch ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
+#        touch ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
+        echo "0" > ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
     else
         echo -en " (valid)" ; right_status $TRUE
     fi
@@ -342,7 +402,7 @@ bs()                   # recursive binary search for $1 target(s) from $2 start(
 usage()                # explain default usage; mod with local "usage module"
 {
   N=$(( ${#command_sequence[@]} -1 ))
-  separator "(usage)" "${PN}-${BUILD}"
+  separator "${PN}-${BUILD}" "(usage)"
   E_message "${BRon}Usage: ${BGon}${PN} [-[options]] ${Boff}"
   message "${BYon}valid commandline options --${Boff}"
   message "  -i | --interactive......: run supervised; confirm execution of each step"
@@ -368,14 +428,14 @@ usage()                # explain default usage; mod with local "usage module"
   do
     echo -e "    ${LBon}${s}: ${msg1_sequence[$s]}${Boff}"
   done
-  exit 1
+  E_message "exiting process [$$]" && exit 1
 }
 
 display_configuration() # use get_longest and display_vars to display ${varlist}
 {
     # will pick up PN, BUILD, varlist from the environment of whatever script
     # sources script_header_joetoo_extended
-    separator "configuration" "${PN}-${BUILD}"
+    separator "${PN}-${BUILD}" "(configuration)"
     longest=$(get_longest ${varlist})
     display_vars ${longest} ${varlist}
     return 0
@@ -385,8 +445,8 @@ run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and o
 {
     # run the sequence of commands stored in the command_sequence array
     # for each step, store updated status in a status file provided as arg $1
-    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (cmdseq_statusfile) " && exit 1
-    cmdseq_statusfile=$1 ; echo ; separator "Running command sequence" "${PN}-${BUILD}" ; echo
+    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (cmdseq_statusfile) " && E_message "exiting process [$$]" && exit 1
+    cmdseq_statusfile=$1 ; echo ; separator "${PN}-${BUILD}" "(running command sequence)" ; echo
     d_message "starting_step: [ ${starting_step} ]" 3
     d_message "stopping_step: [ ${stopping_step} ]" 3
     for ((step=${starting_step}; step<=${stopping_step}; step++))
@@ -423,7 +483,7 @@ run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and o
                ;;
            *    )  # abort due to negative response
                d_message "${BRon}As instructed, not running ${BGon}${command_sequence[${step}]}${BRon}. Quitting...${Boff}" 1 ; \
-               exit ;;
+               E_message "exiting process [$$]" && exit ;;
         esac
     done
     echo
@@ -435,6 +495,7 @@ process_cmdline()      # process command line arguments
 
   last=""
   d_message "processing command line with [ ${arglist} ]" 2
+  d_message "my PID: $$" 5
   # shift each argument into position $1 and examine it
   #   process the argument or processit with its own arguments
   while [ ! -z "$1" ]
@@ -454,7 +515,7 @@ process_cmdline()      # process command line arguments
       shift
     else
       d_message "does not start with - or --" 3
-      usage; exit
+      usage; E_message "exiting process [$$]" && exit
     fi
   done
   d_message "done with process_command_line" 2
@@ -465,17 +526,22 @@ process_argument()     # process one argument (considering the next a potential 
 {
   d_message "about to process [ $* ]" 2
   d_message "1: [ $1 ], 2: [ $2 ]" 2
+  d_message "my PID: $$" 5
   # process command line argument (must be one of the following)
   [ ! -z "$1" ] && case "$1" in
     "-"[sS] | "--status"         )
       # display status
       d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
       read starting_step < ${cmdseq_statusfile};
-      msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+      if [ $starting_step -eq 0 ] ; then
+          msg="${BWon}Status: $starting_step ;"
+      else
+          msg="${BWon}Status: Step $(($starting_step - 1)) complete ;"
+      fi
       msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
       message "${msg}"
-      exit;
+      E_message "exiting process [$$]" && exit;
       ;;
     "-"[rR] | "--resume"         )
       # resume at stored step unless that is overridden by a new start # (below)
@@ -529,7 +595,11 @@ process_argument()     # process one argument (considering the next a potential 
       ;;       # note: "numeric" args like -4 should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg $1 ;;")
-      [ -f /etc/${BPN}/local.cmdline_arguments ] && source /etc/${BPN}/local.cmdline_arguments || process_compound_arg $1
+      if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
+          source /etc/${BPN}/local.cmdline_arguments
+      else
+          process_compound_arg $1
+      fi
       ;;
   esac
   d_message "done with process_argument" 3
@@ -539,10 +609,11 @@ process_argument()     # process one argument (considering the next a potential 
 process_compound_arg()    # process a compount argument
 {
     d_message "about to process compound [ $* ]" 2
+    d_message "my PID: $$" 5
     # must begin with a single dash
-    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    [ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && E_message "exiting process [$$]" && exit 1
     # must not begin with two dashes (would have been picked in process_argument)
-    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
+    [ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && E_message "exiting process [$$]" && exit 1
     # strip leading dash(es)
     myargs=${1##-}
     # handle remaining characters in sequence
@@ -554,11 +625,15 @@ process_compound_arg()    # process a compount argument
                 # display status
                 d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
                 read starting_step < ${cmdseq_statusfile};
-                msg="${BWon}Status: Step $(($starting_step - 1)) complete;"
+                if [ $starting_step -eq 0 ] ; then
+                    msg="${BWon}Status: $starting_step ;"
+                else
+                    msg="${BWon}Status: Step $(($starting_step - 1)) complete ;"
+                fi
                 msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
                 msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
                 d_message "${msg}" 2
-                exit;
+                E_message "exiting process [$$]" && exit;
                 ;;
             [rR] )
                 # resume at stored step unless that is overridden by a new start # (below)
@@ -614,9 +689,12 @@ process_compound_arg()    # process a compount argument
                 ;;       # note: "numeric" args like -4 should fall through to this default
             *   )
                 # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage ;;")
-                [ -f /etc/${BPN}/local.cmdline_compound_arguments ] && \
-                    source /etc/${BPN}/local.cmdline_compound_arguments || \
-                    ( E_message "${E_BAD_ARGS}" && usage )
+                if [ -f /etc/${BPN}/local.cmdline_compound_arguments ] ;then
+                    source /etc/${BPN}/local.cmdline_compound_arguments
+                else
+                    E_message "${E_BAD_ARGS}"
+                    usage
+                fi
                 ;;
         esac
         #strip first char from myargs (i.e. "shift" one character)
@@ -633,8 +711,8 @@ confirm_continue_or_exit() # present prompt/warning and confirm user wants to co
     prompt "${msg}"
     case ${answer:0:1} in
         [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
-        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
+        [nN] ) E_message "Negative response from user; quitting"; E_message "exiting process [$$]" && exit 1 ;;
+        * ) E_message "invalid response to confirm_continue_or_exit"; E_message "exiting process [$$]" && exit 1 ;;
     esac
     return 0
 }
@@ -699,4 +777,8 @@ summarize_my_extension()  # generate this helpful display
   # print summary of included functions (indent left)
   grep "()" ${script_header_installed_dir%/}/script_header_joetoo_extended | grep -v "grep" | sed 's|^|  |'
   echo
+  message "${BYon}Map input value 16 from input range 10-30 to output range 10-100 (scale to one decimal point) with ${BGon}map${Boff} 16 10 30 10 100 1" && \
+  map 16 10 30 10 100 1 && echo "result: $result"
+  echo
+
 }
