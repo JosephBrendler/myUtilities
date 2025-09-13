@@ -397,6 +397,41 @@ validate_source() {
     fi
 }
 
+identify_root_device() {
+    # identify the root device and assign global variables ROOT_DEVICE and ROOT_UUID
+    # first, trap errors
+    [ -z "${OUTPUTDEVICE}" ] && E_message "OUTPUTDEVICE not assigned" && return 1
+    # identify the name and UUID of the root device (LV if LUKS, part if not)
+    # lsblk doesn't know fs labels for lvm LVs, so we have to use blkid to get this
+    message_n "identifying root device"
+    d_message "LUKS: $(status_color $LUKS)$(TrueFalse $LUKS)${Boff}" 4
+    [ $LUKS ] && rootdev_prefix="/dev/mapper/vg_${DEV_HOSTNAME}" || rootdev_prefix=${OUTPUTDEVICE}
+    d_message "rootdev_prefix: $rootdev_prefix" 4
+
+    # the root device can be labeled different ways on different devices...
+    # algorithm
+    #  (1) if the device is labled some version of root (e.g. root_fs, ROOT, ...) assign it
+    #  (2) if there is only one partition, it is the "rootdev" regardless of its label; assign it
+    #  (3) if none of multiple partitions are labeled "root" - then assign the highest as the "rootdev"
+    LINE=$(blkid ${rootdev_prefix}*  | grep -i 'root')
+    if [ ! -z "$LINE" ] || [ $partition_count -eq 1 ] ; then
+        # case 1 or 2
+        ROOT_DEVICE=$(echo $LINE | cut -d':' -f1)
+        remainder=$(echo $LINE | cut -d':' -f2-) ; eval ${remainder}  #assigns LABEL, UUID, TYPE, etc
+        ROOT_UUID="${UUID}"
+    else
+        # case 3 - assign the last partition as rootdev
+#        ROOT_DEVICE=${rootdev_prefix}${p_prefix}${partition_count}  ### should be same as below
+        LINE=$(blkid ${rootdev_prefix}* | tail -n1)
+        ROOT_DEVICE=$(echo $LINE | cut -d':' -f1)
+        remainder=$(echo $LINE | cut -d':' -f2-) ; eval ${remainder}  #assigns LABEL, UUID, TYPE, etc
+        ROOT_UUID="${UUID}"
+    fi
+    echo -en " ( $ROOT_DEVICE | $ROOT_UUID )"
+    right_status $TRUE
+    d_message "ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 4
+}
+
 install_files_from_source() {
     # SOURCE = (in this context) is a path to staged data already collected,
     #   to enable joetoo system image generation for this board

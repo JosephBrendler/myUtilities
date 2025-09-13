@@ -97,7 +97,9 @@ usage() {
 }
 
 check-target-board-loopmount() {
-    separator "(check-target-board-loopmount)" ${PN}
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 5
+
     FLAGGED=$FALSE
     # inspect target (mount point) - verify that BOARD is mounted and get its loop_dev
     if [[ ! -z $(findmnt -ln | grep "/usr/${TARGET}") ]] ; then
@@ -139,8 +141,9 @@ check-target-board-loopmount() {
 }
 
 prep-newroot() {
-    separator "(prep-newroot)" ${PN}
-    d_message "in prep-newroot" 4
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 5
+
     # examine OUTPUTDEVICE expected to be o(if luks, pen and) ready for mounting
     message_n "is newroot mounted?"
     if [[ -z "$(findmnt -ln | grep ${newroot_mountpoint})" ]] ; then
@@ -186,15 +189,16 @@ prep-newroot() {
             echo -en " ${BMon}${root_dev}"${Boff}
             mount ${root_dev} ${newroot_mountpoint} && right_status $? || \
                 die "failed to mount /dev/mapper/${root_lv}"
-        # otherwise, if there's a LABEL=root_fs device, mount it on newroot_mountpoint
-        elif [[ ! -z "$(blkid ${OUTPUTDEVICE}* | grep -i root_fs)" ]] ;  then
-            # use blkid data to idendify root_fs device (e.g. /dev/sdb)
-            root_dev=$(blkid ${OUTPUTDEVICE}* | grep boot_fs | cut -d' ' -f1 | sed 's|\:$||')
-            echo -en " ${LBon}${root_dev}${Boff}"
-            mount ${root_dev} ${newroot_mountpoint} && right_status $? || \
-                die "failed to mount /dev/mapper/${root_lv}"
+        # otherwise, identify the rootdev and mount it on newroot_mountpoint
         else
-            die "no root luks or regular block device found"
+            # identify the name and UUID of the root device (LV if LUKS, part if not)
+           identify_root_device || die "failed to identify_root_device for ${PN}"
+           d_message "(${PN}) ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 5
+
+            # use blkid data to idendify root_fs device (e.g. /dev/sdb)
+            echo -en " ${LBon}${ROOT_DEVICE}${Boff}"
+            mount ${ROOT_DEVICE} ${newroot_mountpoint} || die "failed to mount ${ROOT_DEVICE} ${newroot_mountpoint}"
+            right_status $TRUE
         fi
         # if we get here, it should be successfully mounted
         right_status $TRUE
@@ -205,30 +209,32 @@ prep-newroot() {
         echo -e " ${BGon}yes${Boff}" ; right_status $TRUE
     fi
     # whether already mounted or just mounted, we can now go to newroot_mountpoint
-    #   and if there is a mount-the-rest script, run it ( mount-newroot() )
+    #   and if there is a mount-the-rest script, run it ( mount-the-rest-on-newroot() )
     return 0
 }
 
-mount-newroot() {
-    separator "(mount-newroot)" ${PN}
-    d_message "in mount-newroot" 5
+mount-the-rest-on-newroot() {
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 5
+
     old_dir=$(pwd)
     message_n "moving from $(pwd) to ${newroot_mountpoint} ..."
     cd ${newroot_mountpoint} && right_status $? || die "failed to cd ${newroot_mountpoint}"
     message "now working in $(pwd)"
     message_n "looking for mount-the-rest script"
-    mounttherestscript="$(find ./ -iname 'mount-the-rest*' -type f -executable)" && right_status $? || \
+    mount_the_rest_script="$(find ./ -iname 'mount-the-rest*' -type f -executable)" && right_status $? || \
         die "failed to find ./ -iname 'mount-the-rest*' -type f -executable"
 
     # "DANGER Will Robinson" - check the resulting script builds reliably, before sourcing it
-#    exec ${mounttherestscript}
-    source ${mounttherestscript}
+#    exec ${mount_the_rest_script}
+    source ${mount_the_rest_script}
     return 0
 }
 
 copy-content() {
-    separator "(copy-content)" ${PN}
-    d_message "in copy-content" 4
+    separator ${PN} "(${FUNCNAME[0]})"
+    d_message "in ${FUNCNAME[0]}" 5
+
     # ok - now copy content
     msg="about to run cp -av /usr/${TARGET}/* ${newroot_mountpoint}/ \n"
     msg+="are you sure you want to continue"
@@ -278,7 +284,12 @@ display_configuration || die "failed to display_configuration"
 echo
 format_warning || die "failed format warning somehow, oddly"
 
-mount-newroot || die "failed to mount-newroot"
+if [ ${partition_count} -gt 1 ] ; then
+    mount-the-rest-on-newroot || die "failed to mount-the-rest-on-newroot"
+else
+    message "partition_count is [${partition_count}] so mount-the-rest is N/A; skipping"
+fi
+
 copy-content || die "failed to copy-content"
 
 separator "(wrapping up)" ${PN}

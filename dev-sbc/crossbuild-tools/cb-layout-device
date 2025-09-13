@@ -41,6 +41,10 @@ hidden_varlist="crypt_passphrase"
 
 #-----[ functions ]-------------------------------------------------------------------------
 
+# non-stty-separator() ...... moved to /usr/sbin/script_header_joetoo_extended
+# non-stty-right_status () .. moved to /usr/sbin/script_header_joetoo_extended
+# list_unused_disks(() ...... moved to /usr/sbin/script_header_joetoo_extended
+
 usage() {
     E_message "${BRon}usage: ${BGon}${PN} <BOARD> <OUTPUTDEVICE>${Boff}"
     echo
@@ -55,10 +59,6 @@ usage() {
     echo
     exit 1
 }
-
-# non-stty-separator() ...... moved to /usr/sbin/script_header_joetoo_extended
-# non-stty-right_status () .. moved to /usr/sbin/script_header_joetoo_extended
-# list_unused_disks(() ...... moved to TBD
 
 initialize_variables() {
 
@@ -768,12 +768,12 @@ format_partitions() {
     d_message "in ${FUNCNAME[0]}" 4
 
     # use blkid template data (already ingested) to format partitions
-    for ((i=1; i<${partition_count}; i++)) ; do
-        # determine the partition name on the new device
-        # use TYPE in formatted lablk -o output to filter on partition (ignore disk) lines with grep 'part'
-        # use PARTN to identify THIS partition number in column 3 of formated -o output with awk
-#        p_name="$(lsblk -nlo NAME,TYPE,PARTN ${OUTPUTDEVICE} | grep 'part' | awk -v var="${i}" '$3 == var {print}' | cut -d' ' -f1)"
-#        p_dev_name="/dev/${p_name}"
+    for ((i=1; i<=${partition_count}; i++)) ; do
+        # if this is the last partition in a LUKS setup, don't format it; be done now
+        [ $i -eq ${partition_count} ] && [ $LUKS ] && return 0
+        # otherwise, determine the partition name on the new device
+        #   use TYPE in formatted lablk -o output to filter on partition (ignore disk) lines with grep 'part'
+        #   use PARTN to identify THIS partition number in column 3 of formated -o output with awk
         p_dev_name="${OUTPUTDEVICE}${p_prefix}${i}"
         d_message "i: $i" 4
         d_message "p_dev_name: $p_dev_name" 4
@@ -960,16 +960,8 @@ mount_and_populate() {
     d_message "in ${FUNCNAME[0]}" 4
 
     # identify the name and UUID of the root device (LV if LUKS, part if not)
-    # lsblk doesn't know fs labels for lvm LVs, so we have to use blkid to get this
-    message_n "identifying root device"
-    [ $LUKS ] && rootdev_prefix="/dev/mapper/vg_${DEV_HOSTNAME}" || rootdev_prefix=${OUTPUTDEVICE}
-    LINE=$(blkid ${rootdev_prefix}*  | grep 'root_fs')
-    ROOT_DEVICE=$(echo $LINE | cut -d':' -f1)
-    remainder=$(echo $LINE | cut -d':' -f2-) ; eval ${remainder}  #assigns LABEL, UUID, TYPE, etc
-    ROOT_UUID="${UUID}"
-    echo -en " ( $ROOT_DEVICE | $ROOT_UUID )"
-    right_status $TRUE
-    d_message "ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 4
+    identify_root_device || die "failed to identify_root_device for ${PN}"
+    d_message "(${PN}) ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 5
 
     message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
     mount ${ROOT_DEVICE} ${root_dev_mountpoint} 2>/dev/null || die "failed to mount ${ROOT_DEVICE} ${root_dev_mountpoint} "
@@ -987,6 +979,19 @@ mount_and_populate() {
         die "failed to copy chroot-commands text file to ${root_dev_mountpoint%/}/"
     right_status $TRUE
 
+    # if there is not more than one partition, then this is not applicable
+    if [ ${partition_count} -gt 1 ] ; then
+        # populate the mount-the-rest.<hostname> script, to mount other LVs and/or partitions
+        write_mount_the_rest_script || die "failed to write_mount_the_rest_script"
+    else
+        message "partition_count is [${partition_count}]; mount-the-rest script is N/A; skipping"
+    fi
+
+    [ $ERROR ] && return 1
+    return 0
+}
+
+write_mount_the_rest_script() {
     # populate the mount-the-rest.<hostname> script, to mount other LVs and/or partitions
     # initialize script file by writing header line with ">"
     message_n "creating ${mount_the_rest_script} ..."
@@ -1108,8 +1113,6 @@ mount_and_populate() {
     message_n "making ${root_dev_mountpoint%/}/${mount_the_rest_script} executable"
     chmod +x ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
     right_status $? || (right_status $?; ERROR=$TRUE)
-
-    [ $ERROR ] && return 1
     return 0
 }
 
