@@ -1,28 +1,18 @@
 #!/bin/bash
 #
 # cb-layout-device   (c) joe.brendler  2025-2072
-# prepare a block device to be used as system storage (root/boot_fs) for a crossbuild target filesystem
+# copy appropriate template files into crossbuild target filesystem
 #
-
-# Note: 14 September 2025 - trying to convert this program to run as a "run_sequence" with "process_cmdline"
-#   which will require it to have its own reference to "/etc/${BPN}" - where functions in script_header_joetoo_extended
-#   will look to get local.usage, local.cmdline_arguments, local.cmdline_compound_arguments
-#   This program will define BPN=$(basename ${config_dir})/${PN} where PN=$(basename $0) [crossbuild-tools/cb-layout-device]
-#   rather than load the BPN file created by the parent package which uses BPN= its own PN
 
 source /usr/sbin/script_header_joetoo
 export LC_NUMERIC="en_US.UTF-8"
 declare -A lv_size  # user later, for size of LVs (root, usr, var, opt, home, tmp, srv, extra, swap)
 
-PN=$(basename $0)
-
 config_dir="/etc/crossbuild-tools"
 message_n "sourcing BUILD ..."
 source ${config_dir%/}/BUILD ; right_status $?
-#message_n "sourcing BPN ..."
-#source ${config_dir%/}/BPN ; right_status $?
-message_n "assigning BPN = $(basename ${config_dir})/${PN}.local"
-BPN=$(basename ${config_dir})/${PN}.local || die "failed to assign BPN" ; right_status $TRUE
+message_n "sourcing BPN ..."
+source ${config_dir%/}/BPN ; right_status $?
 source /usr/sbin/script_header_joetoo_extended
 
 VERBOSE=$TRUE
@@ -31,10 +21,12 @@ verbosity=3
 
 #-----[ variables ]-------------------------------------------------------------------------
 
+PN=$(basename $0)
+
 varlist="DEVICE_DATA OUTPUTDEVICE BOARD MEDIUM ENCRYPTION bool.LUKS"
 varlist+=" disksize_bytes ez_disksize_bytes disksize_MiB ez_disksize_MiB MiB GiB"
 varlist+=" swap_size DEV_HOSTNAME"
-varlist+=" BREAK CONFIG_DATA config_dir configfile layoutstatusfile"
+varlist+=" BREAK CONFIG_DATA config_dir configfile"
 varlist+=" BREAK TEMPLATE_DATA sfdisk_template_dir blkid_template_dir lsblk_template_dir"
 varlist+=" sfdisk_template blkid_template lsblk_template"
 varlist+=" sfdisk_head_label sfdisk_head_unit sfdisk_head_first_lba sfdisk_head_sector_size"
@@ -42,46 +34,10 @@ varlist+=" p_prefix partition_count"
 varlist+=" BREAK CRYPT_DATA crypt_keydev crypt_keydev_type crypt_keydev_mountpoint keyfile"
 varlist+=" luks_partition_device edev"
 varlist+=" BREAK ROOT_DATA root_vg root_dev_mountpoint mount_the_rest_script"
-varlist+=" draft_fstab_generator_script"
+varlist+=" draft_fstab_script"
 varlist+=" BREAK PROGRAM_DATA boot.INTERACTIVE bool.VERBOSE verbosity bool.FLAGGED bool.ERROR"
 
 hidden_varlist="crypt_passphrase"
-
-command_sequence=(
-'source_templates'
-'display_template_varlist'
-'set-DEV_HOSTNAME'
-'maybe_luks_lvm_config'
-'display_configuration_and_local_sanity_check'
-'layout_partitions'
-'format_partitions'
-'maybe_layout_cryptsetup_lvm'
-'mount_and_populate'
-)
-
-msg1_sequence=(
-'source templates'
-'display template data (varlist)'
-'set hostname'
-'maybe run luks_lvm_config'
-'display configuration and sanity-check'
-'lay out partitions'
-'format partitions'
-'maybe lay out cryptsetup and lvm'
-'mount and populate new device'
-)
-
-msg2_sequence=(
-'sourcing templates'
-'displaying template data (varlist)'
-'setting hostname'
-'maybe running luks_lvm_config'
-'displaying configuration and sanity-checking'
-'laying out partitions'
-'formatting partitions'
-'maybe laying out cryptsetup and lvm'
-'mounting and populating new device'
-)
 
 #-----[ functions ]-------------------------------------------------------------------------
 
@@ -89,139 +45,127 @@ msg2_sequence=(
 # non-stty-right_status () .. moved to /usr/sbin/script_header_joetoo_extended
 # list_unused_disks(() ...... moved to /usr/sbin/script_header_joetoo_extended
 
-# usage() ... moved to script_header_joetoo_extended, suplemented by /etc/${BPN}/local.usage
+usage() {
+    E_message "${BRon}usage: ${BGon}${PN} <BOARD> <OUTPUTDEVICE>${Boff}"
+    echo
+    message "${BYon}BOARD: must be one of --${Boff}"
+    joetoo-sbc-list | sed 's|^|    |'
+    echo
+    message "${BYon}OUTPUTDEVICE: must be a valid device${Boff}"
+    E_message "${BRon}*** Warning ***${BYon} this process will destroy all data on OUTPUTDEVICE${Boff}"
+    message "Note: these candidate devices are present in your system but not mounted"
+    echo
+    list_unused_disks
+    echo
+    exit 1
+}
 
 initialize_variables() {
 
-    d_message_n "sourcing cb-common-functions ..." 2
-    source /usr/sbin/cb-common-functions ; d_right_status $? 2
+    message_n "sourcing cb-common-functions ..."
+    source /usr/sbin/cb-common-functions ; right_status $?
 
     initialize_vars ${varlist}
     initialize_vars ${hidden_varlist}
 
-    d_message_n "re-assigning config_dir = /etc/crossbuild-tools" 2
-    config_dir="/etc/crossbuild-tools" ; d_right_status $? 2
+    message_n "re-assigning config_dir = /etc/crossbuild-tools"
+    config_dir="/etc/crossbuild-tools" ; right_status $?
 
-    d_message_n "sourcing BUILD ..." 2
-    source ${config_dir%/}/BUILD ; d_right_status $? 2
+    message_n "sourcing BUILD ..."
+    source ${config_dir%/}/BUILD ; right_status $?
 
-#    message_n "sourcing BPN ..."
-#    source ${config_dir%/}/BPN ; right_status $?
-    d_message_n "re-assigning BPN = $(basename ${config_dir})/${PN}.local" 2
-    BPN=$(basename ${config_dir})/${PN}.local || die "failed to assign BPN" ; d_right_status $TRUE 2
-    d_message_n "sourcing /usr/sbin/script_header_joetoo_extended" 2
-    source /usr/sbin/script_header_joetoo_extended ; d_right_status $? 2
+    message_n "sourcing BPN ..."
+    source ${config_dir%/}/BPN ; right_status $?
 
-    d_message_n "initializing INTERACTIVE = TRUE ..." 2
-    INTERACTIVE=$TRUE ; d_right_status $? 2
-    d_message_n "re-initializing VERBOSE = TRUE ..." 2
-    VERBOSE=$TRUE ; d_right_status $? 2
-    d_message_n "re-initializing verbosity = 3 ..." 2
-    verbosity=3 ;  d_right_status $? 2
-    d_message_n "setting default starting_step = 0" 2
-    starting_step=0 ; d_right_status $? 2
-    d_message_n "setting default stopping_step = $(( ${#command_sequence[@]} - 1 ))" 2
-    stopping_step=$(( ${#command_sequence[@]} - 1 )) ; d_right_status $? 2
-    d_message_n "setting default layoutstatusfile = /root/bin/layout_status" 2
-    layoutstatusfile="/root/bin/layout_status" ; d_right_status $? 2
-    d_message_n "initializing default LUKS = FALSE ..." 2
-    LUKS=$FALSE ; d_right_status $? 2
-    d_message_n "initializing partition_count = 0 ..." 2
-    partition_count=0 ; d_right_status $? 2
+    message_n "initializing INTERACTIVE = TRUE ..."
+    INTERACTIVE=$TRUE ; right_status $?
 
-# these now done by process_cmdline
-#    d_message_n "assigning BOARD from command line ..." 2
-#    BOARD="${myBOARD}" ; d_right_status $? 2
-#    d_message_n "assigning OUTPUTDEVICE from command line ..." 2
-#    OUTPUTDEVICE="${myOUTPUTDEVICE}" ; d_right_status $? 2
+    message_n "re-initializing VERBOSE = TRUE ..."
+    VERBOSE=$TRUE ; right_status $?
+    message_n "re-initializing verbosity = 3 ..."
+    verbosity=3 ;  right_status $?
 
-    # source config file - sets MEDIUM and LUKS, as well as INTERACTIVE, VERBOSE, verbosity
+    message_n "initializing default LUKS = FALSE ..."
+    LUKS=$FALSE ; right_status $?
+
+    message_n "initializing partition_count = 0 ..."
+    partition_count=0 ; right_status $?
+
+    message_n "assigning BOARD from command line ..."
+    BOARD="${myBOARD}" ; right_status $?
+
+    message_n "assigning OUTPUTDEVICE from command line ..."
+    OUTPUTDEVICE="${myOUTPUTDEVICE}" ; right_status $?
+
+    # config file sets MEDIUM and LUKS, as well as INTERACTIVE, VERBOSE, verbosity
     # and it optionally sets DEV_HOSTNAME, crypt_keydev, crypt_passphrase
     # all the other data from old config file is in sfdisk, blkid, and lsblk template files
-    d_message_n "assigning configfile = cb-layout-device.conf" 2
-    configfile="cb-layout-device.conf"  ; d_right_status $? 2
-    d_message_n "sourcing config file cb-layout-device.conf ..." 2
+    message_n "assigning configfile = cb-layout-device.conf"
+    configfile="cb-layout-device.conf"  ; right_status $?
+
+    message_n "sourcing config file cb-layout-device.conf ..."
     if [ -e ${config_dir%/}/${configfile} ] ; then
         source ${config_dir%/}/${configfile} ; result=$?
         if [ $result -eq 0 ] ; then
-            d_right_status $TRUE 2
+            right_status $TRUE
         else
-            d_right_status 1 2
+            right_status 1
             die "failed to source ${configfile}"
         fi
     else
-        d_right_status 1 2
+        right_status 1
         die "${configfile} does not exist"
     fi
+
     if [[ $LUKS ]] ; then
-        d_message_n "assigning ENCRYPTION = luks , per config file ..." 2
-        ENCRYPTION="luks" ; d_right_status $? 2
+        message_n "assigning ENCRYPTION = luks , per config file ..."
+        ENCRYPTION="luks" ; right_status $?
     else
-        d_message_n "assigning ENCRYPTION = plain , per config file ..." 2
-        ENCRYPTION="plain" ; d_right_status $? 2
+        message_n "assigning ENCRYPTION = plain , per config file ..."
+        ENCRYPTION="plain" ; right_status $?
     fi
 
+    # initialize sfdisk_ blkid_ and lsblk_template with BOARD and info from config file (medium, LUKS)
+    message_n "assigning sfdisk_template_dir = cb-layout-device-sfdisk-templates ..."
+    sfdisk_template_dir="cb-layout-device-sfdisk-templates" ; right_status $?
+
+    message_n "assigning blkid_template_dir = cb-layout-device-blkid-templates ..."
+    blkid_template_dir="cb-layout-device-blkid-templates" ; right_status $?
+
+    message_n "assigning lsblk_template_dir = cb-layout-device-lsblk-templates ..."
+    lsblk_template_dir="cb-layout-device-lsblk-templates" ; right_status $?
+
+    message_n "assigning sfdisk_template = sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    sfdisk_template="sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
+    message_n "assigning blkid_template = blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    blkid_template="blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
+    message_n "assigning lsblk_template = lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..."
+    lsblk_template="lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; right_status $?
+
     # initialize luks keying device mountpoint
-    d_message_n "assigning crypt_keydev_mountpoint = /mnt/key ..." 2
-    crypt_keydev_mountpoint=/mnt/key ; d_right_status $? 2
+    message_n "assigning crypt_keydev_mountpoint = /mnt/key ..."
+    crypt_keydev_mountpoint=/mnt/key ; right_status $?
 
     # initialize root_dev_mountpoint and related variables
-    d_message_n "assigning root_dev_mountpoint = /mnt/gentoo ..." 2
-    root_dev_mountpoint="/mnt/gentoo" ; d_right_status $? 2
-    d_message_n "assigning mount_the_rest_script = mount-the-rest.${DEV_HOSTNAME} ..." 2
-    mount_the_rest_script="mount-the-rest.${DEV_HOSTNAME}" ; d_right_status $? 2
-    d_message_n "assigning chroot_prep_script = chroot-prep ..." 2
-    chroot_prep_script="chroot-prep" ; d_right_status $? 2
-    d_message_n "assigning chroot_command_textsfile = chroot-commands ..." 2
-    chroot_command_textsfile="chroot-commands" ; d_right_status $? 2
-    d_message_n "assigning draft_fstab_generator_script = draft_fstab_generator_script ..." 2
-    draft_fstab_generator_script="draft_fstab_generator_script" ; d_right_status $? 2
+    message_n "assigning root_dev_mountpoint = /mnt/gentoo ..."
+    root_dev_mountpoint="/mnt/gentoo" ; right_status $?
 
-    # initialize display_configuration section headings
-    d_message_n "assigning DEVICE_DATA section heading" 2
-    DEVICE_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning CONFIG_DATA section heading" 2
-    CONFIG_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning TEMPLATE_DATA section heading" 2
-    TEMPLATE_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning CRYPT_DATA section heading" 2
-    CRYPT_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning ROOT_DATA section heading" 2
-    ROOT_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning PROGRAM_DATA section heading" 2
-    PROGRAM_DATA="see below" ; d_right_status $? 2
-    d_message_n "assigning MiB = 1024 * 1024" 2
-    MiB=$((1024*1024)) ; d_right_status $? 2
-    d_message_n "assigning GiB = 1024 * MiB" 2
-    GiB=$((1024*${MiB})) ; d_right_status $? 2
+    message_n "assigning mount_the_rest_script = mount-the-rest.${DEV_HOSTNAME} ..."
+    mount_the_rest_script="mount-the-rest.${DEV_HOSTNAME}" ; right_status $?
 
-    # initialize lv_size associative array
-    for x in root usr var opt home tmp srv swap extra; do
-        d_message_n "initializing lv_size[${x}] = 0" 2
-        lv_size["${x}"]="0" || die "failed to initialize lv_size[${x}] = 0"
-        debug_do 'echo -e -n " (${lv_size[${x}]})"' 2 ; d_right_status $? 2
-    done
+    message_n "assigning chroot-prep_script = ${root_dev_mountpoint%/}/chroot-prep ..."
+    chroot-prep_script="${root_dev_mountpoint%/}/chroot-prep" ; right_status $?
 
-    return 0
-}
+    message_n "assigning chroot-command_textsfile = ${root_dev_mountpoint%/}/chroot-commands ..."
+    chroot-command_textsfile="${root_dev_mountpoint%/}/chroot-commands" ; right_status $?
 
-assign_BOARD_and_OUTPUTDEVICE_derived_variables() {
-    # initialize sfdisk_ blkid_ and lsblk_template with BOARD and info from config file (medium, LUKS)
-    d_message_n "assigning sfdisk_template_dir = cb-layout-device-sfdisk-templates ..." 2
-    sfdisk_template_dir="cb-layout-device-sfdisk-templates" ; d_right_status $? 2
-    d_message_n "assigning blkid_template_dir = cb-layout-device-blkid-templates ..." 2
-    blkid_template_dir="cb-layout-device-blkid-templates" ; d_right_status $? 2
-    d_message_n "assigning lsblk_template_dir = cb-layout-device-lsblk-templates ..." 2
-    lsblk_template_dir="cb-layout-device-lsblk-templates" ; d_right_status $? 2
-    d_message_n "assigning sfdisk_template = sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..." 2
-    sfdisk_template="sfdisk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; d_right_status $? 2
-    d_message_n "assigning blkid_template = blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..." 2
-    blkid_template="blkid.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; d_right_status $? 2
-    d_message_n "assigning lsblk_template = lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template ..." 2
-    lsblk_template="lsblk.${BOARD}.${MEDIUM}.${ENCRYPTION}.template" ; d_right_status $? 2
+    message_n "assigning draft_fstab_script = ${root_dev_mountpoint%/}/draft-fstab ..."
+    draft-fstab="${root_dev_mountpoint%/}/draft_fstab_script" ; right_status $?
 
     # read blktype as first 2 chars of text to the right of right-most / (e.g. sd in /dev/sdc)
-    d_message_n "assigning partition number prefix" 2
+    message_n "assigning partition number prefix"
     blkname=${OUTPUTDEVICE##*/}; blktype=${blkname:0:2}
     case ${blktype} in
         "sd" ) p_prefix="";; # e.g. /dev/sdc
@@ -229,39 +173,76 @@ assign_BOARD_and_OUTPUTDEVICE_derived_variables() {
         "nv" ) p_prefix="p" ;; # e.g. /dev/nvme0n1
     esac ; result=$?
     echo -n " p_prefix = $p_prefix ..."
-    d_right_status $result 2
+    right_status $result
+
+    # initialize display_configuration section headings
+    message_n "assigning DEVICE_DATA section heading"
+    DEVICE_DATA="see below" ; right_status $?
+
+    message_n "assigning CONFIG_DATA section heading"
+    CONFIG_DATA="see below" ; right_status $?
+
+    message_n "assigning TEMPLATE_DATA section heading"
+    TEMPLATE_DATA="see below" ; right_status $?
+
+    message_n "assigning CRYPT_DATA section heading"
+    CRYPT_DATA="see below" ; right_status $?
+
+    message_n "assigning ROOT_DATA section heading"
+    ROOT_DATA="see below" ; right_status $?
+
+    message_n "assigning PROGRAM_DATA section heading"
+    PROGRAM_DATA="see below" ; right_status $?
+
+    message_n "assigning MiB = 1024 * 1024"
+    MiB=$((1024*1024)) ; right_status $?
+
+    message_n "assigning GiB = 1024 * MiB"
+    GiB=$((1024*${MiB})) ; right_status $?
 
     # calculate disk size in MiB; LC_NUMERIC is set to en_US.UTF-8 at the top
-    d_message_n "calculating disksize_bytes" 2
+    message_n "calculating disksize_bytes"
     disksize_bytes=$(fdisk -l ${OUTPUTDEVICE} | head -n1 | awk '{print $5}') || \
         die "failed to calculate disksize_bytes"
-    debug_do 'echo -e -n " ($disksize_bytes)"' 2 ; d_right_status $? 2
-    d_message_n "calculating disksize_MiB" 2
+    echo -e -n " ($disksize_bytes)" ; right_status $?
+
+    message_n "calculating disksize_MiB"
     disksize_MiB=$(( $disksize_bytes / $((1024 * 1024)) )) || \
         die "failed to calculate disksize_MiB"
-    debug_do 'echo -e -n " ($disksize_MiB)"' 2 ; d_right_status $? 2
-    d_message_n "calculating disksize_GiB" 2
+    echo -e -n " ($disksize_MiB)" ; right_status $?
+
+    message_n "calculating disksize_GiB"
     disksize_GiB=$(( $disksize_bytes / $((1024 * ${MiB})) )) || \
         die "failed to calculate disksize_GiB"
-    debug_do 'echo -e -n " ($disksize_GiB)"' 2 ; d_right_status $? 2
-    d_message_n "calculating ez_disksize_bytes" 2
+    echo -e -n " ($disksize_GiB)" ; right_status $?
+
+    message_n "calculating ez_disksize_bytes"
     ez_disksize_bytes="$(printf "%'d\n" $disksize_bytes) bytes" || \
         die "failed to calculate ez_disksize_bytes"
-    debug_do 'echo -e -n " ($ez_disksize_bytes)"' 2 ; d_right_status $? 2
-    d_message_n "calculating ez_disksize_MiB" 2
+    echo -e -n " ($ez_disksize_bytes)" ; right_status $?
+
+    message_n "calculating ez_disksize_MiB"
     ez_disksize_MiB="$(printf "%'d\n" $disksize_MiB) MiB" || \
         die "failed to calculate ez_disksize_MiB"
-    debug_do 'echo -e -n " ($ez_disksize_MiB)"' 2 ; d_right_status $? 2
-    d_message_n "calculating ez_disksize_GiB" 2
+    echo -e -n " ($ez_disksize_MiB)" ; right_status $?
+
+    message_n "calculating ez_disksize_GiB"
     ez_disksize_GiB="$(printf "%'d\n" $disksize_GiB) MiB" || \
         die "failed to calculate ez_disksize_GiB"
-    debug_do 'echo -e -n " ($ez_disksize_GiB)"' 2 ; d_right_status $? 2
+    echo -e -n " ($ez_disksize_GiB)" ; right_status $?
 
-    # calculate SWAP size appropriate for BOARD
-    d_message_n "calculating appropriate swap_size" 2
+    # initialize lv_size associative array
+    for x in root usr var opt home tmp srv swap extra; do
+        message_n "initializing lv_size[${x}]"
+        lv_size["${x}"]="0" || die "failed to initialize lv_size[${x}] = 0"
+        echo -e -n " (${lv_size[${x}]})" ; right_status $?
+    done
+
+    # calculate appropriate SWAP size
+    message_n "calculating appropriate swap_size"
     calculate_appropriate_swap || die "failed to calculate swap_size"
     swap_size="${lv_size[swap]}"
-    debug_do 'echo -e -n " ($swap_size)"' 2 ; d_right_status $? 2
+    echo -e -n " ($swap_size)" ; right_status $?
 
     return 0
 }
@@ -273,9 +254,6 @@ source_templates() {
 
     template_varlist="" # each ingest adds to this
 
-    d_message "config_dir: $config_dir" 5
-    d_message "sfdisk_template_dir: $sfdisk_template_dir" 5
-    d_message "sfdisk_template: $sfdisk_template" 5
     # (1) ingest sfdisk_template
     message_n "checking sfdisk_template ..."
     [ -f "${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template}" ] && \
@@ -307,15 +285,6 @@ source_templates() {
     message_n "assigning luks container name (edev ="
     get_luks_edev_name || die "failed to get_luks_edev_name"
     echo -n " ${edev})" ; right_status $?
-
-    return 0
-}
-
-display_configuration_and_local_sanity_check() {
-    display_configuration || return 1
-    local_sanity_check || return 1
-    maybe_format_warning || return 1
-    return 0
 }
 
 display_template_varlist() {
@@ -494,48 +463,41 @@ set-crypt_passphrase() {
 }
 
 set-DEV_HOSTNAME() {
-    #  set DEV_HOSTNAME - used in mount-the-rest.hostname script and if LUKS also in vg_hostname-
+    #  set DEV_HOSTNAME
     [ -z ${DEV_HOSTNAME} ] && DEV_HOSTNAME="demobox"
     [ -f /usr/${TARGET}/etc/hostname ] && read -r candidate2 < /usr/${TARGET}/etc/hostname
-
-    if [ ! $INTERACTIVE ] ; then
-        # if not interactive, then go with template or default
-        [ ! -z "${candidate2}" ] && DEV_HOSTNAME="${candidate2}"
+    message "${BYon}Please select a hostname for this system${Boff}"
+    message "  (${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff})"
+    message "  ${BYon}currently, DEV_HOSTNAME = [ $DEV_HOSTNAME ]"
+    if [ ! -z ${candidate2} ] ; then
+        E_message "${BMon}However, a (cross)build image is mounted at /usr/${TARGET}${Boff}"
+        message "   ${BMon}and it's /etc/hostname contains \"${LBon}${candidate2}${BMon}\"${Boff}"
+        message "   ${BYon}Type (s)kip if you want to use that hostname instead${Boff}"
     else
-        # confirm or get hostname from user
-        message "${BYon}Please select a hostname for this system${Boff}"
-        message "  (${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff})"
-        message "  ${BYon}currently, DEV_HOSTNAME = [ $DEV_HOSTNAME ]"
-        if [ ! -z ${candidate2} ] ; then
-            E_message "${BMon}However, a (cross)build image is mounted at /usr/${TARGET}${Boff}"
-            message "   ${BMon}and it's /etc/hostname contains \"${LBon}${candidate2}${BMon}\"${Boff}"
-            message "   ${BYon}Type (s)kip if you want to use that hostname instead${Boff}"
-        else
-            candidate2="${DEV_HOSTNAME}"
-            E_message "${BYon}Type (s)kip if you want to use that hostname${Boff}"
-        fi
-        echo
-        response="n"
-        msg="${BYon}Would you like to select a different hostname for this system?\n${Boff}"
-        msg+="(${BWon}y:${LBon} yes, select new ;"
-        msg+=" ${BWon}s:${LBon} skip, accept [${Boff}$DEV_HOSTNAME${LBon}] ;"
-        msg+=" ${BWon}n:${LBon} no, exit program${Boff})"
-        new_prompt "${msg}"
-        case ${response:0:1} in
-            [nN] ) die "aborting program as instructed" ;;
-            [yY] ) message "affirmative response; continuing"; response="n" ;;
-            [sS] ) candidate="${candidate2}" ; response="y" ;;
-        esac
-        while [[ "${response:0:1}" == [nN] ]] ; do
-            echo -en "${BGon}*${Boff} set hostname for this system: "
-            read candidate
-            message "you responded [ ${candidate} ]"
-            new_prompt "is this correct?"
-        done
-        message_n "setting DEV_HOSTNAME"
-        export DEV_HOSTNAME="${candidate}" || die "failed to set DEV_HOSTNAME"
-        echo -n " (${DEV_HOSTNAME})" ; right_status $TRUE
+        candidate2="${DEV_HOSTNAME}"
+        E_message "${BYon}Type (s)kip if you want to use that hostname${Boff}"
     fi
+    echo
+    response="n"
+    msg="${BYon}Would you like to select a different hostname for this system?\n${Boff}"
+    msg+="(${BWon}y:${LBon} yes, select new ;"
+    msg+=" ${BWon}s:${LBon} skip, accept [${Boff}$DEV_HOSTNAME${LBon}] ;"
+    msg+=" ${BWon}n:${LBon} no, exit program${Boff})"
+    new_prompt "${msg}"
+    case ${response:0:1} in
+        [nN] ) die "aborting program as instructed" ;;
+        [yY] ) message "affirmative response; continuing"; response="n" ;;
+        [sS] ) candidate="${candidate2}" ; response="y" ;;
+    esac
+    while [[ "${response:0:1}" == [nN] ]] ; do
+        echo -en "${BGon}*${Boff} set hostname for this system: "
+        read candidate
+        message "you responded [ ${candidate} ]"
+        new_prompt "is this correct?"
+    done
+    message_n "setting DEV_HOSTNAME"
+    export DEV_HOSTNAME="${candidate}" || die "failed to set DEV_HOSTNAME"
+    echo -n " (${DEV_HOSTNAME})" ; right_status $TRUE
     return 0
 }
 
@@ -551,6 +513,9 @@ luks_lvm_config() {
     else
         echo -e -n " (${#partition_list[@]} partitions defined)" ; right_status $TRUE
     fi
+
+    # (2) check/get DEV_HOSTNAME
+    if [ $INTERACTIVE ] ; then set-DEV_HOSTNAME || die "failed to set-DEV_HOSTNAME"; fi
 
     # (3) now that it has been checked, use DEV_HOSTNAME to set root_vg
     export root_vg="vg_${DEV_HOSTNAME}"
@@ -858,6 +823,7 @@ format_partitions() {
     done
 
     return 0
+
 }
 
 layout_cryptsetup_lvm() {
@@ -879,7 +845,7 @@ layout_cryptsetup_lvm() {
     fi
     case ${response:0:1} in
         [yY] )
-            maybe_format_warning || die "failed format_warning somehow"
+            if [ $INTERACTIVE ] ; then format_warning || die "failed format_warning somehow"; fi
             # ensure disk-write is complete before reporting
             ${myCmd} && sync || die "failed to execute ${myCmd}"
             ;;
@@ -1002,14 +968,14 @@ mount_and_populate() {
     right_status $TRUE
 
     # populate the chroot-prep script
-    message_n "populating ${chroot_prep_script} ..."
-    cp -a ${config_dir%/}/mkdev-files/chroot-prep ${root_dev_mountpoint%/}/${chroot_prep_script} || \
+    message_n "populating ${chroot-prep_script} ..."
+    cp -a ${config_dir%/}/mkdev-files/chroot-prep ${root_dev_mountpoint%/}/ || \
         die "failed to copy chroot-prep script to ${root_dev_mountpoint%/}/"
     right_status $TRUE
 
     # populate the chroot-commands file
-    message_n "populating ${chroot_command_textsfile} ..."
-    cp -a ${config_dir%/}/mkdev-files/chroot-commands ${root_dev_mountpoint%/}/${chroot_command_textsfile} || \
+    message_n "populating ${chroot-command_textsfile} ..."
+    cp -a ${config_dir%/}/mkdev-files/chroot-commands ${root_dev_mountpoint%/}/ || \
         die "failed to copy chroot-commands text file to ${root_dev_mountpoint%/}/"
     right_status $TRUE
 
@@ -1150,96 +1116,71 @@ write_mount_the_rest_script() {
     return 0
 }
 
-local_sanity_check() {
+sanity_check() {
     # check for insane or stupid stuff
-    # todo: validate all three template parts (sfdisk, blkid, lsblk) for consistency
-    # partition type vs format; device size; partition sizes
-    d_message "sanity check partition_count: [$partition_count]" 5
     [ $partition_count -gt 9 ] && die "invalid partition_count; ${PN} supports up to 9"
-    d_message "sanity check disksize_bytes: [$disksize_bytes] vs 32 * GiB [$((32 * $GiB))]" 5
     [ $disksize_bytes -lt $((32 * $GiB)) ] && die "rejecting device with less than 32GiB space"
-    return 0
-}
-
-maybe_luks_lvm_config() {
-    if [ $LUKS ] ; then
-        # validate luks container (appropriate partition, size)
-        # set device hostname (for vg naming)
-        # set luks pashphrase
-        # id and mount luks keying device and assign keyfile
-        luks_lvm_config || return 1
-    fi
-    return 0
-}
-
-maybe_layout_cryptsetup_lvm() {
-    if [ $LUKS ] ; then
-        layout_cryptsetup_lvm || return 1
-    else
-        message "luks lvm layout not requested; skipping"
-    fi
-    return 0
-}
-
-maybe_format_warning() {
-    if [ $INTERACTIVE ] ; then
-        format_warning || return 1
-    fi
     return 0
 }
 
 #-----[ main script ]---------------------------------------------
 checkroot
 separator "$(hostname)" "${PN}"
-# option -s|--status is the only one that can appear alone on the command line
-# otherwise there must be at least 4: -b <BOARD> -o <OUTPUTDEVCIE>
-arglist="$@"
-[ $# -eq 0 ] && E_message "null command line arguments" && usage
-[ $# -eq 1 ] && [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] && E_message "invalid argument(s) [$arglist]" && usage
-[ $# -lt 4 ] && E_message "invalid argument(s) [$arglist]" && usage
-
-# basic common approach - 
-# initialize variables (local function)
-# validate_status_file  (script_header_joetoo_extended)
-# process_cmdline (script_header_joetoo_extended)
-# validate_target which must follow process_cmdline (cb-common-functions)
-# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
-# sanity_check (cb-common-functions)
-# run_sequence (script_header_joetoo_extended)
-# (here, display config and local_sanity_check are included in command_sequence due to pre-requisite complexity)
+[ $# -ne 2 ] && usage
+myBOARD=$1
+myOUTPUTDEVICE=$2
 initialize_variables || die "failed initialize_variables"
-validate_status_file ${layoutstatusfile} || die "Failed to validate_status_file"
-
-d_echo "cmdline: $*" 5
-d_echo "processing cmdline args: $@" 5
-# over-ride configuration with commandline input
-separator ${PN} "(process_cmdline)"
-process_cmdline ${@} || usage
 
 # validate BOARD, assign TARGET, ARCH. etc.
 validate_target ${BOARD} || die "failed validate_target ${BOARD}"
+
 # validate OUTPUTDEVICE
 validate_device ${OUTPUTDEVICE} || die "failed to validate device [ ${OUTPUTDEVICE} ]"
-# now assign variables that depend on BOARD and/or OUTPUTDEVICE
-assign_BOARD_and_OUTPUTDEVICE_derived_variables || die "failed assign_BOARD_and_OUTPUTDEVICE_derived_variables"
 
-# Note: choice of config file selects templates (e.g. mmc.plain or nvme.luks)
+# choice of config file selects templates (e.g. mmc.plain or nvme.luks)
+# todo: validate all three template parts (sfdisk, blkid, lsblk)
+# number of partitions; partition type vs format; device size; partition sizes
+source_templates || die "failed source_templates"
 
-run_sequence ${layoutstatusfile} || die "Failed to run_sequence"
+d_do display_template_varlist 3 || die "failed to display_template_varlist"
 
-# possible to-do - create draft_fstab_generator_script
+if [ $LUKS ] ; then
+    # validate luks container (appropriate partition, size)
+    # set device hostname (for vg naming)
+    # set luks pashphrase
+    # id and mount luks keying device and assign keyfile
+    luks_lvm_config || die "failed luks_lvm_config"
+fi
+
+d_do display_configuration 1 || die "failed to display_configuration"
+
+sanity_check || die "failed sanity_check"
+
+if [ $INTERACTIVE ] ; then format_warning || die "failed format_warning somehow, oddly" ; fi
+
+layout_partitions || die "failed layout_partitions"
+
+format_partitions || die "failed format_partitions"
+
+if [ $LUKS ] ; then
+   layout_cryptsetup_lvm || die "failed layout_cryptsetup_lvm"
+else
+    message "luks lvm layout not requested; skipping"
+fi
+
+mount_and_populate || die "failed mount_and_populate"
+
+# possible to-do - create draft_fstab_script
 # run mount-the-rest, then use lsblk data to get uuid, mountpoint, fstype (use lookup to determine options and pass/dump)
 # for now, leave that for cb-flash-device, which needs to do that anyway
 
 echo
 message "layout complete"
 message "${BYon}The root device [${ROOT_DEVICE}] has been mounted for you at [${root_dev_mountpoint}]${Boff}"
-if [ ${partition_count} -gt 1 ] ; then
-    message "${BYon}You can mount the rest of the new fs with --"
-    message "  ${BGon}cd ${root_dev_mountpoint}; ./mount-the-rest.${DEV_HOSTNAME}${Boff}"
-    message "${BMon}Caution:${BYon} you should validate mount-the-rest.${DEV_HOSTNAME} before you run it${Boff}"
-    echo
-fi
+message "${BYon}You can mount the rest of the new fs with --"
+message "  ${BGon}cd ${root_dev_mountpoint}; ./mount-the-rest.${DEV_HOSTNAME}${Boff}"
+message "${BMon}Caution:${BYon} you should validate mount-the-rest.${DEV_HOSTNAME} before you run it${Boff}"
+echo
 message "${BYon}Note: you can use ${BGon}cb-flash-device <BOARD> <OUTPUTDEVICE>${Boff}"
 message "        to load the new device with data from a"
 message "        mounted (cross)build-target image file"
