@@ -45,47 +45,34 @@ message_n "restarting qemu-binfmt ..."
 #echo '-1' > /proc/sys/fs/binfmt_misc/arm #deregister wrong arm
 #echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\x00\xff\xfe\xff\xff\xff:/usr/local/bin/qemu-wrapper:' > /proc/sys/fs/binfmt_misc/register
 
-dirlist="proc dev var/db/repos/gentoo var/db/repos/joetoo \
-  var/db/repos/crossdev usr/src/linux lib/modules sys tmp dev/pts"
-
-for x in ${dirlist}
-do
-  if [ ! -d $x ] ; then
-    E_message_n "directory $x does not exist; creating it ..."
-    mkdir -pv $x && right_status $? || ( right_status $? && exit 1 )
-  else
-    echo "directory $x already exists; skipping mkdir"
-  fi
-done
-
-# for image chroot, don't mount repos - populate them if empty
-message_n "mounting proc for chroot target ..."
-mount -t proc none proc && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting dev for chroot target ..."
-mount -o bind /dev dev && right_status $? || ( right_status $? && exit 1 )
-message_n "mounting sys for chroot target ..."
-mount -o bind /sys sys && right_status $? || ( right_status $? && exit 1 )
 message_n "copying /etc/resolv.conf for chroot target ..."
 cp /etc/resolv.conf etc/resolv.conf && right_status $? || ( right_status $? && exit 1 )
-# not chrooted yet, use rel addresses for repos
+
+# moved "validate dirlist" to cb-common-functions
+# set dirlist for cb-chroot-target-image
+dirlist="proc dev sys tmp dev/pts"
+dirlist+=" chroot_sources_mountpoint lib/modules"
+dirlist+=" var/db/repos/gentoo var/db/repos/joetoo var/db/repos/crossdev"
+validate-chroot-mountpoint-dirlist || die "failed validate-chroot-mountpoint-dirlist for ${PN}"
+
+# moved to mounts for chroot cb-common-functions
+# for cb-chroot-target-image, don't mount tmp (it will have its own)
+mount_list="proc dev sys"
+mount-chroot-prep || die "failed mount-chroot-prep for ${PN}"
+
+# for cb-chroot-target-image, don't mount repos - populate them if empty
+
+# not chrooted yet, use rel addresses for repos (note cd /usr/${TARGET} above)
 [[ -z $(find var/db/repos/gentoo/ -mindepth 1) ]] && E_message "Note: var/db/repos/gentoo/ is empty; first login will attempt to sync it ..."
 [[ -z $(find var/db/repos/joetoo/ -mindepth 1) ]] && E_message "Note: var/db/repos/joetoo/ is empty; first login will attempt to sync it ..."
 [[ -z $(find usr/src/linux/ -mindepth 1) ]] && E_message "/usr/src/linux/ is empty; consider installing a kernel sources package ..."
 [[ -z $(find lib/modules/ -mindepth 1) ]] && E_message "/lib/modules/ s empty; consider installing a boot-firmware package ..."
-#mount -o bind /tmp tmp
-#mount -o bind /dev/pts dev/pts #only for X
  
 chroot . /bin/bash --login
  
-#umount dev/pts
-#umount tmp
 FLAGGED=$FALSE
-message_n "un-mounting sys from chroot target ..."
-umount sys && right_status $? && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting dev from chroot target ..."
-umount dev && right_status $? && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-message_n "un-mounting proc from chroot target ..."
-umount proc && right_status $? && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+umount-chroot-prep
+
 [[ "$FLAGGED" == "$TRUE" ]] && ( E_message "failed clean exit; note red flags above" && exit 1 )
 
 echo

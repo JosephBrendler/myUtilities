@@ -5,22 +5,23 @@
 #
 
 source /usr/sbin/script_header_joetoo
-message_n "sourcing BUILD ..."
-source /etc/crossbuild-tools/BUILD ; right_status $?
-message_n "sourcing BPN ..."
-source /etc/crossbuild-tools/BPN ; right_status $?
-source /usr/sbin/script_header_joetoo_extended
-
 VERBOSE=$TRUE
 verbosity=2
+
+d_message_n "sourcing BUILD ..." 3
+source /etc/crossbuild-tools/BUILD ; d_right_status $? 3
+d_message_n "sourcing BPN ..." 3
+source /etc/crossbuild-tools/BPN ; d_right_status $? 3
+source /usr/sbin/script_header_joetoo_extended
+
 
 PN=$(basename $0)
 
 # specify cross-build targets to look for
 TARGETS="aarch64-unknown-linux-gnu\|armv7a-unknown-linux-gnueabihf\|armv6j-unknown-linux-gnueabihf"
 
-message_n "sourcing cb-common-functions ..."
-source /usr/sbin/cb-common-functions ; right_status $?
+d_message_n "sourcing cb-common-functions ..." 3
+source /usr/sbin/cb-common-functions ; d_right_status $? 3
 
 usage() {
     E_message "${BRon}usage: ${BGon}${PN}${Boff}"
@@ -30,23 +31,84 @@ usage() {
 }
 
 show-dashboard() {
+    echo
+    # crossbuild stuff first (selected by '/usr/')
+    # for each active loopdevice, show backing file and mounts
+    separator ${PN} "(active crossbuild loop devices)"
+    show-loopdev-backfile-and-mounts "/usr/"
+
+    # now display anything else mounted on one of our TARGETs (e.g. proc, dev, sys for chroot...)
+    separator ${PN} "(other crossbuild mounts status)"
+    findmnt -lo SOURCE,TARGET | grep -v 'loop' | grep "${TARGETS}" |sed 's|^|    |'
+    echo
+
+    echo
+    separator ${PN} "(crossbuild repository status)"
+    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
+        repo_list="gentoo joetoo"
+        for repo in ${repo_list} ; do
+            repo_path="/usr/${TARGET}/var/db/repos/${repo}"
+            if [ -e ${repo_path} ] ; then
+                repo_info=$(file ${repo_path} | cut -d':' -f2)
+                echo -e "    ${LBon}${repo_path}${Boff} is a ${BWon}${repo_info}${Boff}"
+            else
+                echo -e "    ${LBon}${repo_path} ${BRon}does not exist${Boff}"
+            fi
+        done # repo_list
+        echo
+    done # TARGETS
+
+    # now do binhosts (selected by 'stockpile')
+    separator ${PN} "(active binhost loop devices)"
+    show-loopdev-backfile-and-mounts "stockpile"
+}
+
+show-loopdev-backfile-and-mounts() {
+    [ ! $# -eq 1 ] && E_message "argument null; ${FUNCNAME[0]} requires selector" && exit 1
+    selector="$1"
+    while read -r loopdev_LINE ; do
+        # identify the loop_dev name and its backing_file
+        loop_dev="$(echo $loopdev_LINE | cut -d' ' -f1)"
+        backing_file="$(echo $loopdev_LINE | cut -d' ' -f2)"
+        if [ ! -z "${loop_dev}" ] ; then
+            echo -e "    ${BMon}${loop_dev}${Boff} is backed by file: ${BWon}${backing_file}${Boff}"
+            # identify this loop_dev's mounts
+            while read -r mountpoint_LINE; do
+                loop_dev_part="$(echo $mountpoint_LINE | cut -d' ' -f1)"
+                mountpoint="$(echo $mountpoint_LINE | cut -d' ' -f2)"
+                echo -e "        ${BYon}${loop_dev_part}${Boff} is mounted at ${LBon}${mountpoint}${Boff}"
+            done <<<$(findmnt -lo SOURCE,TARGET | grep "${loop_dev}" | sort -h )
+        fi
+    done <<<$(losetup -lnO NAME,BACK-FILE | grep "${selector}" | sort -h )
+}
+
+OLD_show-dashboard() {
     # minimal start-point for dashboard info gathering
     echo
     separator ${PN} "(active crossbuild loop devices)"
     d_message "(running losetup -a | grep '/usr/' | sed 's|^|    |')" 3
-    losetup -a | grep '/usr/' | sed 's|^|    |'
-    echo
-    separator ${PN} "(active binhost loop devices)"
-    d_message "(running losetup -a | grep 'stockpile' | sed 's|^|    |')" 3
-    losetup -a | grep 'stockpile' | sed 's|^|    |'
+#    losetup -a | grep '/usr/' | sed 's|^|    |'
+    losetup -lnO NAME,BACK-FILE | grep '/usr/' | sed 's|^|    |'
     echo
     separator ${PN} "(active crossbuild mounts)"
     d_message "(running mount | grep 'loop' | grep \"${TARGETS}\" |sed 's|^|    |')" 3
     findmnt -lo SOURCE,TARGET | grep 'loop' | grep "${TARGETS}" |sed 's|^|    |'
     echo
+    separator ${PN} "(active binhost loop devices)"
+    d_message "(running losetup -a | grep 'stockpile' | sed 's|^|    |')" 3
+#    losetup -a | grep 'stockpile' | sed 's|^|    |'
+    losetup -lnO NAME,BACK-FILE | grep 'stockpile' | sed 's|^|    |'
+    echo
     separator ${PN} "(active binhost mounts)"
     d_message "(running mount | grep 'loop' | grep 'binhost' |sed 's|^|    |')" 3
     findmnt -lo SOURCE,TARGET  | grep 'loop' | grep 'binhost' |sed 's|^|    |'
+    echo
+    separator ${PN} "(crossbuild repository status)"
+    file /usr/${TARGET}/var/db/repos/gentoo
+    file /usr/${TARGET}/var/db/repos/joetoo
+    echo
+    separator ${PN} "(other crossbuild mounts status)"
+    findmnt -lo SOURCE,TARGET | grep -v 'loop' | grep "${TARGETS}" |sed 's|^|    |'
 }
 
 #-----[ main script ]---------------------------------------------

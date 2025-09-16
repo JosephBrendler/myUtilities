@@ -18,6 +18,9 @@ PN=$(basename $0)
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
 
+message_n "assigning user = joe (used to find/mount /home/<user>/xxx-sources)"
+user="joe" && right_status $? || die "failed to assign user"
+
 TARGET=""
 
 usage() {
@@ -87,51 +90,37 @@ validate-repo-mountpoints() {
     return 0
 }
 
-validate-dirlist() {
-    separator "${PN}" "(${FUNCNAME[0]})"
-    dirlist="proc dev usr/src/linux lib/modules sys tmp dev/pts"
-
-    # ensure all the needed filesystem structures are present
-    for x in ${dirlist}
-    do
-        message_n "examining $x"
-        if [ ! -d $x ] ; then
-          echo -en " (does not exist)"
-          mkdir -p $x >/dev/null 2>/dev/null && echo -en " (${BGon}created${Boff})" || die "failed to mkdir -pv $x"
-        else
-          echo -en " (${BGon}exists${Boff})"
-        fi
-        right_status $TRUE
-    done
-    return 0
-}
+# moved validate-dirlist to cb-common-functions
 
 mount-everything() {
     separator "${PN}" "(${FUNCNAME[0]})"
-    message_n "mounting proc for chroot target ..."
-    mount -t proc none /usr/${TARGET}/proc >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount /proc"
-    message_n "mounting dev for chroot target ..."
-    mount -o bind /dev /usr/${TARGET}/dev >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount /dev"
-    message_n "mounting var/db/repos/joetoo for chroot target ..."
-    mount -o bind /var/db/repos/joetoo /usr/${TARGET}/var/db/repos/joetoo >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount host repo joetoo"
-    message_n "mounting var/db/repos/gentoo for chroot target ..."
-    mount -o bind /var/db/repos/gentoo /usr/${TARGET}/var/db/repos/gentoo >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount host repo gentoo"
-    message_n "mounting usr/src/linux for chroot target ..."
-    mount -o bind /home/joe/raspi-sources/linux /usr/${TARGET}/usr/src/linux >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount host kernel sources"
-    message_n "mounting lib/modules for chroot target ..."
-    mount -o bind /lib/modules /usr/${TARGET}/lib/modules >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount host modules"
-    message_n "mounting sys for chroot target ..."
-    mount -o bind /sys /usr/${TARGET}/sys >/dev/null 2>&1 && \
-        right_status $? || die "failed to mount /sys"
+
+    # copy resolv.conf
     message_n "copying /etc/resolv.conf for chroot target ..."
     cp /etc/resolv.conf /usr/${TARGET}/etc/resolv.conf >/dev/null 2>&1 && \
         right_status $? || die "failed to copy resolv.conf"
+
+    # mount chroot-prep stuff
+    mount_list="proc dev sys lib/modules "
+    # and repos
+    mount_list+="var/db/repos/gentoo var/db/repos/joetoo"
+    mount-chroot-prep || die "failed mount-chroot-prep for ${PN}"
+
+    # mount kernel sources
+    message_n "looking for kernel sources"
+    case ${BOARD:0:2} in
+        "bc" ) SOURCES="raspi-sources" ;;
+        "rk" ) SOURCES="rockchip-sources" ;;
+        "fs" ) SOURCES="nxp-sources" ;;
+        "me" ) SOURCES="amlogic-sources" ;;
+        *    ) die "sources for board [$BOARD] not supported (yet)"
+    esac
+    [ ! -d /home/${user}/${SOURCES}/linux ] && echo && die "could not find kernel sources [/home/${user}/${SOURCES}/linux]"
+    right_status $TRUE
+    message_n "mounting usr/src/linux for chroot target ..."
+    mount -o bind /home/${user}/${SOURCES}/linux /usr/${TARGET}/usr/src/chroot-sources-mountpoint >/dev/null 2>&1 && \
+        right_status $? || die "failed to mount host kernel sources"
+
     #mount -o bind /tmp tmp
     #mount -o bind /dev/pts dev/pts #only for X
     return 0
@@ -142,20 +131,14 @@ umount-everything() {
     #umount /usr/${TARGET}/dev/pts
     #umount /usr/${TARGET}/tmp
     FLAGGED=$FALSE
-    message_n "un-mounting sys from chroot target ..."
-    umount /usr/${TARGET}/sys && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting lib/modules from chroot target ..."
-    umount /usr/${TARGET}/lib/modules && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting usr/src/linux from chroot target ..."
-    umount /usr/${TARGET}/usr/src/linux && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting var/db/repos/gentoo from chroot target ..."
-    umount /usr/${TARGET}/var/db/repos/gentoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting var/db/repos/joetoo from chroot target ..."
-    umount /usr/${TARGET}/var/db/repos/joetoo && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting dev from chroot target ..."
-    umount /usr/${TARGET}/dev && right_status $? || ( right_status $? && FLAGGED=$TRUE )
-    message_n "un-mounting proc from chroot target ..."
-    umount /usr/${TARGET}/proc && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    # chroot-prep stuff
+    mount_list="proc dev sys lib/modules "
+    # and repos (but not crossdev)
+    mount_list+=" var/db/repos/gentoo var/db/repos/joetoo"
+    # and kernel sources
+    mount_list+=" usr/src/chroot-sources-mountpoint"
+    umount-chroot-prep || FLAGGED=$TRUE
+
     [ $FLAGGED ] && return 1 || return 0
 }
 
@@ -180,7 +163,11 @@ message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
 
 validate-repo-mountpoints || die "failed to validate-repo-mountpoints"
 
-validate-dirlist || die "failed to validate-dirlist"
+# set dirlist for cb-chroot-target
+dirlist="proc dev sys tmp dev/pts"
+dirlist+=" chroot_sources_mountpoint lib/modules"
+#    dirlist+=" var/db/repos/gentoo var/db/repos/joetoo var/db/repos/crossdev"
+validate-chroot-mountpoint-dirlist || die "failed validate-chroot-mountpoint-dirlist for ${PN}"
 
 mount-everything || die "failed to mount-everything"
  
