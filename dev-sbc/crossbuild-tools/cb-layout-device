@@ -168,8 +168,7 @@ initialize_variables() {
     # initialize root_dev_mountpoint and related variables
     d_message_n "assigning root_dev_mountpoint = /mnt/gentoo ..." 2
     root_dev_mountpoint="/mnt/gentoo" ; d_right_status $? 2
-    d_message_n "assigning mount_the_rest_script = mount-the-rest.${DEV_HOSTNAME} ..." 2
-    mount_the_rest_script="mount-the-rest.${DEV_HOSTNAME}" ; d_right_status $? 2
+    # moved initialization of mount_the_rest_script to set-DEV_HOSTNAME
     d_message_n "assigning chroot_prep_script = chroot-prep ..." 2
     chroot_prep_script="chroot-prep" ; d_right_status $? 2
     d_message_n "assigning chroot_command_textsfile = chroot-commands ..." 2
@@ -518,7 +517,7 @@ set-DEV_HOSTNAME() {
         response="n"
         msg="${BYon}Would you like to select a different hostname for this system?\n${Boff}"
         msg+="(${BWon}y:${LBon} yes, select new ;"
-        msg+=" ${BWon}s:${LBon} skip, accept [${Boff}$DEV_HOSTNAME${LBon}] ;"
+        msg+=" ${BWon}s:${LBon} skip, accept [${Boff}${candidate2}${LBon}] ;"
         msg+=" ${BWon}n:${LBon} no, exit program${Boff})"
         new_prompt "${msg}"
         case ${response:0:1} in
@@ -536,6 +535,10 @@ set-DEV_HOSTNAME() {
         export DEV_HOSTNAME="${candidate}" || die "failed to set DEV_HOSTNAME"
         echo -n " (${DEV_HOSTNAME})" ; right_status $TRUE
     fi
+    # now use DEV_HOSTNAME to name the mount-the-rest.hostname script
+    d_message_n "assigning mount_the_rest_script = mount-the-rest.${DEV_HOSTNAME} ..." 2
+    mount_the_rest_script="mount-the-rest.${DEV_HOSTNAME}" ; d_right_status $? 2
+
     return 0
 }
 
@@ -993,6 +996,8 @@ mount_and_populate() {
     separator ${PN} "(${FUNCNAME[0]})"
     d_message "in ${FUNCNAME[0]}" 4
 
+    ERROR=$FALSE   # write_mount_the_rest_script can set this $TRUE
+
     # identify the name and UUID of the root device (LV if LUKS, part if not)
     identify_root_device || die "failed to identify_root_device for ${PN}"
     d_message "(${PN}) ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 5
@@ -1092,7 +1097,18 @@ write_mount_the_rest_script() {
     # (use blkid to get partitions again, lsblk template to get mountpoins)
     for selector in ${pnames} ; do
         mp=$(awk '$3 =="part" {print $4}' ${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template} | grep ${selector})
-        [ -z "${mp}" ] && E_message "no mountpoint for LABEL=$LABEL found in lsblk template" && ERROR=$TRUE
+        if [ -z "${mp}" ] ; then
+            # no mountpoint for this partition found in lsblk template
+            E_message "no mountpoint for LABEL=$LABEL found in lsblk template"
+            message_n "trying work-around"
+            # see if an easy fix can be applied
+            case $selector in
+                "root" ) mp="/"     ; echo -e -n " (assigned ${mp})" ; result=0 ;;
+                "boot" ) mp="/boot" ; echo -e -n " (assigned ${mp})" ; result=0 ;;
+                *      ) echo -e -n " (none yet available)" ; result=1 ; ERROR=$TRUE ;;
+            esac
+            right_status $result
+        fi
         mp_assignment="${selector}_mountpoint=${mp}"
         message_n "appending mountpoint assignment: [${mp_assignment}]"
         echo "${mp_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \

@@ -40,27 +40,48 @@ show-dashboard() {
     # now display anything else mounted on one of our TARGETs (e.g. proc, dev, sys for chroot...)
     separator ${PN} "(other crossbuild mounts status)"
     findmnt -lo SOURCE,TARGET | grep -v 'loop' | grep "${TARGETS}" |sed 's|^|    |'
-    echo
 
-    echo
-    separator ${PN} "(crossbuild repository status)"
-    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
-        repo_list="gentoo joetoo"
-        for repo in ${repo_list} ; do
-            repo_path="/usr/${TARGET}/var/db/repos/${repo}"
-            if [ -e ${repo_path} ] ; then
-                repo_info=$(file ${repo_path} | cut -d':' -f2)
-                echo -e "    ${LBon}${repo_path}${Boff} is a ${BWon}${repo_info}${Boff}"
-            else
-                echo -e "    ${LBon}${repo_path} ${BRon}does not exist${Boff}"
-            fi
-        done # repo_list
-        echo
-    done # TARGETS
+    # now display anything mounted on /mnt/gentoo (possible outputdevice)
+    show-gentoo-mounts
+
+   # display status of repositories in various /usr/${TARGET} directories
+    show-target-repositories-status
 
     # now do binhosts (selected by 'stockpile')
     separator ${PN} "(active binhost loop devices)"
     show-loopdev-backfile-and-mounts "stockpile"
+}
+
+show-gentoo-mounts() {
+    # display anything mounted on /mnt/gentoo (possible outputdevice)
+    separator ${PN} "(/mnt/gentoo mounts - possible OUTPUTDEVICEs)"
+    selector="/mnt/gentoo"
+    if [ ! -z "$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )" ] ; then 
+        while read -r findmnt_LINE ; do
+            eval $(echo $findmnt_LINE | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
+            d_message "src: $src   tgt: $tgt   fstype: $fstype" 5
+            echo -e "    ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
+        done <<<$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )
+    fi
+}
+
+show-target-repositories-status() {
+   # display status of repositories in various /usr/${TARGET} directories
+    separator ${PN} "(crossbuild repository status)"
+    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
+        repo_list="gentoo joetoo"
+        for repo in ${repo_list} ; do
+            if [ -d /usr/${TARGET}/var/db/repos ] ; then
+                repo_path="/usr/${TARGET}/var/db/repos/${repo}"
+                if [ -e ${repo_path} ] ; then
+                    repo_info=$(file ${repo_path} | cut -d':' -f2)
+                    echo -e "    ${LBon}${repo_path}${Boff} is a ${BWon}${repo_info}${Boff}"
+                else
+                    echo -e "    ${LBon}${repo_path} ${BRon}does not exist${Boff}"
+                fi  # full repo path
+            fi  # /var/db/repos
+        done # repo_list
+    done # TARGETS
 }
 
 show-loopdev-backfile-and-mounts() {
@@ -80,35 +101,6 @@ show-loopdev-backfile-and-mounts() {
             done <<<$(findmnt -lo SOURCE,TARGET | grep "${loop_dev}" | sort -h )
         fi
     done <<<$(losetup -lnO NAME,BACK-FILE | grep "${selector}" | sort -h )
-}
-
-OLD_show-dashboard() {
-    # minimal start-point for dashboard info gathering
-    echo
-    separator ${PN} "(active crossbuild loop devices)"
-    d_message "(running losetup -a | grep '/usr/' | sed 's|^|    |')" 3
-#    losetup -a | grep '/usr/' | sed 's|^|    |'
-    losetup -lnO NAME,BACK-FILE | grep '/usr/' | sed 's|^|    |'
-    echo
-    separator ${PN} "(active crossbuild mounts)"
-    d_message "(running mount | grep 'loop' | grep \"${TARGETS}\" |sed 's|^|    |')" 3
-    findmnt -lo SOURCE,TARGET | grep 'loop' | grep "${TARGETS}" |sed 's|^|    |'
-    echo
-    separator ${PN} "(active binhost loop devices)"
-    d_message "(running losetup -a | grep 'stockpile' | sed 's|^|    |')" 3
-#    losetup -a | grep 'stockpile' | sed 's|^|    |'
-    losetup -lnO NAME,BACK-FILE | grep 'stockpile' | sed 's|^|    |'
-    echo
-    separator ${PN} "(active binhost mounts)"
-    d_message "(running mount | grep 'loop' | grep 'binhost' |sed 's|^|    |')" 3
-    findmnt -lo SOURCE,TARGET  | grep 'loop' | grep 'binhost' |sed 's|^|    |'
-    echo
-    separator ${PN} "(crossbuild repository status)"
-    file /usr/${TARGET}/var/db/repos/gentoo
-    file /usr/${TARGET}/var/db/repos/joetoo
-    echo
-    separator ${PN} "(other crossbuild mounts status)"
-    findmnt -lo SOURCE,TARGET | grep -v 'loop' | grep "${TARGETS}" |sed 's|^|    |'
 }
 
 #-----[ main script ]---------------------------------------------
