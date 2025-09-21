@@ -1,105 +1,90 @@
 ## Do not delete or edit this file 
 ##   This file is sourced by the kernelupdate script to provide instructions
 ##   to users regarding how to get sources appropriate for their project
-
-# Remember, you must first have valid sources in your <project_root>/linux directory. Here are several ways -- 
+# Notes:
+# (1) dropped dom0 build support in favor of simple gentoo-kernel 20250507
 #
-# Manually clone raspberry-pi sources
-  Instructions for raspi-sources --
+# (2) Interactive support allows you to copy the ${manual_prefix} or ${make_me} string
+# and use it to manually issue the sequence of commands that accomplishes a kernel update
+#
+# (3) You must first have cloned/linked the kernel sources <project_root>/linux directory
+#
+# (4) you can either "seed" build dir with .config or interactively (manually)
+# make one with, e.g. --
+    eval ${make_me} imx_v8_defconfig
+#
+# (5) first run of kernelupdate for any given "model" creates directory structure
+#
+# To build cross compiler, start clean, and if stable versions are available use "-S" --
+    TARGET=armv7a-unknown-linux-gnueabihf
+    crossdev --clean --target ${TARGET}
+    crossdev -S -t ${TARGET}
+# If a specific version of part of the toolchain is needed use this --
+    crossdev --b ~2.40 --g ~12.3 --k ~2.37 --l ~6.1 --target ${TARGET}
+#
+# (6) If using it, ou may need to disable distcc first; run --
+    nodist_path
+# and preface crossdev commands above with FEATURES="${FEATURES} -distcc" --
+    FEATURES="${FEATURES} -distcc" crossdev -S -t ${TARGET}
+#
+# see README_* instructions on getting kernel sources, manual process, etc.
+# ( similar to the following example for raspi-sources )
 
-  # First, on build-workstation, remove any existing sources folder
-  cd /home/${user}/raspi-sources
-  rm -r linux
-  # ignore (deprecated) ./update-ebuild.sh   ## created for  EGIT based ebuild, but I'm now downloading, and making tarball myself
+  # First, on build-workstation, remove any existing sources link or folder
+    cd /home/${user}/raspi-sources
+    rm -r linux
+  # ignore (deprecated) ./update-ebuild.sh   ## created for  EGIT based ebuild,
+  # but we're now downloading, and making tarball directly
 
   # See https://www.raspberrypi.com/documentation/computers/linux_kernel.html#choosing_sources
-  # Manually clone raspberry-pi sources
   # browse https://www.kernel.org/ to determine latest stable version of kernel
   # browse https://github.com/raspberrypi/linux.git and note available branches and tags
-  branch_version=X.Z   ## e.g. 6.8
-  git clone --depth 1 --branch rpi-${branch_version}.y https://github.com/raspberrypi/linux.git linux-${branch_version}.y
+    branch_version=X.Z   ## e.g. 6.12
+    git clone --depth 1 --branch rpi-${branch_version}.y https://github.com/raspberrypi/linux.git linux-${branch_version}.y
 
-  cd linux-${branch_version}.y
-  kernelversion=$(make kernelversion) ; echo "kernelversion: $kernelversion"
-  cd ..
-  mv linux-${branch_version}.y linux-${kernelversion}-raspi
+    cd linux-${branch_version}.y
+    kernelversion=$(make kernelversion) ; echo "kernelversion: $kernelversion"
+    cd ..
+    mv linux-${branch_version}.y linux-${kernelversion}-raspi
 
   # then see README-tar-command
-  tar --exclude '.git*' -cvjpf linux-${kernelversion}-raspi.tbz2 linux-${kernelversion}-raspi
+    tar --exclude '.git*' -cvjpf linux-${kernelversion}-raspi.tbz2 linux-${kernelversion}-raspi
 
   # create link for kernelupdate use
-  ln -snf linux-${kernelversion}-raspi linux
+    ln -snf linux-${kernelversion}-raspi linux
 
   # scp to raspi56406 to publish
-  scp linux-${kernelversion}-raspi.tbz2 raspi56406:/home/${user}/
+    scp linux-${kernelversion}-raspi.tbz2 raspi56406:/home/${user}/
 
   # now go to raspi56406 and move (as root) from /home/${user}/ to /var/www/localhost/htdocs/raspi-sources/
-  sudo cp /home/${user}/linux-${kernelversion}-raspi.tbz2 /var/www/localhost/htdocs/raspi-sources/
-  chown root:root /var/www/localhost/htdocs/raspi-sources/linux-${kernelversion}-raspi.tbz2
-  sudo rm /home/${user}/linux-${kernelversion}-raspi.tbz2
+    cp /home/${user}/linux-${kernelversion}-raspi.tbz2 /var/www/localhost/htdocs/raspi-sources/
+    rm /home/${user}/linux-${kernelversion}-raspi.tbz2
 
   # manually update the new raspi-sources ebuild
-  cd /home/${user}/joetoo/sys-kernel/raspi-sources/
-  cp ${latest-version} ${new-version}
+    cd /home/${user}/joetoo/sys-kernel/raspi-sources/
+    cp ${latest-version} ${new-version}
 
   # now go to build-workstation and run (as root)
-  eselect kernelupdate list/set
+    eselect kernelupdate list/set
+
   # link the new sources and seed a .config file
-  cd ~/My_${model}_project/
-  ln -snf /home/${user}/raspi-sources/-<version> linux
-  cp kernelconfigs/<myconfig> build/${model}/.config
+    cd ~/My_${model}_project/
+    ln -snf /home/${user}/raspi-sources/-<version> linux
+    cp kernelconfigs/<myconfig> build/${model}/.config
+
   # now run kernelupdate
-  kernelupdate
+    kernelupdate
 
-# For rockchip kernels, wget a specific version (e.g. below, 6.4.12) from kernel.org --
-  # First remove any existing sources folder
-  cd /home/${user}/rockchip-sources
-  rm -r linux
-  # then clone the new sources (there is not update-ebuild.sh because the rockchip-sources ebuild
-  #   is based on explicitly named version archives, and thus uses ${PV} to avoid needing updates
+# For rockchip, amlogic, and nxp/freescale kernels, we browse to find the same specific kernel that
+# armbian is using, and use wget to download that. (the ebuild can do the same, so there is no
+# no need to copy a tarball to our server (raspi56406).  See instructions at README_*
 
-  # Just wget the current version (e.g. below, 6.4.12) from kernel.org --
-  # browse to https://cdn.kernel.org/   and note the latest release (or others)
-  wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.4.12.tar.xz
-  tar xvpf linux-6.4.12.tar.xz
-  cd ~/My_${model}_project/
-  ln -snf /home/${user}/rockchip-sources/-<version> linux
-  cp kernelconfigs/<myconfig> build/${model}/.config
-    # (or manually use make_model to make <model>_defconfig and create an initial .config file)
-    # Inspect, confirm the /etc/kernelupdate-embedded/kernelupdate-embedded.conf
-    #   symlink points to the right config file
-  kernelupdate
-
-  # manually update the new rockchip-sources ebuild
-  cd /home/${user}/joetoo/sys-kernel/rockchip-sources/
-  cp ${latest-version} ${new-version}
-
-# Clone from kernel.org, Github's torvalds/linux only mirrors the
-# master branch, not the LTS ones (see https://github.com/torvalds/linux/branches).
-  cd /usr/aarch64-unknown-linux-gnu/usr/src
-  git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-  cd linux
-  git branch --list --remotes
-  git branch --show-current
-  git checkout linux-<new_LTS_version>.y
-
-# Fetch Tinkerboard kernel config
-  curl -L https://raw.githubusercontent.com/TinkerBoard/debian_kernel/develop/arch/arm/configs/miniarm-rk3288_defconfig '\' 
-    -o arch/arm/configs/miniarm-rk3288_defconfig
-  cd ~/My_project/build//
-  ln -snf /usr/aarch64-unknown-linux-gnu/usr/src/linux-<version> linux
-  cd ../../; cp kernelconfigs/<myconfig> build/<model>/.config
-  # (or manually use make_model to make <model>_defconfig and create an initial .config file)
-  # Inspect, confirm the /etc/kernelupdate/kernelupdate.conf
-  #   symlink points to the right config file
-  kernelupdate
-
-# Alternatively, you might be able to 
-  emerge sys-kernel/gentoo-sources or
-  emerge sys-kernel/raspberrypi-sources 
-  ln -snf /usr/src/linux-<identifier> linux
-  ... to link to /usr/source/linux
-  ( IF gentoo-sources can make dtbs [which as of 6.5.1 it cannot] )
-
-# You might even be able to cross-build sys-kernel/gentoo-kernel ...
-  I haven't tried that yet
+# see also --
+# https://www.raspberrypi.com/documentation/computers/linux_kernel.html
+# https://www.kernel.org/
+# https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/
+# https://github.com/nxp-imx/linux-imx
+# https://github.com/libre-computer-project/libretech-linux.git
+# https://github.com/raspberrypi/linux
+# https://github.com/rockchip-linux
+# https://github.com/rockchip-linux/kernel

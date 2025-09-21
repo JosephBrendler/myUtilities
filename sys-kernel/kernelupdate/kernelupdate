@@ -3,29 +3,29 @@
 # adapted from kernelupdate-dom0 of October 2021,
 #   makeU-distrib-tar of February 2022, and
 #   installU_onServer of February 2022
-# generalized from kernelupdate-embedded, to build kernels for SBCs *or xen domU May 2024
-# dropped dom0 build support in favor of simple gentoo-kernel 20250507
+# generalized from kernelupdate-embedded, to (cross)build kernels for any platform
+# including SBCs, big amd64 machines, xen domU PVs
 #
-# 24 July 2024 - first test edit in vscode (rewrite for non-interactive option, etc)
+# Notes:
+# (1) dropped dom0 build support in favor of simple gentoo-kernel 20250507
 #
-# Interactive support allows you to copy the ${manual_prefix} string and use it to
+# (2) Interactive support allows you to copy the ${manual_prefix} string and use it to
 #   manually issue the sequence of commands that accomplishes a kernel update
-#   for (e.g.) tinkerboard
 #
-# this process assumes you have already cloned/linked the kernel sources
-#   and seeded build dir with .config
+# (3) this whole process assumes you have already cloned/linked the kernel sources
 #
-# first run creates directory structure
+# (4) you can either "seed" build dir with .config or interactively (manually)
+#   make one with, e.g. # eval ${make_me} imx_v8_defconfig
 #
-# To build cross compiler, start clean --
+# (5) first run of kernelupdate for any given "model" creates directory structure
+#
+# To build cross compiler, start clean, and if stable versions are available use "-S" --
 #   TARGET=armv7a-unknown-linux-gnueabihf
 #   crossdev --clean --target ${TARGET}
-#
-# As of 20250507 all supported boards have stable toolchain available, so use "-S" --
 #   crossdev -S -t ${TARGET}
 # If a specific version of part of the toolchain is needed use this --
 #   crossdev --b ~2.40 --g ~12.3 --k ~2.37 --l ~6.1 --target ${TARGET}
-# may need to first run nodist_path and preface above with FEATURES=${FEATURES}" -distcc"
+# may need to first run "nodist_path" and preface above with "FEATURES=${FEATURES} -distcc"
 #
 # see README_* instructions on getting kernel sources, manual process, etc.
 #
@@ -39,7 +39,8 @@ source /usr/sbin/script_header_joetoo
 d_message_n "sourcing make.conf to setting PORTDIR, PKGDIR, DISTDIR ..." 1
 source /etc/portage/make.conf ; d_right_status $? 1
 
-# default configuration (/etc/${PN}.conf will over-write and override)
+# default configuration 
+# (config at /etc/${PN}.conf will overwrite/override this, and cmdline will override that )
 VERBOSE=$TRUE
 verbosity=1
 
@@ -51,7 +52,7 @@ d_right_status $TRUE 1
 [[ -e /etc/${PN}/${PN}.conf ]] && CONF_DIR="/etc/${PN}" || die "CONF_DIR [/etc/${PN}/${PN}.conf] does not exist"
 
 # source BUILD and BPN, then source script_header_joetoo_extended
-# (so the latter gets local.usage, local.cmdline_arguments, located by BPN
+# ( so the latter can get local.usage, local.cmdline_arguments, etc. which it locates at /etc/${BPN}/ )
 d_message_n "sourcing BUILD and BPN" 1
 source ${CONF_DIR%/}/BPN || die "failed to source BPN"
 source ${CONF_DIR%/}/BUILD || die "failed to source BUILD"
@@ -79,7 +80,8 @@ copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
 
 varlist="${config_parmlist} ${devel_parmlist} ${output_parmlist} ${copypaste_parmlist}"
 
-# set default values (override later with .conf and/or command line)
+#-----[ edit this section to set default values ]------------------------------------
+# ( override later with .conf and/or command line )
 user="joe"
 makeopts=" -j9 -l5"
 features=" -userpriv -distcc"
@@ -102,18 +104,15 @@ answer=""
 newanswer=""
 SSH_AUTH_SOCK="/home/${user}/.ssh/ssh-agent.sock"
 
-# source (eselected) ${PN}.conf in order to load customized settings
-#   check each setting below to assign, if needed
-#   Note: ${PN}.conf in ${CONF_DIR%/}/ will override one in pwd
-
+#-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
 message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
 source ${CONF_DIR%/}/${PN}.conf || die "failed to source ${CONF_DIR%/}/${PN}.conf"
 right_status $TRUE
 
 #  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
 message "${BMon}About to source ${BGon}setnodistpath${Boff} ..."
-source /usr/sbin/setnodistpath || die "failed to source /usr/sbin/setnodistpath"
-echo -e "    ${BMon}PATH: ${BWon}${PATH}${Boff}"
+source /usr/bin/setnodistpath || die "failed to source /usr/bin/setnodistpath"
+echo -e "   ${BMon}(readable) PATH includes: ${BWon}${PATH}${Boff}" | sed 's|:|\ :\ |g'
 echo
 
 # append "/" to dtb_folder and overlay_folder if missing and not null
@@ -205,6 +204,7 @@ d_message "done setup and auto-configure" 3
 # 20250507 - dropped dom0 build (use gentoo-kernel w savedconfig instead)
 # 20250920 - started rewrite to use script_header_joetoo_extended run_sequence and cmdline processing
 command_sequence=(
+'cache_commit_signing_key'
 'backup_config'
 'make_mrproper'
 'cp -v ${config_dir%/}/.config.bak ${model_config}'
@@ -224,6 +224,7 @@ command_sequence=(
 )
 
 msg1_sequence=(
+'cache commit-signing key'
 'back-up config'
 'clean with make mrproper'
 'restore backup .config file'
@@ -243,6 +244,7 @@ msg1_sequence=(
 )
 
 msg2_sequence=(
+'caching commit-signing key'
 'backing-up config'
 'cleaning with make mrproper'
 'restoring backup .config file'
@@ -267,6 +269,13 @@ starting_step=0
 stopping_step=${#command_sequence[@]}
 
 #-----[ functions ]--------------------------------------------------
+
+cache_commit_signing_key() {
+    sudo -u ${user} echo "test" > /home/${user}/cachetest
+    sudo -u ${user} gpg --clearsign /home/${user}/cachetest
+    sudo -u ${user} rm /home/${user}/cachetest.asc;
+}
+
 warn_oldconfig() {
   message "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
   message "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
