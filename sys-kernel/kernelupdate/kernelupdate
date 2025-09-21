@@ -20,6 +20,7 @@
 # To build cross compiler, start clean --
 #   TARGET=armv7a-unknown-linux-gnueabihf
 #   crossdev --clean --target ${TARGET}
+#
 # As of 20250507 all supported boards have stable toolchain available, so use "-S" --
 #   crossdev -S -t ${TARGET}
 # If a specific version of part of the toolchain is needed use this --
@@ -34,13 +35,7 @@
 #---[ execute setup and initialization, as required ]-------------------------
 source /usr/sbin/script_header_joetoo
 
-# local variables
-BUILD="0"
-
-#eval $( grep ^PORTDIR /etc/portage/make.conf )
-#eval $( grep ^PKGDIR /etc/portage/make.conf )
-#eval $( grep ^DISTDIR /etc/portage/make.conf )
-# source make.conf b/c we can't do it this way for systems that set e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
+# source make.conf b/c we can't use e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
 d_message_n "sourcing make.conf to setting PORTDIR, PKGDIR, DISTDIR ..." 1
 source /etc/portage/make.conf ; d_right_status $? 1
 
@@ -48,12 +43,46 @@ source /etc/portage/make.conf ; d_right_status $? 1
 VERBOSE=$TRUE
 verbosity=1
 
-PN=$(basename $0)
+d_message_n "assigning PN = $(basename $0)" 1
+PN=$(basename $0) || die "failed to assign PN"
+d_right_status $TRUE 1
 
-# initialize local variables to default values (override later with .conf and/or command line)
+# identify CONF_DIR (normally /etc/${PN}/${PN}.conf)
+[[ -e /etc/${PN}/${PN}.conf ]] && CONF_DIR="/etc/${PN}" || die "CONF_DIR [/etc/${PN}/${PN}.conf] does not exist"
+
+# source BUILD and BPN, then source script_header_joetoo_extended
+# (so the latter gets local.usage, local.cmdline_arguments, located by BPN
+d_message_n "sourcing BUILD and BPN" 1
+source ${CONF_DIR%/}/BPN || die "failed to source BPN"
+source ${CONF_DIR%/}/BUILD || die "failed to source BUILD"
+debug_do 'echo -e -n " (BUILD: $BUILD ; BPN: $BPN)"' 1
+d_right_status $TRUE 1
+d_message_n "sourcing /usr/sbin/script_header_joetoo_extended" 1
+source /usr/sbin/script_header_joetoo_extended || die "failed to source /usr/sbin/script_header_joetoo_extended"
+d_right_status $TRUE 1
+
+# identify local variables by section, to make it easier to display configuration
+config_parmlist="PN BPN bool.INTERACTIVE bool.RESUME starting_step stopping_step bool.VERBOSE"
+config_parmlist+=" verbosity lv.status_file CONF_DIR user"
+config_parmlist+=" makeopts features arch cross_compile model lv.model_config"
+config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
+
+devel_parmlist="lv.my_devel_dir lv.devel_dir lv.my_devel_dir_credentials lv.my_ebuild_dir"
+devel_parmlist+=" lv.my_ebuild_dir_credentials lv.ebuild_dir lv.host_dir SSH_AUTH_SOCK"
+devel_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
+devel_parmlist+=" kernel_basename lv.kernel_image_name"
+
+output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
+output_parmlist+=" lv.publish_tarball_cmd_file lv.publish_ebuild_cmd_file"
+
+copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
+
+varlist="${config_parmlist} ${devel_parmlist} ${output_parmlist} ${copypaste_parmlist}"
+
+# set default values (override later with .conf and/or command line)
 user="joe"
 makeopts=" -j9 -l5"
-features=" -userpriv -distcc -distcc-pump"
+features=" -userpriv -distcc"
 arch="arm"
 cross_compile="armv7a-unknown-linux-gnueabihf-"
 model="rk3288-tinker-s"
@@ -61,49 +90,38 @@ image="zImage"
 kernel="kernel7.img"
 dtb_folder="rockchip"
 overlay_folder="rockchip/overlay"
-build_root="/home/joe/My_${model}_project"
-my_devel_dir="/home/joe/myUtilities/sys-kernel"
-my_devel_dir_credentials="/home/joe/myUtilities/.git/.credentials"
-my_ebuild_dir="/home/joe/joetoo/sys-kernel"
-my_ebuild_dir_credentials="/home/joe/joetoo/.git/.credentials"
+build_root="/home/${user}/My_${model}_project"
+my_devel_dir="/home/${user}/myUtilities/sys-kernel"
+my_devel_dir_credentials="/home/${user}/myUtilities/.git/.credentials"
+my_ebuild_dir="/home/${user}/joetoo/sys-kernel"
+my_ebuild_dir_credentials="/home/${user}/joetoo/.git/.credentials"
 host_dir=${build_root%/}/"domU_kernel_images"
 INTERACTIVE=${FALSE}
 RESUME=${FALSE}
-starting_step=0
 answer=""
 newanswer=""
-SSH_AUTH_SOCK="/home/joe/.ssh/ssh-agent.sock"
+SSH_AUTH_SOCK="/home/${user}/.ssh/ssh-agent.sock"
 
-# previous version loaded ssh keys here, but they were later unaccessible to other shells
-# this now build into "publish" script
+# source (eselected) ${PN}.conf in order to load customized settings
+#   check each setting below to assign, if needed
+#   Note: ${PN}.conf in ${CONF_DIR%/}/ will override one in pwd
+
+message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
+source ${CONF_DIR%/}/${PN}.conf || die "failed to source ${CONF_DIR%/}/${PN}.conf"
+right_status $TRUE
 
 #  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
-message "${BMon}About to source ${BGon}setnodistpath${BMon} ..."
-source /usr/local/sbin/setnodistpath && echo "PATH:  $PATH"
+message "${BMon}About to source ${BGon}setnodistpath${Boff} ..."
+source /usr/sbin/setnodistpath || die "failed to source /usr/sbin/setnodistpath"
+echo -e "    ${BMon}PATH: ${BWon}${PATH}${Boff}"
 echo
-
-# source the current build number, assuming it was properly generated during ebuild deployment
-if [[ -e /etc/${PN}/BUILD ]] ; then
-  message_n "sourcing BUILD ..."
-  source /etc/${PN}/BUILD
-  right_status $?
-fi
-
-# source ${PN}.conf in order to load customized settings
-#   check each setting below to assign, if needed
-#   Note: ${PN}.conf in /etc/${PN}/ will override one in pwd
-
-[[ -e ${PN}.conf ]] && CONF_DIR="$(pwd)"
-[[ -e /etc/${PN}/${PN}.conf ]] && CONF_DIR="/etc/${PN}"
-message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
-source ${CONF_DIR%/}/${PN}.conf; right_status $?
 
 # append "/" to dtb_folder and overlay_folder if missing and not null
 #( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
 #( [[ ${#overlay_folder} -gt 0 ]] && [[ ! "${overlay_folder: -1}" == "/" ]] ) && overlay_folder+="/"
 # don't need these, since I adopted ${xxx_dir%/}/ instead
 
-# you should not need to edit anything below this point
+#-----[ you should not need to edit anything below this point ]---------------------------------------
 sources_dir="${build_root%/}/linux"
 config_dir="${build_root%/}/kernelconfigs"
 build_dir="${build_root%/}/build"
@@ -114,7 +132,7 @@ kernel_basename="linux-${model}_joetoo_kernelimage"
 distrib_dir="${model_dir%/}/tmp/distrib"
 lib_dir="${distrib_dir%/}/lib"
 boot_dir="${distrib_dir%/}/boot"
-module_dir=""  # to be set after make modules_install
+module_dir="<TBD>"  # to be set after make modules_install
 
 # create the build directory structure if it does not exist (-p makes parents)
 [[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown ${user}:${user} "${build_root}"
@@ -185,6 +203,7 @@ d_message "done setup and auto-configure" 3
 #            (found that the consolidated ebuild doesn't work until ALL of the candidate kernels are actually built)
 # 20250112 - put back 'publish_ebuild' for all but dom0; now using separate linux-${model_joetoo-kernelimage.${PV}.ebuilds
 # 20250507 - dropped dom0 build (use gentoo-kernel w savedconfig instead)
+# 20250920 - started rewrite to use script_header_joetoo_extended run_sequence and cmdline processing
 command_sequence=(
 'backup_config'
 'make_mrproper'
@@ -203,7 +222,49 @@ command_sequence=(
 'publish_tarball'
 'publish_ebuild'
 )
+
+msg1_sequence=(
+'back-up config'
+'clean with make mrproper'
+'restore backup .config file'
+'warn about oldconfig'
+'do eval ${make_me} oldconfig'
+'do eval ${make_me} prepare'
+'do eval ${make_me} menuconfig'
+'save new config'
+'do eval ${make_me}'
+'clean output directories'
+'install the kernel in package'
+'install modules in package'
+'install dtbs in package'
+'make package tarball'
+'publish package tarball'
+'publish package ebuild'
+)
+
+msg2_sequence=(
+'backing-up config'
+'cleaning with make mrproper'
+'restoring backup .config file'
+'warning about oldconfig'
+'doing eval ${make_me} oldconfig'
+'doing eval ${make_me} prepare'
+'doing eval ${make_me} menuconfig'
+'saving new config'
+'doing eval ${make_me}'
+'cleaning output directories'
+'installing the kernel in package'
+'installing modules in package'
+'installing dtbs in package'
+'making package tarball'
+'publishing package tarball'
+'publishing package ebuild'
+)
 d_message "done setting command sequence" 3
+
+# set default starting and stopping step (override w cmdline)
+starting_step=0
+stopping_step=${#command_sequence[@]}
 
 #-----[ functions ]--------------------------------------------------
 warn_oldconfig() {
@@ -311,7 +372,11 @@ install_modules()
   eval "${make_me} INSTALL_MOD_PATH=${distrib_dir} modules_install"
 
   # identify the new module directory
-  module_dir=$( basename $( find ${lib_dir%/}/modules/  -maxdepth 1  -iname ${version_number}*  -type d ) )
+  message_n "re-setting module_dir"
+  module_dir=$( basename $( find ${lib_dir%/}/modules/  -maxdepth 1  -iname ${version_number}*  -type d ) ) || \
+      die "failed to assign module_dir"
+  echo -e -n " (${module_dir})"
+  right_status $TRUE
 
   # fix the build and source symlinks
   message "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
@@ -384,9 +449,9 @@ publish_tarball() {
 
     # if the version 0.0.0 tarball for this package does not exist, create it and upload to github repo
     if [ ! -e ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ] ; then
-        # use the README-instructions file in /etc/${PN} as content for the dummy tarball 0.0.0
+        # use the README-instructions file in ${CONF_DIR%/} as content for the dummy tarball 0.0.0
         message "creating dummy tarball ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ..."
-        tar -cvjpf ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 /etc/${PN}/README-instructions
+        tar -cvjpf ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ${CONF_DIR%/}/README-instructions
         message_n "changing ownership for upload ..."
         chown -R ${user}:${user} ${devel_dir%/}/ ; right_status $?
         publish_tarball_command_sequence+=("git add ${kernel_basename}-0.0.0.tar.bz2")
@@ -429,7 +494,7 @@ publish_tarball() {
     separator "contents of ${publish_tarball_cmd_file}... " $(hostname)
     cat ${publish_tarball_cmd_file}
     message_n "setting permissions on ${publish_tarball_cmd_file}... "
-    chown joe:joe ${publish_tarball_cmd_file} && \
+    chown ${user}:${user} ${publish_tarball_cmd_file} && \
     chmod +x ${publish_tarball_cmd_file} ; right_status $?
 
     # now actually execute the publication by running the publication command file
@@ -596,7 +661,7 @@ publish_ebuild() {
     cat ${publish_ebuild_cmd_file}
     echo
     message_n "setting permissions on ${publish_ebuild_cmd_file}... "
-    chown joe:joe ${publish_ebuild_cmd_file} && \
+    chown ${user}:${user} ${publish_ebuild_cmd_file} && \
     chmod +x ${publish_ebuild_cmd_file} ; right_status $?
 
     # now actually execute the publication by running the publication command file
@@ -604,66 +669,26 @@ publish_ebuild() {
     sudo -u ${user} ${publish_ebuild_cmd_file}
 }
 
-usage() {
-  N=${#command_sequence[@]}
-  separator "usage" "${PN}"
-  E_message "Usage: ${PN} [options]"
-  message "  -i | --interactive --> run interactively; confirm execution of each step"
-  message "  -n | --noninteractive --> run non-interactively; proceed automatically with each step"
-  message "  -s | --status  --> return status (next step, step_number)"
-  message "  -r | --resume  --> resume proccessing (with next step, from statusfile)"
-  message "  -v | --verbose --> increase verbosity"
-  message "  -q | --quiet   --> decrease verbosity"
-  message "  -[0-${N}]      -->  save ${N} to status file and resume proccessing at step ${N}"
-  echo
-  message "${BMon}Note: single-character options may be combined. For example -${Boff}"
-  message "  ${BGon}${PN} --verbose -nqr11${Boff}"
-  message "  ${BYon}would ressume non-interactively at step 11 with normal verbosity${Boff}"
-  echo
-  message "${BYon}Command sequence steps:${Boff}"
-  for ((s=0; s<${#command_sequence[@]}; s++))
-  do
-    echo -e "    ${LBon}${s}: ${command_sequence[$s]}${Boff}"
-  done
-  exit
-}
-
-new_prompt()        # set external variable $newanswer based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read newanswer; # '=~' not in busybox
-while ! expr "${newanswer:0:1}" : [yYnNsS] >/dev/null;  # newanswer not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Yes/no/skip|Yns]: " && read newanswer; done; }
 
 display_config()
 {
-varlist="CONF_DIR arch cross_compile model image kernel dtb_folder overlay_folder build_root"
-varlist+=" INTERACTIVE RESUME starting_step VERBOSE verbosity version_number sources_dir"
-varlist+=" config_dir build_dir model_dir model_config distrib_dir lib_dir boot_dir host_dir"
-varlist+=" kernel_basename kernel_image_name devel_dir ebuild_dir status_file"
 longest=$(get_longest ${varlist})
 
 message "${BMon}Current Configuration:${Boff}"
 display_vars ${longest} "CONF_DIR"
+echo
 separator "From Config File and/or command line" $(hostname)
-parmlist="arch cross_compile model image kernel dtb_folder overlay_folder build_root"
-parmlist+=" bool.INTERACTIVE bool.RESUME starting_step bool.VERBOSE verbosity"
-display_vars ${longest} ${parmlist}
-
+display_vars ${longest} ${config_parmlist}
 echo
 separator "Auto-configured" $(hostname)
-parmlist=" version_number sources_dir"
-parmlist+=" config_dir build_dir model_dir model_config distrib_dir lib_dir boot_dir host_dir"
-parmlist+=" kernel_basename kernel_image_name devel_dir ebuild_dir status_file"
-display_vars ${longest} ${parmlist}
+display_vars ${longest} ${devel_parmlist}
 echo
-
-varlist="publish_tarball_cmd_file publish_ebuild_cmd_file"
-longest=$(get_longest ${varlist})
-parmlist="${varlist}"
-display_vars ${longest} ${parmlist}
+separator "Output Information" $(hostname)
+display_vars ${longest} ${output_parmlist}
 echo
-myvar="make_me"
-display_vars ${#myvar} "${myvar}"
+separator "Copy/Paste Information" $(hostname)
+cplongest=$(get_longest ${copypaste_parmlist})
+display_vars ${cplongest} ${copypaste_parmlist}
 echo
 message "${Mon}If building manually${Boff} --"
 message "  ${Mon}first${Boff} cd ${sources_dir}"
@@ -687,7 +712,7 @@ echo
 }
 
 make_sources_message() {
-# pull text from /etc/${PN}/README-instructions
+# pull text from ${CONF_DIR%/}/README-instructions
 # ignore lines beginning with two #s (i.e. "##")
 # echo lines beginning with one "#" in light blue
 # ehco other lines in bright white
@@ -707,152 +732,6 @@ do
     echo -e ${BWon}${line}${Boff}        # emphasize in bright white only the lines that do not begin with "#"
   fi
 done < ${CONF_DIR%/}/README-instructions
-}
-
-process_command_line() {
-# process command line arguments (for now only -x/--exclude option can have argument(s))
-last=""
-#d_message "processing command line with argument(s): [ ${*} ]" 2
-d_message "processing command line with argument(s): [ ${@} ]" 2
-# shift each argument into position $1 and examine it
-#   process the argument or processit with its own arguments
-while [ ! -z "$1" ]
-do
-  d_message "arg1 = [ $1 ]" 3
-  # if arg begins with a single dash, process it alone
-  if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
-    d_message "processing [ $1 ] alone as single-dash argument" 3
-    process_argument $1
-    shift
-  # if arg begins with a double dash, process it alone
-  elif [ "${1:0:2}" == "--" ] ; then
-    d_message "processing [ $1 ] alone as double-dash argument" 3
-    process_argument $1
-    shift
-  else
-    d_message "does not start with - or --" 3
-    usage; exit
-  fi
-done
-d_message "done with process_command_line" 2
-}
-
-process_argument() {
-  d_message "about to process argument(s): [ $* ]" 1
-  d_message "1: [ $1 ], 2: [ $2 ]" 2
-  # process command line argument (must be one of the following)
-  [ ! -z "$1" ] && case "$1" in
-    "-"[sS] | "--status"         )
-      # display status
-      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
-      read starting_step < ${status_file};
-      message "${BWon}Status: Step $(($starting_step - 1)) complete; next step would be [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
-      exit;
-      ;;
-    "-"[rR] | "--resume"         )
-      # resume at stored step unless that is overridden by a new start # (below)
-      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
-      RESUME=${TRUE}
-      read starting_step < ${status_file};
-      message "${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
-      ;;
-    "-"[iI] | "--interactive"    )
-      # interactive
-      INTERACTIVE=${TRUE};
-      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
-      ;;
-    "-"[nN] | "--noninteractive" )
-      # non-interactive
-      INTERACTIVE=${FALSE}
-      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
-      ;;
-    "-"[qQ] | "--quiet"          )
-      # decrease verbosity
-      [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
-      message "${BYon}decreased verbosity: ${verbosity}${Boff}"
-      ;;
-    "-"[vV] | "--verbose"          )
-      # increase verbosity
-      [[ ${verbosity} -lt 6 ]] && let verbosity++
-      VERBOSE=${TRUE}
-      message "${BYon}increased verbosity: ${verbosity}${Boff}"
-      ;;       # note: "numeric" args like -4 should fall through to this default
-    *                            )
-    process_compound_arg $1
-      ;;
-  esac
-  d_message "done with process_argument" 1
-}
-
-process_compound_arg()
-{
-d_message "about to process compound argument(s): [ $* ]" 1
-# must begin with a single dash
-[ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-# must not begin with two dashes (would have been picked in process_argument)
-[ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && usage && exit 1
-# strip leading dash(es)
-myargs=${1##-}
-# handle remaining characters in sequence
-while [ -n "${myargs}" ]
-do
-  #handle one character at at time, from the left
-  case ${myargs:0:1} in
-    [sS] )
-      # display status
-      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
-      read starting_step < ${status_file};
-      message "${BWon}Status: Step $(($starting_step - 1)) complete; next step would be [ ${BMon}$starting_step${BWon} ] ( ${BGon}${command_sequence[${starting_step}]}${BWon} )${Boff}";
-      exit;
-      ;;
-    [rR] )
-      # resume at stored step unless that is overridden by a new start # (below)
-      message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}"
-      RESUME=${TRUE}
-      read starting_step < ${status_file};
-      message "${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
-      ;;
-    [0-9] )
-      # currently there are steps 0-13; if the next char is also numeric, append it and "shift"
-      RESUME=${TRUE}
-      starting_step="${myargs:0:1}";
-      if [[ "${myargs:1:1}" == [0-9] ]] ; then
-        starting_step="${myargs:0:2}";
-        myargs=${myargs:1}
-      fi
-      message "${BYon}Saving next step ${BWon}${starting_step}${BYon} to status file [${Boff}${status_file}${BYon}]${Boff}"
-      echo ${starting_step} > ${status_file};
-      message "${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]--${Boff}";
-      ;;
-    [iI] )
-      # interactive
-      INTERACTIVE=${TRUE};
-      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
-      ;;
-    [nN] )
-      # non-interactive
-      INTERACTIVE=${FALSE}
-      message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
-      ;;
-    [qQ] )
-      # decrease verbosity
-      [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && VERBOSE=${FALSE}
-      message "${BYon}decreased verbosity: ${verbosity}${Boff}"
-      ;;
-    [vV] )
-      # increase verbosity
-      [[ ${verbosity} -lt 6 ]] && let verbosity++
-      VERBOSE=${TRUE}
-      message "${BYon}increased verbosity: ${verbosity}${Boff}"
-      ;;       # note: "numeric" args like -4 should fall through to this default
-    *   ) E_message "${E_BAD_ARGS}" && usage && exit 1
-  esac
-  #strip first char from myargs (i.e. "shift" one character)
-  myargs=${myargs:1}
-done
-dmseg "done with process_compount_arg" 1
 }
 
 sanity_check() {
@@ -891,57 +770,21 @@ else
 fi
 }
 
-run_logical_step_sequence()
-{
-for ((step_number=${starting_step}; step_number<${#command_sequence[@]}; step_number++))
-do
-  d_message "Writing step_number [ $step_number ] to status_file ( $status_file )" 2
-  echo $step_number > ${status_file}
-  # skip device tree steps for domU builds
-  if [ "${model:0:3}" == "dom" ] && [ "${command_sequence[step_number]:(-4)}" == "dtbs" ]
-  then
-    # take no action; the loop will increment step counter on next entry
-    d_message "domU does not have dtbs -- skipping this step" 2
-  else
-    if [[ ${INTERACTIVE} ]] ; then
-      d_message "INTERACTIVE is true, will prompt before executing this step [ $step_number ]" 2
-      newanswer=""
-      # confirm user is ready/wants to run the next command
-      new_prompt "${BMon}Are you ready to run ${BGon}${command_sequence[step_number]}${BMon}?${Boff}"
-    elif [ ${step_number} -eq 5 ] ; then  # skip menuconfig for non-interactive
-      message "INTERACTIVE is false; ${BMon}Skipping ${BGon}${command_sequence[step_number]}${BMon} as instructed ...${Boff}"
-      newanswer="s"
-    else  # automatically execute other steps for non-interactive
-      d_message "INTERACTIVE is false; will automatically execute this step [ $step_number ]" 2
-      message "${BMon}Beginning ${BGon}${command_sequence[step_number]}${BMon} as instructed ...${Boff}"
-      newanswer="y"
-    fi  ## interactive
-    case $newanswer in
-      [Yy] )  # execute this command and continue
-        message "${LBon}About to run ${BYon}${command_sequence[step_number]}${LBon}...${Boff}" ; \
-        eval ${command_sequence[step_number]}; right_status $? ;;
-      [Ss] ) ;; # skip this command and continue
-      *    )  # abort due to negative newanswer
-        message "${BRon}As instructed, not running ${BGon}${command_sequence[step_number]}${BRon}. Quitting...${Boff}" ; \
-        exit ;;
-    esac
-  fi # no dtbs for domU
-done
-}
-
 #-----[ main script ]------------------------------------------------
 checkroot
 separator "${PN}-${BUILD}" $(hostname)
 starting_step=0
 
-process_command_line "${@}"
+validate_status_file ${status_file} || die "failed to validate_status_file"
 
-display_config
+process_cmdline "${@}" || die "failed to process command line"
+
+display_config || die "failed display_config"
 sh_countdown 2
 
-sanity_check
+sanity_check || die "failed sanity_check"
 
-run_logical_step_sequence
+run_sequence ${status_file} || die "failed run_sequence"
 
 final_msg="${BMon}Components, including kernel image [ ${image} ], modules, overlays, "
 final_msg+="and dtb files, as appropriate for model [ ${model} ], successfully staged in "

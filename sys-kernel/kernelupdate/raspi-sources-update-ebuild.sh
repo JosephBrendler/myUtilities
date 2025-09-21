@@ -16,8 +16,8 @@ verbosity=3
 newbranch="$1"
 
 PN="raspi-sources"
-local_repodir=/home/joe/${PN}/
-ebuild_dir="/home/joe/joetoo/sys-kernel/${PN}"
+local_repodir=/home/${user}/${PN}/
+ebuild_dir="/home/${user}/joetoo/sys-kernel/${PN}"
 
 #initialize other variables
 newbranch=""

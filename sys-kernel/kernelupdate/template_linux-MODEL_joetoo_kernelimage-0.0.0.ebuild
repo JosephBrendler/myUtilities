@@ -14,7 +14,7 @@ KEYWORDS="arm arm64 amd64 ~arm ~arm64 ~amd64"
 # to-do: drop sources USE flags, since packages can use linux-info to get from running kernel
 #   switch kernels so "modprobe configs" is not required to turn that on
 IUSE="
-	-raspi-sources -rockchip-sources
+	-raspi-sources -rockchip-sources -nxp-sources
 	+dtb +dtbo
 	-symlink
 "
@@ -24,6 +24,7 @@ REQUIRED_USE=""
 RESTRICT="mirror"
 
 RDEPEND="
+	nxp-sources?    ( =sys-kernel/nxp-sources-${PV} )
 	raspi-sources?    ( =sys-kernel/raspi-sources-${PV} )
 	rockchip-sources? ( =sys-kernel/rockchip-sources-${PV} )
 "
@@ -37,6 +38,7 @@ S=${WORKDIR}
 
 # NOTE: joetoo kernels for some rockchip models don't work... (lacking patched sources)
 
+# extract model from package name
 my_PN=${PN/linux-/}
 model=${my_PN/_joetoo_kernelimage/}
 
@@ -107,6 +109,7 @@ src_install() {
 		case ${model:0:2} in
 			"bc" )  dtb_folder="broadcom"; src_overlay_path="/boot/dts/overlays/"; dest_overlay_path="/boot/overlays/";;
 			"rk" )  dtb_folder="rockchip"; src_overlay_path="/boot/dts/rockchip/overlay/"; dest_overlay_path="/boot/dts/rockchip/overlay/";;
+			"fs"|"im" )  dtb_folder="nxp/freescale"; src_overlay_path="/boot/dts/nxp/overlay/"; dest_overlay_path="/boot/dts/nxp/overlay/";;
 			*    )  die "Error: invalid model asignment [ ${model} ]. Exiting ..." ;;
 		esac
 		dodir /boot/dts && einfo "Created /boot/dts with dodir"
