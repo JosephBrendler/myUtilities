@@ -6,7 +6,7 @@
 
 source /usr/sbin/script_header_joetoo
 VERBOSE=$TRUE
-verbosity=2
+verbosity=3
 
 d_message_n "sourcing BUILD ..." 3
 source /etc/crossbuild-tools/BUILD ; d_right_status $? 3
@@ -14,11 +14,15 @@ d_message_n "sourcing BPN ..." 3
 source /etc/crossbuild-tools/BPN ; d_right_status $? 3
 source /usr/sbin/script_header_joetoo_extended
 
+selector=""
 
 PN=$(basename $0)
 
 # specify cross-build targets to look for
-TARGETS="aarch64-unknown-linux-gnu\|armv7a-unknown-linux-gnueabihf\|armv6j-unknown-linux-gnueabihf"
+#TARGETS="aarch64-unknown-linux-gnu\|armv7a-unknown-linux-gnueabihf\|armv6j-unknown-linux-gnueabihf"
+#TARGETS="aarch64-unknown-linux-gnu armv7a-unknown-linux-gnueabihf armv6j-unknown-linux-gnueabihf"
+# detect crossdev build targets actually installed (in repo)
+TARGETS=( $(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -printf '%f\n' | sed 's|^cross-||') )
 
 d_message_n "sourcing cb-common-functions ..." 3
 source /usr/sbin/cb-common-functions ; d_right_status $? 3
@@ -32,19 +36,30 @@ usage() {
 
 show-dashboard() {
     echo
+    separator ${PN} "( crossdev TARGETs in /var/db/repos/crossdev/ )"
+    for x in $TARGETS; do echo -e "    ${LBon}${x}${Boff}"; done
+    echo
     # crossbuild stuff first (selected by '/usr/')
     # for each active loopdevice, show backing file and mounts
     separator ${PN} "(active crossbuild loop devices)"
     show-loopdev-backfile-and-mounts "/usr/"
 
     # now display anything else mounted on one of our TARGETs (e.g. proc, dev, sys for chroot...)
-    show-other_crossbuild-mounts
-
-    # now display anything mounted on /mnt/gentoo (possible outputdevice)
-    show-mounts "/mnt/gentoo"
+    separator ${PN} "(other mounts - e.g. for chroot)"
+    for TARGET in ${TARGETS[@]}; do
+        selector="${TARGET}"
+        show-mounts "${TARGET}" | grep -v "loop"
+    done
 
     # now show any other mounts on /dev/sd devices
-    show-mounts "/dev/sd"
+    selector="/dev/sd"
+    separator ${PN} "(${selector} - possible OUTPUTDEVICE)"
+    show-mounts "${selector}"
+
+    # now display anything mounted on /mnt/gentoo (possible outputdevice)
+    selector="/mnt/gentoo"
+    separator ${PN} "(${selector} - mounted root_fs)"
+    show-mounts "${selector}"
 
     # display status of repositories in various /usr/${TARGET} directories
     show-target-repositories-status
@@ -53,53 +68,39 @@ show-dashboard() {
     # now do binhosts (selected by 'stockpile')
     separator ${PN} "(active binhost loop devices)"
     show-loopdev-backfile-and-mounts "stockpile"
-}
 
-show-other_crossbuild-mounts() {
-    # display anything mounted on /dev/sd devices (possible outputdevice)
-    selector="${TARGETS}"
-    separator ${PN} "(other crossbuild mounts)"
-    if [ ! -z "$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )" ] ; then 
-        while read -r findmnt_LINE ; do
-            eval $(echo $findmnt_LINE | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
-            d_message "src: $src   tgt: $tgt   fstype: $fstype" 5
-            echo -e "    ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
-        done <<<$(findmnt -lno SOURCE,TARGET,FSTYPE | grep -v 'loop' | grep "${selector}" | sort -h )
-    fi
+    echo
+    # now show contents of stockpile
+    separator ${PN} "(stockpile contents)"
+    message "crossbuild environments (*.env)"
+    find /home/joe/sbc-stockpile/ -maxdepth 1 -type f -name '*.env' -printf '%f\n' | sort -h | sed 's|^|    |'
+    echo
+    message "deployed images (*.img)"
+    find /home/joe/sbc-stockpile/ -maxdepth 1 -type f -name '*.img' -printf '%f\n' | sort -h | sed 's|^|    |'
 
 }
 
 show-mounts() {
     # display anything mounted on /dev/sd devices (possible outputdevice)
-    selector="$1"
-    separator ${PN} "(${selector} mounts - possible OUTPUTDEVICEs)"
-    if [ ! -z "$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )" ] ; then 
+    d_message "  in ${FUNCNAME[0]} with selector: ${selector}" 5
+    mounts_found=$(findmnt -lno SOURCE,TARGET,FSTYPE | grep ${selector} | sort -h)
+    d_message "mounts_found: $mounts_found" 5
+#    mounts=( $(findmnt -lno SOURCE,TARGET,FSTYPE | grep ${selector}) )
+    if [ ! -z "${mounts_found}" ] ; then
+#        d_message "#: ${#mounts[@]}" 3
         while read -r findmnt_LINE ; do
             eval $(echo $findmnt_LINE | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
             d_message "src: $src   tgt: $tgt   fstype: $fstype" 5
-            echo -e "    ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
-        done <<<$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )
-    fi
-
-}
-
-show-gentoo-mounts() {
-    # display anything mounted on /mnt/gentoo (possible outputdevice)
-    selector="/mnt/gentoo"
-    separator ${PN} "(${selector} mounts - possible OUTPUTDEVICEs)"
-    if [ ! -z "$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )" ] ; then 
-        while read -r findmnt_LINE ; do
-            eval $(echo $findmnt_LINE | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
-            d_message "src: $src   tgt: $tgt   fstype: $fstype" 5
-            echo -e "    ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
-        done <<<$(findmnt -lno SOURCE,TARGET,FSTYPE | grep "${selector}" | sort -h )
+            echo -e "        ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
+        done<<<"${mounts_found}"
     fi
 }
 
 show-target-repositories-status() {
    # display status of repositories in various /usr/${TARGET} directories
     separator ${PN} "(crossbuild repository status)"
-    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
+#    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
+    for TARGET in ${TARGETS} ; do
         repo_list="gentoo joetoo"
         for repo in ${repo_list} ; do
             if [ -d /usr/${TARGET}/var/db/repos ] ; then
@@ -136,16 +137,20 @@ show-loopdev-backfile-and-mounts() {
 
 #-----[ main script ]---------------------------------------------
 checkroot
+clear
 separator "$(hostname)" "${PN}"
 [ $# -ne 0 ] && usage
 
 old_dir="$(pwd)"
 cd /usr/
-message "now working in parent of crossbuild target directory: [${Mon}$(pwd)${Boff}]"
+d_message "now working in parent of crossbuild target directory: [${Mon}$(pwd)${Boff}]" 1
+d_message "#: ${#TARGETS[@]}" 4
+d_message "\${TARGETS[@]}:" 5
+debug_do 'for TARGET in ${TARGETS[@]}; do echo "    $TARGET"; done' 5
 
 show-dashboard || die "failed to show-dashboard"
 
 echo
 cd $old_dir
-message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+d_message "now working in previous directory: [${Mon}$(pwd)${Boff}]" 1
 exit 0
