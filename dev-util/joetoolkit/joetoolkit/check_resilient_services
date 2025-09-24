@@ -1,0 +1,276 @@
+#! /bin/bash
+# check_resilient_services - check and restart services if needed
+# Joe Brendler - based on 2013 net_services_assurance.start script
+#
+# source headers
+#script_header_installed_dir=./         ## only when testing, pre-ebuild
+script_header_installed_dir=/usr/sbin   # this is where it should be installed
+source ${script_header_installed_dir%/}/script_header_joetoo
+
+# only needed for testing sources pending package build
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+
+#-----[ variables ]------------------------------------------------------
+cmdseq_statusfile="/root/${PN}_status"
+VERBOSE=$TRUE
+verbosity=5
+PN=$(basename $0)
+
+# assign BPN before sourcing script_header_joetoo_extended, which
+#   /etc/${BPN}/ stores local custom conent employing cli processing, etc --
+#     local.useage ; local.cmdline_arguments ; local.cmdline_compound_arguments
+BPN="joetoolkit/${PN}"
+source ${script_header_installed_dir%/}/script_header_joetoo_extended
+
+FLAGGED=$FALSE
+result=0
+
+varlist=" PN BPN BUILD starting_step stopping_step cmdseq_statusfile"
+varlist+=" services_list sleepwait"
+varlist+=" BREAK bool.INTERACTIVE bool.FLAGGED bool.VERBOSE verbosity"
+
+hidden_varlist="result response answer "
+
+command_sequence=(
+'check_all_services'
+'show_all_service_status'
+)
+
+msg1_sequence=(
+'check all services'
+'show statu of all services'
+)
+
+#-----[ functions ]------------------------------------------------------
+
+initialize_variables() {
+    # use script_header_joetoo functions
+    initialize_vars ${varlist}
+    initialize_vars ${hidden_varlist}
+
+    FLAGGED=$FALSE
+    # assign initial values
+    message_n "Assigning PN = $(basename $0) ..."
+    PN=$(basename $0) ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning BPN = ${PN} ..."
+    BPN="joetoolkit/${PN}" ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning INTERACTIVE = \$TRUE ..."
+    INTERACTIVE=$TRUE ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning VERBOSE = \$TRUE ..."
+    VERBOSE=$TRUE ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning verbosity = 3 ..."
+    verbosity=3 ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Sourcing BUILD ..."
+    source /etc/${BPN}/BUILD ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning starting_step = 0 ..."
+    starting_step=0 ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning sleepwait = 0.5 ..."
+    sleepwait=0.5 ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning stopping_step = \${#command_sequence[@]} - 1 ..."
+    stopping_step=$(( ${#command_sequence[@]} - 1 )) ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning cmdseq_statusfile = /root/${PN}_status ..."
+    cmdseq_statusfile=/root/${PN}_status ; result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    message_n "Assigning runlevels ..."
+    # runlevels=$(find /etc/runlevels/ -mindepth 1 -maxdepth 1 -printf '%f\n')
+    runlevels="boot sysinit default"  # dont check nonetwork or shutdown
+    result=$? ; right_status $result
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+
+    [ $FLAGGED ] && return 1 || return 0
+}
+
+check_all_services() {
+    for runlevel in ${runlevels}; do
+        check_runlevel_services ${runlevel} || die "failed to check_runlevel_services ${runlevel}"
+    done
+}
+
+check_runlevel_services() {
+    rl=$1
+    separator ${PN} "(${rl} services)"
+    runlevel_services=$(find /etc/runlevels/${rl}/ -mindepth 1 -maxdepth 1 -printf '%f\n')
+    for service in ${runlevel_services} ; do
+        d_message_n "checking service ${service} ..." 2
+        check_fix_one_service ${service}
+        right_status $?
+    done
+    echo
+    return 0
+}
+
+check_fix_one_service() {
+    local svc="$1"
+
+    # get the status of service named by $1 and act accordingly
+    status=$(get_svc_status ${svc})
+    d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+    # if status is stopped or crashed, try to restart
+    if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
+        debug_do 'echo -e -n " (restarting)"' 2
+        restart_service ${svc} && sleep ${sleepwait}
+
+        # check again, and if still stopped or crashed, try to stop and then start
+        status=$(get_svc_status ${svc})
+        d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+        # if status is stopped or crashed, try to stop and then start
+        if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
+            debug_do 'echo -e -n "(stop-starting)"' 2
+            stop_start_service ${svc} && sleep ${sleepwait}
+
+            # check again, and if still stopped or crashed, try to look for and remove the running pid tracking file, then restart
+            status=$(get_svc_status ${svc})
+            d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+            # if status is stopped or crashed, try remove pid file and then restart
+            if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
+                debug_do 'echo -e -n "(removing pidfile)"' 2
+                rmpid_restart_service ${svc} && sleep ${sleepwait}
+                # if still stopped or crashed, return 1
+                if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
+                    debug_do 'echo -e -n "(${BRon}still down${Boof})"' 2
+                    loggit "${PN}" 1
+                    return 1
+                else
+                    /usr/bin/logger -p cron.notice ${PN} "${svc} successfully restarted after rm pidfile"
+                fi # still down
+            else
+                /usr/bin/logger -p cron.notice ${PN} "${svc} successfully started after stop"
+            fi # third check
+        else
+            /usr/bin/logger -p cron.notice ${PN} "${svc} successfully restarted"
+        fi # second check
+    else
+        debug_do '/usr/bin/logger -p cron.info ${PN} "${svc} status checked - ok"' 3
+    fi # first check
+    return 0
+}
+
+restart_service() {
+    # restart the service named by $1
+    d_message "in ${FUNCNAME[0]}}" 5
+    local svc="$1"
+    /etc/init.d/${svc} restart >/dev/null 2>&1
+}
+
+stop_start_service() {
+    # restart the service named by $1
+    d_message "in ${FUNCNAME[0]}}" 5
+    local svc="$1"
+    /etc/init.d/${svc} stop >/dev/null 2>&1
+    sleep ${sleepwait}
+    /etc/init.d/${svc} start >/dev/null 2>&1
+}
+
+rmpid_restart_service() {
+    # restart the service named by $1
+    d_message "in ${FUNCNAME[0]}}" 5
+    local svc="$1"
+    if [ -e /run/${svc}.pid ] ; then
+        rm /run/${svc}.pid >/dev/null 2>&1
+        sleep ${sleepwait}
+        /etc/init.d/${svc} restart >/dev/null 2>&1
+    fi
+}
+
+get_svc_status() {
+    # get status of service named by $1
+    local svc="$1"
+    # read last word of last line of status info and drop trailing period
+    local result=$(/etc/init.d/${svc} status | tail -n1 | awk '{print $NF}' | sed 's|\.$||' )
+    echo -n ${result}
+}
+
+service_status_color() {
+    local status=$( echo "$1" | awk '{print $1}')
+    case $status in
+        "started"|"running"      ) echo -en "${BGon}" ;;
+        "inactive"|"placeholder" ) echo -en "${BYon}" ;;
+        "stopped"|"crashed"      ) echo -en "${BRon}" ;;
+    esac
+}
+
+display_configuration() {
+    separator ${PN} "(display configuration)"
+    # use script_header_joetoo functions
+    longest=$(get_longest ${varlist})
+    display_vars $longest ${varlist} || return 1
+    return 0
+}
+
+sanity_check() {
+    separator ${PN} "(sanity check)"
+    # put some code here to catch dumb stuff like cmdline option assignments that should
+    # be mutually exclusive
+    [ ! $INTERACTIVE ] && [ $EXAMPLE ] && E_message "(demonstration) INTERACTIVE and EXAMPLE should NOT both be TRUE; quitting" && return 1
+    return 0
+}
+
+show_all_service_status() {
+    # list all service status
+    for runlevel in ${runlevels}; do
+        separator ${PN} "rc-status ${runlevel}"
+        rc-status ${runlevel}
+    done
+}
+
+#-----[ main script ]----------------------------------------------------
+checkroot
+separator ${PN} $(hostname)
+
+
+# basic common approach -
+# initialize variables (local function)
+# validate_status_file  (script_header_joetoo_extended)
+# process_cmdline (script_header_joetoo_extended)
+# local validation, configuration, and variable assignment (local function(s))
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (cb-common-functions)
+# run_sequence (script_header_joetoo_extended)
+
+# initialize variables and set default values
+initialize_variables || die "Failed to initialize_variables"
+
+validate_status_file $cmdseq_statusfile || die "Failed to validate_status_file"
+
+# over-ride configuration with commandline input
+separator ${PN} "(process_cmdline)"
+process_cmdline $@  || die "Failed to process_cmdline"
+
+display_configuration || die "Failed to display_configuration"
+
+# sanity check configuration
+sanity_check || die "Failed sanity_check"
+
+# use script_header_joetoo_extended (bash) functions
+run_sequence $cmdseq_statusfile || die "Failed to run_sequence"
+
+message "${PN} Complete"
+echo
+
+
+
+
+# pause so messages can be read by user
+#pause 5
+sh_countdown 4
+
+exit 0
