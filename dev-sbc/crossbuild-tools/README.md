@@ -113,6 +113,7 @@ Currently, the following BOARDs are supported:
     rk3288-tinker-s
     rk3399-tinker-2
     rk3399-rock-pi-4c-plus
+    rk3399-rock-4se
     rk3588-rock-5b
     rk3588-radxa-rock-5b+
     rk3588s-orangepi-5
