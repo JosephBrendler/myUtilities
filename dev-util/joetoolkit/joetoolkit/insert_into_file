@@ -3,107 +3,62 @@ source /usr/sbin/script_header_joetoo
 VERBOSE=$TRUE
 verbosity=3
 PRETEND=$TRUE
+FLAGGED=$FALSE
 
-varlist="target_folder target_line_text insert_file before_after BREAK lv.target_file_list BREAK user group BREAK bool.VERBOSE verbosity bool.PRETEND"
+varlist="PN BPN BUILD"
+varlist+=" BREAK configfile target_folder target_line_text insert_file before_after BREAK lv.target_file_list"
+varlist+=" BREAK user group BREAK bool.VERBOSE verbosity bool.PRETEND"
 
 #-----[ functions ]-----------------------------------------------------
 initialize_variables() {
-  d_message "initializing variables" 2
-  myverbosity=$verbosity; myPRETEND=$PRETEND
-  for var in ${varlist} ; do
-    message_n "initializing ${var} ..."
-    # ignore BREAKs
-    if [[ ${var} == "BREAK" ]]; then
-      [ ${verbosity} -ge 3 ] && echo -n " (ignoring ${var}) ..." ; right_status $?
-    # if there's a . in var, nandle it by type
-    elif [[ ! ${var} == *.* ]] ; then
-      # no . found - regular num/text variable; set null
-      [ ${verbosity} -ge 3 ] && echo -n " (regular num/text variable; initializing null) ..."
-      eval export ${var}="" ; right_status $?
-    elif [[ $(echo ${var} | cut -d'.' -f1) == "bool" ]] ; then
-      # it's boolean; so set true/false
-      [ ${verbosity} -ge 3 ] && echo -n " (boolean; initializing FALSE) ..."
-      eval export $(echo ${var} | cut -d'.' -f2)=$FALSE ; right_status $?
-    else
-      # it's a long variable (lv) just set null
-      [ ${verbosity} -ge 3 ] && echo -n " (long string variable; initializing null) ..."
-      eval export $(echo ${var} | cut -d'.' -f2)="" ; right_status $?
-    fi
-  done
-  d_message "done initializing variables" 2
+    d_message "initializing variables" 2
+    myverbosity=$verbosity; myPRETEND=$PRETEND
+    initialize_vars ${varlist}
 
-  #reinitialize VERBOSE and verbosity as above
-  message_n "re-initializing verbosity ... [ ${myverbosity} ]"
-  export verbosity=$myverbosity ; right_status $?
-  message_n "re-initializing VERBOSE ..."
-  [ ${verbosity} -gt 0 ] && export VERBOSE=$TRUE || export VERBOSE=$FALSE
-  [ ${verbosity} -ge 3 ] && echo -en " $(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}"
-  right_status $?
-  message_n "re-initializing PRETEND ..."
-  PRETEND=$myPRETEND
-  [ ${verbosity} -ge 3 ] && echo -en " $(status_color ${PRETEND})$(TrueFalse ${PRETEND})${Boff}"
-  right_status $?
+    #reinitialize VERBOSE and verbosity as above
+    FLAGGED=$FALSE
+    message_n "re-initializing verbosity ... [ ${myverbosity} ]"
+    export verbosity=$myverbosity ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
 
-  message_n "initializing bash array for output ..."
-  export output=() ; right_status $?
-}
+    message_n "re-initializing VERBOSE ..."
+    [ ${verbosity} -gt 0 ] && export VERBOSE=$TRUE || export VERBOSE=$FALSE
+    right_status $?
+    debug_do 'echo -en " $(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}"' 3
 
-usage() {
-echo
-E_message "${BRon}Usage:${Gon} insert_into_file [-v|q...]${Boff}"
-echo -e "  ${BYon}No arguments allowed. Specify configuration -${Boff}"
-echo "    target_folder......: path to folder containing target(s)"
-echo "    target_file_list...: name of target file(s). e.g. *.conf"
-echo "    target_line_text...: text of line before/after which to insert"
-echo "    insert_file........: pathname of file with content to insert"
-echo "    before_after.......: \"before\" or \"after\" (default=after)"
-echo "    owner..............: target file owner. e.g. \"joe\""
-echo "    group..............: target file group. e.g. \"joe\""
-echo "    VERBOSE............: provide verbose output (boolean)"
-echo "    verbosity..........: (0-6) how verbose"
-echo -e "  ${BYon}in confg file /etc/insert_into_file.conf${Boff}"
-echo
-echo -e "  ${BYon}options:${Boff}"
-echo -e "    -v - increase verbosity (override config)"
-echo -e "    -q - decrease verbosity (override config)"
-echo -e "    ( e.g. -vvvq = increase verbosity by 2 )"
-echo -e "    -p - pretend (do not write output to file)(default)"
-echo -e "    -w - write   (do write output to file)"
-echo
-echo -e "  ${Mon}Note:${Boff}"
-echo -e "    ${Mon} user and group must exist${Boff}"
-echo -e "    ${Mon} target_folder and insert_file must exist${Boff}"
-echo -e "    ${Mon} target_file_list and target_line_text cannot be null${Boff}"
-echo
-# sanity check explanations
-  [ $# -gt 1 ] && E_message "too many arguments [$#]"
-  [ ${#user} -eq 0 ] && E_message "user: [ ${user} ] null"
-  [ ${#group} -eq 0 ] && E_message "group: [ ${group} ] null"
-  [ ${#user} -gt 0 ] && [[ ! $(grep ${user} /etc/shadow) ]] && E_message "user: [ ${user} ] not found"
-  [ ${#group} -gt 0 ] && [[ ! $(grep ${group} /etc/gshadow) ]] && E_message "group: [ ${group} ] not found"
-  [ ! -e ${target_folder} ] && E_message "target_folder [ ${target_folder} ] does not exist"
-  [ ! -e ${insert_file} ] && E_message "insert_file [ ${insert_file} ] does not exist"
-  [ ${#target_file_list} -eq 0 ] && E_message "target_file_list [ ${target_file_list} ] null"
-  [ ${#target_line_text} -eq 0 ] && E_message "target_line_text [ ${target_line_text} ] null"
-exit
+    message_n "re-initializing PRETEND ..."
+    export PRETEND=$myPRETEND ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+    debug_do 'echo -en " $(status_color ${PRETEND})$(TrueFalse ${PRETEND})${Boff}"' 3
+
+    message_n "assigning configfile ..."
+    export configfile="/etc/${PN}/${PN}.conf ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "initializing bash array for output ..."
+    export output=() ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    [ $FLAGGED ] && return 1 || return 0
 }
 
 read_config() {
-  # prefer /etc/insert_into_file.conf over /usr/local/sbin/insert_into_file.conf
-  # but use the latter if the former does not exist
-  echo
-  message_n "Reading config ..."
-  if [ -e /etc/insert_into_file.conf ] ; then
-    [ ${verbosity} -ge 1 ] && echo -n "[ /etc/insert_into_file.conf ]"
-    source /etc/insert_into_file.conf; right_status $?
-  elif [ -e /usr/local/sbin/insert_into_file.conf ] ; then
-    [ ${verbosity} -ge 1 ] && echo -n "[ /usr/local/sbin/insert_into_file.conf ]"
-    source /usr/local/sbin/insert_into_file.conf; right_status $?
-  else
-    [ ${verbosity} -ge 1 ] && echo -en " ${BRon}Error: no configuration file found${Boff}"
-    right_status $FALSE
-    usage
-  fi
+    echo
+    message_n "Reading config ..."
+    if [ -e ${configfile} ] ; then
+        echo -n " [ ${configfile} ]"
+        source ${configfile} || die "failed to source ${configfile}"
+        right_status $TRUE
+    else
+        echo -en " (${BRon}not found${Boff})"
+        right_status 1
+        usage
+    fi
+    return 0
 }
 
 display_config() {
@@ -112,145 +67,117 @@ display_config() {
   longest=$(get_longest ${varlist})
   display_vars ${longest} ${varlist}
   echo
+  return 0
 }
 
 do_insert() {
-  d_message " running do_insert with input from [ ${insert_file} ]" 4
-  insert_file="${1}"
-  while read linein
-  do
-#    if [ ! -z "${linein}" ] ; then
-      d_message "  inserting [ ${linein} ]" 4
-      output+=("${linein}")
-#    fi
-  done < ${insert_file}
+    d_message " running do_insert with input from [ ${insert_file} ]" 4
+    insert_file="${1}"
+    while read linein
+    do
+#      if [ ! -z "${linein}" ] ; then
+        d_message "  inserting [ ${linein} ]" 4
+        output+=("${linein}")
+#      fi
+    done < ${insert_file}
+    return 0
 }
 
 read_input_and_edit_output() {
-  # read input from file specified in arg1
-  in_file="$1"
-  while read line
-  do
-    # if line is not null and it matches tartet text, then insert before/after
-    if [ ! -z "${line}" ] && [ "${line}" == "${target_line_text}" ] ; then
-      d_message "this is target target line; inserting ${before_after}" 4
-      case ${before_after} in
-        "before" )
-          d_message "adding insert to output array" 4
-          do_insert "${insert_file}"
-          d_message "adding original line [ ${line} ] to output array" 4
-          output+=("$(echo "${line}")")
-          ;;
-        "after"  )
-          d_message "adding original line [ ${line} ] to output array" 4
-          output+=("$(echo "${line}")")
-          d_message "adding insert to output array" 4
-          do_insert "${insert_file}"
-          ;;
-        *        ) E_message "invalid before_after [ ${before_after}]"; usage;;
-      esac
-    else
-      # this is not the target line, so just add it back into the output array
-      d_message "adding line [ ${line} ] to output array" 4
-      output+=("$(echo "${line}")")
-    fi
-  done < ${in_file}
+    # read input from file specified in arg1
+    in_file="$1"
+    while read line
+    do
+        # if line is not null and it matches tartet text, then insert before/after
+        if [ ! -z "${line}" ] && [ "${line}" == "${target_line_text}" ] ; then
+            d_message "this is target target line; inserting ${before_after}" 4
+            case ${before_after} in
+                "before" )
+                    d_message "adding insert to output array" 4
+                    do_insert "${insert_file}"
+                    d_message "adding original line [ ${line} ] to output array" 4
+                    output+=("$(echo "${line}")")
+                  ;;
+                "after"  )
+                    d_message "adding original line [ ${line} ] to output array" 4
+                    output+=("$(echo "${line}")")
+                    d_message "adding insert to output array" 4
+                    do_insert "${insert_file}"
+                  ;;
+                *        ) E_message "invalid before_after [ ${before_after}]"; usage;;
+            esac
+        else
+            # this is not the target line, so just add it back into the output array
+            d_message "adding line [ ${line} ] to output array" 4
+            output+=("$(echo "${line}")")
+        fi
+    done < ${in_file}
+    return 0
 }
 
 sanity_check() {
-  [ ${#user} -eq 0 ] && usage
-  [ ${#group} -eq 0 ] && usage
-  [[ ! $(grep ${user} /etc/shadow) ]] && usage
-  [[ ! $(grep ${group} /etc/gshadow) ]] && usage
-  [ ! -e ${target_folder} ] && usage
-  [ ! -e ${insert_file} ] && usage
-  [ ${#target_file_list} -eq 0 ] && usage
-  [ ${#target_line_text} -eq 0 ] && usage
+    # sanity check explanations
+    [ $# -gt 1 ] && E_message "too many arguments [$#]" && usage
+    [ ${#user} -eq 0 ] && E_message "user: [ ${user} ] null" && usage
+    [ ${#group} -eq 0 ] && E_message "group: [ ${group} ] null" && usage
+    [ ${#user} -gt 0 ] && [[ ! $(grep ${user} /etc/shadow) ]] && E_message "user: [ ${user} ] not found" && usage
+    [ ${#group} -gt 0 ] && [[ ! $(grep ${group} /etc/gshadow) ]] && E_message "group: [ ${group} ] not found" && usage
+    [ ! -e ${target_folder} ] && E_message "target_folder [ ${target_folder} ] does not exist" && usage
+    [ ! -e ${insert_file} ] && E_message "insert_file [ ${insert_file} ] does not exist" && usage
+    [ ${#target_file_list} -eq 0 ] && E_message "target_file_list [ ${target_file_list} ] null" && usage
+    [ ${#target_line_text} -eq 0 ] && E_message "target_line_text [ ${target_line_text} ] null" && usage
+    return 0
 }
 
 dump_output() {
-  for ((i=0; i<${#output[@]}; i++)) ; do
-    echo "$i: ${output[$i]}"
-  done
-}
-
-process_commandline() {
-  arg=$1
-  d_message "processing cmdline" 2
-  # process argument one character at a time
-  while [ ${#arg} -gt 0 ]; do
-    opt=${arg:0:1}
-    case $opt in
-      "-"  )
-        d_message "ignoring dash [${opt}]" 3
-        ;;
-      [qQ] )
-        d_message "decreasing verbosity" 1
-        let verbosity--
-        ;;
-      [vV] )
-        d_message "increasing verbosity" 1
-        let verbosity++
-        ;;
-      [pP] )
-        d_message "setting PRETEND TRUE" 1
-        PRETEND=$TRUE
-        ;;
-      [wW] )
-        d_message "setting WRITE (PRETEND FALSE)" 1
-        PRETEND=$FALSE
-        ;;
-      *    )
-        E_message "invalid option [${opt}] in argument"
-        usage $1
-        ;;
-    esac
-    # drop this character and move on
-    arg=${arg:1}
-  done
+    for ((i=0; i<${#output[@]}; i++)) ; do
+        echo "$i: ${output[$i]}"
+    done
+    return 0
 }
 
 write_output() {
-  out_file="${1}"
-  message_n "writing output to ${out_file} ..."
-  echo "" > ${out_file}
-  for ((i=0; i<=${#output[@]}; i++))
-  do
-    echo "${output[i]}" >> ${out_file}
-  done ; right_status $?
-  message_n "setting ownership with chown ${user}:${group} ${out_file} ..."
-  chown ${user}:${group} ${out_file} ; right_status $?
+    out_file="${1}"
+    message_n "writing output to ${out_file} ..."
+    echo "" > ${out_file}
+    for ((i=0; i<=${#output[@]}; i++))
+    do
+        echo "${output[i]}" >> ${out_file}
+    done ; right_status $?
+    message_n "setting ownership with chown ${user}:${group} ${out_file} ..."
+    chown ${user}:${group} ${out_file} ; right_status $?
 }
 
 #-----[ main script ]--------------------------------------------------
 echo
-[ $# -gt 1 ] && usage $@
-separator "insert_into_file" $(hostname)
+separator "${PN}-${BUILD}" $(hostname)
 checkroot
-initialize_variables
-read_config
+initialize_variables || die "failed initialize_variables"
+read_config || die "failed read_config"
 
 #process command line to override config
-[ $# -eq 1 ] && process_commandline $1
+process_cmdline $@
 
-sanity_check
-display_config
+sanity_check || die "failed sanity_check"
+display_config || die "failed display_config"
 
 for filename in ${target_folder%/}/${target_file_list}
 do
-  # reinitialize output array
-  output=()
-  separator ${filename} $(basename $0)
-  target_file="${filename}"
-  d_message "target_file: [ ${target_file} ]" 2
-  read_input_and_edit_output "${target_file}"
-  [ ${verbosity} -ge 3 ] && dump_output
-  if [ ! ${PRETEND} ] ; then
-    # do it for real
-      write_output "${target_file}" || message "PRETEND -- did not write output"
-      # if the first line is now blank, remove it
-      while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' $target_file ; done
-      # if the lastt line is now blank, remove it
-      while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' $filename ; done
-  fi
+    # reinitialize output array
+    output=()
+    separator ${filename} ${PN}
+    target_file="${filename}"
+    d_message "target_file: [ ${target_file} ]" 2
+    read_input_and_edit_output "${target_file}"
+    d_do dump_output 3
+    if [ ! ${PRETEND} ] ; then
+        # do it for real
+        write_output "${target_file}"
+        # if the first line is now blank, remove it
+        while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' $target_file ; done
+        # if the last line is now blank, remove it
+        while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' $filename ; done
+    else
+        message "PRETEND -- did not write output"
+    fi
 done
