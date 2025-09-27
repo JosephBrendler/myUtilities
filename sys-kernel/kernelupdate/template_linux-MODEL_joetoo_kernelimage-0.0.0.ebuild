@@ -63,16 +63,41 @@ pkg_setup() {
 }
 
 pkg_preinst() {
-	einfo "Starting pkg_preinst ..."
-	# if /boot is on a separate block device, and it is not mounted, try to>
-	if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  && \
-		! grep "${ROOT%/}/boot" /proc/mounts >/dev/null 2>&1 ; then
-		elog "${ROOT%/}/boot is not mounted, trying to mount it now..."
-		! $(mount /boot) && \
-			die "Failed to mount /boot" || \
-			elog "Succeeded in mounting /boot ; continuing..."
+	export FALSE=''
+	export TRUE=0
+	EFI_MOUNT=$FALSE
+	# if /boot/efi is on a separate block device, and it is not mounted, try to mount it
+	elog "checking whether /boot/efi should be/is mounted ..."
+	if grep -v '^#' /etc/fstab | grep boot/efi >/dev/null 2>&1  ; then
+		EFI_MOUNT=$TRUE
+		elog "Verified /boot/efi is supposed to be mounted; checking if it is ..."
+		if ! grep "${ROOT%/}/boot/efi" /proc/mounts >/dev/null 2>&1 ; then
+			elog "${ROOT%/}/boot/efi is not mounted, trying to mount it now ..."
+			! $(mount /boot/efi) && \
+				die "Failed to mount /boot" || \
+				elog "Succeeded in mounting /boot/efi ; continuing ..."
+		else
+			elog "Verified ${ROOT%/}/boot/efi is mounted ; continuing ..."
+		fi
 	else
-		elog "Verified /boot is mounted ; continuing..."
+		elog "Verified /boot/efi is not supposed to be mounted ; continuing ..."
+	fi
+	BOOT_MOUNT=$FALSE
+	# if /boot is on a separate block device, and it is not mounted, try to>
+	elog "checking whether /boot should be/is mounted ..."
+	if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  ; then
+		BOOT_MOUNT=$TRUE
+		elog "Verified /boot is supposed to be mounted; checking if it is ..."
+		if ! grep "${ROOT%/}/boot" /proc/mounts >/dev/null 2>&1 ; then
+			elog "${ROOT%/}/boot is not mounted, trying to mount it now ..."
+			! $(mount /boot) && \
+				die "Failed to mount /boot" || \
+				elog "Succeeded in mounting /boot ; continuing ..."
+		else
+			elog "Verified ${ROOT%/}/boot is mounted ; continuing ..."
+		fi
+	else
+		elog "Verified /boot is not supposed to be mounted ; continuing ..."
 	fi
 }
 
@@ -102,8 +127,8 @@ src_install() {
 		# note: armbian upstream sources put dtb/overlay files in "boot/dtb-<branch>-<version>/${dtb_folder}/"
 		#       and then and need link dtb-<branch>-<version> <-- dtb in /boot/
 		# note: joetoo's kernelupdate tarball upstream sources put overlay files in
-		#        "/boot/dts/overlays" , for raspi models, but in
-		#        "/boot/dts/rockchip/overlay" , for rockdhip models
+		#	"/boot/dts/overlays" , for raspi models, but in
+		#	"/boot/dts/rockchip/overlay" , for rockdhip models
 		# note: armbian upstream sources put overlay files in "/boot/dtb-<branch>-<version>/${dtb_folder}/overlay"
 		#       and then and need link dtb-<branch>-<version> <-- dtb in /boot/
 		case ${model:0:2} in
@@ -175,7 +200,7 @@ src_install() {
 	fi
 	# conditionally install symlink
 	# To Do - if boot is not on vfat ==> [ ! "$(grep -v '^#' /etc/fstab | grep boot | awk '{print $3}')" == "vfat" ]
-	#         then determine link name from joetooEnv.txt (rockchip imagefile=) or config.txt (raspi kernel=)
+	#	 then determine link name from joetooEnv.txt (rockchip imagefile=) or config.txt (raspi kernel=)
 	if use symlink ; then
 		elog "  (USE=\"symlink\") (set)"
 		ewarn "USE symlink (selected), but this is not implemented yet"
