@@ -5,9 +5,17 @@ verbosity=3
 PRETEND=$TRUE
 FLAGGED=$FALSE
 
-varlist="PN BPN BUILD"
+varlist="PN BPN BUILD starting_step stopping_step cmdseq_statusfile bool.VERBOSE verbosity bool.INTERACTIVE bool.PRETEND"
 varlist+=" BREAK configfile target_folder target_line_text insert_file before_after BREAK lv.target_file_list"
-varlist+=" BREAK user group BREAK bool.VERBOSE verbosity bool.PRETEND"
+varlist+=" BREAK user group"
+
+command_sequence=(
+'batch_edit_target_files'
+)
+
+msg1_sequence=(
+'batch edit target files'
+)
 
 #-----[ functions ]-----------------------------------------------------
 initialize_variables() {
@@ -17,6 +25,26 @@ initialize_variables() {
 
     #reinitialize VERBOSE and verbosity as above
     FLAGGED=$FALSE
+    message_n "assigning PN = $(basename $0) "
+    export PN=$(basename $0) ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "sourcing BUILD"
+    source /etc/${PN}/BUILD ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "sourcing BPN"
+    source /etc/${PN}/BPN ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "sourcing script_header_joetoo_extended"
+    source /usr/sbin/script_header_joetoo_extended ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
     message_n "re-initializing verbosity ... [ ${myverbosity} ]"
     export verbosity=$myverbosity ; result=$?
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
@@ -33,8 +61,29 @@ initialize_variables() {
     right_status $result
     debug_do 'echo -en " $(status_color ${PRETEND})$(TrueFalse ${PRETEND})${Boff}"' 3
 
+    message_n "re-initializing INTERACTIVE ..."
+    export INTERACTIVE=$FALSE ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+    debug_do 'echo -en " $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"' 3
+
+    message_n "re-initializing starting_step = 0 ..."
+    export starting_step=0 ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "re-initializing stopping_step = $((${#command_sequence[@]} - 1)) ..."
+    export stopping_step=$((${#command_sequence[@]} - 1)) ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
     message_n "assigning configfile ..."
-    export configfile="/etc/${PN}/${PN}.conf ; result=$?
+    export configfile="/etc/${PN}/${PN}.conf" ; result=$?
+    [ ! $result -eq 0 ] && FLAGGED=$TRUE
+    right_status $result
+
+    message_n "assigning cmdseq_statusfile = ${PN}_statusfile ..."
+    export cmdseq_statusfile="${PN}_statusfile" ; result=$?
     [ ! $result -eq 0 ] && FLAGGED=$TRUE
     right_status $result
 
@@ -48,6 +97,7 @@ initialize_variables() {
 
 read_config() {
     echo
+    d_message "configfile: $configfile" 3
     message_n "Reading config ..."
     if [ -e ${configfile} ] ; then
         echo -n " [ ${configfile} ]"
@@ -66,6 +116,10 @@ display_config() {
   message "${BYon}Current Configuration --${Boff}"
   longest=$(get_longest ${varlist})
   display_vars ${longest} ${varlist}
+  echo
+  separator "${BYon}Content of insert_file [${insert_file}]" "(below)"
+  cat ${insert_file}
+  separator "${BYon}Content of insert_file [${insert_file}]" "(above)"
   echo
   return 0
 }
@@ -126,6 +180,7 @@ sanity_check() {
     [ ! -e ${insert_file} ] && E_message "insert_file [ ${insert_file} ] does not exist" && usage
     [ ${#target_file_list} -eq 0 ] && E_message "target_file_list [ ${target_file_list} ] null" && usage
     [ ${#target_line_text} -eq 0 ] && E_message "target_line_text [ ${target_line_text} ] null" && usage
+    [ ! -L /etc/${PN}/${PN}.conf ] && E_message "${PN}.conf symlink does not exist. Run eselect ${PN} list/set" && usage
     return 0
 }
 
@@ -148,11 +203,34 @@ write_output() {
     chown ${user}:${group} ${out_file} ; right_status $?
 }
 
+batch_edit_target_files() {
+    for filename in $(find ${target_folder%/}/ -name "${target_file_list}") ; do
+        # reinitialize output array
+        output=()
+        separator ${filename} ${PN}
+        target_file="${filename}"
+        d_message "target_file: [ ${target_file} ]" 2
+        read_input_and_edit_output "${target_file}"
+        d_do dump_output 3
+        if [ ! ${PRETEND} ] ; then
+            # do it for real
+            write_output "${target_file}"
+            # if the first line is now blank, remove it
+            while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' $target_file ; done
+            # if the last line is now blank, remove it
+            while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' $filename ; done
+        else
+            message "${BRon}PRETEND${Boff} -- ${BYon}did not write output${Boff}"
+        fi
+    done
+}
+
 #-----[ main script ]--------------------------------------------------
 echo
 separator "${PN}-${BUILD}" $(hostname)
 checkroot
 initialize_variables || die "failed initialize_variables"
+validate_status_file ${cmdseq_statusfile} || die "failed validate_status_file"
 read_config || die "failed read_config"
 
 #process command line to override config
@@ -160,24 +238,10 @@ process_cmdline $@
 
 sanity_check || die "failed sanity_check"
 display_config || die "failed display_config"
+confirm_continue_or_exit
 
-for filename in ${target_folder%/}/${target_file_list}
-do
-    # reinitialize output array
-    output=()
-    separator ${filename} ${PN}
-    target_file="${filename}"
-    d_message "target_file: [ ${target_file} ]" 2
-    read_input_and_edit_output "${target_file}"
-    d_do dump_output 3
-    if [ ! ${PRETEND} ] ; then
-        # do it for real
-        write_output "${target_file}"
-        # if the first line is now blank, remove it
-        while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' $target_file ; done
-        # if the last line is now blank, remove it
-        while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' $filename ; done
-    else
-        message "PRETEND -- did not write output"
-    fi
-done
+# ok - now actually do it
+run_sequence ${cmdseq_statusfile} || die "failed run_sequence"
+message "${BMon}${PN}${BGon} completed successfully${Boff}"
+echo
+exit 0
