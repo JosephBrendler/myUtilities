@@ -48,7 +48,7 @@ result=0
 mytimezone=America/New_York
 
 varlist="PN BPN BUILD BOARD TARGET"
-varlist+=" starting_step stopping_step cmdsequence_statusfile"
+varlist+=" starting_step stopping_step cmdseq_statusfile"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" bool.COMPLETE bool.FLAGGED"
 varlist+=" BREAK bool.VERBOSE verbosity"
@@ -74,6 +74,7 @@ command_sequence=(
 'add-default-runlevel-services'
 'setup-clock'
 'install-boot-firmware'
+'install-sbc-boot-config'
 'display-next-steps'
 )
 
@@ -97,6 +98,7 @@ msg1_sequence=(
 'add default runlevel services'
 'set up clock'
 'install boot firmware'
+'install sbc-boot-config'
 'display next steps'
 )
 
@@ -120,6 +122,7 @@ msg2_sequence=(
 'adding default runlevel services'
 'setting up clock'
 'installing boot firmware'
+'installing sbc-boot-config'
 'displaying next steps'
 )
 
@@ -143,8 +146,8 @@ initialize_variables() {
     export stopping_step=$(( ${#command_sequence[@]} - 1 )) ; result=$?; d_right_status $result 2
     [ $result -ne 0 ] && FLAGGED=$TRUE
 
-    d_message_n "setting default cmdsequence_statusfile = /root/bin/finalizechrootjoetoo_status" 2
-    export cmdsequence_statusfile="/root/bin/finalizechrootjoetoo_status" ; result=$?; d_right_status $result 2
+    d_message_n "setting default cmdseq_statusfile = /root/bin/finalizechrootjoetoo_status" 2
+    export cmdseq_statusfile="/root/bin/finalizechrootjoetoo_status" ; result=$?; d_right_status $result 2
     [ $result -ne 0 ] && FLAGGED=$TRUE
 
     d_message_n "setting PN = $(basename $0)" 2
@@ -178,32 +181,42 @@ display_configuration()  {
 
 get-target() {
     # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
-    message_n "determining TARGET ..."
-    apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
-    [ $result -eq 0 ] && message "apparent_TARGET: $apparent_TARGET" || \
-        ( E_message "failed to determine apparent_TARGET" && FLAGGED=$TRUE && return 1 )
+    d_message_n "determining TARGET ..." 1
+    apparent_TARGET=$(portageq envvar CHOST) || die "failed to assign apparent_TARGET"
+    d_right_status $TRUE 1
+    d_message "apparent_TARGET: $apparent_TARGET" 2
+    return 0
 }
 
 get-check-config() {
     # source /root/.cb-config and validate TARGET (fatal if failure)
     # also assign BOARD, etc. I am ... (non-fatal if failure)
-    [ -e /root/.cb-config ] && source /root/.cb-config || ( E_message "/root/.cb-config not found" )
-    message_n "validating BOARD, TARGET and qemu-chroot config ..."
+    d_message_n "checking /root/.cb-config" 1
+    if [ -e /root/.cb-config ] ; then
+        source /root/.cb-config  || die "failed to source /root/.cb-config"
+        d_right_status $TRUE 1
+    else
+        d_right_status 1 1
+        E_message "/root/.cb-config not found; exiting"
+        return 1
+    fi
+    d_message_n "validating BOARD, TARGET and qemu-chroot config ..." 1
     if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
-        echo -en " ${BGon}(match)${Boff}"
-        right_status $TRUE
-        message "  BOARD ........: $BOARD"
-        message "  TARGET .......: $TARGET"
-        message "  TARGET_ARCH ..: $TARGET_ARCH"
-        message "  QEMU_ARCH ....: $QEMU_ARCH"
+        debug_do 'echo -en " ${BGon}(match)${Boff}"' 1
+        d_right_status $TRUE 1
+        d_message "  BOARD ........: $BOARD" 2
+        d_message "  TARGET .......: $TARGET" 2
+        d_message "  TARGET_ARCH ..: $TARGET_ARCH" 2
+        d_message "  QEMU_ARCH ....: $QEMU_ARCH" 2
         return 0
     else
-        echo -en " ${BRon}(mismatch)${Boff}"
-        right_status 1
+        debug_do 'echo -en " ${BRon}(mismatch)${Boff}"' 1
+        d_right_status 1 1
         E_message "TARGET mismatch; exiting"
         FLAGGED=$TRUE
         return 1
     fi
+    return 0
 }
 
 build-chroot_emerge-command() {
@@ -408,58 +421,69 @@ fix-inittab() {
 }
 
 write-fstab() {
-    # get root_dev
+    # get root_dev (-P produces assignable var/val pairs; grep mountpoint ensures output TARGET matches mountpoint)
     message_n "determining root_dev ..."
-    root_mountpoint="/"
-    root_dev=$(mount | grep " ${root_mountpoint} " | awk '{print $1}') && \
-    ( echo -en " (${root_dev})" && right_status $result ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
-    # get boot_dev
-    boot_mountpoint="/boot"
+    root_mountpoint="/" ; SOURCE=""
+    eval "$(findmnt -Po SOURCE,TARGET,FSTYPE --target ${root_mountpoint} | grep ${root_mountpoint})" && \
+    root_dev=${SOURCE} || die "failed to assign root_dev"
+    echo -e -n " (${root_dev})"
+    right_status $TRUE
+    # get boot_dev (-P produces assignable var/val pairs; grep mountpoint ensures output TARGET matches mountpoint)
     message_n "determining boot_dev ..."
-    boot_dev=$(mount | grep " ${boot_mountpoint} " | awk '{print $1}') && \
-    ( echo -en " (${boot_dev})" && right_status $result ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    boot_mountpoint="/boot" ; SOURCE=""
+    eval "$(findmnt -Po SOURCE,TARGET,FSTYPE --target ${boot_mountpoint} | grep ${boot_mountpoint})" && \
+    boot_dev=${SOURCE} || die "failed to assign root_dev"
+    echo -e -n " (${root_dev})"
+    right_status $TRUE
     # get blkid data for root_dev
     message_n "getting blkid data for root_dev"
+    TYPE=""; UUID=""; PARTUUID=""
     eval $(blkid | grep ${root_dev} | sed "s|${root_dev}: ||") ; result=$?
     if [ $result -eq 0 ] ; then
         root_fstype=${TYPE}
         root_uuid=${UUID}
         root_partuuid=${PARTUUID}
         echo -en " (fstype: [${root_fstype=}] partuuid: [${root_partuuid}])"
-        right_status $result
+        # set fstab opts and dump-pass strings for root
+        root_opts="noatime"
+        root_dp="0 1"
     else
         echo -en " ${BRon}(fail)${Boff}"
         right_status $result
         FLAGGED=$TRUE
         return 1
     fi
+    right_status $TRUE
     # get blkid data for boot_dev
     message_n "getting blkid data for boot_dev"
-    eval $(blkid | grep ${boot_dev} | sed "s|${boot_dev}: ||") ; result=$?
-    if [ $result -eq 0 ] ; then
-        boot_fstype=${TYPE}
-        boot_uuid=${UUID}
-        boot_partuuid=${PARTUUID}
-        echo -en " (fstype: [${boot_fstype=}] partuuid: [${boot_partuuid}])"
-        right_status $result
+    if [ ! -z "${boot_dev}" ] ; then
+        TYPE=""; UUID=""; PARTUUID=""
+        eval $(blkid | grep ${boot_dev} | sed "s|${boot_dev}: ||") ; result=$?
+        if [ $result -eq 0 ] ; then
+            boot_fstype=${TYPE}
+            boot_uuid=${UUID}
+            boot_partuuid=${PARTUUID}
+            echo -e -n " (fstype: [${boot_fstype=}] partuuid: [${boot_partuuid}])"
+            # set fstab opts and dump-pass strings for boot
+            boot_opts="noatime,noauto,nodev,nosuid,noexec"
+            boot_dp="1 2"
+        else
+            echo -e -n " ${BRon}(fail)${Boff}"
+            right_status $result
+            FLAGGED=$TRUE
+            return 1
+        fi
     else
-        echo -en " ${BRon}(fail)${Boff}"
-        right_status $result
-        FLAGGED=$TRUE
-        return 1
+        echo -e -n " (none mounted; skipping)"
     fi
-    # set fstab opts and dump-pass strings for root and boot
-    root_opts="noatime"
-    root_dp="0 1"
-    boot_opts="noatime,noauto,nodev,nosuid,noexec"
-    boot_dp="1 2"
+    right_status $TRUE
     # write (append) fstab line for /boot and / (PARTUUIDs will have to be changed after image is written to media (e.g. sd card)
-    message_n "writing (appending) fstab line for /boot ..."
-    echo -e "PARTUUID=${boot_partuuid}\t${boot_mountpoint}\t\t${boot_fstype}\t\t${boot_opts}\t\t${boot_dp}" >> /etc/fstab && \
-    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
-    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE )
+    if [ ! -z "${boot_dev}" ] ; then
+        message_n "writing (appending) fstab line for /boot ..."
+        echo -e "PARTUUID=${boot_partuuid}\t${boot_mountpoint}\t\t${boot_fstype}\t\t${boot_opts}\t\t${boot_dp}" >> /etc/fstab && \
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE )
+    fi
     message_n "writing (appending) fstab line for / ..."
     echo -e "PARTUUID=${root_partuuid}\t${root_mountpoint}\t\t${root_fstype}\t\t${root_opts}\t\t${root_dp}" >> /etc/fstab && \
     ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
@@ -580,16 +604,50 @@ install-boot-firmware() {
     #    sys-boot/raspi-boot-firmware  -- for raspi boards, all of which are named bcm27xx-rpi-x-x...
     #    sys-boot/rockchip-boot-firmware  -- for rockchip boards, all of which are named rk3xxx-nnnn
     #    for generic boards use default (raspi)
+    # installs kernel and u-boot reflash resources
     # determine which we need ...
+    # re-load BOARD, in case we are resuming
+    d_message "BOARD: $BOARD" 5
     case ${BOARD:0:2} in
-        "bc" ) package="sys-boot/raspi-boot-firmware" ;;
-        "rk" ) package="sys-boot/rockchip-boot-firmware" ;;
-        "fs"|"im" ) package="sys-boot/nxp-boot-firmware" ;;
+        "bc" )  # raspi
+            package="sys-boot/raspi-boot-firmware"
+            prefix=" USE=\"${BOARD} dtbo kernel\""
+            ;;
+        "rk" )  # rockchip
+            package="sys-boot/rockchip-boot-firmware"
+            prefix=" USE=\"${BOARD} dtbo armbian_kernel\""
+            ;;
+        "me" )  # amlogic
+            package="sys-boot/nxp-boot-firmware"
+            prefix=" USE=\"${BOARD} dtbo armbian_kernel joetoo-fw \""
+            ;;
+        "fs"|"im" )  # nxp (freescale)
+            package="sys-boot/nxp-boot-firmware"
+            prefix=" USE=\"${BOARD} dtbo kernel\""
+            ;;
         *    ) E_message "invalid board case in $0"; return 1 ;;
     esac
-    message "about to run chroot_emerge ${emerge_opts} ${package}"
-    [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
-    eval "${chroot_emerge} ${emerge_opts} ${package}" ;  result=$?
+    [[ $INTERACTIVE ]] && emerge_opts="-uavDNUg" || emerge_opts="-uvDNg"
+    message "about to run ${prefix} chroot_emerge ${emerge_opts} ${package}"
+    eval "${prefix} ${chroot_emerge} ${emerge_opts} ${package}" ;  result=$?
+    [ $result -eq 0 ] && message "chroot_emerge ${emerge_opts} ${package} ${BGon}succeeded${Boff}" || \
+        E_message "chroot_emerge ${emerge_opts} ${package}  ${BRon}failed${Boff}"
+    return $result
+}
+
+
+* sys-boot/nxp-boot-firmware [1]
+ {+dtbo fsl-imx8mq-phanbell +kernel}
+
+install-sbc-boot-config() {
+    # install sys-boot/sbc-boot-config (covers all makers); installs --
+    #    raspi: cmdline.txt, config.txt
+    #    rockchip|nxp|amlogic: joetooEnv.txt, boot.cmd, boot.scr
+    package="sys-boot/sbc-boot-config"
+    prefix="USE=\"${BOARD}\""
+    [[ $INTERACTIVE ]] && emerge_opts="-uavDNUg" || emerge_opts="-uvDNg"
+    message "about to run ${prefix} chroot_emerge ${emerge_opts} ${package}"
+    eval "${prefix} ${chroot_emerge} ${emerge_opts} ${package}" ;  result=$?
     [ $result -eq 0 ] && message "chroot_emerge ${emerge_opts} ${package} ${BGon}succeeded${Boff}" || \
         E_message "chroot_emerge ${emerge_opts} ${package}  ${BRon}failed${Boff}"
     return $result
@@ -615,20 +673,19 @@ msg="processing cmdline ..."
 process_cmdline "${@}"   # override defaults, sets BOARD or TARGET
 right_status $?
 
-validate_status_file ${cmdsequence_statusfile}
-#get-target ;  result=$?
-#[ $result -eq 0 ] && message "get-target returned ${BGon}success${Boff}" || \
-#    ( E_message "get-target returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+validate_status_file ${cmdseq_statusfile}
 
-#get-check-config ;  result=$?
-#[ $result -eq 0 ] && message "get-check-config returned ${BGon}success${Boff}" || \
-#    ( E_message "get-check-config returned ${BRon}failure${Boff}" && FLAGGED=$TRUE )
+# check CTARGET - CBUILD - CHOST configuration
+get-target || die "failed to get-target"
+
+# reload /root/.cb-config to check BOARD against CTARGET
+get-check-config || die "failed to get-check-config"
 
 build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
 
 display_configuration || die "failed to display_configuration"
 
-run_sequence ${cmdsequence_statusfile} || die "failed to run_sequence"
+run_sequence ${cmdseq_statusfile} || die "failed to run_sequence"
 
 message_n "removing ${firstrunmarker} ..."
 rm ${firstrunmarker} ; result=$?
