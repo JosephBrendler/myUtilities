@@ -14,7 +14,7 @@ KEYWORDS="arm arm64 amd64 ~arm ~arm64 ~amd64"
 # to-do: drop sources USE flags, since packages can use linux-info to get from running kernel
 #   switch kernels so "modprobe configs" is not required to turn that on
 IUSE="
-	-raspi-sources -rockchip-sources -nxp-sources
+	-raspi-sources -rockchip-sources -amlogic-sources -nxp-sources
 	+dtb +dtbo
 	-symlink
 "
@@ -24,21 +24,23 @@ REQUIRED_USE=""
 RESTRICT="mirror"
 
 RDEPEND="
-	nxp-sources?    ( =sys-kernel/nxp-sources-${PV} )
 	raspi-sources?    ( =sys-kernel/raspi-sources-${PV} )
 	rockchip-sources? ( =sys-kernel/rockchip-sources-${PV} )
+	amlogic-sources? ( =sys-kernel/amlogic-sources-${PV} )
+	nxp-sources? ( =sys-kernel/nxp-sources-${PV} )
 "
 
 BDEPEND="${RDEPEND}"
 
-SRC_URI="https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/${CATEGORY}/${P}.tar.bz2"
+# moving from github to raspi56403 (PN-PV vs P to enable -rX revisions of ebuild)
+#SRC_URI="https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/${CATEGORY}/${P}.tar.bz2"
+SRC_URI="https://raspi56403.brendler/joetoo-kernels/${PN}-${PV}.tar.bz2"
 
 # fix S
 S=${WORKDIR}
 
 # NOTE: joetoo kernels for some rockchip models don't work... (lacking patched sources)
 
-# extract model from package name
 my_PN=${PN/linux-/}
 model=${my_PN/_joetoo_kernelimage/}
 
@@ -63,41 +65,16 @@ pkg_setup() {
 }
 
 pkg_preinst() {
-	export FALSE=''
-	export TRUE=0
-	EFI_MOUNT=$FALSE
-	# if /boot/efi is on a separate block device, and it is not mounted, try to mount it
-	elog "checking whether /boot/efi should be/is mounted ..."
-	if grep -v '^#' /etc/fstab | grep boot/efi >/dev/null 2>&1  ; then
-		EFI_MOUNT=$TRUE
-		elog "Verified /boot/efi is supposed to be mounted; checking if it is ..."
-		if ! grep "${ROOT%/}/boot/efi" /proc/mounts >/dev/null 2>&1 ; then
-			elog "${ROOT%/}/boot/efi is not mounted, trying to mount it now ..."
-			! $(mount /boot/efi) && \
-				die "Failed to mount /boot" || \
-				elog "Succeeded in mounting /boot/efi ; continuing ..."
-		else
-			elog "Verified ${ROOT%/}/boot/efi is mounted ; continuing ..."
-		fi
-	else
-		elog "Verified /boot/efi is not supposed to be mounted ; continuing ..."
-	fi
-	BOOT_MOUNT=$FALSE
+	einfo "Starting pkg_preinst ..."
 	# if /boot is on a separate block device, and it is not mounted, try to>
-	elog "checking whether /boot should be/is mounted ..."
-	if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  ; then
-		BOOT_MOUNT=$TRUE
-		elog "Verified /boot is supposed to be mounted; checking if it is ..."
-		if ! grep "${ROOT%/}/boot" /proc/mounts >/dev/null 2>&1 ; then
-			elog "${ROOT%/}/boot is not mounted, trying to mount it now ..."
-			! $(mount /boot) && \
-				die "Failed to mount /boot" || \
-				elog "Succeeded in mounting /boot ; continuing ..."
-		else
-			elog "Verified ${ROOT%/}/boot is mounted ; continuing ..."
-		fi
+	if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  && \
+		! grep "${ROOT%/}/boot" /proc/mounts >/dev/null 2>&1 ; then
+		elog "${ROOT%/}/boot is not mounted, trying to mount it now..."
+		! $(mount /boot) && \
+			die "Failed to mount /boot" || \
+			elog "Succeeded in mounting /boot ; continuing..."
 	else
-		elog "Verified /boot is not supposed to be mounted ; continuing ..."
+		elog "Verified /boot is mounted ; continuing..."
 	fi
 }
 
@@ -127,13 +104,14 @@ src_install() {
 		# note: armbian upstream sources put dtb/overlay files in "boot/dtb-<branch>-<version>/${dtb_folder}/"
 		#       and then and need link dtb-<branch>-<version> <-- dtb in /boot/
 		# note: joetoo's kernelupdate tarball upstream sources put overlay files in
-		#	"/boot/dts/overlays" , for raspi models, but in
-		#	"/boot/dts/rockchip/overlay" , for rockdhip models
+		#        "/boot/dts/overlays" , for raspi models, but in
+		#        "/boot/dts/rockchip/overlay" , for rockdhip models
 		# note: armbian upstream sources put overlay files in "/boot/dtb-<branch>-<version>/${dtb_folder}/overlay"
 		#       and then and need link dtb-<branch>-<version> <-- dtb in /boot/
 		case ${model:0:2} in
 			"bc" )  dtb_folder="broadcom"; src_overlay_path="/boot/dts/overlays/"; dest_overlay_path="/boot/overlays/";;
 			"rk" )  dtb_folder="rockchip"; src_overlay_path="/boot/dts/rockchip/overlay/"; dest_overlay_path="/boot/dts/rockchip/overlay/";;
+			"me" )  dtb_folder="amlogic"; src_overlay_path="/boot/dts/amlogic/overlay/"; dest_overlay_path="/boot/dts/amlogic/overlay/";;
 			"fs"|"im" )  dtb_folder="nxp/freescale"; src_overlay_path="/boot/dts/nxp/overlay/"; dest_overlay_path="/boot/dts/nxp/overlay/";;
 			*    )  die "Error: invalid model asignment [ ${model} ]. Exiting ..." ;;
 		esac
@@ -200,7 +178,7 @@ src_install() {
 	fi
 	# conditionally install symlink
 	# To Do - if boot is not on vfat ==> [ ! "$(grep -v '^#' /etc/fstab | grep boot | awk '{print $3}')" == "vfat" ]
-	#	 then determine link name from joetooEnv.txt (rockchip imagefile=) or config.txt (raspi kernel=)
+	#         then determine link name from joetooEnv.txt (rockchip imagefile=) or config.txt (raspi kernel=)
 	if use symlink ; then
 		elog "  (USE=\"symlink\") (set)"
 		ewarn "USE symlink (selected), but this is not implemented yet"

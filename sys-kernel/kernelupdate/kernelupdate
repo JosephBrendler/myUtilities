@@ -68,14 +68,15 @@ config_parmlist+=" verbosity lv.status_file CONF_DIR user"
 config_parmlist+=" makeopts features arch cross_compile model lv.model_config"
 config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
 
-devel_parmlist="lv.my_devel_dir lv.devel_dir lv.my_devel_dir_credentials lv.my_ebuild_dir"
-devel_parmlist+=" lv.my_ebuild_dir_credentials lv.ebuild_dir lv.host_dir SSH_AUTH_SOCK"
+devel_parmlist="lv.my_ebuild_dir lv.my_ebuild_dir_credentials"
+devel_parmlist+=" lv.ebuild_dir lv.host_dir SSH_AUTH_SOCK"
 devel_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
 devel_parmlist+=" kernel_basename lv.kernel_image_name"
 
 output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
-output_parmlist+=" lv.publish_tarball_cmd_file lv.publish_ebuild_cmd_file"
-
+output_parmlist+=" lv.publish_tarball_cmd_file"
+output_parmlist+=" lv.publish_ebuild_cmd_file"
+output_parmlist+=" joetoo_kernel_webserver"
 copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
 
 varlist="${config_parmlist} ${devel_parmlist} ${output_parmlist} ${copypaste_parmlist}"
@@ -93,8 +94,11 @@ kernel="kernel7.img"
 dtb_folder="rockchip"
 overlay_folder="rockchip/overlay"
 build_root="/home/${user}/My_${model}_project"
-my_devel_dir="/home/${user}/myUtilities/sys-kernel"
-my_devel_dir_credentials="/home/${user}/myUtilities/.git/.credentials"
+#my_devel_dir="/home/${user}/myUtilities/sys-kernel"
+#my_devel_dir_credentials="/home/${user}/myUtilities/.git/.credentials"
+sshkey_rsa="/home/${user}/.ssh/id_rsa"
+sshkey_ecdsa="/home/${user}/.ssh/id_ecdsa"
+sshkey_ed25519="/home/${user}/.ssh/id_ed25519"
 my_ebuild_dir="/home/${user}/joetoo/sys-kernel"
 my_ebuild_dir_credentials="/home/${user}/joetoo/.git/.credentials"
 host_dir=${build_root%/}/"domU_kernel_images"
@@ -103,6 +107,7 @@ RESUME=${FALSE}
 answer=""
 newanswer=""
 SSH_AUTH_SOCK="/home/${user}/.ssh/ssh-agent.sock"
+joetoo_kernel_webserver="raspi56403.brendler"
 
 #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
 message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
@@ -191,7 +196,7 @@ d_message "version_number: ${version_number}" 3
 kernel_image_name="${kernel_basename}-${version_number}"
 
 # build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
-devel_dir="${my_devel_dir%/}"
+#devel_dir="${my_devel_dir%/}"
 ebuild_dir="${my_ebuild_dir%/}/${kernel_basename}"
 publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
 publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
@@ -203,6 +208,7 @@ d_message "done setup and auto-configure" 3
 # 20250112 - put back 'publish_ebuild' for all but dom0; now using separate linux-${model_joetoo-kernelimage.${PV}.ebuilds
 # 20250507 - dropped dom0 build (use gentoo-kernel w savedconfig instead)
 # 20250920 - started rewrite to use script_header_joetoo_extended run_sequence and cmdline processing
+# 20250928 - started migration of joetoo-kernels from github to joetoo_kernel_webserver
 command_sequence=(
 'cache_commit_signing_key'
 'backup_config'
@@ -266,14 +272,15 @@ d_message "done setting command sequence" 3
 
 # set default starting and stopping step (override w cmdline)
 starting_step=0
-stopping_step=${#command_sequence[@]}
+stopping_step=$(( ${#command_sequence[@]} -1 ))
 
 #-----[ functions ]--------------------------------------------------
 
 cache_commit_signing_key() {
-    sudo -u ${user} echo "test" > /home/${user}/cachetest
-    sudo -u ${user} gpg --clearsign /home/${user}/cachetest
-    sudo -u ${user} rm /home/${user}/cachetest.asc;
+    sudo -u ${user} echo "test" > /home/${user}/cachetest && \
+    sudo -u ${user} gpg --clearsign /home/${user}/cachetest && \
+    sudo -u ${user} rm /home/${user}/cachetest.asc; result=$?
+    return $result
 }
 
 warn_oldconfig() {
@@ -313,9 +320,10 @@ make_mrproper() {
   clean_make_me="MAKEOPTS=\"${makeopts}\" FEATURES=\"${features}\" "
   clean_make_me+="make ARCH=${arch} CROSS_COMPILE=${cross_compile} "
   d_message "Cleaning sources directory [ ${sources_dir} ] ..." 1
-  eval ${clean_make_me} mrproper
+  eval ${clean_make_me} mrproper || die "failed to clean_make_me mrproper"
   d_message "Cleaning ${model} build directory [ ${model_dir} ] ..." 1
-  eval ${make_me} mrproper
+  eval ${make_me} mrproper || die "failed to make_me mrproper"
+  return 0
 }
 
 backup_config() {
@@ -329,10 +337,11 @@ backup_config() {
     E_message "$msg"
     exit
   fi
+  return 0
 }
 
 save_new_config() {
-  cp -v ${model_config} ${config_dir%/}/.config.${model}-${version_number}
+  cp -v ${model_config} ${config_dir%/}/.config.${model}-${version_number} && return 0 || return 1
 }
 
 # leaving this here for reference, but it is depracated, since I now
@@ -340,6 +349,8 @@ save_new_config() {
 make_dtbs() {
   # make dtbs for this model SBC, if this is not a domU build
   [ ! "${model:0:3}" == "dom" ] && eval "${make_me} dtbs"
+  result=$? ; return $result
+
 }
 
 clean_distrib_dirs()
@@ -354,7 +365,7 @@ clean_distrib_dirs()
   find ${build_dir} -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
   message "${BYon}Contents of ${distrib_dir} --"
   message "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
-  tree -L 2 ${distrib_dir%/}/
+  tree -a -L 2 ${distrib_dir%/}/
 }
 
 verify_boot_mount() {
@@ -369,23 +380,54 @@ verify_boot_mount() {
   else
     message "Verified /boot is mounted ; continuing..."
   fi
+  return 0
 }
 
 install_kernel()
 {
-  # stage kernel
-  cd ${sources_dir} && message "Now working in $PWD"
-  message "${LBon}Installing the kernel ...${Boff}"
-  case ${model} in
+    # stage kernel
+    cd ${sources_dir} && message "Now working in $PWD"
+    message "${LBon}Installing the kernel ...${Boff}"
     # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
-    "domU" ) eval "INSTALL_PATH=${host_dir} ${make_me} install" ;
-             eval "INSTALL_PATH=${boot_dir} ${make_me} install" ;;
-    # Otherwise (SBC kernel), install to boot_dir for tarball.  Don't just use make install;
-    #   also copy the proper image manually to the proper deployed kernel name
-    *      ) eval "INSTALL_PATH=${boot_dir} ${make_me} install" ;
-             cp -av ${model_dir%/}/arch/${arch}/boot/${image} \
-                 ${boot_dir%/}/${kernel}-${version_number};;
-  esac
+    if [[ "${model}" == "domU" ]] ; then
+        eval "INSTALL_PATH=${host_dir} ${make_me} install"
+        eval "INSTALL_PATH=${boot_dir} ${make_me} install"
+    else
+        # Otherwise install to boot_dir for tarball. Start with make install
+        echo -e -n "${BWon}"
+        eval "INSTALL_PATH=${boot_dir} ${make_me} install" | sed 's|^|    |'
+        #   also copy the proper image manually to the proper deployed kernel name
+        #   as specified in the confg file
+        echo -e -n "${BMon}"
+        cp -av ${model_dir%/}/arch/${arch}/boot/${image} \
+             ${boot_dir%/}/${kernel}-${version_number} | sed 's|^|    |'
+        echo -e -n "${Boff}"
+        # for extra assurance, copy all kernels found here, named as built
+        # ${image} specified in config file should be one of --
+        #  "Image" (uncompressed, raw kernel binary)
+        #  "zImage" (self-extracting, compressed kernel image, loads itself in low memory for older bootloaders/systems)
+        #  "Image.gz" (the Image file compressed using the gzip; requires the bootloader to decompress it)
+        #  "bzImage" (Big zImage) allows decompression into high memory for larger kernels
+        #  (see docs to determine which is needed)
+        k_out_dir="${model_dir%/}/arch/${arch}/boot/"
+        d_message "k_out_dir: $k_out_dir" 5
+        message "${LBon}Also staging other kernel image formats ...${Boff}"
+        k_name_list="Image zImage Image.gz bzImage vmlinuz vmlinux"
+        for k_name in ${k_name_list} ; do
+            d_message "looking for k_name: [${k_name}] in k_out_dir: [${k_out_dir%}]" 4
+            # if there is one of these, copy it
+            d_message "${BYon}----- will examine each line in the following -----${Boff}" 4
+            debug_do 'echo -e -n "${BMon}"; find ${k_out_dir%} -name "${k_name}"; echo -e -n "${Boff}"' 4
+            d_message "${BYon}------- will examine each line in the above -------${Boff}" 4
+            for file in $(find ${k_out_dir%} -name "${k_name}") ; do
+                d_message "${BWon}copying file [$file]${Boff}" 5
+                echo -e -n "${BMon}"
+                cp -av ${file} ${boot_dir%/}/ | sed 's|^|    |'
+                echo -e -n "${Boff}"
+            done
+        done
+    fi
+    return 0
 }
 
 install_modules()
@@ -412,6 +454,7 @@ install_modules()
   rm -v source 2>/dev/null
   ln -snfv /usr/src/linux source
   cd $old_dir && message "Now working in $PWD"
+  return 0
 }
 
 install_dtbs()
@@ -421,6 +464,7 @@ install_dtbs()
     message "${LBon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
     mkdir -p ${boot_dir%/}/dts/${dtb_folder}
     eval "${make_me} INSTALL_DTBS_PATH=${boot_dir%/}/dts/${dtb_folder%/}/ dtbs_install"
+
     message "In case of error in dtbs_install, will try to manually copy ..."
     # manually install dtb files from dtb_folder (omit subdirectories like "overlays")
     for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${dtb_folder%/}/ -maxdepth 1 -mindepth 1 -type f -iname '*.dtb' -or -iname 'README*')
@@ -435,6 +479,12 @@ install_dtbs()
     # copy the one dtb file we need up to boot
     message "${LBon}Staging the dtb file for tarball ...${Boff}"
     cp -av ${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb ${boot_dir%/}/
+
+    # for extra assurance, copy the entire dts folder...
+    message "${LBon}Also staging the entire dts folder for tarball (just in case) ...${Boff}"
+    mkdir -p ${boot_dir%/}/entire_source_dts
+    cp -av ${model_dir%/}/arch/${arch}/boot/dts ${boot_dir%/}/entire_source_dts/
+    return 0
 }
 
 make_tarball()
@@ -449,59 +499,50 @@ make_tarball()
     # create tarball from staged contents; don't include kernel sources
     tar_command="tar "
     tar_command+="  --exclude lib/modules/${module_dir%/}/source/"
+    tar_command+="  --exclude lib/modules/${module_dir%/}/build/"
     tar_command+="  -cvjf ${kernel_image_name}.tar.bz2 ./boot ./lib"
     eval $tar_command && \
     message "${BYon}Complete.  Your tarball is located in the ${LBon}${distrib_dir}${BYon} directory${Boff}" || \
     E_message "${BRon}Something went wrong -- refer to output above${Boff}"
     cd $old_dir && message "Now working in $PWD"
+    return 0
 }
 
 publish_tarball() {
-    # publish_tarball must also publish the tarball corresponding to the template ebuild
-    # or publish_ebuild will fail because pkgdev wont be able to create a manifest
+    # Migrating joetoo-kernels from github to raspi56403.brendler as of 28 Sep 2025
+    # So this script no longer needs to publish to github.  Instead it will
+    # will use scp to transfer (as ${user}) these files to ${user}'s home directory
+    # on raspi56403.brendler, and we will rely on a cron job on raspi56403.brendler
+    # to move these files up to the web server
+    d_message "joetoo_kernel_webserver: $joetoo_kernel_webserver" 3
     publish_tarball_command_sequence=()
-    publish_tarball_command_sequence+=("#!/bin/bash" \
+
+    # set SSH_AUTH_SOCK env var to a fixed value and test whether ${SSH_AUTH_SOCK} is valid
+    # if not valid,  remove the old one, then start ssh-agent using ${SSH_AUTH_SOCK}
+    # check for ssh keys, and add if they are not already loaded copy the new tarball
+    # to joetoo_kernel_webserver
+
+    publish_tarball_command_sequence+=( \
+        "#!/bin/bash" \
         'export SSH_AUTH_SOCK="'"${SSH_AUTH_SOCK}"'"' \
         "ssh-add -l 2>/dev/null >/dev/null" \
         '[ $? -ge 2 ] && ssh-agent -a ${SSH_AUTH_SOCK} >/dev/null' \
         "echo 'ssh-agent added, listing keys ...'" \
         "ssh-add -l" \
-        "source ${my_devel_dir_credentials}" \
-        "echo" \
-        "cd ${devel_dir%/}/" \
-        "echo new PWD: \${PWD}" \
-        "git pull" )
+        '[[ -z $(ssh-add -l | grep -v "no identities") ]] && for x in ${sshkey_rsa} ${sshkey_ecdsa} ${sshkey_ed25519}; do ssh-add ${x}; done' \
+        'echo' )
 
-    # if the version 0.0.0 tarball for this package does not exist, create it and upload to github repo
-    if [ ! -e ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ] ; then
-        # use the README-instructions file in ${CONF_DIR%/} as content for the dummy tarball 0.0.0
-        message "creating dummy tarball ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ..."
-        tar -cvjpf ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 ${CONF_DIR%/}/README-instructions
-        message_n "changing ownership for upload ..."
-        chown -R ${user}:${user} ${devel_dir%/}/ ; right_status $?
-        publish_tarball_command_sequence+=("git add ${kernel_basename}-0.0.0.tar.bz2")
-    else
-        d_message "tarball ${devel_dir%/}/${kernel_basename}-0.0.0.tar.bz2 already exists. Not creating." 3
-    fi
+    # change ownership for upload
+    message_n 'changing ownership for upload ...'
+    chown -R ${user}:${user} ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ; right_status $?
 
-    # copy the new tarball to devel_dir and upload to github repo
-    echo; message "copying package ${distrib_dir%/}/${kernel_image_name}.tar.bz2 to ${devel_dir%/}/"
-    cp -v ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ${devel_dir%/}/
-    message_n "changing ownership for upload ..."
-    chown -R ${user}:${user} ${devel_dir%/}/ ; right_status $?
-
+    # now actually copy the tarball to the webserver with scp
     publish_tarball_command_sequence+=( \
-        "git status" \
-        "git add ${kernel_image_name}.tar.bz2" \
-        "git commit -m \"adding ${kernel_image_name}\"" \
-        'eval "git push git@github.com:${gituser}/${gitrepo}.git master"' \
-        'git push' \
-        '' )
+        "echo; message_n 'copying tarball package to webserver ...'" \
+        "scp ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ${joetoo_kernel_webserver}:/home/${user}/" \
+        )
 
-    # move to the devel_dir, so git commands are relative to it locally
-    old_dir=$(pwd)
-    message "leaving $(pwd)" &&  cd ${devel_dir} && message "Now working in $(pwd)"
-
+    # now output the publish_tarball_command_sequence arrat into a file (script)
     echo; message "Building publish_tarball_cmd_file [ ${publish_tarball_cmd_file} ]..."
     # actually build the publish_tarball_cmd_file from the publish_tarball_command_sequence
     # first command uses single ">", to initialize the file; then others use ">>"
@@ -516,15 +557,17 @@ publish_tarball() {
     done
 
     message "leaving $(pwd)" &&  cd ${old_dir} && message "Now working in $(pwd)"
-    separator "contents of ${publish_tarball_cmd_file}... " $(hostname)
-    cat ${publish_tarball_cmd_file}
-    message_n "setting permissions on ${publish_tarball_cmd_file}... "
+    separator "${FUNCNAME[0]}" "(script contents)"
+    cat ${publish_tarball_cmd_file} | sed 's|^|    |'
+    message_n "setting permissions on ${publish_tarball_cmd_file} ... "
     chown ${user}:${user} ${publish_tarball_cmd_file} && \
     chmod +x ${publish_tarball_cmd_file} ; right_status $?
 
     # now actually execute the publication by running the publication command file
-    separator "now executing commands in ${publish_tarball_cmd_file}... " $(hostname)
+    separator "${FUNCNAME[0]}" "(executing script)"
     sudo -u ${user} ${publish_tarball_cmd_file}
+
+    result=$? ; return $result
 }
 
 publish_ebuild() {
@@ -661,7 +704,7 @@ publish_ebuild() {
 #         "git add ../../metadata/md5-cache/sys-kernel/metadata.xml")
     # cntinue building the git command sequence
     publish_ebuild_command_sequence+=( \
-        "git commit -m \"adding ${kernel_image_name}\"" \
+        "git commit -s -m \"adding ${kernel_image_name}\"" \
         'eval "git push git@github.com:${gituser}/${gitrepo}.git master"' \
         'git push' \
         '' )
@@ -692,108 +735,113 @@ publish_ebuild() {
     # now actually execute the publication by running the publication command file
     separator "now executing commands in ${publish_ebuild_cmd_file}... " $(hostname)
     sudo -u ${user} ${publish_ebuild_cmd_file}
+
+    result=$? ; return $result
 }
 
 
 display_config()
 {
-longest=$(get_longest ${varlist})
+    longest=$(get_longest ${varlist})
 
-message "${BMon}Current Configuration:${Boff}"
-display_vars ${longest} "CONF_DIR"
-echo
-separator "From Config File and/or command line" $(hostname)
-display_vars ${longest} ${config_parmlist}
-echo
-separator "Auto-configured" $(hostname)
-display_vars ${longest} ${devel_parmlist}
-echo
-separator "Output Information" $(hostname)
-display_vars ${longest} ${output_parmlist}
-echo
-separator "Copy/Paste Information" $(hostname)
-cplongest=$(get_longest ${copypaste_parmlist})
-display_vars ${cplongest} ${copypaste_parmlist}
-echo
-message "${Mon}If building manually${Boff} --"
-message "  ${Mon}first${Boff} cd ${sources_dir}"
-message "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
-message "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
-echo
-message "  ${Gon}make_me='${make_me}'${Boff}"
-echo
-message "${Mon}then use e.g.${Boff} --"
-msg1='eval ${manual_prefix}'
-msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
-message "${Gon}${msg1} ${msg2}${Boff}"
-message "or"
-msg2="make menuconfig${Boff}"
-message "${Gon}${msg1} ${msg2}${Boff}"
-echo
-msg1='eval ${make_me} olddefconfig'
-message "or"
-message "${Gon}${msg1}${Boff}"
-echo
+    message "${BMon}Current Configuration:${Boff}"
+    display_vars ${longest} "CONF_DIR"
+    echo
+    separator "From Config File and/or command line" $(hostname)
+    display_vars ${longest} ${config_parmlist}
+    echo
+    separator "Auto-configured" $(hostname)
+    display_vars ${longest} ${devel_parmlist}
+    echo
+    separator "Output Information" $(hostname)
+    display_vars ${longest} ${output_parmlist}
+    echo
+    separator "Copy/Paste Information" $(hostname)
+    cplongest=$(get_longest ${copypaste_parmlist})
+    display_vars ${cplongest} ${copypaste_parmlist}
+    echo
+    message "${Mon}If building manually${Boff} --"
+    message "  ${Mon}first${Boff} cd ${sources_dir}"
+    message "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
+    message "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
+    echo
+    message "  ${Gon}make_me='${make_me}'${Boff}"
+    echo
+    message "${Mon}then use e.g.${Boff} --"
+    msg1='eval ${manual_prefix}'
+    msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
+    message "${Gon}${msg1} ${msg2}${Boff}"
+    message "or"
+    msg2="make menuconfig${Boff}"
+    message "${Gon}${msg1} ${msg2}${Boff}"
+    echo
+    msg1='eval ${make_me} olddefconfig'
+    message "or"
+    message "${Gon}${msg1}${Boff}"
+    echo
+    return 0
 }
 
 make_sources_message() {
-# pull text from ${CONF_DIR%/}/README-instructions
-# ignore lines beginning with two #s (i.e. "##")
-# echo lines beginning with one "#" in light blue
-# ehco other lines in bright white
-#
-d_message "running make_sources_message() ..." 3
-d_message "CONF_DIR: ${CONF_DIR}" 3
-d_message_n "README-instructions file" 3
-[ -f ${CONF_DIR%/}/README-instructions ] && d_message "found" 3 || dE_message "not found!" 3
-while read line
-do
-  d_message "considering line: $line" 5
-  if [ "${line:0:1}" == "#" ] ; then
-    if [ "${line:1:1}" != "#" ] ; then    # do not print those lines starting "##" at all
-        echo -e ${LBon}${line}${Boff}    # emphasize in light blue the comment lines beginning "#"
-    fi
-  else
-    echo -e ${BWon}${line}${Boff}        # emphasize in bright white only the lines that do not begin with "#"
-  fi
-done < ${CONF_DIR%/}/README-instructions
+    # pull text from ${CONF_DIR%/}/README-instructions
+    # ignore lines beginning with two #s (i.e. "##")
+    # echo lines beginning with one "#" in light blue
+    # ehco other lines in bright white
+    #
+    d_message "running make_sources_message() ..." 3
+    d_message "CONF_DIR: ${CONF_DIR}" 3
+    d_message_n "README-instructions file" 3
+    [ -f ${CONF_DIR%/}/README-instructions ] && d_message "found" 3 || dE_message "not found!" 3
+    while read line
+    do
+      d_message "considering line: $line" 5
+      if [ "${line:0:1}" == "#" ] ; then
+        if [ "${line:1:1}" != "#" ] ; then    # do not print those lines starting "##" at all
+            echo -e ${LBon}${line}${Boff}    # emphasize in light blue the comment lines beginning "#"
+        fi
+      else
+        echo -e ${BWon}${line}${Boff}        # emphasize in bright white only the lines that do not begin with "#"
+      fi
+    done < ${CONF_DIR%/}/README-instructions
+
+    result=$? ; return $result
 }
 
 sanity_check() {
-# veryfy the sanity of the combination of arguments on the command line
-### this is carried over from jus example, but it is not used here (yet)
+    # veryfy the sanity of the combination of arguments on the command line
+    ### this is carried over from jus example, but it is not used here (yet)
 
-### posible future additional sanity checks like this...
-#BOGUSTEST=${FALSE}
-#[[ ! $INTERACTIVE ]] && [[ $RESUME ]] && [[ $BOGUSTEST ]] \
-#   E_message "Dangerous option combination: noninteractive and resume" && \
-#   usage && exit 1
+    ### posible future additional sanity checks like this...
+    #BOGUSTEST=${FALSE}
+    #[[ ! $INTERACTIVE ]] && [[ $RESUME ]] && [[ $BOGUSTEST ]] \
+    #   E_message "Dangerous option combination: noninteractive and resume" && \
+    #   usage && exit 1
 
-d_message "running sanity_check() ..." 3
-d_message "sources_dir: ${sources_dir}" 3
-answer=""
-if [[ $starting_step -eq 0 ]]
-then
-  # if a sources directory has not been linked, advise the user about this
-  if [[ ! -e "${sources_dir}" ]]
-  then
-    separator "${PN}" "Manual Prerequisites"
-    E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
-    make_sources_message
-    exit
-  else
-    # confirm the current configuration before executing main script
-    prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
-    [[ ! $answer == [Yy] ]] && return 1
-  fi
-else
-  # resume operation at some step other than 0
-  do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
-  do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
-  prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
-  [[ ! $answer == [yY] ]] && return 1
-fi
-return 0
+    d_message "running sanity_check() ..." 3
+    d_message "sources_dir: ${sources_dir}" 3
+    answer=""
+    if [[ $starting_step -eq 0 ]]
+    then
+      # if a sources directory has not been linked, advise the user about this
+      if [[ ! -e "${sources_dir}" ]]
+      then
+        separator "${PN}" "Manual Prerequisites"
+        E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
+        make_sources_message
+        exit
+      else
+        # confirm the current configuration before executing main script
+        prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
+        [[ ! $answer == [Yy] ]] && return 1
+      fi
+    else
+      # resume operation at some step other than 0
+      do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
+      do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
+      prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
+      [[ ! $answer == [yY] ]] && return 1
+    fi
+    return 0
 }
 
 #-----[ main script ]------------------------------------------------
@@ -806,7 +854,7 @@ validate_status_file ${status_file} || die "failed to validate_status_file"
 process_cmdline "${@}" || die "failed to process command line"
 
 display_config || die "failed display_config"
-sh_countdown 2
+#sh_countdown 2
 
 sanity_check || die "failed sanity_check"
 
