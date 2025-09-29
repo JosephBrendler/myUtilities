@@ -62,25 +62,6 @@ d_message_n "sourcing /usr/sbin/script_header_joetoo_extended" 1
 source /usr/sbin/script_header_joetoo_extended || die "failed to source /usr/sbin/script_header_joetoo_extended"
 d_right_status $TRUE 1
 
-# identify local variables by section, to make it easier to display configuration
-config_parmlist="PN BPN bool.INTERACTIVE bool.RESUME starting_step stopping_step bool.VERBOSE"
-config_parmlist+=" verbosity lv.status_file CONF_DIR user"
-config_parmlist+=" makeopts features arch cross_compile model lv.model_config"
-config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
-
-devel_parmlist="lv.my_ebuild_dir lv.my_ebuild_dir_credentials"
-devel_parmlist+=" lv.ebuild_dir lv.host_dir SSH_AUTH_SOCK"
-devel_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
-devel_parmlist+=" kernel_basename lv.kernel_image_name"
-
-output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
-output_parmlist+=" lv.publish_tarball_cmd_file"
-output_parmlist+=" lv.publish_ebuild_cmd_file"
-output_parmlist+=" joetoo_kernel_webserver"
-copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
-
-varlist="${config_parmlist} ${devel_parmlist} ${output_parmlist} ${copypaste_parmlist}"
-
 #-----[ edit this section to set default values ]------------------------------------
 # ( override later with .conf and/or command line )
 user="joe"
@@ -99,8 +80,8 @@ build_root="/home/${user}/My_${model}_project"
 sshkey_rsa="/home/${user}/.ssh/id_rsa"
 sshkey_ecdsa="/home/${user}/.ssh/id_ecdsa"
 sshkey_ed25519="/home/${user}/.ssh/id_ed25519"
-my_ebuild_dir="/home/${user}/joetoo/sys-kernel"
-my_ebuild_dir_credentials="/home/${user}/joetoo/.git/.credentials"
+package_category_dir="/home/${user}/joetoo/sys-kernel"
+github_ebuild_repo_credentials="/home/${user}/joetoo/.git/.credentials"
 host_dir=${build_root%/}/"domU_kernel_images"
 INTERACTIVE=${FALSE}
 RESUME=${FALSE}
@@ -119,6 +100,29 @@ message "${BMon}About to source ${BGon}setnodistpath${Boff} ..."
 source /usr/bin/setnodistpath || die "failed to source /usr/bin/setnodistpath"
 echo -e "   ${BMon}(readable) PATH includes: ${BWon}${PATH}${Boff}" | sed 's|:|\ :\ |g'
 echo
+
+# identify local variables by section, to make it easier to display configuration
+# do this after sourcing config so some variables can be optionally excluded from varlist
+config_parmlist="PN BPN bool.INTERACTIVE bool.RESUME starting_step stopping_step bool.VERBOSE"
+config_parmlist+=" verbosity CONF_DIR user"
+config_parmlist+=" model arch cross_compile makeopts features"
+config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
+
+auto_parmlist="lv.model_dir lv.KBUILD_OUTPUT lv.KERNEL_DIR lv.model_config lv.package_category_dir"
+auto_parmlist+=" lv.github_ebuild_repo_credentials SSH_AUTH_SOCK lv.ebuild_dir lv.status_file"
+[[ "${model:0:3}" !=  "dom" ]] && auto_parmlist+=" lv.host_dir"
+auto_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
+auto_parmlist+=" kernel_basename lv.kernel_image_name"
+
+output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
+output_parmlist+=" lv.publish_tarball_cmd_file"
+output_parmlist+=" lv.publish_ebuild_cmd_file"
+output_parmlist+=" joetoo_kernel_webserver"
+copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
+
+varlist="${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
+
+
 
 # append "/" to dtb_folder and overlay_folder if missing and not null
 #( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
@@ -197,7 +201,7 @@ kernel_image_name="${kernel_basename}-${version_number}"
 
 # build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
 #devel_dir="${my_devel_dir%/}"
-ebuild_dir="${my_ebuild_dir%/}/${kernel_basename}"
+ebuild_dir="${package_category_dir%/}/${kernel_basename}"
 publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
 publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
 
@@ -323,6 +327,20 @@ make_mrproper() {
   eval ${clean_make_me} mrproper || die "failed to clean_make_me mrproper"
   d_message "Cleaning ${model} build directory [ ${model_dir} ] ..." 1
   eval ${make_me} mrproper || die "failed to make_me mrproper"
+  d_message "*Completely* cleaning ${model} build directory ..." 1
+  # CAUTION: this will destroy your system if KBUILD_OUTPUT is unassigned
+  if [ ! -z "${KBUILD_OUTPUT" ] ; then
+    answer=""
+    message "${BYon}Caution: About to remove KBUILD_OUTPUT filestructure with ${BRon}rm -r ${KBUILD_OUTPUT}/* ${KBUILD_OUTPUT}/*${Boff} "
+    prompt "${BWon}(Y: Ok to continue ; N: No, abort)"
+    if [[ "${answer}" == [yY] ]] ; then
+      rm -r ${KBUILD_OUTPUT}/* ${KBUILD_OUTPUT}/* || die "failed while trying to delete KBUILD_OUTPUT filestructure"
+    else
+      die "aborting, as instructed"
+    fi
+  else
+    die "KBUILD_OUTPUT [${KBUILD_OUTPUT}] appears to be null; not running rm command; exiting"
+  fi
   return 0
 }
 
@@ -582,7 +600,7 @@ publish_ebuild() {
         '[ $? -ge 2 ] && ssh-agent -a ${SSH_AUTH_SOCK} >/dev/null' \
         "echo 'ssh-agent added, listing keys ...'" \
         "ssh-add -l" \
-        "source ${my_ebuild_dir_credentials}" \
+        "source ${github_ebuild_repo_credentials}" \
         "echo" \
         "cd ${ebuild_dir%/}/" \
         "echo new PWD: \${PWD}" \
@@ -751,7 +769,7 @@ display_config()
     display_vars ${longest} ${config_parmlist}
     echo
     separator "Auto-configured" $(hostname)
-    display_vars ${longest} ${devel_parmlist}
+    display_vars ${longest} ${auto_parmlist}
     echo
     separator "Output Information" $(hostname)
     display_vars ${longest} ${output_parmlist}
