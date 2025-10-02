@@ -1,7 +1,12 @@
 #!/bin/bash
-
+source /usr/sbin/script_header_joetoo
 user="joe"
 stockpile_dir="/home/${user}/sbc-stockpile"
+PN=$(basename $0)
+#VERBOSE=$TRUE
+#verbosity=5
+VERBOSE=$FALSE
+verbosity=2
 
 # binhosts are all at /usr/xxxxxx_binhost
 binhost_list=(
@@ -35,6 +40,25 @@ meson-g12b-a311d-libretech-cc
 )
 
 for ((i=0; i< ${#binhost_list[@]}; i++)) ; do
-    # mount backend on binhost mountpoint ( syntax: cb-mount-binhost <BOARD> <<MOUNTPOINT> )
-    cb-mount-binhost ${binhost_env_backends[$i]} /usr/${binhost_list[$i]}_binhost
+    # if it exists, mount backend on binhost mountpoint
+    backingfile="${stockpile_dir%/}/${binhost_env_backends[$i]}.env"
+    if [ -f ${backingfile} ] ; then
+        d_message "trying to mount ${backingfile} ..." 5
+        # syntax: cb-mount-binhost <BOARD>  <<MOUNTPOINT>
+        cb-mount-binhost "${binhost_env_backends[$i]}" "/usr/${binhost_list[$i]}_binhost" >/dev/null 2>&1
+        result=$?
+    else
+        d_message "${backingfile} doesn't exist" 5
+        # didn't exist
+        result=2
+    fi
+    case $result in
+        0) PRIORITY="notice" && RESULT="succeeded" && message "${RESULT}" ;;
+        1) PRIORITY="err" && RESULT="failed" && E_message "${RESULT}" ;;
+        2) PRIORITY="err" && RESULT="failed (backing file doesn't exist)" && E_message "${RESULT}";;
+        *) PRIORITY="err" && RESULT="failed (invalid result [$result])" && E_message "${RESULT}" ;;
+    esac
+#    [ $result -eq 0 ] && ( RESULT="succeeded"; PRIORITY="notice" ) || \
+ #       ( RESULT="failed"; PRIORITY="err" )
+    logger -p cron.${PRIORITY} "cb-mount-binhost ${binhost_env_backends[$i]} ${RESULT}"
 done
