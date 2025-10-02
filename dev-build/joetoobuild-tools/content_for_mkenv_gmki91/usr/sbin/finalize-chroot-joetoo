@@ -64,17 +64,23 @@ command_sequence=(
 'remove-kernelsources-mountpoint'
 'prep-eix-db-dir'
 'sync-repo gentoo'
+'emerge-git-eselect-repo'
 'sync-repo joetoo'
 'add-user'
 'fix-inittab'
 'write-fstab'
 'make-mountpoints'
-'chroot_emerge-world'
+'edit-91joetoo_platform'
+'emerge-platform-meta'
+'run-dispatch-conf'
+'emerge-common-meta'
+'run-dispatch-conf'
+'edit-80joetoo_common'
+'emerge-world'
 'run-dispatch-conf'
 'add-default-runlevel-services'
 'setup-clock'
-'install-boot-firmware'
-'install-sbc-boot-config'
+'install-grub'
 'display-next-steps'
 )
 
@@ -88,18 +94,25 @@ msg1_sequence=(
 'remove kernel sources mountpoint'
 'prepare eix database directory'
 'sync repo gentoo'
+'emerge git eselect-repo'
 'sync repo joetoo'
 'add user'
 'fix inittab'
 'write fstab'
 'make mountpoints'
+'edit package.use/91joetoo_platform'
+'emerge platform-meta'
+'run dispatch-conf'
+'emerge common-meta'
+'run dispatch-conf'
+'edit 80joetoo_common'
 'chroot_emerge world'
 'run dispatch-conf'
 'add default runlevel services'
 'set up clock'
-'install boot firmware'
-'install sbc-boot-config'
+'install grub'
 'display next steps'
+'complete'
 )
 
 msg2_sequence=(
@@ -112,18 +125,25 @@ msg2_sequence=(
 'removing kernel sources mountpoint'
 'prepare eix database directory'
 'syncing repo gentoo'
+'emerge dev-vcs/git and eselect-repo'
 'syncing repo joetoo'
 'adding user'
 'fixing inittab'
 'writing fstab'
 'making mountpoints'
+'editing package.use/91joetoo_platform'
+'emerging platform-meta'
+'running dispatch-conf'
+'emerging common-meta'
+'running dispatch-conf'
+'editing 80joetoo_common'
 'emerging(-chroot) world'
 'running dispatch-conf'
 'adding default runlevel services'
 'setting up clock'
-'installing boot firmware'
-'installing sbc-boot-config'
+'installing grub'
 'displaying next steps'
+'complete'
 )
 
 #-----[ functions ]---------------------------------------------------------------------
@@ -354,6 +374,13 @@ prep-eix-db-dir() {
     [[ $SOFARSOGOOD ]] && return 0 || ( FLAGGED=$TRUE && return 1)
 }
 
+emerge-git-eselect-repo() {
+    # before sync-repo joetoo, we need git (and eselect-repo for form)
+    eval "${chroot_emerge} -av1 dev-vcs/git eselect-repository" ; result=$?
+    message_n "exit status - " && right_status $result || ( right_status $result && return 1 )
+    return 0
+}
+
 sync-repo() {
     REPO=$1
     # if the eix database directory does not exist, create it and give portage permission to use it
@@ -509,13 +536,35 @@ make-mountpoints() {
     done
 }
 
-chroot_emerge-world() {
+edit-91joetoo_platform() {
+    nano /etc/portage/package.use/91joetoo_amd64
+    return $?
+}
+
+emerge-platform-meta() {
+    eval "${chroot_emerge} -av joetoo-platform-meta" ; result=$?
+    message_n "exit status - " && right_status $result || ( right_status $result && return 1 )
+    return 0
+}
+
+emerge-common-meta() {
+    eval "${chroot_emerge} -av joetoo-common-meta" ; result=$?
+    message_n "exit status - " && right_status $result || ( right_status $result && return 1 )
+    return 0
+}
+
+edit-80joetoo_common() {
+    nano /etc/portage/package.use/80joetoo_common
+    return $?
+}
+
+emerge-world() {
     # re-run chroot_emerge -uavDN @world --keep-going
     message "about to run chroot_emerge -uavDN @world --keep-going"
     [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
     eval "${chroot_emerge} ${emerge_opts} @world --keep-going" ; result=$?
-    [ $result -eq 0 ] && message "chroot_emerge-world ${BGon}succeeded${Boff}" || \
-        E_message "chroot_emerge-world ${BRon}failed${Boff}"
+    [ $result -eq 0 ] && message "emerge-world ${BGon}succeeded${Boff}" || \
+        E_message "emerge-world ${BRon}failed${Boff}"
     return $result
 }
 
@@ -599,6 +648,16 @@ setup-clock() {
     esac
 }
 
+install-grub() {
+    # this should have been installed in /usr/sbin/ (in PATH) by joetoolkit
+    # ( maybe add step to edit make.conf and remind user to look at this)
+    grub_install_both_ways
+    chmod +x /etc/grub.d/10_linux
+    chmod +x /etc/grub.d/20_linux_xen
+    grub-mkconfig -o /boot/grub/grub.cfg
+}
+
+# keep this in case we go back to building for sbcs this way, too
 install-boot-firmware() {
     # install boot-firmware with
     #    sys-boot/raspi-boot-firmware  -- for raspi boards, all of which are named bcm27xx-rpi-x-x...
@@ -635,10 +694,7 @@ install-boot-firmware() {
     return $result
 }
 
-
-* sys-boot/nxp-boot-firmware [1]
- {+dtbo fsl-imx8mq-phanbell +kernel}
-
+# keep this in case we go back to building for sbcs this way, too
 install-sbc-boot-config() {
     # install sys-boot/sbc-boot-config (covers all makers); installs --
     #    raspi: cmdline.txt, config.txt
@@ -675,17 +731,26 @@ right_status $?
 
 validate_status_file ${cmdseq_statusfile}
 
+# get-target will need to run "portageq envvar CHOST" which needs a the
+# chroot's own repo to be sync'd first, and that needs chroot_emerge variable defined
+build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
+sync-repo gentoo || die "failed to sync-repo gentoo"
+
 # check CTARGET - CBUILD - CHOST configuration
 get-target || die "failed to get-target"
 
 # reload /root/.cb-config to check BOARD against CTARGET
 get-check-config || die "failed to get-check-config"
 
-build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
 
 display_configuration || die "failed to display_configuration"
 
 run_sequence ${cmdseq_statusfile} || die "failed to run_sequence"
+
+# maybe, when run_sequence is done, set up another command_sequence for sbcs, with
+# 'install-boot-firmware' and
+# 'install-sbc-boot-config'
+# I saved the functions above, for now
 
 message_n "removing ${firstrunmarker} ..."
 rm ${firstrunmarker} ; result=$?
