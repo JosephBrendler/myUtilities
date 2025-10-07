@@ -521,6 +521,11 @@ make_tarball()
     eval $tar_command && \
     message "${BYon}Complete.  Your tarball is located in the ${LBon}${distrib_dir}${BYon} directory${Boff}" || \
     E_message "${BRon}Something went wrong -- refer to output above${Boff}"
+    # create a sha512sum hash for the tarball
+    message_n "computing and saving sha512sum for tarball ..."
+    sha512sum ${kernel_image_name}.tar.bz2 > ${kernel_image_name}.tar.bz2.sha512sum
+    right_status $?
+
     cd $old_dir && message "Now working in $PWD"
     return 0
 }
@@ -550,13 +555,17 @@ publish_tarball() {
         'echo' )
 
     # change ownership for upload
-    message_n 'changing ownership for upload ...'
+    message_n 'changing ownership of tarball for upload ...'
     chown -R ${user}:${user} ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ; right_status $?
+    message_n 'changing ownership of sha512sum for upload ...'
+    chown -R ${user}:${user} ${distrib_dir%/}/${kernel_image_name}.tar.bz2.sha512sum ; right_status $?
 
     # now actually copy the tarball to the webserver with scp
     publish_tarball_command_sequence+=( \
         "echo; message_n 'copying tarball package to webserver ...'" \
         "scp ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ${joetoo_kernel_webserver}:/home/${user}/" \
+        "echo; message_n 'copying tarball sha512sum to webserver ...'" \
+        "scp ${distrib_dir%/}/${kernel_image_name}.tar.bz2.sha512sum ${joetoo_kernel_webserver}:/home/${user}/" \
         )
 
     # now output the publish_tarball_command_sequence arrat into a file (script)
@@ -606,6 +615,26 @@ publish_ebuild() {
         "echo new PWD: \${PWD}" \
         "git pull" \
         )
+
+    # verify the tarball upload before building ebuild b/c ebuild will need to download it to create its manifest
+    # the tarball publication procees uploads a sha512sum after the tarball, so don't try to create ebuild until that is available
+    URL="https://${joetoo_kernel_webserver}/joetoo-kernels/${kernel_image_name}.tar.bz2.sha512sum"
+    message_n "checking for uploaded sha512sum to verify tarball upload to webserver is complete"
+#    wget ${URL} >/dev/null 2>&1; right_status $?
+    interations=0
+    interval=2
+    interation_limit=500
+    while ! curl --output /dev/null --silent --head --fail "$URL" && [ $interations -lt $interation_limit ] ; do
+        sleep $interval
+        let interations+=1
+    done
+    if [ $interations -ge $interation_limit ] ; then
+        E_message "cannot publish ebuild; tarball upload appears incomplete"
+        return 1
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        right_status $TRUE
+    fi
 
     # if the ebuild_dir does not exist, create it
     if [[ ! -d "${ebuild_dir}" ]] ; then
