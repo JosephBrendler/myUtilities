@@ -1,0 +1,164 @@
+#!/bin/bash
+# move_joetoo_kernels_to_webserver  - (c) joe brendler 2025-2975
+source /usr/sbin/script_header_joetoo
+PN=$(basename $0)
+
+#-----[ variables ]-------------------------------------------------------
+user="joe"
+joetoo_sources_webserver_root="/var/www/localhost/htdocs/"
+sources_dir=""
+
+SIZE_CHECK_INTERVAL=2    # seconds to wait between size-change checks
+SIZE_CHECK_ITERATIONS=3  # of times to check (must be >= 2)
+
+COMPLETION_CHECK_INTERVAL=60    # seconds to wait between size-change checks
+COMPLETION_CHECK_ITERATIONS=2   # of times to check (must be >= 2)
+
+FAILED_WHILE_LOOP_ITERATION_LIMIT=500
+
+filesize=0
+
+VERBOSE=$TRUE
+verbosity=5
+
+#-----[ functions ]-------------------------------------------------------
+
+# check if a file is still being written to
+is_file_size_stable() {
+    local STABLE=$TRUE
+    local file="$1"
+    filesize=$(get_file_size "$file")
+    d_message "in ${FUNCNAME[0]}; file: [$file], filesize: [$filesize]" 6
+    local size2=0
+    # make repeated checks of size (for stat, --format= is same as -c)
+    for ((i=0; i<${SIZE_CHECK_ITERATIONS}; i++)) ; do
+        sleep ${SIZE_CHECK_INTERVAL}       # wait a bit
+        size2=$(get_file_size "$file")  # check size again
+        [[ ! "$filesize" -eq "$size2" ]] && STABLE=$FALSE
+    done
+    [ $STABLE ] && return 0 || return 1
+}
+
+get_file_size() {
+    local file="$1"
+    # check size
+    local size=$(stat -c %s "$file") || die "failed to get file size"
+    echo "$size"
+    return 0
+}
+#-----[ main script ]-------------------------------------------------------
+TRIED=$FALSE ; ERROR=$FALSE
+# look for kernel-sources tarballs named linux-<version>-<raspi|amlogic|nxp>.<tar.gz|tbz2>
+#for tarball in $(find /home/${user}/ -maxdepth 1 -name 'linux-*-*.t*z*') ; do
+for tarball in $(find /home/${user}/ -maxdepth 1 -name 'linux-*-*.tbz2' -or -name 'linux-*-*.tar.[xg]z') ; do
+    TRIED=$TRUE
+    message "found: ${tarball}"
+    /usr/bin/logger -p cron.notice "${PN} found ${tarball}"
+    message_n "checking if its transfer is complete ..."
+    SCP ; filesize=$(get_file_size "${tarball}")
+    d_message "in main script; tarball: [${tarball}], filesize: [$filesize]" 6
+    echo -n " (${filesize})" ; RCP
+    iterations=0
+    while ! is_file_size_stable "${tarball}" && [ $iterations -lt ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] ; do
+        echo -n " (${filesize})" ; RCP
+        sleep ${SIZE_CHECK_INTERVAL}      # wait a bit
+        let iterations+=1
+    done
+    if [ $iterations -ge ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] ; then
+        die "exceeded iteration limit"
+        /usr/bin/logger -p cron.err "${PN} failed (iteration limit exceeded)"
+    else
+        echo -e -n " (${BGon}complete${Boff})"
+        right_status $TRUE
+    fi
+
+    # look for hashfile
+    message_n "looking for hash file ..."
+    d_message "in main script; hash file: [${tarball}.sha512sum]" 6
+    iterations=0
+    while [ ! -f "${tarball}.sha512sum" ] && [ $iterations -lt ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ]  ; do
+        sleep ${SIZE_CHECK_INTERVAL}      # wait a bit
+    done
+    if [ $iterations -ge ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] ; then
+        die "exceeded iteration limit"
+        /usr/bin/logger -p cron.err "${PN} failed (iteration limit exceeded)"
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        right_status $TRUE
+    fi
+    [ $iterations -ge ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] && die "exceeded iteration limit"
+
+    # receive hashfile
+    message_n "receiving hash file ..."
+    SCP ; filesize=$(get_file_size "${tarball}.sha512sum")
+    echo -n " (${filesize})" ; RCP
+    while ! is_file_size_stable "${tarball}.sha512sum" && [ $iterations -lt ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] ; do
+        echo -n " (${filesize})" ; RCP
+        sleep ${SIZE_CHECK_INTERVAL}	  # wait a bit
+        let iterations+=1
+    done
+    if [ $iterations -ge ${FAILED_WHILE_LOOP_ITERATION_LIMIT} ] ; then
+        die "exceeded iteration limit"
+        /usr/bin/logger -p cron.err "${PN} failed (iteration limit exceeded)"
+    else
+        echo -e -n " (${BGon}complete${Boff})"
+        right_status $TRUE
+    fi
+
+    # compute and compare hash
+    message_n "computing sha512sum ..."
+    tarball_hash=$(sha512sum ${tarball} | awk '{print $1}')
+    received_hash=$(awk '{print $1; exit}' "${tarball}.sha512sum")
+    if [[ "${tarball_hash}" != "${received_hash}" ]] ; then
+        die "sha512sum is incorrect"
+        /usr/bin/logger -p cron.err "${PN} failed (sha512sum incorrect)"
+    else
+        echo -e -n " (${BGon}verified${Boff})"
+        right_status $TRUE
+    fi
+    # select sources directory based on tarball name
+    message_n "extracting maker from tarball filename ..."
+    maker=$(echo $(echo $(basename "$tarball") | awk -F '-' '{print $3}') | awk -F '.' '{print $1}')
+    result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e -n " (${BGon}${maker}${Boff})"
+        right_status $TRUE
+    else
+        /usr/bin/logger -p cron.err "${PN} failed to extract maker from tarball filename"
+        die "failed to extract maker from tarball filename"
+    fi
+    message_n "assigning sources_dir ..."
+    case ${maker} in
+        "amlogic"|"nxp"|"raspi" ) sources_dir="${maker}-sources" ;;
+        "rockchip" ) die "tarball is for rockchip-sources, but is un-needed (ebuild gets directly from SRC_URI)" ;;
+       *         ) die "invalid tarball filename [$tarball] with maker [$maker]" ;;
+    esac
+    echo -e -n " (${BGon}${sources_dir}${Boff})"
+    right_status $TRUE
+
+    # copy tarball and sha512sum to webserver
+    message_n "moving tarball and sha512sum to webserver ..."
+    cp "${tarball}" ${joetoo_sources_webserver_root%/}/${sources_dir}/ 2>/dev/null ; result=$?
+    cp "${tarball}.sha512sum" ${joetoo_sources_webserver_root%/}/${sources_dir}/  2>/dev/null ; result2=$?
+    if [ ! $result -eq 0 ] || [ ! $result2 -eq 0 ] ; then
+        ERROR=$TRUE ; right_status 1
+        /usr/bin/logger -p cron.err "${PN} failed to copy tarball and sha512sum to webserver"
+    else
+        right_status $TRUE
+        /usr/bin/logger -p cron.notice "${PN} copied tarball and sha512sum to webserver"
+        message_n "removing  copy from /home/${user} ..."
+        rm "${tarball}" 2>/dev/null ; result=$?
+        rm "${tarball}.sha512sum" 2>/dev/null ; result2=$?
+        if [ ! $result -eq 0 ] || [ ! $result2 -eq 0 ] ; then
+            ERROR=$TRUE ; right_status 1
+            /usr/bin/logger -p cron.err "${PN} failed to remove copy of tarball and sha512sum from /home/${user}/"
+        else
+            right_status $TRUE
+            /usr/bin/logger -p cron.notice "${PN} removed copy of tarball and sha512sum from /home/${user}/"
+        fi
+    fi
+done
+
+[ $ERROR ] && exit_status=1 || exit_status=0
+[ $TRIED ] && loggit $(basename $0) ${exit_status}
+exit ${exit_status}
