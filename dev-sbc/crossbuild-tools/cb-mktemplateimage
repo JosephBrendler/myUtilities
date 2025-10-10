@@ -12,8 +12,8 @@ source /etc/crossbuild-tools/BPN ; right_status $?
 source /usr/sbin/script_header_joetoo_extended
 
 VERBOSE=$TRUE
-#verbosity=2
-verbosity=3
+# set default verbosity only if it is not already set
+[ -z $verbosity ] && verbosity=3
 
 PN=$(basename $0)
 
@@ -30,13 +30,20 @@ source /usr/sbin/cb-common-functions ; right_status $?
 TARGET=""
 
 usage() {
-    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
-    smaller_script_common_usage_message
-    exit
+    E_message "${BRon}usage: ${BGon}${PN} <IMAGE_TYPE>${Boff}"
+    echo
+    message "${BYon}IMAGE_TYPE must be one of --${Boff}"
+    message "${LBon}  sparse ...:${Boff} create a sparse file (consumes only disk size used)"
+    message "${LBon}  full .....:${Boff} create a full sized file"
+    echo
+    exit 1
 }
 
 initialize_variables() {
+    d_message "in ${FUNCNAME[0]}" 5
     [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    # save variables we have in varlist but dont want to lose
+    oldVERBOSE=$VERBOSE; oldverbosity=$verbosity
     initialize_vars ${varlist}
 
     # set default values
@@ -48,6 +55,8 @@ initialize_variables() {
     d_message_n "sourcing BPN ..." 2
     source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
 
+    d_message_n "re-setting IMAGE_TYPE = ${myIMAGE_TYPE}" 2
+    IMAGE_TYPE="${myIMAGE_TYPE}" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default imagefile = /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img" 2
     imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img && \
         d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
@@ -58,10 +67,10 @@ initialize_variables() {
     d_message_n "setting default partition2_size_mb = $((image_size_mb - partition1_size_mb))" 2
     partition2_size_mb=$((image_size_mb - partition1_size_mb)) && \
         d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
-    d_message_n "setting default VERBOSE true" 2
-    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
-    d_message_n "setting default verbosity = 3" 2
-    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "re-setting VERBOSE to $(TrueFalse $oldVERBOSE)" 2
+    export VERBOSE=$oldVERBOSE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "re-setting verbosity = $oldverbosity" 2
+    export verbosity=$oldverbosity && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     if [[ $FLAGGED ]] ; then
         E_message "failed clean exit; note red flags above"
         return 1
@@ -73,16 +82,12 @@ initialize_variables() {
 }
 
 prepare() {
+    d_message "in ${FUNCNAME[0]}; verbosity: [$verbosity]" 5
     FLAGGED=$FALSE
-#    [ -n "$(losetup -a)" ] && E_message "There are loop devices already active" && FLAGGED=$TRUE
-#    [ -n "$(mount | grep loop)" ] && E_message "There are loop devices mounted" && FLAGGED=$TRUE
-    # if any currently active loop device is already mounted on TARGET, flag out (i.e. ignore e.g. xen loop devs)
-    if [ ! -z "$(losetup -a | grep ${TARGET})" ] ; then
-        problem_dev="$(losetup -a | grep ${TARGET} | awk '{print $1}')"
-        problem_dir="$(losetup -a | grep ${TARGET} | awk '{print $3}')"
-        E_message "${problem_dev} is active and mounted on ${problem_dir} (i.e. TARGET [${TARGET}])"
-        FLAGGED=$TRUE
-    fi
+    # don't need to know BOARD or TARGET here; just making an empty image file
+    # there may be other checks to do, so save the FLAGGED structure for now
+
+    # shouldn't have been called if it already exists, but in case invoked manually, check this
     [ -f "${imagefile}" ] && E_message "imagefile ${imagefile} already exists" && FLAGGED=$TRUE
     if [[ $FLAGGED ]] ; then
         E_message "Note red flags above. Please clean up before continuing"
@@ -92,6 +97,7 @@ prepare() {
 }
 
 mksparseimagetemplate() {
+    d_message "in ${FUNCNAME[0]}" 5
     # Create empty image file
     message_n "creating sparse image file [ ${imagefile} ] ..."
     dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M && right_status $? && \
@@ -99,6 +105,7 @@ mksparseimagetemplate() {
 }
 
 mkimagetemplate() {
+    d_message "in ${FUNCNAME[0]}" 5
     # Create empty image file
     message_n "creating fixed-size image file [ ${imagefile} ] ..."
     dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb} && right_status $? || ( right_status $? && exit 1 )
@@ -106,6 +113,7 @@ mkimagetemplate() {
 }
 
 mktemplate-common() {
+    d_message "in ${FUNCNAME[0]}" 5
     # Set up loop device
     message_n "setting up loop device"
     loop_device="$(losetup --find --show ${imagefile})" && result=$? && \
@@ -158,17 +166,18 @@ mktemplate-common() {
 #-----[ main script ]---------------------------------------------
 checkroot
 separator ${PN} $(hostname)
-[ $# -ne 0 ] && usage
+d_message "in main script with verbosity [$verbosity] and args [$@]" 5
+[ $# -ne 1 ] && usage
+
+myIMAGE_TYPE="$1"
+[[ "${myIMAGE_TYPE:0:1}" != [sSfF] ]] && E_message "Invalid argument [ ${myIMAGE_TYPE} ]" && usage
 
 # initialize variables and set default values
 initialize_variables || die "Failed to initialize_variables"
 prepare || die "failed prepare()"
 display_configuration || die "failed to display_configuration"
 
-# previously written to take argument 1 to be assigned to IMAGE_TYPE, but
-# cb-setup is hard-coded using "cb-mktemplateimage s" -- so hard code it
-# here instead and avoid having to accomodate in common local.usage cli options
-IMAGE_TYPE="s"
+# cb-setup should be hard-coded using "cb-mktemplateimage s"
 case ${IMAGE_TYPE:0:1} in
     [sS] ) mksparseimagetemplate || die "failed to mksparseimagetemplate" ;;
     [fF] ) mkimagetemplate || die "failed to mkimagetemplate" ;;
@@ -176,3 +185,5 @@ case ${IMAGE_TYPE:0:1} in
 esac
 
 exit 0
+
+#echo -e "${BMon}Debug: marker" ; exit 1
