@@ -361,41 +361,26 @@ save_new_config() {
 # leaving this here for reference, but it is depracated, since I now
 # build all targets (kernel images, modules, and dtbs) with # eval "${make_me}"
 make_dtbs() {
-  # make dtbs for this model SBC, if this is not a domU build
-  [ ! "${model:0:3}" == "dom" ] && eval "${make_me} dtbs"
-  result=$? ; return $result
-
+    # make dtbs for this model SBC, if this is not a domU build
+    [ ! "${model:0:3}" == "dom" ] && eval "${make_me} dtbs"
+    result=$? ; return $result
 }
 
 clean_distrib_dirs()
 {
-  message "${LBon}Cleaning the distribution staging directory...${Boff}"
-  for x in $lib_dir $boot_dir
-  do
-    [[ -d $x ]] && find ${x%/}/ -mindepth 1 -iname '*' -delete
-    [ ! -d $x ] && mkdir -p $x 
-  done
-  message "${LBon}Cleaning the tarball and ebuild publishing directory...${Boff}"
-  find ${distrib_dir} -iname '*.tar.bz2' -delete
-  find ${build_dir} -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
-  message "${BYon}Contents of ${distrib_dir} --"
-  message "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
-  tree -a -L 2 ${distrib_dir%/}/
-}
-
-verify_boot_mount() {
-  # if boot needs to be mounted, ensure it is, or try to mount it...
-  if grep -v '^#' /etc/fstab | grep boot >/dev/null 2>&1  && \
-    ! grep "/boot" /proc/mounts >/dev/null 2>&1
-  then
-    message "/boot is not mounted, trying to mount it now..."
-    ! $(mount /boot) && \
-     ( E_message "Failed to mount /boot" ; exit 1 ) || \
-      message "Succeeded in mounting /boot ; continuing..."
-  else
-    message "Verified /boot is mounted ; continuing..."
-  fi
-  return 0
+    message "${LBon}Cleaning the distribution staging directory...${Boff}"
+    for x in $lib_dir $boot_dir
+    do
+        [[ -d $x ]] && find ${x%/}/ -mindepth 1 -iname '*' -delete
+        [ ! -d $x ] && mkdir -p $x
+    done
+    message "${LBon}Cleaning the tarball and ebuild publishing directory...${Boff}"
+    find ${distrib_dir} -iname '*.tar.bz2' -delete
+    find ${build_dir} -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
+    message "${BYon}Contents of ${distrib_dir} --"
+    message "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
+    tree -a -L 2 ${distrib_dir%/}/
+    return 0
 }
 
 install_kernel()
@@ -568,9 +553,9 @@ publish_tarball() {
 
     # now actually copy the tarball to the webserver with scp
     publish_tarball_command_sequence+=( \
-        "echo; message_n 'copying tarball package to webserver ...'" \
+        "echo; echo -n 'copying tarball package to webserver ...'" \
         "scp ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ${joetoo_kernel_webserver}:/home/${user}/" \
-        "echo; message_n 'copying tarball sha512sum to webserver ...'" \
+        "echo; echo -n 'copying tarball sha512sum to webserver ...'" \
         "scp ${distrib_dir%/}/${kernel_image_name}.tar.bz2.sha512sum ${joetoo_kernel_webserver}:/home/${user}/" \
         )
 
@@ -629,7 +614,7 @@ publish_ebuild() {
 #    wget ${URL} >/dev/null 2>&1; right_status $?
     interations=0
     interval=2
-    interation_limit=500
+    interation_limit=500   # [to do] get more deliberate about this choice
     while ! curl --output /dev/null --silent --head --fail "$URL" && [ $interations -lt $interation_limit ] ; do
         sleep $interval
         let interations+=1
@@ -644,11 +629,11 @@ publish_ebuild() {
 
     # if the ebuild_dir does not exist, create it
     if [[ ! -d "${ebuild_dir}" ]] ; then
-      mkdir -pv -m 755 "${ebuild_dir}"
-      chown -R ${user}:${user} "${ebuild_dir}"
-      publish_ebuild_command_sequence+=("git add ./")
+        mkdir -pv -m 755 "${ebuild_dir}"
+        chown -R ${user}:${user} "${ebuild_dir}"
+        publish_ebuild_command_sequence+=("git add ./")
     else
-      d_message "${ebuild_dir} already exists; not creating." 3
+        d_message "${ebuild_dir} already exists; not creating." 3
     fi
 
     # move to the ebuild dir
@@ -659,18 +644,18 @@ publish_ebuild() {
     old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
     # if the ebuild dir does not contain a template ebuild, then populate it
     if [[ ! -f $old_template ]] ; then
-      # populate ebuild template if needed
-      if [[ -f $new_template ]] ; then
-        message_n "published ebuild template does not exist; creating one ..."
-        cp $new_template $old_template ; right_status $?
-        chown -R ${user}:${user} "${ebuild_dir%/}/"
-        publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
-        NEW_TEMPLATE=$TRUE
-      else
-	E_message "${BRon}Error: ${Boff} $new_template does not exist" 3
-      fi
+        # populate ebuild template if needed
+        if [[ -f $new_template ]] ; then
+            message_n "published ebuild template does not exist; creating one ..."
+            cp $new_template $old_template ; right_status $?
+            chown -R ${user}:${user} "${ebuild_dir%/}/"
+            publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
+            NEW_TEMPLATE=$TRUE
+        else
+	    E_message "${BRon}Error: ${Boff} $new_template does not exist" 3
+        fi
     else
-      d_message "$old_template already exists; not creating." 3
+        d_message "$old_template already exists; not creating." 3
     fi
 
     # if the ebuild dir contains a template that has changed, then replace it (shouldn't run if above just did)
@@ -688,17 +673,17 @@ publish_ebuild() {
     # if the ebuild dir does not contain a metadata file, then populate it
     message "CONF_DIR: ${CONF_DIR}"
     if [[ ! -f $old_metadata ]] ; then
-      # populate metadata.xml if needed
-      if [[ -f $new_metadata ]] ; then
-        cp  $new_metadata $old_metadata
-        chown -R ${user}:${user} "${ebuild_dir%/}/"
-        publish_ebuild_command_sequence+=("git add /metadata.xml")
-        NEW_METADATA=$TRUE
-      else
-	E_message "${BRon}Error: ${Boff} $new_metadata does not exist" 3
-      fi
+        # populate metadata.xml if needed
+        if [[ -f $new_metadata ]] ; then
+            cp  $new_metadata $old_metadata
+            chown -R ${user}:${user} "${ebuild_dir%/}/"
+            publish_ebuild_command_sequence+=("git add /metadata.xml")
+            NEW_METADATA=$TRUE
+        else
+	    E_message "${BRon}Error: ${Boff} $new_metadata does not exist" 3
+        fi
     else
-      d_message "$old_metadata already exists; not creating." 3
+        d_message "$old_metadata already exists; not creating." 3
     fi
     # if the ebuild dir contains a metadata file that has changed, then replace it (shouldn't run if above just did)
     if [[ $(diff $new_metadata $old_metadata) ]] ; then
@@ -879,24 +864,24 @@ sanity_check() {
     answer=""
     if [[ $starting_step -eq 0 ]]
     then
-      # if a sources directory has not been linked, advise the user about this
-      if [[ ! -e "${sources_dir}" ]]
-      then
-        separator "${PN}" "Manual Prerequisites"
-        E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
-        make_sources_message
-        exit
-      else
-        # confirm the current configuration before executing main script
-        prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
-        [[ ! $answer == [Yy] ]] && return 1
-      fi
+        # if a sources directory has not been linked, advise the user about this
+        if [[ ! -e "${sources_dir}" ]]
+        then
+            separator "${PN}" "Manual Prerequisites"
+            E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
+            make_sources_message
+            exit
+        else
+            # confirm the current configuration before executing main script
+            prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
+            [[ ! $answer == [Yy] ]] && return 1
+        fi
     else
-      # resume operation at some step other than 0
-      do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
-      do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
-      prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
-      [[ ! $answer == [yY] ]] && return 1
+        # resume operation at some step other than 0
+        do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
+        do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
+        prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
+        [[ ! $answer == [yY] ]] && return 1
     fi
     return 0
 }
@@ -911,7 +896,6 @@ validate_status_file ${status_file} || die "failed to validate_status_file"
 process_cmdline "${@}" || die "failed to process command line"
 
 display_config || die "failed display_config"
-#sh_countdown 2
 
 sanity_check || die "failed sanity_check"
 
