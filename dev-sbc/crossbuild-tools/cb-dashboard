@@ -14,7 +14,10 @@ d_message_n "sourcing BPN ..." 3
 source /etc/crossbuild-tools/BPN ; d_right_status $? 3
 source /usr/sbin/script_header_joetoo_extended
 
+#-----[ variables ]--------------------------------------------------------------------------
 selector=""
+
+webroot="/var/www/localhost/htdocs/"
 
 PN=$(basename $0)
 
@@ -23,6 +26,8 @@ PN=$(basename $0)
 #TARGETS="aarch64-unknown-linux-gnu armv7a-unknown-linux-gnueabihf armv6j-unknown-linux-gnueabihf"
 # detect crossdev build targets actually installed (in repo)
 TARGETS=( $(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -printf '%f\n' | sed 's|^cross-||') )
+
+#-----[ functions ]--------------------------------------------------------------------------
 
 d_message_n "sourcing cb-common-functions ..." 3
 source /usr/sbin/cb-common-functions ; d_right_status $? 3
@@ -62,12 +67,18 @@ show-dashboard() {
     show-mounts "${selector}"
 
     # display status of repositories in various /usr/${TARGET} directories
+    separator ${PN} "(crossbuild repository status)"
     show-target-repositories-status
 
     echo
     # now do binhosts (selected by 'stockpile')
     separator ${PN} "(active binhost loop devices)"
     show-loopdev-backfile-and-mounts "stockpile"
+
+    echo
+    # now show links at webroot/packages/ and their targets
+    separator ${PN} "(linked binhost web services)"
+    show-binary-package-services
 
     echo
     # now show contents of stockpile
@@ -98,7 +109,6 @@ show-mounts() {
 
 show-target-repositories-status() {
    # display status of repositories in various /usr/${TARGET} directories
-    separator ${PN} "(crossbuild repository status)"
 #    for TARGET in $(echo $TARGETS | sed 's:\\|: :g'); do
     for TARGET in ${TARGETS} ; do
         repo_list="gentoo joetoo"
@@ -135,7 +145,19 @@ show-loopdev-backfile-and-mounts() {
     done <<<$(losetup -lnO NAME,BACK-FILE | grep "${selector}" | sort -h )
 }
 
-#-----[ main script ]---------------------------------------------
+show-binary-package-services() {
+    # display links in webroot and their link_targets
+    d_message "  in ${FUNCNAME[0]}" 5
+    website="${webroot%/}/packages"
+    echo; message "${BWon}binhost website: ${BMon}${website}${Boff}"
+    for link in $(find ${website} -maxdepth 1 -mindepth 1 -type l -printf '%f\n'); do
+        message_n ${BYon}${link}
+        link_target=$(echo $(file ${website%/}/${link}) | awk '{print $NF}');
+        echo -e "${BWon} --> ${LBon}${link_target}${Boff}"
+    done
+}
+
+#-----[ main script ]----------------------------------------------------------------------
 checkroot
 clear
 separator "$(hostname)" "${PN}"
