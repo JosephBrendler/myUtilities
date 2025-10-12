@@ -64,5 +64,5 @@ install_my_local_ca_certificates
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
 echo
-export PS1="(${QEMU_ARCH} chroot) ${PS1}"
+export PS1="(${cb_QEMU_ARCH} chroot) ${PS1}"
 #-----[ edit/comment-out after system deployment ]-------------------------------------
