@@ -3,6 +3,9 @@
 # cb-mount-binhost   (c) joe.brendler  2025-2072
 # mount a stockpiled crossbuild environment image file (*.env) for use as a binary package server
 #
+# update 20251014 - syntax cb-mount-binhost <BACKING_FILE>
+# rather than old syntax cb-mount-binhost <BOARD> <MOUNTPOINT>
+#
 source /usr/sbin/script_header_joetoo
 message_n "sourcing BUILD ..."
 source /etc/crossbuild-tools/BUILD ; right_status $?
@@ -16,7 +19,9 @@ VERBOSE=$TRUE
 
 PN=$(basename $0)
 
-stockpile_dir="/home/joe/sbc-stockpile"
+user="joe"
+stockpile_dir="/home/${user}/sbc-stockpile"
+binhost_mountpoint_dir="/mnt"
 
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
@@ -25,35 +30,26 @@ MOUNTPOINT=""
 
 usage() {
     echo
-    E_message "${BRon}usage: ${BGon}${PN} <BOARD> <MOUNTPOINT>${Boff}"
+    E_message "${BRon}usage: ${BGon}${PN} <BACKING_FILE>${Boff}"
     echo
-    message "  ${BYon}Exactly one <BOARD> and exactly one <MOUNTPOINT> must be specified"
+    message "  ${BYon}Exactly one <BACKING_FILE> must be specified"
     echo
-    message "  ${LBon}<MOUNTPOINT> must be an empty directory, e.g. --${Boff}"
-    echo "         /usr/sweetpotato_binhost"
-    echo
-    message "  ${LBon}${PN} currently supports these SBCs --${Boff}"
-    while read board_model; do
-        echo -e "         ${board_model}"
-    done <<< $(joetoo-sbc-list | grep -v '\[')
-    echo
-    message "  ${LBon}These stockpiled SBC crossbuild environment files are available --${Boff}"
+    message "  ${LBon}<BACKING_FILE> must be a stockpiled SBC crossbuild image or environment file.${Boff}"
+    message "  ${LBon}These are currently available --${Boff}"
     # set shell globbing options to count files in the mountpoint directory
     # nullglob ensures that a pattern matching no files expands to nothing
     # (rather than the pattern itself), and dotglob includes dotfiles (hidden files)
     # The files array will be empty if the directory is empty
     shopt -s nullglob dotglob
-    images=("${stockpile_dir%/}"/*.env)
-    [ ${#images[@]} -eq 0 ] && die "There are no stockpiled crossbuild env files available"
-    for ((i=0; i<${#images[@]}; i++)) ; do
-        echo "         $(basename ${images[$i]})"
-    done
+    images=("${stockpile_dir%/}"/*.env "${stockpile_dir%/}"/*.img)
+    [ ${#images[@]} -eq 0 ] && die "There are no stockpiled crossbuild .env or .img files available"
+    for image in ${images[@]}; do echo "         $(basename ${image})" ; done
     shopt -u nullglob dotglob # Unset the options after use
     echo
-    message "  ${BYon}Exactly one <TARGET> will be selected automatically. Examples:${Boff}"
-    echo "         aarch64-unknown-linux-gnu"
-    echo "         armv6j-unknown-linux-gnueabihf"
-    echo "         armv7a-unknown-linux-gnueabihf"
+    message "  ${BMon}<BACKING_FILE> must be basename only, do not include path${Boff}"
+    echo
+    message "  ${LBon}<MOUNTPOINT> will be chosen analytically${Boff}"
+    echo "         e.g. /mnt/sweetpotato_binhost"
     echo
     message "${BMon}find additionl information at /etc/crossbuild-tools/README"
     echo
@@ -62,11 +58,12 @@ usage() {
 
 validate_stockpile_image() {
     # return 0 if properly named image file exists in the stockpile directory
-    [ ! -f ${stockpile_dir%/}/${BOARD}.env ] && die "stockpile image file [${stockpile_dir%/}/${BOARD}.env] does not exist"
+    [ ! -f ${stockpile_dir%/}/${BACKING_FILE} ] && die "stockpile image file [${stockpile_dir%/}/${BACKING_FILE}] does not exist"
     return 0
 }
 
 validate_mountpoint() {
+    d_message "in ${FUNCNAME[0]}" 5
     # return 0 if valid (directory exists and is empty)
     [ ! -d ${MOUNTPOINT} ] && die "mountpoint [${MOUNTPOINT}] does not exist"
     # set shell globbing options to count files in the mountpoint directory
@@ -81,6 +78,7 @@ validate_mountpoint() {
 }
 
 mount-board-image-as-crossbuild-binhost() {
+    d_message "in ${FUNCNAME[0]}" 5
     # inspect target (mount point) - is anything mounted? (un-mount)
     d_message "MOUNTPOINT ......: ${MOUNTPOINT}" 1
     d_echo 1
@@ -93,15 +91,15 @@ mount-board-image-as-crossbuild-binhost() {
     fi
     # inspect for loop devices attached to BOARD stockpile image file
     message "looking for loop device attached to ${stockpile_dir%/}/${BOARD}.env ..."
-    loop_dev=$(losetup -a | grep "${stockpile_dir%/}/${BOARD}.env" | cut -d':' -f1)
+    loop_dev=$(losetup -a | grep "${stockpile_dir%/}/${BACKING_FILE}" | cut -d':' -f1)
     if [ ! -z "${loop_dev}" ] ; then
-        E_message "${BYon}${loop_dev} is already attached to ${stockpile_dir%/}/${BOARD}.env"
+        E_message "${BYon}${loop_dev} is already attached to ${stockpile_dir%/}/${BACKING_FILE}"
         exit 1
     else
-        message "no loop device is yet attached to ${stockpile_dir%/}/${BOARD}.env; continuing"
+        message "no loop device is yet attached to ${stockpile_dir%/}/${BACKING_FILE}; continuing"
     fi
     message_n "attaching loop device"
-    img_loop_dev=$(losetup --find --show --partscan ${stockpile_dir%/}/${BOARD}.env) && \
+    img_loop_dev=$(losetup --find --show --partscan ${stockpile_dir%/}/${BACKING_FILE}) && \
         ( echo -n " (${img_loop_dev})" && right_status $? ) || ( right_status $? && exit 1 )
     # Get partition device names
     message_n "getting device name for partition 1 ..."
@@ -120,15 +118,31 @@ mount-board-image-as-crossbuild-binhost() {
     return 0
 }
 
+sanity_check() {
+    d_message "in ${FUNCNAME[0]}" 5
+    # placeholder for future sanity checks
+    return 0
+}
+
 #-----[ main script ]---------------------------------------------
 checkroot
-separator "(${BOARD})" "${PN}"
-[ $# -ne 2 ] && usage
-BOARD=$1
-MOUNTPOINT=$2
+[ $# -ne 1 ] && usage
+BACKING_FILE=$1
+separator "${PN}" "(${BACKING_FILE})"
+# get BOARD from BACKING_FILE filename
+# (remove the extension) (then remove the text from the first underscore onwards)
+BOARD="${BACKING_FILE%.*}";  BOARD="${BOARD%%_*}"
+d_message "BACKING_FILE: [$BACKING_FILE]; BOARD: [$BOARD]" 4
 validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
-validate_stockpile_image ${BOARD} || die "Failed to validate_stockpile_image ${BOARD}"
+validate_stockpile_image ${BACKING_FILE} || die "Failed to validate_stockpile_image ${BACKING_FILE}"
+
+# id the appropriate binhost name for this board and use that to id MOUNTPOINT
+bh=""
+id_binhost_and_link_for_board ${BOARD} || die "failed to id_binhost_and_link_for_board ${BOARD}"
+MOUNTPOINT="${binhost_mountpoint_dir%/}/${bh}_binhost"
+# not make sure it exists
 validate_mountpoint ${MOUNTPOINT} || die "Failed to validate_mountpoint [${MOUNTPOINT}]"
+sanity_check || die "failed sanity_check"
 
 old_dir="$(pwd)"
 cd $(dirname ${MOUNTPOINT}) || die "Failed to change director to parent of mountpoint [${MOUNTPOINT}]"

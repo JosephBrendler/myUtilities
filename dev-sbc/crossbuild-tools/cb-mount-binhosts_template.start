@@ -1,64 +1,334 @@
 #!/bin/bash
+#
+# the purpose of this .start script is to facilitate the use of
+# stockpiled crossbuilt images for use as binary package hosts
+
 source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_extended
+source /usr/sbin/script_header_joetoo_unicode
+source /usr/sbin/cb-common-functions
+
+#-----[ user variables ]--------------------------------------------------------------------------
 user="joe"
 stockpile_dir="/home/${user}/sbc-stockpile"
-PN=$(basename $0)
-#VERBOSE=$TRUE
-#verbosity=5
-VERBOSE=$FALSE
-verbosity=2
+binhost_mountpoint_dir="/mnt"
+webroot="/var/www/localhost/htdocs/"
+pkg_website="${webroot%/}/packages"
 
-# binhosts are all at /usr/xxxxxx_binhost
-binhost_list=(
-raspi
-raspi23A
-rk3588
-sweetpotato
-solitude
-alta
-)
+# you have to have crossbuilt image(s) in a stockpile to make this work, so let's start there -
 
-# these bin-repo links are already linked, so we don't really need them here
-# repositories are all at /var/www/localhost/htdocs/packages/
-#binhost_repositories=(
-#armv6j-unknown-linux-gnueabihf-rpi1-packages
-#armv7a-unknown-linux-gnueabihf-rpi23A-packages
-#aarch64-unknown-linux-gnu-rk3588-packages
-#aarch64-unknown-linux-gnu-sweetpotato-packages
-#aarch64-unknown-linux-gnu-solitude-packages
-#aarch64-unknown-linux-gnu-alta-packages
-#)
+# identify the board names for which .env or .img files are available to use as backends
+# for web-hosting binary package services. ( .env and/or .img files in /home/${user}/sbc-stockpile )
+# HINT: in a separate terminal, run the list_boards() function below and then pick which you want to include here
 
-# binhost backends are all .env files in /home/${user}/sbc-stockpile
-binhost_env_backends=(
+# mannually assign them in this array
+declare -a boards=()         # array of board names for which we have backing files available in stockpile
+boards=(
 bcm2708-rpi-b
 bcm2709-rpi-2-b
-rk3588-radxa-rock-5b+
-meson-gxl-s905x-libretech-cc-v2
-meson-sm1-s905d3-libretech-cc
-meson-g12b-a311d-libretech-cc
 )
+#boards=(
+#bcm2708-rpi-b
+#bcm2709-rpi-2-b
+#rk3588-radxa-rock-5b+
+#meson-gxl-s905x-libretech-cc-v2
+#meson-sm1-s905d3-libretech-cc
+#meson-g12b-a311d-libretech-cc
+#)
 
-for ((i=0; i< ${#binhost_list[@]}; i++)) ; do
-    # if it exists, mount backend on binhost mountpoint
-    backingfile="${stockpile_dir%/}/${binhost_env_backends[$i]}.env"
-    if [ -f ${backingfile} ] ; then
-        d_message "trying to mount ${backingfile} ..." 5
-        # syntax: cb-mount-binhost <BOARD>  <<MOUNTPOINT>
-        cb-mount-binhost "${binhost_env_backends[$i]}" "/usr/${binhost_list[$i]}_binhost" >/dev/null 2>&1
+#-----[ non-user variables ]--------------------------------------------------------------------------
+PN=$(basename $0)
+VERBOSE=$TRUE
+#verbosity=5
+#VERBOSE=$FALSE
+# set default verbosity only if it is not already set
+#[ -z $verbosity ] && verbosity=3
+[ -z $verbosity ] && verbosity=5
+
+bh=""     # identify binhost name for board
+link=""   # identify weblink to binpkgs for board
+
+declare -a bh_boards=()     # array of board names that are candidate binhosts
+declare -a backing_files=()       # array of all candidate backing files
+declare -a backing_file_chunck=() # array of some candidate backing files
+declare -a img_candidates=()      # array of .img candidate backing files (preferred)
+declare -a env_candidates=()      # array of .env candidate backing files
+
+backing_file=""
+
+# alternatively, you can do this automatically and just rely on pick_best_backing_file
+AUTOMATIC=$TRUE
+#AUTOMATIC=$FALSE
+
+#-----[ functions ]--------------------------------------------------------------------------
+
+load_boards() {
+    d_do "bremoji \"${toolbox}\"" 6; d_message "in ${FUNCNAME[0]}" 5
+    # populate array with names of boards for which we have .emv or .img files available in stockpile
+    mapfile -t boards < <(find "$stockpile_dir" -maxdepth 1 -type f \
+        \( -name '*.env' -o -name '*.img' \) -print0 \
+        | sed -z 's|.*/||; s/\.\(env\|img\)$//; s/_[^_]*$//' \
+        | tr '\0' '\n' \
+        | sort -u)  || return 1
+    return 0
+}
+
+list_boards() {
+    d_do "bremoji \"${toolbox}\"" 6; d_message "in ${FUNCNAME[0]}" 6
+    for board in ${boards[@]} ; do echo $board; done | sort -u || return 1
+    # HINT: run this command manually to create a list and then pick which you want to include above
+    return 0
+}
+
+load_backing_files() {
+    d_do "bremoji \"${toolbox}\"" 5; d_message "in ${FUNCNAME[0]}" 5
+    # populate array with filenames available to back a binhost for $1 (brd)
+    local brd=$1
+    # if there are more than one board that can serve as bh, load the others, too
+    # identify the binhost and weblink to binpkgs for this board
+    d_do "bremoji \"${toolbox}\"" 3
+    id_binhost_and_link_for_board ${brd}
+    d_do "u_message ${hammer} \"  bh: $bh ; link: $link\"" 3
+    d_do "bremoji \"${magnet}\"" 3
+    id_boards_for_binhost ${bh}  # loads array bh_boards
+    backing_files=()       # re-initialize arrays
+    backing_file_chunck=() # re-initialize arrays
+    # load filenames that are a binhost-match for brd
+    for bh_board in ${bh_boards[@]}; do
+        d_do "bremoji \"${screwdriver}\"" 3
+        d_message_n "loading backing files for binhost-[${bh}]-matching board [${bh_board}]" 3
+        mapfile -t backing_file_chunck < <(find "$stockpile_dir" -maxdepth 1 -type f \
+            \( -name '*.env' -o -name '*.img' \) -printf '%f\n' | grep ${bh_board})
+        # add chunk to array
+        backing_files+=(${backing_file_chunck[@]})
         result=$?
-    else
-        d_message "${backingfile} doesn't exist" 5
-        # didn't exist
-        result=2
-    fi
-    case $result in
-        0) PRIORITY="notice" && RESULT="succeeded" && message "${RESULT}" ;;
-        1) PRIORITY="err" && RESULT="failed" && E_message "${RESULT}" ;;
-        2) PRIORITY="err" && RESULT="failed (backing file doesn't exist)" && E_message "${RESULT}";;
-        *) PRIORITY="err" && RESULT="failed (invalid result [$result])" && E_message "${RESULT}" ;;
-    esac
-#    [ $result -eq 0 ] && ( RESULT="succeeded"; PRIORITY="notice" ) || \
- #       ( RESULT="failed"; PRIORITY="err" )
-    logger -p cron.${PRIORITY} "cb-mount-binhost ${binhost_env_backends[$i]} ${RESULT}"
-done
+        if [ $result -eq 0 ] ; then
+            d_do "emoji \"${check_mark_button}\"" 3
+            d_right_status $TRUE 3
+        else
+            echo; d_do "emoji \"${explosion}\"" 3
+            die "failed to load backing files for bh_board [$bh_board]"
+        fi
+    done
+    return 0
+}
+
+list_backing_files() {
+    d_do "bremoji \"${toolbox}\"" 5
+    d_message "in ${FUNCNAME[0]}" 5
+    for file in ${backing_files[@]}; do echo $file; done
+}
+
+# moved id_binhost_and_link_for_board() to cb-common-functions
+# moved id_boards_for_binhost() to cb-common-functions
+
+setup_mountpoints_and_weblinks() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    bremoji "${toolbox}"; d_message "in ${FUNCNAME[0]}" 5
+    # look up each board to be included and set up its mountpoint and its web-hosting link to binpkgs
+    for board in ${boards[@]} ; do
+        d_do "bremoji \"${dna}\"" 2
+        d_message "${LBon}board: $board${Boff}" 2
+        # identify the binhost and weblink to binpkgs for this board
+        d_do "bremoji \"${toolbox}\"" 5
+        id_binhost_and_link_for_board ${board}
+        d_do "u_message ${hammer} \"  bh: ${bh} ; link: ${link}\"" 2
+        # if the mount point does not exist, create it
+        d_do "bremoji \"${hammer}\"" 2
+        d_message_n "checking mountpoint" 2
+        if [ ! -d "${binhost_mountpoint_dir%/}/${bh}_binhost" ] ; then
+            debug_do 'echo -e -n " (${BYon}creating${Boff})"' 2
+            mkdir -p "${binhost_mountpoint_dir%/}/${bh}_binhost" ; result=$?
+            if [ ! $result -eq 0 ] ; then
+                logger -p cron.err "$PN failed to mkdir -p binhost_mountpoint for  board [$board]"
+                echo; bremoji ${explosion}; die "failed to mkdir -p binhost_mountpoint for board [$board]"
+            fi
+            logger -p cron.notice "$PN created mountpoint ${binhost_mountpoint_dir%/}/${bh}_binhost for board [$board]"
+        else
+            debug_do 'echo -e -n " (${BGon}exists${Boff})"' 2
+        fi
+        d_do "emoji \"${check_mark_button}\"" 2
+        d_right_status $TRUE 2
+        # if the web-hosting link to binpkgs doesn't exist, create it
+        d_do "bremoji \"${hammer}\"" 2
+        d_message_n "checking web-link to binpkgs" 2
+        if [ ! -L "${pkg_website%/}/${link}" ] ; then
+            debug_do 'echo -e -n " (${BYon}creating${Boff})"' 2
+            # identify the target for binpkgs to which we want to link
+            link_target="${binhost_mountpoint_dir%/}/${bh}_binhost/var/cache/binpkgs"
+            d_do "bremoji \"${dna}\"" 5
+            d_message "link_target: $link_target" 5
+            d_do "bremoji \"${dna}\"" 5
+            d_message "pkg_website: $pkg_website" 5
+            d_do "bremoji \"${dna}\"" 5
+            d_message "link: $link" 5
+            ln -s "${link_target}" "${pkg_website%/}/${link}" ; result=$?
+            if [ ! $result -eq 0 ] ; then
+                logger -p cron.err "$PN failed to create weblink [${link}] for board [$board]"
+                echo; bremoji ${explosion}; die "failed to create web-link for $board"
+            fi
+            logger -p cron.notice "$PN created weblink [${link}] for board [$board]"
+        else
+            debug_do 'echo -e -n " (${BGon}exists${Boff})"' 2
+        fi
+        d_do "emoji \"${check_mark_button}\"" 2
+        d_right_status $TRUE 2
+    done
+    return 0
+}
+
+find_newest_file() {
+    local file=""
+    local newest_file=""
+    local newest_time=0
+    local file_list=("${@}")
+    # If the file list is empty, return an empty string
+    if [[ ${#file_list[@]} -eq 0 ]]; then echo ""; return 1; fi
+    # iterate through file_list and compare modification time
+    for file in "${file_list[@]}"; do
+        local file_path="$stockpile_dir/$file"
+        # Check if the file exists before attempting to get its modification time
+        if [[ ! -f "$file_path" ]]; then continue; fi   # continue jumps out to next iteration in for loop
+        # Use stat to get the modification time in seconds since the epoch
+        local mod_time=$(stat -c %Y "$file_path")
+        # Compare and find the newest
+        if [[ $mod_time -gt $newest_time ]]; then
+            newest_time=$mod_time
+            newest_file="$file"
+        fi
+    done
+    echo "$newest_file"
+    return 0
+}
+
+pick_and_mount_best_backing_file() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    d_do "bremoji \"${toolbox}\"" 5; d_message "in ${FUNCNAME[0]}" 5
+
+    # re-initialize arrays
+    backing_files=()
+    img_candidates=()
+    env_candidates=()
+    local best_pick=""
+
+    # for each board included, identify the best backing file available, then
+    # use cb-mount-binhost to activate a loop device and mount it
+    for board in "${boards[@]}"; do
+        # if there is already a loop device activated for this board's backing file, skip to the next
+        # (should only apply when run manually, since this is a .start scrit run at boot time)
+        d_do "bremoji \"${microscope}\"" 2
+        d_message "${LBon}examining situation for board [${BMon}${board}${LBon}]${Boff}" 2
+        if [[ ! -z $(losetup -a | grep "${board}") ]] ; then
+            d_do "bremoji \"${no_entry}\"" 2
+            d_message "${BMon}loop device already active for board [${LBon}${board}${BMon}]${Boff}"
+            continue; # continue jumps out to next iteration in for loop
+        fi
+        # identify the binhost appropriate for this board and determine if it is already in use with another board
+        d_do "bremoji \"${toolbox}\"" 5
+        id_binhost_and_link_for_board ${board}
+        d_do "bremoji \"${microscope}\"" 2
+        d_message "${LBon}examining situation for board [${BMon}${board}${LBon}]'s binhost [${bh}]${Boff}" 2
+        if [[ ! -z $(findmnt -lno TARGET,SOURCE,FSTYPE | grep "${bh}") ]] ; then
+            d_do "bremoji \"${no_entry}\"" 2
+            d_message "${BMon}mountpoint(s) already in use for binhost [${LBon}${bh}${BMon}]${Boff}"
+            continue; # continue jumps out to next iteration in for loop
+        fi
+        # identify candidate backing file(s)
+        load_backing_files "${board}"
+        d_do "bremoji \"${hammer}\"" 2
+        d_message "${BYon}available backing files:${Boff}" 2
+        debug_do 'list_backing_files | sed "s|^|    |"' 2
+        # if there are more than one candidate, pick the "best" ; rules --
+        # (1) prefer .img to .env (more complete) ; (2) prefer newest
+        if [[ ${#backing_files[@]} -eq 0 ]] ; then
+            bremoji ${explosion}; die "no backing files available for board [$board]"
+            logger -p cron.err "no backing files available for board [$board]"
+        elif [[ ${#backing_files[@]} -eq 1 ]] ; then
+            d_do "bremoji \"${microscope}\"" 5
+            d_message "picking the only candidate" 5
+            best_pick="${backing_files[0]}"
+        elif [[ ${#backing_files[@]} -gt 1 ]] ; then
+            # sort them by type since .img is preferred
+            d_do "bremoji \"${microscope}\"" 5
+            d_message "sorting candidates by type" 5
+            for file in "${backing_files[@]}" ; do
+                if [[ "$file" == *.img ]]; then
+                    img_candidates+=("$file")
+                elif [[ "$file" == *.env ]]; then
+                    env_candidates+=("$file")
+                else
+                    # save to convert to elif if/when qcow2 images are incorporated
+                    bremoji ${explosion}; die "invalid backing file [$file]"
+                fi
+            done
+            # apply rule (1) prefer .img file if available; in either case if more than 1, pick newest
+            if [[ ${#img_candidates[@]} -gt 0 ]] ; then
+                d_do "bremoji \"${microscope}\"" 5
+                d_message "picking from [${#img_candidates[@]}]] img_candidates" 5
+                best_pick=$(find_newest_file "${img_candidates[@]}")
+            elif [[ ${#env_candidates[@]} -gt 0 ]] ; then
+                d_do "bremoji \"${microscope}\"" 5
+                d_message "picking from [${#env_candidates[@]}] env_candidates" 5
+                best_pick=$(find_newest_file "${env_candidates[@]}")
+            else  # nonsense case, should have been caught above
+                bremoji ${explosion}; die "nonsense case in elif comparisons #img_candidates: [${#img_candidates[@]}] #env_candidates: [${#env_candidates[@]}]"
+            fi
+        else  # nonsense case
+            bremoji ${explosion}; die "nonsense case in elif comparisons #backingfiles: [${#backing_files[@]}]"
+        fi
+        # now proceed with best_pick as the backing file
+
+        # if it exists, mount backend on binhost mountpoint
+        d_do "bremoji \"${hammer}\"" 4
+        d_message "chose best_pick: [${best_pick}]" 4
+
+        backing_file="${stockpile_dir%/}/${best_pick}"
+        if [ -f ${backing_file} ] ; then
+            d_do "bremoji \"${hammer}\"" 4
+            d_message "${BMon}trying to mount backing file [${LBon}${backing_file}${BMon}] ...${Boff}" 4
+            # new syntax: cb-mount-binhost <BACKINGFILE> # (which takes basename only; no path)
+#            cb-mount-binhost "${backing_file}" "${binhost_mountpoint_dir%/}/${bh}_binhost" >/dev/null 2>&1
+            if [ $verbosity -gt 0 ] ; then
+                cb-mount-binhost "$(basename ${backing_file})"
+                result=$?
+            else
+                cb-mount-binhost "$(basename ${backing_file})" >/dev/null 2>&1
+                result=$?
+            fi
+        else
+            d_message "${backing_file} doesn't exist" 5
+            # didn't exist
+            result=2
+        fi
+        case $result in
+            0) PRIORITY="notice" && RESULT="succeeded" && message "${RESULT}" ;;
+            1) PRIORITY="err" && RESULT="failed" && E_message "${RESULT}" ;;
+            2) PRIORITY="err" && RESULT="failed (backing file doesn't exist)" && E_message "${RESULT}";;
+            *) PRIORITY="err" && RESULT="failed (invalid result [$result])" && E_message "${RESULT}" ;;
+        esac
+    #    [ $result -eq 0 ] && ( RESULT="succeeded"; PRIORITY="notice" ) || \
+     #       ( RESULT="failed"; PRIORITY="err" )
+        logger -p cron.${PRIORITY} "cb-mount-binhost ${backing_file} on ${bh}_binhost ${RESULT}"
+    done
+}
+
+#-----[ main script ]------------------------------------------------------------------------
+# ** if you have no duplicates ** you can automate the assignment of boards array
+# by setting AUTOMATIC=$TRUE above
+[ $AUTOMATIC ] && load_boards
+
+separator "$(hostname)" "${PN}"
+d_do "bremoji \"${toolbox}\"" 3
+d_message "in main script; verbosity: $verbosity" 5
+d_do "bremoji \"${dna}\"" 2
+d_message "AUTOMATIC: $(status_color ${AUTOMATIC})$(TrueFalse ${AUTOMATIC})${Boff}" 2
+d_do "u_message ${hammer} \"boards: ${boards[@]}\"" 2
+
+setup_mountpoints_and_weblinks || ( bremoji ${explosion}; die "failed to setup_mountpoints_and_weblinks" )
+
+pick_and_mount_best_backing_file || ( bremoji ${explosion}; die "failed to pick_and_mount_best_backing_file" )
+
+d_do "bremoji \"${flag_chequered}\"" 2
+d_message "done!" 2
+
+#echo -e "${BMon}Debug Marker${Boff}"; exit

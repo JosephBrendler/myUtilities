@@ -3,7 +3,8 @@
 # cb-umount-binhost   (c) joe.brendler  2025-2072
 # un-mount a crossbuild environment binhost image file from its associated MOUNTPOINT
 #
-
+# update 20251014 - use BACKING_FILE rather than BOARD as arg $1
+#
 source /usr/sbin/script_header_joetoo
 message_n "sourcing BUILD ..."
 source /etc/crossbuild-tools/BUILD ; right_status $?
@@ -17,22 +18,43 @@ VERBOSE=$TRUE
 
 PN=$(basename $0)
 
-stockpile_dir="/home/joe/sbc-stockpile"
+user="joe"
+stockpile_dir="/home/${user}/sbc-stockpile"
 
 message_n "sourcing cb-common-functions ..."
 source /usr/sbin/cb-common-functions ; right_status $?
 TARGET=""
 
 usage() {
-    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
-    smaller_script_common_usage_message
+    message "${BRon}usage: ${BGon}${PN} <BACKING_FILE>${Boff}"
+    echo
+    message "  ${LBon}<BACKING_FILE> must be a stockpiled SBC crossbuild image or environment file.${Boff}"
+    message "  ${LBon}These are currently available --${Boff}"
+    # set shell globbing options to count files in the mountpoint directory
+    # nullglob ensures that a pattern matching no files expands to nothing
+    # (rather than the pattern itself), and dotglob includes dotfiles (hidden files)
+    # The files array will be empty if the directory is empty
+    shopt -s nullglob dotglob
+    images=("${stockpile_dir%/}"/*.env "${stockpile_dir%/}"/*.img)
+    [ ${#images[@]} -eq 0 ] && die "There are no stockpiled crossbuild .env or .img files available"
+    for image in ${images[@]}; do echo "         $(basename ${image})" ; done
+    shopt -u nullglob dotglob # Unset the options after use
+    echo
+    message "${BMon}find additionl information at /etc/crossbuild-tools/README"
     exit 1
 }
 
+
+validate_stockpile_image() {
+    # return 0 if properly named image file exists in the stockpile directory
+    [ ! -f ${stockpile_dir%/}/${BACKING_FILE} ] && die "stockpile image file [${stockpile_dir%/}/${BACKING_FILE}] does not exist"
+    return 0
+}
+
 get_mountpoint() {
-    # inspect for loop devices attached to BOARD image file
-    message_n "identifying loop_dev attached to ${stockpile_dir%/}/${BOARD}.env ..."
-    export loop_dev=$(losetup -a | grep "${stockpile_dir%/}/${BOARD}.env" | cut -d':' -f1) && \
+    # inspect for loop devices attached to BACKING_FILE
+    message_n "identifying loop_dev attached to ${stockpile_dir%/}/${BACKING_FILE} ..."
+    export loop_dev=$(losetup -a | grep "${stockpile_dir%/}/${BACKING_FILE}" | cut -d':' -f1) && \
         echo -en " (${LBon}${loop_dev}${Boff})" || die "Failed to determine loop_dev"
     right_status $TRUE
     message_n "identifying mountpoint for loop_dev ..."
@@ -66,9 +88,16 @@ umount-binhost-board-from-mountpoint() {
 
 #-----[ main script ]---------------------------------------------
 checkroot
-separator "(${BOARD})" "${PN}"
 [ $# -ne 1 ] && usage
-BOARD=$1
+BACKING_FILE=$1
+separator "${PN}" "(${BACKING_FILE})"
+# get BOARD from BACKING_FILE filename
+# (remove the extension) (then remove the text from the first underscore onwards)
+BOARD="${BACKING_FILE%.*}";  BOARD="${BOARD%%_*}"
+d_message "BACKING_FILE: $BACKING_FILE" 3
+d_message "BOARD: $BOARD" 3
+validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
+validate_stockpile_image ${BACKING_FILE} || die "Failed to validate_stockpile_image ${BACKING_FILE}"
 validate_target ${BOARD} || die "Failed to validate_target [${BOARD}]"
 get_mountpoint ${BOARD} || die "Failed to get_mountpoint ${BOARD}"
 
