@@ -1,0 +1,74 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+checkroot
+distcc_log_dir="/var/log/distcc"
+distcc_log_file="distccd.log"
+intended_ownership="distcc:daemon"
+PN=$(basename $0)
+
+separator "$(hostname)" "(${PN})"
+# check or create distcc_log_dir
+message_n "checking for ${distcc_log_dir}"
+if [ -d ${distcc_log_dir} ] ; then
+    echo -e -n " (${BGon}exists${Boff})"
+    right_status $TRUE
+else
+    echo -e -n " (${BYon}creating${Boff})"
+    mkdir ${distcc_log_dir} ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e -n "(${BGon}done${Boff})"
+        right_status $TRUE
+    else
+        right_status 1
+        die "failed to create ${distcc_log_dir}"
+    fi # mkdir
+fi # -d
+
+# check or create distcc_log_file
+message_n "checking for ${distcc_log_file}"
+if [ -f ${distcc_log_dir%/}/${distcc_log_file} ] ; then
+    echo -e -n " (${BGon}exists${Boff})"
+    right_status $TRUE
+else
+    echo -e -n " (${BYon}creating${Boff})"
+    touch ${distcc_log_dir%/}/${distcc_log_file} ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e -n "(${BGon}done${Boff})"
+        right_status $TRUE
+    else
+        right_status 1
+        die "failed to create ${distcc_log_file}"
+    fi # touch
+fi # -f
+
+# check or set permissions on distcc_log_file
+message_n "checking ownership of ${distcc_log_file}"
+ownership="$(stat -c '%U:%G' "${distcc_log_dir%/}/${distcc_log_file}")"
+if [[ "${ownership}" == "${intended_ownership}" ]] ; then
+    echo -e -n " (${BGon}${ownership}${Boff})"
+    right_status $TRUE
+else
+    echo -e -n " (${BRon}${ownership}, ${BYon}resetting${Boff})"
+    chown "${intended_ownership}" "${distcc_log_dir%/}/${distcc_log_file}" ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e -n "(${BGon}done${Boff})"
+        right_status $TRUE
+    else
+        right_status 1
+        die "failed to reset ownership of ${distcc_log_file}"
+    fi # chown
+fi # ownerhsip
+
+# restart distcc
+message_n "restarting distcc service"
+/etc/init.d/distccd restart >/dev/null 2>&1 ; result=$?
+if [ $result -eq 0 ] ; then
+    echo -e -n " (${BGon}started${Boff})"
+    right_status $TRUE
+else
+    right_status 1
+    die "failed to restart distcc service"
+fi # restart
+
+separator "${PN}" "(current log)"
+cat /var/log/distcc/distccd.log | sed 's|^|    |'
