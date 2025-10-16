@@ -1,0 +1,115 @@
+#!/bin/bash
+
+#-----[ variables ]-------------------------------------
+PN=$(basename $0)
+
+user="joe"
+
+out_dir="/home/joe/scratch/"
+web_server="raspi56406:/home/joe/"
+#-----[ Note: set output file name here ]---------------------------------
+out_file_prefix="linux_arm64_"
+out_file_suffix="_armbian_kernel_image"
+out_file_extension="tbz2"  # no leading .
+
+CSI="\033["
+BRon="${CSI}01;31m"
+BGon="${CSI}01;32m"
+BYon="${CSI}01;33m"
+BBon="${CSI}01;34m"
+BMon="${CSI}01;35m"
+LBon="${CSI}01;36m"
+BWon="${CSI}01;39m"
+Won="${CSI}01;37m"
+Boff="${CSI}00m"
+
+#-----[ functions ]-------------------------------------
+testcolors() {
+    for x in ${BRon} ${BGon} ${BYon} ${BBon} ${BMon} ${LBon} ${BWon} ${Won}; do
+        echo -e "${x}color ${Boff}"
+    done
+}
+
+usage() {
+    E_message "usage: ${PN} /path/to/tarball"
+    echo
+    exit 1
+}
+
+E_message() {
+    echo -e "${BRon}*${Boff} $@"
+}
+
+message() {
+    echo -e "${BGon}*${Boff} $@"
+}
+
+message_n() {
+    echo -e -n "${BGon}*${Boff} $@"
+}
+
+checkroot() {
+    ROOT_UID=0
+    if [ "$UID" -ne "$ROOT_UID" ] ; then
+        E_message "user must be root but is not"
+        exit 1
+    else
+        return 0
+    fi
+}
+
+die() {
+    E_message "$@"
+    exit 1
+}
+
+validate-tarball() {
+    local candidate="$1"
+    if [ -f "${candidate}" ] ; then
+        tarball="$(basename ${candidate})"
+        message "tarball: $tarball"
+        return 0
+    fi
+    return 1
+}
+
+generate-hashfile() {
+    message_n "generating hashfile and setting ownership to (${user})..."
+    sha512sum ${out_dir%/}/${tarball} > ${out_dir%/}/${tarball}.sha512sum && \
+    chown ${user}:${user} ${out_dir%/}/${tarball}.sha512sum
+    result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e " (${BGon}Ok${Boff})"
+        return 0
+    else
+        echo -e " (${BRon}!!${Boff})"
+        return 1
+    fi
+}
+
+scp-to-server() {
+    message "using scp to upload tarball to web_server ..."
+    sudo -u ${user} scp "${out_dir%/}/${tarball}" "${web_server}" && \
+    sudo -u ${user} scp "${out_dir%/}/${tarball}.sha512sum" "${web_server}"
+    result=$?
+    if [ $result -eq 0 ] ; then
+        echo -e " (${BGon}Ok${Boff})"
+        return 0
+    else
+        echo -e " (${BRon}!!${Boff})"
+        return 1
+    fi
+}
+
+#-----[ main script ]-----------------------------------
+checkroot
+message "completed checkroot and still running"
+#testcolors
+
+[ $# -ne 1 ] && E_message "Error: invalid arguments" && usage
+
+validate-tarball "$1" || die "failed to validate imagefile"
+generate-hashfile || die "failed to generate hashfile"
+scp-to-server || die "failed to scp tarball and hashfile to server"
+
+echo -e "${BYon}Done${Boff}"

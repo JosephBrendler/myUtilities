@@ -1,0 +1,203 @@
+#!/bin/bash
+
+#-----[ variables ]-------------------------------------
+PN=$(basename $0)
+
+user="joe"
+
+out_dir="/home/joe/scratch/"
+#-----[ Note: set output file name here ]---------------------------------
+out_file_prefix="linux_arm64_"
+out_file_suffix="_armbian_kernel_image"
+out_file_extension="tbz2"  # no leading .
+
+joetoo_sbc_list=(
+'bcm2712-rpi-cm5-cm5io'
+'bcm2712-rpi-5-b'
+'bcm2711-rpi-cm4-io'
+'bcm2711-rpi-4-b'
+'bcm2710-rpi-3-b-plus'
+'bcm2710-rpi-3-b'
+'bcm2709-rpi-2-b'
+'bcm2708-rpi-b'
+'rk3288-tinker-s'
+'rk3399-rock-pi-4c-plus'
+'rk3399-rock-4se'
+'rk3399-tinker-2'
+'rk3588-rock-5b'
+'rk3588-radxa-rock-5b+'
+'rk3588s-orangepi-5'
+'rk3588s-orangepi-5b'
+'rk3588s-rock-5c'
+'fsl-imx8mq-phanbell'
+'meson-gxl-s905x-libretech-cc-v2'
+'meson-sm1-s905d3-libretech-cc'
+'meson-g12b-a311d-libretech-cc'
+'generic-armv6j'
+'generic-armv7a'
+'generic-aarch64'
+'generic-amd64'
+)
+
+CSI="\033["
+BRon="${CSI}01;31m"
+BGon="${CSI}01;32m"
+BYon="${CSI}01;33m"
+BBon="${CSI}01;34m"
+BMon="${CSI}01;35m"
+LBon="${CSI}01;36m"
+BWon="${CSI}01;39m"
+Won="${CSI}01;37m"
+Boff="${CSI}00m"
+
+#-----[ functions ]-------------------------------------
+testcolors() {
+    for x in ${BRon} ${BGon} ${BYon} ${BBon} ${BMon} ${LBon} ${BWon} ${Won}; do
+        echo -e "${x}color ${Boff}"
+    done
+}
+
+usage() {
+    E_message "usage: ${PN} /path/to/imagefile <BOARD>"
+    echo
+    message "${BYon}BOARD must be one of --${Boff}"
+    dump-joetoo-sbc-list
+    echo
+    exit 1
+}
+
+E_message() {
+    echo -e "${BRon}*${Boff} $@"
+}
+
+message() {
+    echo -e "${BGon}*${Boff} $@"
+}
+
+message_n() {
+    echo -e -n "${BGon}*${Boff} $@"
+}
+
+checkroot() {
+    ROOT_UID=0
+    if [ "$UID" -ne "$ROOT_UID" ] ; then
+        E_message "user must be root but is not"
+        exit 1
+    else
+        return 0
+    fi
+}
+
+die() {
+    E_message "$@"
+    exit 1
+}
+
+dump-joetoo-sbc-list() {
+    for ((i=0; i<${#joetoo_sbc_list[@]}; i++)) ; do
+        echo -e "   ${joetoo_sbc_list[${i}]}"
+    done
+    return 0
+}
+
+validate-board() {
+    local board=$1
+    # return 0 if board in in joetoo_sbc_list, 1 if not
+    for ((i=0; i<${#joetoo_sbc_list[@]}; i++)) ; do
+        if [[ "${joetoo_sbc_list[${i}]}" == "${board}" ]] ; then
+            BOARD="${board}"
+            message "BOARD: $BOARD"
+            return 0
+        fi
+    done
+    return 1  # not found
+}
+
+validate-imagefile() {
+    local img="$1"
+    if [ -f "${img}" ] ; then
+        imagefile="$1"
+        message "imagefile: $imagefile"
+        return 0
+    fi
+    return 1
+}
+
+#-----[ main script ]-----------------------------------
+checkroot
+message "completed checkroot and still running"
+#testcolors
+
+[ $# -ne 2 ] && E_message "Error: invalid arguments" && usage
+
+validate-imagefile "$1" || die "failed to validate imagefile"
+validate-board "$2" || die "failed to validate board"
+
+img_loopdev=$(losetup -a | grep "${imagefile}" | cut -d':' -f1)
+[ -z "${img_loopdev}" ] && die "no loop device active for imagefile"
+message "img_loopdev: $img_loopdev"
+
+mountpoint=$(mount | grep "${img_loopdev}" | head -n1 | awk '{print $3}')
+message "mountpoint: ${mountpoint}"
+
+message "This is what is mounted on ${mountpoint}"
+mount | grep "${mountpoint}" | sed 's|^|  |'
+
+# determine version number
+message_n "determining version number ..."
+IFS='_'
+read -r -a elements <<< "${imagefile}" || die "failed to read imagefile elements"
+IFS=$' \t\n'  # reset IFS
+# version is the second-to-last element
+version="${elements[$((${#elements[@]} - 2))]}" || die "vailed to assign version number"
+echo -e " ${BGon}(OK)${Boff}"
+message "version: $version"
+
+old_dir="$(pwd)"
+message "moving from ${old_dir} to ${mountpoint} ..."
+cd "${mountpoint}" || die "failed to cd ${mountpoint}"
+echo -e " PWD: $(pwd) ${BGon}(OK)${Boff}"
+
+message "copying dtb file to /boot/ ..."
+dtb_file=$(find ./boot/dtb/ -iname "${BOARD}.dtb") || die "failed to find dtb file"
+cp -v ${dtb_file} ${mountpoint%/}/boot/ || die "failed to copy dtb to /boot/"
+echo -e " ${BGon}(OK)${Boff}"
+
+#-----[ Note: set parts to be included in tarball here ]--------------------------------------
+#parts="boot lib/modules/* lib/firmware/* vmlinuz* initrd.img* usr/src/*"
+# don't use wildcards, and only include what exists, to avoid tar errors
+part_list="boot lib/modules lib/firmware vmlinuz initrd.img usr/src"
+parts=""
+for item in $part_list; do
+    if [ -e "$item" ] ; then
+        message "$item exists; adding to parts"
+        parts+=" $item"
+    else
+        E_message "$item does not exist; omitting from parts"
+    fi
+done
+
+options="-cvjpf"
+archivename="${out_dir%/}/${out_file_prefix}${BOARD}${out_file_suffix}-${version}.${out_file_extension}"
+quiet=">/dev/null 2>&1"
+message "options: ${options}"
+message "archivename: ${archivename}"
+message "parts: ${parts}"
+
+message_n "creating tarball ..."
+tar_command="tar ${options} ${archivename} ${parts} ${quiet}"
+# omit ${quiet} like this for debugging ------------V
+#tar_command="tar ${options} ${archivename} ${parts}"
+eval "${tar_command}" || die "failed to create tarball"
+echo -e " PWD: $(pwd) ${BGon}(OK)${Boff}"
+
+message_n "changing ownership of tarball to ${user} ..."
+chown ${user}:${user} ${archivename} || die "failed to change ownership of tarball"
+echo -e " PWD: $(pwd) ${BGon}(OK)${Boff}"
+ls -al ${archivename} | sed 's|^|  |'
+
+message "moving from ${mountpoint} to ${old_dir}..."
+cd "${old_dir}" || die "failed to cd ${old_dir}"
+echo -e " PWD: $(pwd) ${BGon}(OK)${Boff}"
+
+echo -e "${BYon}Done${Boff}"

@@ -1,0 +1,84 @@
+#!/bin/bash
+
+#-----[ variables ]-------------------------------------
+PN=$(basename $0)
+CSI="\033["
+BRon="${CSI}01;31m"
+BGon="${CSI}01;32m"
+BYon="${CSI}01;33m"
+BBon="${CSI}01;34m"
+BMon="${CSI}01;35m"
+LBon="${CSI}01;36m"
+BWon="${CSI}01;39m"
+Won="${CSI}01;37m"
+Boff="${CSI}00m"
+
+#-----[ functions ]-------------------------------------
+testcolors() {
+    for x in ${BRon} ${BGon} ${BYon} ${BBon} ${BMon} ${LBon} ${BWon} ${Won}; do
+        echo -e "${x}color ${Boff}"
+    done
+}
+
+usage() {
+    E_message "usage: ${PN} /path/to/imagefile"
+    exit 1
+}
+
+E_message() {
+    echo -e "${BRon}*${Boff} $@"
+}
+
+message() {
+    echo -e "${BGon}*${Boff} $@"
+}
+
+message_n() {
+    echo -e -n "${BGon}*${Boff} $@"
+}
+
+checkroot() {
+    ROOT_UID=0
+    if [ "$UID" -ne "$ROOT_UID" ] ; then
+        E_message "user must be root but is not"
+        exit 1
+    else
+        return 0
+    fi
+}
+
+die() {
+    E_message "$@"
+    exit 1
+}
+
+#-----[ main script ]-----------------------------------
+checkroot
+message "completed checkroot and still running"
+#testcolors
+
+[ $# -ne 1 ] && E_message "Error: path to image file not specified" && usage
+imagefile="$1"
+message "imagefile: $imagefile"
+
+img_loopdev=$(losetup -a | grep "${imagefile}" | cut -d':' -f1)
+message "img_loopdev: $img_loopdev"
+
+mountpoint=$(mount | grep "${img_loopdev}" | head -n1 | awk '{print $3}')
+message "mountpoint: ${mountpoint}"
+
+message "This is what is mounted on ${mountpoint}"
+mount | grep "${mountpoint}" | sed 's|^|  |'
+
+message_n "un-mounting ${mountpoint} recursively ..."
+umount -R -q "${mountpoint}" || die "failed to un-mount ${mountpoint}"
+echo -e " ${BGon}(OK)${Boff}"
+
+message "This should now show nothing mounted ..."
+mount | grep armbian | sed 's|^|  |'
+
+message_n "detaching ${img_loopdev} ..."
+losetup -d "${img_loopdev}" || die "failed to detach ${img_loopdev}"
+echo -e " ${BGon}(OK)${Boff}"
+
+echo -e "${BYon}Done${Boff}"
