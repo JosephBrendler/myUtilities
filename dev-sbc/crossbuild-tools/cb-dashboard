@@ -25,7 +25,8 @@ PN=$(basename $0)
 #TARGETS="aarch64-unknown-linux-gnu\|armv7a-unknown-linux-gnueabihf\|armv6j-unknown-linux-gnueabihf"
 #TARGETS="aarch64-unknown-linux-gnu armv7a-unknown-linux-gnueabihf armv6j-unknown-linux-gnueabihf"
 # detect crossdev build targets actually installed (in repo)
-TARGETS=( $(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -printf '%f\n' | sed 's|^cross-||') )
+#TARGETS=( $(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -printf '%f\n' | sed 's|^cross-||') )
+readarray -d'' TARGETS < <(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -print0)
 
 #-----[ functions ]--------------------------------------------------------------------------
 
@@ -42,7 +43,7 @@ usage() {
 show-dashboard() {
     echo
     separator ${PN} "( crossdev TARGETs in /var/db/repos/crossdev/ )"
-    for x in $TARGETS; do echo -e "    ${LBon}${x}${Boff}"; done
+    for TARGET in ${TARGETS[@]}; do echo -e "    ${LBon}${TARGET}${Boff}"; done
     echo
     # crossbuild stuff first (selected by '/usr/')
     # for each active loopdevice, show backing file and mounts
@@ -97,16 +98,21 @@ show-dashboard() {
 show-mounts() {
     # display anything mounted on /dev/sd devices (possible outputdevice)
     d_message "  in ${FUNCNAME[0]} with selector: ${selector}" 5
-    mounts_found=$(findmnt -lno SOURCE,TARGET,FSTYPE | grep ${selector} | sort -h)
-    d_message "mounts_found: $mounts_found" 5
-#    mounts=( $(findmnt -lno SOURCE,TARGET,FSTYPE | grep ${selector}) )
-    if [ ! -z "${mounts_found}" ] ; then
-#        d_message "#: ${#mounts[@]}" 3
-        while read -r findmnt_LINE ; do
-            eval $(echo $findmnt_LINE | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
+    # -S /dev/sd*: filters for devices originating from /dev/sd*.
+    # -n: suppresses the header line.
+    # -l: provides a list format.
+    # -o SOURCE,TARGET,FSTYPE: specifies the exact output columns.
+    # -r: provides raw output, disabling special formatting.
+    readarray -t mounts_found < <(findmnt -lno SOURCE,TARGET,FSTYPE | grep -E "^${selector}")
+    d_message "mounts_found[@]: ${mounts_found[@]}" 5
+    if [ ! ${#mounts_found[@]} -eq 0 ] ; then
+        d_message "#: ${#mounts_found[@]}" 6
+        for ((i=0; i<${#mounts_found[@]}; i++)) ; do
+            echo ${mounts_found[$i]}
+            eval $(echo ${mounts_found[$i]} | awk '{print "src="$1"; tgt="$2"; fstype="$3}')
             d_message "src: $src   tgt: $tgt   fstype: $fstype" 5
             echo -e "        ${BYon}${src}${Boff} is mounted at ${LBon}${tgt}${Boff} with fs_type ${BMon}${fstype}${Boff}"
-        done<<<"${mounts_found}"
+        done
     fi
 }
 
@@ -132,20 +138,22 @@ show-target-repositories-status() {
 show-loopdev-backfile-and-mounts() {
     [ ! $# -eq 1 ] && E_message "argument null; ${FUNCNAME[0]} requires selector" && exit 1
     selector="$1"
-    while read -r loopdev_LINE ; do
+    readarray -t loop_devices < <(losetup -lnO NAME,BACK-FILE | grep "${selector}" | sort -h)
+    for ((i=0; i<${#loop_devices[@]}; i++)) ; do
         # identify the loop_dev name and its backing_file
-        loop_dev="$(echo $loopdev_LINE | cut -d' ' -f1)"
-        backing_file="$(echo $loopdev_LINE | cut -d' ' -f2)"
+        loop_dev="$(echo ${loop_devices[$i]} | cut -d' ' -f1)"
+        backing_file="$(echo ${loop_devices[$i]} | cut -d' ' -f2)"
         if [ ! -z "${loop_dev}" ] ; then
             echo -e "    ${BMon}${loop_dev}${Boff} is backed by file: ${BWon}${backing_file}${Boff}"
             # identify this loop_dev's mounts
-            while read -r mountpoint_LINE; do
-                loop_dev_part="$(echo $mountpoint_LINE | cut -d' ' -f1)"
-                mountpoint="$(echo $mountpoint_LINE | cut -d' ' -f2)"
+            readarray -t mounts_found < <(findmnt -lno SOURCE,TARGET,FSTYPE | grep -E "^${loop_dev}")
+            for ((j=0; j<${#mounts_found[@]}; j++)) ; do
+                loop_dev_part="$(echo ${mounts_found[$j]} | cut -d' ' -f1)"
+                mountpoint="$(echo ${mounts_found[$j]} | cut -d' ' -f2)"
                 echo -e "        ${BYon}${loop_dev_part}${Boff} is mounted at ${LBon}${mountpoint}${Boff}"
-            done <<<$(findmnt -lo SOURCE,TARGET | grep "${loop_dev}" | sort -h )
+            done # mounts found for loop_dev
         fi
-    done <<<$(losetup -lnO NAME,BACK-FILE | grep "${selector}" | sort -h )
+    done # loop_devices
 }
 
 show-binary-package-services() {
