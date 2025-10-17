@@ -17,7 +17,9 @@ source /usr/sbin/script_header_joetoo_extended
 #-----[ variables ]--------------------------------------------------------------------------
 selector=""
 
+user="joe"
 webroot="/var/www/localhost/htdocs/"
+stockpile_dir="/home/${user}/sbc-stockpile/"
 
 PN=$(basename $0)
 
@@ -44,16 +46,16 @@ usage() {
 
 show-dashboard() {
     echo
-    separator ${PN} "( crossdev TARGETs in /var/db/repos/crossdev/ )"
+    separator "${PN}-${BUILD}" "( crossdev TARGETs in /var/db/repos/crossdev/ )"
     for TARGET in ${TARGETS[@]}; do echo -e "    ${LBon}${TARGET}${Boff}"; done
     echo
     # crossbuild stuff first (selected by '/usr/')
     # for each active loopdevice, show backing file and mounts
-    separator ${PN} "(active crossbuild loop devices)"
+    separator "${PN}-${BUILD}" "(active crossbuild loop devices)"
     show-loopdev-backfile-and-mounts "/usr/"
 
     # now display anything else mounted on one of our TARGETs (e.g. proc, dev, sys for chroot...)
-    separator ${PN} "(other mounts - e.g. for chroot)"
+    separator "${PN}-${BUILD}" "(other mounts - e.g. for chroot)"
     for TARGET in ${TARGETS[@]}; do
         selector="${TARGET}"
         show-mounts "${TARGET}" | grep -v "loop"
@@ -61,41 +63,65 @@ show-dashboard() {
 
     # now show any other mounts on /dev/sd devices
     selector="/dev/sd"
-    separator ${PN} "(${selector} - possible OUTPUTDEVICE)"
+    separator "${PN}-${BUILD}" "(${selector} - possible OUTPUTDEVICE)"
     show-mounts "${selector}"
 
     # now display anything mounted on /mnt/gentoo (possible outputdevice)
     selector="/mnt/gentoo"
-    separator ${PN} "(${selector} - mounted root_fs)"
+    separator "${PN}-${BUILD}" "(${selector} - mounted root_fs)"
     show-mounts "${selector}"
 
     # display status of repositories in various /usr/${TARGET} directories
-    separator ${PN} "(crossbuild repository status)"
+    separator "${PN}-${BUILD}" "(crossbuild repository status)"
     show-target-repositories-status
 
     echo
     # now do binhosts (selected by 'stockpile')
-    separator ${PN} "(active binhost loop devices)"
+    separator "${PN}-${BUILD}" "(active binhost loop devices)"
     show-loopdev-backfile-and-mounts "stockpile"
 
     echo
     # now show links at webroot/packages/ and their targets
-    separator ${PN} "(linked binhost web services)"
+    separator "${PN}-${BUILD}" "(linked binhost web services)"
     show-binary-package-services
 
     echo
     # now show contents of stockpile
-    separator ${PN} "(stockpile contents)"
-    message "crossbuild environments (*.env)"
-    find /home/joe/sbc-stockpile/ -maxdepth 1 -type f -name '*.env' -printf '%f\n' | sort -h | sed 's|^|    |'
+    separator "${PN}-${BUILD}" "(stockpile contents)"
+    show-stockpile-contents
     echo
-    message "deployed images (*.img)"
-    find /home/joe/sbc-stockpile/ -maxdepth 1 -type f -name '*.img' -printf '%f\n' | sort -h | sed 's|^|    |'
-    echo
-    message "other developed images (*.qcow2)"
-    find /home/joe/sbc-stockpile/ -maxdepth 1 -type f -name '*.qcow2' -printf '%f\n' | sort -h | sed 's|^|    |'
 
 }
+
+show-stockpile-contents() {
+    for selector in "env" "img" "qcow2" ; do
+        d_message "selector: [${selector}]" 5
+        case $selector in
+            "env" ) category="environments" ;;
+            "img" ) category="images" ;;
+            *     ) category="other developed images" ;;
+        esac
+        message "${BMon}crossbuild ${category} (*.${selector})${Boff}"
+        show-stockpile-category "*.${selector}"
+    done
+
+}
+
+show-stockpile-category() {
+    filter="$1"
+    readarray -t backers < <(find ${stockpile_dir} -maxdepth 1 -type f -name "${filter}" -printf '%f\n' | sort -h)
+
+    for ((i=0; i<${#backers[@]}; i++)) ; do
+#        echo; echo ${backers[$i]}; echo $(repeat '-' ${#backers[$i]}) ;
+        APPARENT_SIZE_BYTES=$(stat -c%s "${stockpile_dir%/}/${backers[$i]}") ;
+        apparent_gibs=$(echo "scale=1; (($APPARENT_SIZE_BYTES / 1000 / 1000 / 1000))" | bc) ;
+        ACTUAL_SIZE_BYTES=$(du -B 1 "${stockpile_dir%/}/${backers[$i]}" | awk '{print $1}') ;
+        actual_gibs=$(echo "scale=1; (($ACTUAL_SIZE_BYTES / 1000 / 1000 / 1000))" | bc) ;
+        echo -e "    ${BYon}${backers[$i]}${Boff} ( apparent size: ${apparent_gibs}GiB ; actual size: ${actual_gibs}GiB )" ;
+    done
+}
+
+
 
 show-mounts() {
     # display anything mounted on /dev/sd devices (possible outputdevice)
@@ -173,7 +199,7 @@ show-binary-package-services() {
 #-----[ main script ]----------------------------------------------------------------------
 checkroot
 clear
-separator "$(hostname)" "${PN}"
+separator "$(hostname)" ""${PN}-${BUILD}""
 [ $# -ne 0 ] && usage
 
 old_dir="$(pwd)"
