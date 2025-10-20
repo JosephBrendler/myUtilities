@@ -1,0 +1,110 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+
+#-----[ variables ]------------------------------------------------------------------
+
+PN=$(basename $0)
+
+nextcloud_dir="/var/www/localhost/htdocs/myCloud"
+silent=">/dev/null 2>&1"
+
+VERBOSE=$TRUE
+# don't set verbosity unless it is not already set
+[ -z $verbosity ] && verbosity=3
+
+#-----[ functions ]------------------------------------------------------------------
+
+initialize() {
+    # set these variables after command line has been processed
+    command_sequence=(
+        "check_ssl_certificate \"${rootcacert_path}\""
+        "sudo -u apache php occ security:certificates:import ${rootcacert_path} ${silent}"
+    ) && \
+    msg_sequence=(
+        'check ssl certificate'
+        'import ssl certificate'
+    )
+    return $?
+}
+
+usage() {
+    echo
+    E_message "${BRon}Error: ${Boff}Invalid argument(s) [$@]"
+    E_message "${BYon}usage: ${BGon}${PN} ${BMon}/path/to/root_ca_certificate.crt${Boff}"
+    exit 1
+}
+
+# Function to check if a file is a valid SSL certificate
+check_ssl_certificate() {
+    local cert_file="$1"
+    echo -e -n " (${Yon}$(basename ${cert_file})${Boff})"
+
+    if [ ! -f "$cert_file" ]; then
+        E_message "Error: Certificate file '$cert_file' not found."
+        return 1
+    else
+        echo -e -n "(${Gon}exists${Boff})"
+    fi
+    d_echo 3
+
+    # Attempt to parse the certificate file
+    # openssl x509 will return an error if the file is not a valid certificate
+    if openssl x509 -in "$cert_file" -noout &>/dev/null; then
+        msg="Certificate file '$(basename $cert_file)'"
+        msg+=" has a ${BGon}valid SSL certificate format${Boff}."
+        d_message "${msg}" 3
+
+        # Extract validity dates
+        start_date=$(openssl x509 -in "$cert_file" -noout -startdate | cut -d'=' -f2)
+        end_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d'=' -f2)
+
+        # Convert dates to epoch for comparison
+        start_epoch=$(date -d "$start_date" +%s)
+        end_epoch=$(date -d "$end_date" +%s)
+        current_epoch=$(date +%s)
+
+        msg="  ${LBon}Valid period is from: ${BMon}${start_date}"
+        msg+="${LBon} to ${BMon}${end_date}${Boff}"
+        d_message "${msg}" 4
+
+        if (( current_epoch < start_epoch )); then
+            E_message "Certificate is ${BRon}not yet valid${Boff}."
+            return 1
+        elif (( current_epoch > end_epoch )); then
+            E_message "Certificate has ${BRon}expired${Boff}."
+            return 1
+        else
+            d_message "Certificate is currently ${BGon}valid${Boff} (within its validity period)." 3
+            return 0
+        fi
+    else
+        E_message "Error: Certificate file '$cert_file' is ${BRon}not a valid SSL certificate format${Boff}."
+        return 1
+    fi
+}
+
+#-----[ main script ]---------------------------------------------------------------
+checkroot
+separator $(hostname) ${PN}
+[ $# -ne 1 ] && usage
+rootcacert_path=$1
+initialize || die "failed to initialize"
+
+old_dir=$(pwd)
+message_n "${BYon}Moving to ${BMon}${nextcloud_dir}${Boff}"
+cd ${nextcloud_dir} || die "failed to move to ${nextcloud_dir}"
+right_status $TRUE
+d_message "${BWon}pwd: ${LBon}$(pwd)${Boff}" 3
+
+d_message "rootcacert_path: $rootcacert_path" 3
+for ((i=0; i< ${#command_sequence[@]}; i++)) ; do
+    message_n "${BWon}running ${BGon}${msg_sequence[$i]}${Boff} ..."
+    eval "${command_sequence[$i]}" || die "failed: ${command_sequence[$i]}"
+    right_status $TRUE
+done
+echo
+message_n "${BYon}Moving back to ${BMon}${old_dir}${Boff}"
+cd ${nextcloud_dir} || die "failed to move to ${nextcloud_dir}"
+right_status $TRUE
+d_message "${BWon}pwd: ${LBon}$(pwd)${Boff}" 3
+message "${BGon}Done${Boff}"
