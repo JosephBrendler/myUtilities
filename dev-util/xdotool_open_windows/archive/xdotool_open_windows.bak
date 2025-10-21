@@ -1,23 +1,34 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
 
-
 #-----[ initialize variables ]-------------------------------------------------
 width="46%"
 height="85%"
 X1="1%"
 Y1="5%"
 X2="51%"
-BUILD="0.002b 190113"
-logFile="/home/joe/xdotool_open_windows.log"
+PN=$(basename $0)
+
+user=joe
+
+config_dir="/etc/xdotool_open_windows"
+config_file="${config_dir%/}/xdotool_open_windows.conf"
+build_file=$"${config_dir%/}/BUILD"
+log_dir="/home/${user}"
+old_log_dir="/home/${user}"
+logFile="${log_dir%/}/xdotool_open_windows.log"
+
 terminal_program=/usr/bin/konsole
 #terminal_program=/usr/bin/lxterminal
-#terminal_program=/usr/bin/uxterm
-sleepWait=0.5    # default - set in .conf
-longWait=2       # default - set in .conf
+#terminal_program=/usr/bin/xterm
+
+sleepWait=0.5      # default - set in .conf
+longWait=2         # default - set in .conf
+delay_ms=20        # (inter-stroke type delay) default - set in .conf
+
 VERBOSE=$TRUE
-#VERBOSE=$FALSE
-verbosity=3
+# set verbosity only if not already set (allow calling program to do so)
+[ -z $verbosity ] && verbosity=4
 
 ssh_session_list=( \
  x_blank x_blank \
@@ -28,138 +39,258 @@ ssh_session_list=( \
  x_blank x_blank \
  )
 
+varlist="config_dir lv.config_file build_file log_dir lv.logFile"
+varlist+=" numdesktops sleepWait longWait width height X1 Y1 X2"
+varlist+=" control_window BREAK bool.VERBOSE verbosity"
+
 # load custom configuration, if it exists
-[[ -f ./xdotool_open_windows.conf ]] && source ./xdotool_open_windows.conf
-[[ -f /etc/xdotool_open_windows.conf ]] && source /etc/xdotool_open_windows.conf
+message_n "sourcing config_file: ${config_file} ..."
+[[ -f ${config_file} ]] || die "${config_file} does not exist"
+source ${config_file} || die "failed to source ${config_file}"
+right_status $?
 
-numdesktops=$((${#ssh_session_list[@]} / 2))
-[[ $(($numdesktops % 2)) -eq 1 ]] && let numdesktops+=1
+message_n "sourcing build_file: ${build_file} ..."
+[[ -f ${build_file} ]] || die "${build_file} does not exist"
+source ${build_file} || die "failed to source ${build_file}"
+right_status $?
 
-## TODO -- package for ebuild
 d_message "(DEBUG $(my_short_date)) Top of script. Just set global variables." 3
-d_message "(DEBUG $(my_short_date)) numdesktops: ${numdesktops}" 2
 
 #-----[ function blocks ]-------------------------------------------------
 print_ssh_session_list() {
-  #used for debugging only
-  for i in $(seq 0 $(($num_desktops - 1)) )
+  d_message "in ${FUNCNAME[0]}" 3
+  d_echo 3
+  # i will count the dsktop, on each of which there are 2 slots for terminals j, k
+  # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5)
+  for ((i=0; i<${#ssh_session_list[@]}; i++ ))
   do
-    let index=$((2 * $i))
-    cmd_target=${ssh_session_list[$index]}
-    d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
-    let index+=1
-    cmd_target=${ssh_session_list[$index]}
-    d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
+    j=$((2*$i))
+    k=$(($j+1))
+    cmd_target=${ssh_session_list[$j]}
+    d_message "$(my_short_date) debug ssh_session_list: j=$j ssh_session_list[\$j]=${ssh_session_list[$j]} cmd_target=$cmd_target" 3
+    let k=$(( $j + 1 ))
+    cmd_target=${ssh_session_list[$k]}
+    d_message "$(my_short_date) debug ssh_session_list: j+1(k)=$k ssh_session_list[\$k]=${ssh_session_list[$k]} cmd_target=$cmd_target" 3
+    d_echo 3
   done
 }
 
-setup_window_for_index() {
+setup_window_for_term() {
+    d_message "in ${FUNCNAME[0]} with arg(s) [$@]" 5
     local index=$1
     cmd_target=${ssh_session_list[$index]}
     d_message "$(my_short_date) debug ssh_session_list: i=$i index=$index ssh_session_list[\$index]=${ssh_session_list[$index]} cmd_target=$cmd_target" 3
     d_message "$(my_short_date) index = [$index] , cmd_target = $cmd_target" 2
-    if [[ "${cmd_target:0:1}" != "x" ]]
+    if [[ "${cmd_target:0:2}" != "x_" ]]
     then
-      cmd="--command=\"ssh $cmd_target\""
-#      d_message "$(my_short_date) about to run \"${terminal_program} --title=\"$(basename ${terminal_program})_${i}.${index} &\"" 1
+#      cmd="--command=\"su -user joe ssh $cmd_target\""
+      cmd="--command=\"ssh ${cmd_target}\""
       d_message "$(my_short_date) about to run \"${terminal_program} 2\>/dev/null &\"\"" 1
       ${terminal_program} 2>/dev/null &
       sleep $longWait
+$      sleep $sleepWait
       # open new window
-      newterm=$(xdotool getactivewindow)
+      newterm=$(xdotool getactivewindow 2>/dev/null)
       xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${index}" ${newterm}
-      newtermname=$(xdotool getactivewindow getwindowname)
-      newtermgeometry=$(xdotool getactivewindow getwindowgeometry)
+      newtermname=$(xdotool getactivewindow getwindowname 2>/dev/null)
+      newtermgeometry=$(xdotool getactivewindow getwindowgeometry 2>/dev/null)
       d_message "$(my_short_date) openned new terminal_win = [$newterm $newtermname]" 1
       d_message "$(my_short_date) new terminal_win geometry = [$newtermgeometry]" 2
-      d_message "$(my_short_date) setting focus to window $newtermname on desktop ${i}" 1
+      d_message "$(my_short_date) setting focus to window $newtermname on desktop [${i}]" 1
       xdotool windowfocus $newterm
       sleep $sleepWait
       # set window size
-      d_message "$(my_short_date) setting size of window $newtermname to ${width} ${height}" 2
+      d_message "$(my_short_date) setting size of window $newtermname to [${width}] [${height}]" 2
       xdotool windowsize --sync --usehints $newterm ${width} ${height}
+#      xdotool windowsize --usehints $newterm ${width} ${height}
       sleep $sleepWait
       # move window - put even numbered windows on right, odd left (leave cursor on left)
       if [[ $((${index}%2)) -eq 0 ]]
-      then # even
-        d_message "$(my_short_date) moving window $newtermname to ${X2} ${Y1}" 2
-        xdotool windowmove --sync $newterm ${X2} ${Y1}
-        sleep $sleepWait
-      else # odd
-        d_message "$(my_short_date) moving window $newtermname to ${X1} ${Y1}" 2
+      then # even (left side)
+        d_message "$(my_short_date) moving window $newtermname to [${X1}] [${Y1}]" 2
         xdotool windowmove --sync $newterm ${X1} ${Y1}
+        sleep $sleepWait
+      else # odd (right side)
+        d_message "$(my_short_date) moving window $newtermname to [${X2}] [${Y1}]" 2
+        xdotool windowmove --sync $newterm ${X2} ${Y1}
         sleep $sleepWait
       fi
       # open ssh session to indexed target
-      d_message "$(my_short_date) launching ssh with command [ssh $cmd_target] in window $newtermname on desktop ${i}" 1
-      xdotool type --window ${newterm} --delay 30 --clearmodifiers "ssh $cmd_target"
+      d_message "$(my_short_date) launching ssh with commands [su ${user}] and [$cmd_target] in window $newtermname on desktop ${i}" 1
+#      xdotool type --window ${newterm} --delay ${delay_ms} --clearmodifiers "ssh ${cmd_target}"
       sleep $sleepWait
-      xdotool key --window ${newterm} --delay 30 --clearmodifiers Return
+      xdotool type --window ${newterm} --clearmodifiers "ssh ${cmd_target}"
+#      echo "ssh ${cmd_target}" | xclip -selection clipboard
+#      xdotool key "Shift+Insert"
+      sleep $sleepWait
+#      xdotool key --window ${newterm} --delay ${delay_ms} --clearmodifiers Return
+      xdotool key --window ${newterm} --clearmodifiers Return
       sleep $sleepWait
 
     fi
 }
 
-#-----[ main script ]-----------------------------------------------------
-separator "xdotool_open_windows"
-checknotroot
+show_config() {
+    d_message "in ${FUNCNAME[0]}" 5
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+}
 
+open_windows() {
+    d_message "in ${FUNCNAME[0]}" 5
+    msg="$(my_short_date) Openning $(basename ${terminal_program})"
+    msg+=" terminals and starting ssh sessions. Please wait..."
+    d_message "${msg}" 1
+
+    d_message "$(my_short_date) about to enumerate ssh session list..." 1
+    print_ssh_session_list
+
+    d_message "$(my_short_date) now openning new windows" 1
+    # i will count the dsktop, on each of which there are 2 slots for terminals j, k
+    # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5)
+    for ((i=0; i<${#ssh_session_list[@]}; i++ ))
+    do   # launch two terminal windows per desktop
+      j=$((2*$i))
+      k=$(($j+1))
+      d_message "setting desktop [${i}]" 1
+      xdotool set_desktop ${i}
+      sleep $sleepWait
+      d_message "launching terminals on desktop [${i}]" 1
+      if [[ $i -eq 0 ]] # this desktop is for the control window - don't make a new one
+      then
+        ## TODO - rename control window; move it to desktop 0
+        # don't open an ssh session (${ssh_session_list[0]} should always = "x_me")
+        d_message "moving control_window ${control_window} to [${X1}] [${Y1}]" 2
+        xdotool windowmove --sync "${control_window}" "${X1}" "${Y1}"
+        d_message "done" 2
+        sleep $sleepWait
+        d_message "setting size of control_window ${control_window} to w:[${width}] h:[${height}]" 2
+        xdotool windowsize --sync --usehints "${control_window}" "${width}" "${height}"
+# --sync means wait for resizing to be complete before returning
+#        xdotool windowsize --usehints "${control_window}" "${width}" "${height}"
+        d_message "done" 2
+        sleep $sleepWait
+        # if there is another terminal to open next to control window do it now
+        setup_window_for_term "1"
+      else
+        d_message "launching terminals [${j}] and [${k}] on desktop [${i}]" 1
+        setup_window_for_term "$j"
+        d_message "done launching terminal on [${j}]" 2
+        sleep $sleepWait
+        setup_window_for_term "$k"
+        d_message "done launching terminal on [${k}]" 2
+        sleep $sleepWait
+      fi
+    done
+    d_message "setting desktop 0" 1
+    xdotool set_desktop 0
+    sleep $sleepWait
+    xdotool windowfocus window=${control_window}
+    #xdotool mousemove --window ${control_window} 5% 5% click 1
+    #xdotool mousemove --window ${control_window} 20 20 click 1
+}
+
+rotate_logfile() {
+    d_message "in ${FUNCNAME[0]}" 5
+    ## TODO - rotate logfile
+    message_n "archiving old logfile ..."
+    sudo sh -c "gzip -c ${logFile} > ${old_log_dir%/}/$(basename ${logFile})-$(my_short_date).gz" || \
+        die "failed to archive logFile"
+    right_status $TRUE
+
+    message_n "removing old logfile ..."
+    sudo rm $logFile || die "failed to remove old logFile"
+    right_status $TRUE
+
+    message_n "creating new logfile ..."
+    sudo touch $logFile && \
+    sudo chown ${user}:${user} $logFile || die "failed to create new logFile"
+    right_status $TRUE
+
+    return 0
+}
+
+redirect_output_to_logfile() {
+    d_message "in ${FUNCNAME[0]}" 5
+    exec 6>&1 2>/dev/null           # Link file descriptor #6 with stdout. Saves stdout.
+    exec > $logFile  2>/dev/null    # stdout replaced with file.
+    # ----------------------------------------------------------- #
+    # All output from commands in this block sent to file $logFile
+}
+
+redirect_output_back_to_stdout() {
+    d_message "in ${FUNCNAME[0]}" 5
+    exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
+}
+
+validate_logfile() {
+    d_message "in ${FUNCNAME[0]}" 5
+    message_n "looking for logFile [${logFile}]"
+    if [ ! -f ${logFile} ] ; then
+        echo -e -n " (${BRon}not found${Boff})"
+        right_status 1
+        msg="logFile [${logFile}] not found\n"
+        msg+="${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
+        E_message "${msg}"
+        return 1
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        right_status $TRUE
+        message_n "checking logFile ownership"
+        log_owner=$(stat -c '%U' "${logFile}")
+        log_group=$(stat -c '%G' "${logFile}")
+        if [[ "${log_owner}:${log_group}" == "${user}:${user}" ]] ; then
+            echo -e -n "(${BGon}${log_owner}:${log_group}${Boff})"
+            right_status $TRUE
+        else
+            echo -e -n "(${BRon}${log_owner}:${log_group}${Boff})"
+            right_status 1
+            msg="bad ownership on logFile [${logFile}]\n"
+            msg+="${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
+            E_message "${msg}"
+            return 1
+        fi # ownership
+    fi # existence
+    return 0
+}
+
+#-----[ main script ]-----------------------------------------------------
+d_message "now in main script" 3
+#checknotroot
+message_n "checking not root ..."
+checknotroot && right_status $? || die "failed checknotroot"
+
+# don't do this - it will close all windows in both (all) activities
+#d_message "$(my_short_date) first closing open windows..." 1
+#xdotool_close_windows  ## partner external script
+#d_message "$(my_short_date) done closing" 1
+
+separator "${PN}-${BUILD}" "$(hostname)"
+
+validate_logfile || die "failed to validate logfile"
+
+numdesktops=$((${#ssh_session_list[@]} / 2))
+[[ $(($numdesktops % 2)) -eq 1 ]] && let numdesktops+=1
 xdotool set_num_desktops ${numdesktops}
 
 num_desktops=$(xdotool get_num_desktops)
 control_window=$(xdotool getactivewindow)
 
-# TODO -- showconfig ()
-d_message "numdesktops: $numdesktops (calculated)" 1
-d_message "num_desktops: $num_desktops (set)" 1
-d_message "control_window: $control_window" 1
+# move the control window to desktop zero
+message_n "moving control_window ${control_window} to desktop 0 ..."
+xdotool set_desktop_for_window ${control_window} 0 || \
+    die "failed tomove control_window ${control_window} to desktop 0"
+right_status $TRUE
 
-d_message "$(my_short_date) Openning $(basename ${terminal_program}) terminals and starting ssh sessions. Please wait..." 1
-## TODO - rotate logfile
-d_message "$(my_short_date) removing old log file" 1
-rm -v $logFile
-exec 6>&1 2>/dev/null           # Link file descriptor #6 with stdout. Saves stdout.
-exec > $logFile  2>/dev/null    # stdout replaced with file.
-# ----------------------------------------------------------- #
-# All output from commands in this block sent to file $logFile
+rotate_logfile || die "failed to rotate logfile"
 
-d_message "$(my_short_date) first closing open windows..." 1
-xdotool_close_windows  ## partner external script
-d_message "$(my_short_date) done closing" 1
+#redirect_output_to_logfile
 
-d_message "$(my_short_date) now openning new windows" 1
-print_ssh_session_list
+show_config
 
-for i in $(seq 0 $(($num_desktops - 1)) )
-do   # launch two terminal windows per desktop
-  d_message "setting desktop ${i}" 1
-  xdotool set_desktop ${i}
-  sleep $sleepWait
-  d_message "launching terminals on desktop ${i}" 1
-  let index=$((2 * $i))
-  if [[ $index -eq 0 ]] # this is the control window - don't make a new one
-  then
-    ## TODO - rename control window; move it to desktop 0
-    d_message "moving control_window $control_window to ${X1} ${Y1}" 2
-    xdotool windowmove --sync $control_window ${X1} ${Y1}
-    sleep $sleepWait
-    d_message "setting size of control_window $control_window to ${width} ${height}" 2
-    xdotool windowsize --sync --usehints $control_window ${width} ${height}
-    sleep $sleepWait
-  else
-    setup_window_for_index $index
-    sleep $sleepWait
-  fi
-  let index+=1
-  setup_window_for_index $index
-  sleep $sleepWait
-done
-xdotool set_desktop 0
-sleep $sleepWait
-xdotool windowfocus window=${control_window}
-#xdotool mousemove --window ${control_window} 5% 5% click 1
-#xdotool mousemove --window ${control_window} 20 20 click 1
+open_windows
+d_message "${BMon}Debug Marker${Boff}" 3 ; exit 1
 
-exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
+#redirect_output_back_to_stdout
 
 cat $logFile
