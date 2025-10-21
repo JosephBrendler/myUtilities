@@ -37,8 +37,12 @@ SCREEN_HEIGHT=$(echo $SCREEN_DIMENSIONS | cut -dx -f2)
 
 silent=">/dev/null 2>&1"  # append this to a command to silence it
 
-sleepWait=0.5      # default - set in .conf
-longWait=2         # default - set in .conf
+# customized timing and detailed output (increase for debugging)
+#sleepWait=0.5    # default - set in .conf
+sleepWait=0.15    # default - set in .conf
+#longWait=2       # default - set in .conf
+longWait=1.1      # default - set in .conf
+timeout=10        # seconds to wait while trying to close a window or identify a new one
 
 new_window_timeout=10 # seconds to wait while trying to identify the newly launched window
 
@@ -275,7 +279,6 @@ open_windows() {
 
     # use xdotool_sizemove_this_window (alias mw) l|L|r|R [<width>%] [<height>%]
     log_message_n "resizing control_window"
-#    mw "R" "$WINDOW_WIDTH" "$WINDOW_HEIGHT" ${silent}; result=$?
     eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
     if [ $result -eq 0 ] ; then
         right_status $TRUE
@@ -361,40 +364,43 @@ setup_terminal() {
     d_log_message "in ${FUNCNAME[0]} with arg(s) [$@]" 5
     local t="$1"  # terminal number
     ssh_target="${ssh_session_list[$t]}"
-    log_message "openning terminal and ssh to [${ssh_target}]"
-    # take a baseline for comparison so we can find the new window for certain
-    terminal_class="$(basename ${terminal_program})"
-    before=($(xdotool search --class "${terminal_class}"))
-    # launch a new terminal with an ssh session as needed
-    "${terminal_program}" -e ssh "${ssh_target}" &
-    sleep $longWait
-    # newterm=$(xdotool getactivewindow 2>/dev/null) ## <-- unreliable
-    newterm=$(poll_for_new_window)
-    if  [ ! -z "$newterm" ] ; then
-        xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${t}" "${newterm}"
-        log_message "opened new terminal for ${ssh_target} on desktop [$i]"
-        # sizemove this windw
-        if [ $(($t % 2)) -eq 0 ] ; then
-            # even (Left)
-            log_message_n "resizing window [$t]"
-#            mw "L" "$WINDOW_WIDTH" "$WINDOW_HEIGHT" ${silent}; result=$?
-            eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
+    # if the ssh_target name begins "x_" we ignore it - it is intended to be blank (no window)
+    if [[ ! "${ssh_target}" == "x_"* ]] ; then
+        log_message "openning terminal and ssh to [${ssh_target}]"
+        # take a baseline for comparison so we can find the new window for certain
+        terminal_class="$(basename ${terminal_program})"
+        before=($(xdotool search --class "${terminal_class}"))
+        # launch a new terminal with an ssh session as needed
+        "${terminal_program}" -e ssh "${ssh_target}" &
+        sleep $longWait
+        # newterm=$(xdotool getactivewindow 2>/dev/null) ## <-- unreliable
+        newterm=$(poll_for_new_window)
+        if  [ ! -z "$newterm" ] ; then
+            xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${t}" "${newterm}"
+            log_message "opened new terminal for ${ssh_target} on desktop [$i]"
+            # sizemove this windw
+            if [ $(($t % 2)) -eq 0 ] ; then
+                # even (Left)
+                log_message_n "resizing window [$t]"
+                eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
+            else
+                # odd (Right)
+                log_message_n "resizing window [$t]"
+                eval "mw R $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
+            fi # even/odd
+            if [ $result -eq 0 ] ; then
+                right_status $TRUE
+            else
+                log_E_message "failed to resize window [$t]"
+                right_status 1
+                return 1
+            fi # 0 result
         else
-            # odd (Right)
-            log_message_n "resizing window [$t]"
-#            mw "R" "$WINDOW_WIDTH" "$WINDOW_HEIGHT" ${silent}; result=$?
-            eval "mw R $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
-        fi # even/odd
-        if [ $result -eq 0 ] ; then
-            right_status $TRUE
-        else
-            log_E_message "failed to resize window [$t]"
-            right_status 1
-            return 1
-        fi # 0 result
+            log_E_message "failed to get new window ID within time limit"
+        fi # nonzero newterm
     else
-        log_E_message "failed to get new window ID within time limit"
-    fi # nonzero newterm
+        log_message "not openning a terminal for (blank) [${ssh_target}]"
+    fi # non x_ (blank) ssh_target
     return 0
 }
 

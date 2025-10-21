@@ -4,23 +4,112 @@ source /usr/sbin/script_header_joetoo
 #-----[ initialize variables ]-------------------------------------------------
 PN=$(basename $0)
 
+### defaults - override in config file
 user=joe
 
-logFile="/home/${user}/xdotool_close_windows.log"
+#log_dir="/home/${user}"
+log_dir="/var/log"
+#old_log_dir="/var/log"
+old_log_dir="/var/log/old_logs"
+logFile="${log_dir%/}/xdotool_close_windows.log"
 
 config_dir="/etc/xdotool_open_windows"
 build_file=$"${config_dir}/BUILD"
+config_file=$"${config_dir}/xdotool_open_windows.conf"
 
-sleepWait=0.1
+# customized timing and detailed output (increase for debugging)
+#sleepWait=0.5    # default - set in .conf
+sleepWait=0.15    # default - set in .conf
+#longWait=2       # default - set in .conf
+longWait=1.1      # default - set in .conf
+timeout=10        # seconds to wait while trying to close a window or identify a new one
+
 VERBOSE=$TRUE
-verbosity=4
+#VERBOSE=$FALSE
+# set verbosity only if not already set (allow calling program to do so)
+[ -z $verbosity ] && verbosity=3
 
 message_n "sourcing build_file: ${build_file} ..."
 [[ -f ${build_file} ]] || die "${build_file} does not exist"
 source ${build_file} || die "failed to source ${build_file}"
 right_status $?
 
-rm $logFile
+message_n "sourcing config_file: ${config_file} ..."
+[[ -f ${config_file} ]] || die "${config_file} does not exist"
+source ${config_file} || die "failed to source ${config_file}"
+right_status $?
+
+# over-ride the open_windows config on this one (for now)
+logFile="${log_dir%/}/xdotool_close_windows.log"
+
+# to do: rotate log file like in open_windows
+sudo rm $logFile
+
+#-----[ functions ]-------------------------------------------------
+
+kill_pids() {
+    # kill processes identified by ${filter}
+    pids=($(eval "ps -aef | ${filter} | awk '{print \$2}'"))
+    filter_name="$(echo ${filter} | awk '{print $2}')"
+    if [[ -z "${pids[@]}" ]] ; then
+         message "Found [${#pids[@]}] processes for filter [${filter_name}]"
+    else
+        elapsed=0
+        round=1
+        while [[ ! -z "${pids[@]}" && $elapsed -le $timeout ]] ; do
+             message "Found [${#pids[@]}] processes for filter [${filter_name}]..."
+            for x in ${pids[@]}
+            do
+                message "(${round}) killing process x: [${x}] for filter [${filter_name}]"
+                kill -9 $x 2>/dev/null
+                # To Do: get and handle result (exit/return status)
+            done # for
+            sleep $longWait
+            elapsed=$(( $elapsed + $longWait ))
+            round+=1
+            pids=($(eval "ps -aef | ${filter} | awk '{print \$2}'"))
+        done # while
+        x=""
+    fi # -z pids
+    return 0
+}
+
+close_windows() {
+    my_window=$(xdotool getactivewindow)
+    message "my_window: ${my_window}"
+    # identify all terminal windows (use --any but not --onlyvisible to get minimized, too)
+    window_list=()
+    window_list=($(xdotool search --any lxterminal 2>/dev/null))
+    window_list+=($(xdotool search --any Konsole))
+    window_list+=($(xdotool search --any xterm 2>/dev/null))
+    message "Current window list:"
+    echo ${window_list[@]} ; echo
+    message "Now closing all terminal windows except my_window [${my_window}] ..."
+    # close all these windows
+    for win in ${window_list[@]}
+    do
+        desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
+        message_n "Examining window [ $win ] on desktop [ $desktop ] ... "
+        if [[ $win -ne $my_window ]]
+        then
+            # use xprop to get the window's type and only close "normal" windows
+            # this is to avoid disrupting windowmanager/compositor (e.g. kwin) functionaliy
+            if xprop -id $win | grep -q "_NET_WM_WINDOW_TYPE_NORMAL" ; then
+                echo -e -n " (${BGon}Normal${Boff})"
+                xdotool windowclose $win 2>/dev/null && echo " closed" || \
+                    echo "tried, but failed to close"
+            else
+                echo -e " (${BMon}Special, ${BRon}NOT Normal${Boff} window, ${BYon}skipping${Boff})"
+            fi
+        else
+            echo -e " (${BYon}My${Boff} window, ${BYon}skipping${Boff})"
+        fi
+        sleep $sleepWait
+    done
+    return 0
+}
+
+#-----[ main script ]-----------------------------------------------
 
 exec 6>&1 2>/dev/null           # Link file descriptor #6 with stdout. Saves stdout.
 exec > $logFile  2>/dev/null    # stdout replaced with file.
@@ -28,55 +117,20 @@ exec > $logFile  2>/dev/null    # stdout replaced with file.
 # All output from commands in this block sent to file $logFile
 separator "${PN}-${BUILD}" "(closing)"
 message "Exterminating any rogue xdotool_xxx process..."
-pids=($(ps -aef | grep xdotool_ | grep -v 'color=auto' | grep -v $! | awk '{print $2}'))
-message "Found ${#pids[@]} xdotool_xxx processes..."
-for x in ${pids}
-do
-  message "killing process x=${x}"
-  kill -9 $x 2>/dev/null
-done
-x=""
-
-my_window=$(xdotool getactivewindow)
-message "my_window: ${my_window}"
 num_desktops=$(xdotool get_num_desktops)
 message "num_desktops: $num_desktops"
 
-window_list=()
-window_list=($(xdotool search --any lxterminal 2>/dev/null))
-window_list+=($(xdotool search --any Konsole))
-window_list+=($(xdotool search --any xterm 2>/dev/null))
-message "Current window list:"
-echo ${window_list[@]}
-echo
-message "Now closing all terminal windows except my_window [${my_window}] ..."
+# kill any existing xdotoo_xxx processes
+filter="grep 'xdotool_' | grep -v 'color=auto' | grep -v $!"
+kill_pids || die "failed to kill_pids for filter [${filter}]"
 
-
-for win in ${window_list[@]}
-do
-    desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
-    message_n "Examining window [ $win ] on desktop [ $desktop ] ... "
-    if [[ $win -ne $my_window ]]
-    then
-        xdotool windowclose $win 2>/dev/null && echo "closed" || \
-            echo "tried, but failed to close"
-    else
-        echo "my_window; skipping"
-    fi
-    sleep $sleepWait
-done
+# close all terminal windows except the control_window (that activated this program)
+close_windows || die "failed to close_windows"
 
 # now kill any residual ssh sessions
 message "Exterminating any rogue ssh processes ..."
-filter="grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
-pids=($(eval "ps -aef | grep ssh | ${filter} | awk '{print \$2}'"))
-message "Found ${#pids[@]} ssh processes..."
-for x in ${pids}
-do
-  message "killing process x=${x}"
-  kill -9 $x 2>/dev/null
-done
-x=""
+filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
+kill_pids || die "failed to kill_pids"
 
 # move the active window to desktop 0, if it isn't already there
 my_window=$(xdotool getactivewindow)
