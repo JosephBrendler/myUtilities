@@ -36,6 +36,8 @@ X1="1%"          # left horizontal edge position of left window as a percent of 
 Y1="5%"          # vertical position of both terminals as a percent of screen height
 X2="45%"         # left horizontal edge position of right window as a percent of screen width
 
+LR="L"           # which window L|R to resize/move
+
 #-----[ Filesystem ]--------------------------------------------------------------------
 config_dir="/etc/xdotool_open_windows"
 config_file="${config_dir%/}/xdotool_open_windows.conf"
@@ -56,6 +58,7 @@ terminal_program="/usr/bin/konsole"       # default
 sleepWait=0.5    # help avoid race conditions
 longWait=2       # help avoid race conditions
 timeout=10       # seconds to wait while trying to close a window or identify a new one
+typeWait=2       # seconds to wait while trying to identify a newly opened window
 
 #-----[ Debug Verbosity ]---------------------------------------------------------------
 #VERBOSE=$FALSE
@@ -90,11 +93,12 @@ SCREEN_HEIGHT=$(echo $SCREEN_DIMENSIONS | cut -dx -f2)
 
 silent=">/dev/null 2>&1"  # append this to a command to silence it
 
-varlist="PN  BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
-varlist+=" BREAK width height X1 Y1 X2 SCREEN_WIDTH SCREEN_HEIGHT WINDOW_WIDTH"
-varlist+=" WINDOW_HEIGHT POS_X1 POS_Y1 POS_X2"
+varlist="PN BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
+varlist+=" BREAK control_window width height X1 Y1 X2 SCREEN_WIDTH SCREEN_HEIGHT"
+varlist+=" WINDOW_WIDTH WINDOW_HEIGHT POS_X1 POS_Y1 POS_X2"
 varlist+=" BREAK numdesktops sleepWait longWait timeout"
-varlist+=" control_window BREAK bool.VERBOSE verbosity"
+varlist+=" bool.VERBOSE verbosity"
+
 
 # load custom configuration, if it exists
 message_n "sourcing config_file: ${config_file} ..."
@@ -109,38 +113,66 @@ right_status $?
 
 # set these after sourcing config
 num_ssh_sessions=${#ssh_session_list[@]}
+xdotool_filter="grep 'xdotool_' | grep -v 'color=auto' | grep -v $!"
+ssh_filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
+control_window=""
 
 #-----[ functions ]----------------------------------------------------------
 
 # 20251022 - moved these functions to script_header_joetoo
-
 # timestamp()
-#log_message()
-#log_echo()
-#log_echo_e()
-#log_E_message()
-#d_log_message()
+# log_message()
+# log_echo()
+# log_echo_e()
+# log_E_message()
+# d_log_message()
+# log_message_n()
+# log_echo_n()
+# log_echo_e_n()
+# log_right_status()
+# log_handle_result()
+# validate_logfile()
 
-#log_message_n() {
-#    local message="$1"
-#    local msg="$(timestamp) - $message"
-#    sudo sh -c "echo -e \" ${BGon}*${Boff} ${msg}\" >> $logFile"
-#    message_n "$message"
-#}
+log_separator() {
+    # regular separator AND separator to logFile
+    separator "$1" "$2"
+    echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile"
+}
 
-#log_echo_n() {
-#    local message="$1"
-#    local msg="$(timestamp) - $message"
-#    sudo sh -c "echo -n \"${msg}\" >> $logFile"
-#    echo -n "$message"
-#}
+log_show_config() {
+    d_log_message "in lg_show_config" 5
+    log_separator "${PN}-${BUILD}" "(configuration)"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+    display_vars ${longest} ${varlist} >> "$logFile"
+}
 
-#log_echo_e_n() {
-#    local message="$1"
-#    local msg="$(timestamp) - $message"
-#    sudo sh -c "echo -e -n \"${msg}\" >> $logFile"
-#    echo -e -n "$message"
-#}
+show_config() {
+    d_message "in show_config" 5
+    separator "${PN}-${BUILD}" "(configuration)"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+}
+
+# convert a percentage string (e.g., "46%") to a pixel integer.
+calculate_pixels() {
+    local percentage=$1
+    local total_dimension=$2
+    local percent_value=$(echo "$percentage" | cut -d'%' -f1)
+    echo $((total_dimension * percent_value / 100))
+}
+
+set_terminal_window_dimensions() {
+    # set terminal dimensions in pixels based on percents from config
+    d_log_message "in ${FUNCNAME[0]}" 5
+    ERROR=$FALSE
+    WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR=$TRUE
+    WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR=$TRUE
+    POS_X1=$(calculate_pixels "$X1" "$SCREEN_WIDTH") || ERROR=$TRUE
+    POS_Y1=$(calculate_pixels "$Y1" "$SCREEN_HEIGHT") || ERROR=$TRUE
+    POS_X2=$(calculate_pixels "$X2" "$SCREEN_WIDTH") || ERROR=$TRUE
+    [ ! $ERROR ] && return 0 || return 1
+}
 
 detect_graphical_env_and_pick_wm_tool() {
     # windowing: x11 or wayland only (ignore Mir, Quartz, SurfaceFlinger, MGR, fbui, W, etc)
@@ -204,26 +236,6 @@ detect_graphical_env_and_pick_wm_tool() {
     return 0
 }
 
-# convert a percentage string (e.g., "46%") to a pixel integer.
-calculate_pixels() {
-    local percentage=$1
-    local total_dimension=$2
-    local percent_value=$(echo "$percentage" | cut -d'%' -f1)
-    echo $((total_dimension * percent_value / 100))
-}
-
-set_terminal_window_dimensions() {
-    # set terminal dimensions in pixels based on percents from config
-    d_log_message "in ${FUNCNAME[0]}" 5
-    ERROR=$FALSE
-    WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR=$TRUE
-    WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR=$TRUE
-    POS_X1=$(calculate_pixels "$X1" "$SCREEN_WIDTH") || ERROR=$TRUE
-    POS_Y1=$(calculate_pixels "$Y1" "$SCREEN_HEIGHT") || ERROR=$TRUE
-    POS_X2=$(calculate_pixels "$X2" "$SCREEN_WIDTH") || ERROR=$TRUE
-    [ ! $ERROR ] && return 0 || return 1
-}
-
 dump_ssh_session_list() {
   d_log_message "in ${FUNCNAME[0]}" 5
   # i will count the dsktop, on each of which there are 2 slots for terminals j, k
@@ -238,95 +250,6 @@ dump_ssh_session_list() {
     ssh_target="${ssh_session_list[$k]}"
     d_log_message "k: $[k] ssh_session_list[\$k]: [${ssh_session_list[$k]}] ssh_target: [$ssh_target}" 3
   done
-}
-
-validate_logfile() {
-    d_log_message "in ${FUNCNAME[0]}" 5
-    log_message_n "looking for logFile [${logFile}]"
-    if [ ! -f ${logFile} ] ; then
-        echo -e -n " (${BRon}not found${Boff})"
-        right_status 1
-        msg="logFile [${logFile}] not found\n"
-        msg+="${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
-        log_E_message "${msg}"
-        return 1
-    else
-        echo -e -n " (${BGon}found${Boff})"
-        right_status $TRUE
-        log_message_n "checking logFile ownership"
-        log_owner=$(stat -c '%U' "${logFile}")
-        log_group=$(stat -c '%G' "${logFile}")
-        if [[ "${log_owner}:${log_group}" == "${user}:${user}" ]] ; then
-            echo -e -n " (${BGon}${log_owner}:${log_group}${Boff})"
-            right_status $TRUE
-        else
-            echo -e -n "(${BRon}${log_owner}:${log_group}${Boff})"
-            right_status 1
-            msg="bad ownership on logFile [${logFile}]\n"
-            msg+="${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
-            log_E_message "${msg}"
-            return 1
-        fi # ownership
-    fi # existence
-    return 0
-}
-
-rotate_logfile() {
-    d_log_message "in ${FUNCNAME[0]}" 5
-    ## TODO - rotate logfile
-    log_message_n "archiving old logfile ..."
-    sudo sh -c "gzip -c ${logFile} > ${old_log_dir%/}/$(basename ${logFile})-$(timestamp).gz" || \
-        die "failed to archive logFile"
-    right_status $TRUE
-
-    log_message_n "removing old logfile ..."
-    sudo rm $logFile || die "failed to remove old logFile"
-    right_status $TRUE
-
-    log_message_n "creating new logfile ..."
-    sudo touch $logFile && \
-    sudo chown ${user}:${user} $logFile || die "failed to create new logFile"
-    right_status $TRUE
-
-    return 0
-}
-
-log_right_status() {
-    local msg status=$1;
-    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
-    echo -e -n "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && \
-    echo -e " $msg" >> $logFile && return 0 || return 1
-}
-
-log_handle_result() {
-    # follow "log_message_n ...; command; result=$?"
-    # with log_handle_result "ok_msg" "err_msg"
-    # substitute no_msg=" \b" for either, to "suppress"
-    local exit_status="$1"
-    local ok_msg
-    local err_msg
-    # build ok_msg
-    if [[ "$2" == "${no_msg}" ]] ; then
-        ok_msg=""
-    else
-        ok_msg=" (${BGon}${2:-success!}${Boff})"
-    fi
-    # build err_msg
-    if [[ "$3" == "${no_msg}" ]] ; then
-        err_msg=""
-    else
-        err_msg=" (${BRon}${3:-error!}${Boff})"
-    fi
-    # now check exit statusand log/report result
-    if [ "$exit_status" -eq 0 ] ; then
-        log_echo_e_n "${ok_msg}"
-        log_right_status $TRUE
-    else
-        log_echo_e_n "${err_msg}"
-        log_right_status 1
-        return 1
-    fi
-    return 0
 }
 
 setup_desktops() {
@@ -359,28 +282,16 @@ setup_desktops() {
     return 0
 }
 
-show_config() {
-    d_log_message "in ${FUNCNAME[0]}" 5
-    separator "${PN}" "(configuration)"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-}
-
 open_windows() {
     # size-move the control window; then open terminals for ssh sessions
     d_log_message "in ${FUNCNAME[0]}" 5
-    separator "${PN}" "(${FUNCNAME[0]})"
+    log_separator "${PN}" "(${FUNCNAME[0]})"
     msg="Openning $(basename ${terminal_program})"
     msg+=" terminals and starting ssh sessions. Please wait..."
     d_log_message "${msg}" 1
 
     d_log_message "Enumerating ssh session list ..." 1
     dump_ssh_session_list | sudo tee -a $logFile; result=$?
-
-    # identify the control window (used to activate this program)
-    log_message_n "Getting ID of current (control) window"
-    control_window=$(xdotool getactivewindow) ; result=$?
-    log_handle_result "$?" "${control_window}" "failed to id control_window" || return 1
 
     # move the control_window to desktop zero
     log_message_n "moving control_window to desktop 0 ..."
@@ -514,21 +425,31 @@ poll_for_new_window() {
 }
 
 #-----[ main script ]-----------------------------------------------------
-d_log_message "now in main script" 3
-#checknotroot
-log_message_n "checking not root ..."
+d_message "now in main script" 3
+message_n "checking not root ..."
 checknotroot && right_status $? || die "failed checknotroot"
-
-separator "$(hostname)" "${PN}-${BUILD}"
-
 validate_logfile || die "failed to validate logfile"
-rotate_logfile || die "failed to rotate logfile"
-log_message "Starting script execution."
+
+log_separator "$(hostname)" "${PN}-${BUILD}"
+log_message "starting script"
+
+# identify the control window (used to activate this program)
+log_message_n "Getting ID of current (control) window"
+control_window=$(xdotool getactivewindow)
+log_handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
+
+# identify the current desktop and log_message "starting script"
+current_desktop=$(xdotool get_desktop_for_window "${control_window}")
+log_message "current_desktop: ${current_desktop}"
+num_desktops=$(xdotool get_num_desktops)
+log_message "num_desktops: $num_desktops"
+
+# run sequence
 set_terminal_window_dimensions || die "failed to set_terminal_window_dimensions"
 setup_desktops || die "failed to setup_desktops"
 show_config || die "failed to show_config"
 open_windows || die "failed to open_windows"
+
 d_log_message "${BGon}Done${Boff}" 1
 
 #d_message "${BMon}Debug Marker${Boff}" 3 ; exit 1
-

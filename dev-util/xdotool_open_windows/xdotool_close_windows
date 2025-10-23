@@ -11,6 +11,7 @@
 #
 
 ### to-do:
+### (0) generalize for wayland or x11 using draft detect_graphical_env_and_pick_wm_tool() below
 ### (1) enable higher number up to four (quaarter-tiled) windows per desktop
 ###     (keep the convention of same number on the line of assignment)
 ### (2) use tigervnc/remina to open vnc/ssh if line has v_<name> (ssh if s_<name>)
@@ -35,6 +36,8 @@ X1="1%"          # left horizontal edge position of left window as a percent of 
 Y1="5%"          # vertical position of both terminals as a percent of screen height
 X2="45%"         # left horizontal edge position of right window as a percent of screen width
 
+LR="L"           # which window L|R to resize/move
+
 #-----[ Filesystem ]--------------------------------------------------------------------
 config_dir="/etc/xdotool_open_windows"
 config_file="${config_dir%/}/xdotool_open_windows.conf"
@@ -55,8 +58,7 @@ terminal_program="/usr/bin/konsole"       # default
 sleepWait=0.5    # help avoid race conditions
 longWait=2       # help avoid race conditions
 timeout=10       # seconds to wait while trying to close a window or identify a new one
-
-typeWait=1.5
+typeWait=2       # seconds to wait while trying to identify a newly opened window
 
 #-----[ Debug Verbosity ]---------------------------------------------------------------
 #VERBOSE=$FALSE
@@ -64,141 +66,251 @@ VERBOSE=$TRUE
 # set verbosity only if not already set (allow calling program to do so)
 [ -z $verbosity ] && verbosity=4
 
-message_n "sourcing build_file: ${build_file} ..."
-[[ -f ${build_file} ]] || die "${build_file} does not exist"
-source ${build_file} || die "failed to source ${build_file}"
-right_status $?
+#-----[ Session List ]------------------------------------------------------------------
+ssh_session_list=( \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ x_blank x_blank \
+ )
 
+#-----[ program variables (do not edit) ]--------------------------------------------
+
+# use xdotool_sizemove_this_window (alias mw) l|L|r|R [<width>%] [<height>%]
+shopt -s expand_aliases
+alias mw='/usr/sbin/xdotool_sizemove_this_window'
+
+# no_msg is a space overwritten by a backspace, used to send null message with a non-null string
+no_msg=" \b"
+
+# get display geometry in pixels
+# Using 'xdpyinfo' b/c it is more stable/portable than 'xdotool getdisplaygeometry'
+SCREEN_DIMENSIONS=$(xdpyinfo | grep -oP 'dimensions:\s+\K\S+')
+SCREEN_WIDTH=$(echo $SCREEN_DIMENSIONS | cut -dx -f1)
+SCREEN_HEIGHT=$(echo $SCREEN_DIMENSIONS | cut -dx -f2)
+
+silent=">/dev/null 2>&1"  # append this to a command to silence it
+
+varlist="PN BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
+varlist+=" BREAK control_window numdesktops sleepWait longWait timeout"
+varlist+=" bool.VERBOSE verbosity"
+
+
+
+
+# load custom configuration, if it exists
 message_n "sourcing config_file: ${config_file} ..."
 [[ -f ${config_file} ]] || die "${config_file} does not exist"
 source ${config_file} || die "failed to source ${config_file}"
 right_status $?
 
-# over-ride the open_windows config on this one (for now)
-logFile="${log_dir%/}/xdotool_close_windows.log"
+message_n "sourcing build_file: ${build_file} ..."
+[[ -f ${build_file} ]] || die "${build_file} does not exist"
+source ${build_file} || die "failed to source ${build_file}"
+right_status $?
 
-# to do: rotate log file like in open_windows
-sudo rm $logFile
+# set these after sourcing config
+num_ssh_sessions=${#ssh_session_list[@]}
+xdotool_filter="grep 'xdotool_' | grep -v 'color=auto' | grep -v '$!'"
+ssh_filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
+current_window=""
 
 #-----[ functions ]-------------------------------------------------
 
+# 20251022 - moved these functions to script_header_joetoo
+# timestamp()
+# log_message()
+# log_echo()
+# log_echo_e()
+# log_E_message()
+# d_log_message()
+# log_message_n()
+# log_echo_n()
+# log_echo_e_n()
+# log_right_status()
+# log_handle_result()
+# validate_logfile()
+
+log_separator() {
+    # regular separator AND separator to logFile
+    separator "$1" "$2"
+    echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile"
+}
+
+log_show_config() {
+    d_log_message "in lg_show_config" 5
+    log_separator "${PN}-${BUILD}" "(configuration)"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+    display_vars ${longest} ${varlist} >> "$logFile"
+}
+
+show_config() {
+    d_message "in show_config" 5
+    separator "${PN}-${BUILD}" "(configuration)"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+}
+
+# convert a percentage string (e.g., "46%") to a pixel integer.
+calculate_pixels() {
+    local percentage=$1
+    local total_dimension=$2
+    local percent_value=$(echo "$percentage" | cut -d'%' -f1)
+    echo $((total_dimension * percent_value / 100))
+}
+
+set_terminal_window_dimensions() {
+    # set terminal dimensions in pixels based on percents from config
+    d_log_message "in ${FUNCNAME[0]}" 5
+    ERROR=$FALSE
+    WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR=$TRUE
+    WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR=$TRUE
+    POS_X1=$(calculate_pixels "$X1" "$SCREEN_WIDTH") || ERROR=$TRUE
+    POS_Y1=$(calculate_pixels "$Y1" "$SCREEN_HEIGHT") || ERROR=$TRUE
+    POS_X2=$(calculate_pixels "$X2" "$SCREEN_WIDTH") || ERROR=$TRUE
+    [ ! $ERROR ] && return 0 || return 1
+}
+
+close_windows() {
+    d_log_message "in ${FUNCNAME[0]} with arg(s) [$@]" 5
+    # identify all terminal windows (use --any but not --onlyvisible to get minimized, too)
+    window_list=()
+    window_list=($(xdotool search --any lxterminal 2>/dev/null))
+    window_list+=($(xdotool search --any Konsole))
+    window_list+=($(xdotool search --any xterm 2>/dev/null))
+    log_message "Currently tracking [${BMon}${#window_list[@]}${Boff}] terminal windows"
+    d_log_message "Current window list:" 3
+    d_log_echo ${window_list[@]} 3 ; d_log_echo "" 3
+    log_message "Now closing all terminal windows except control_window [${BMon}${control_window}${Boff}] ..."
+    # close all these windows
+    for win in $(for x in ${window_list[@]}; do echo $x; done | sort -n)
+    do
+        # since windows come and go (some closed as dependents of ones we closed)
+        # we need to test for the continued existence of the window before running
+        # commands like below, which would produce errors/unexptected results otherwise
+        # xdotool getwindowname $win queries the X server for the window name
+        # if $win exists, the command succeeds and prints its name to stdout
+        # if $win has been closed, the command will fail and write an error message to stderr
+        xdotool getwindowname "$win" >/dev/null 2>&1
+        [ ! "$?" -eq 0 ] && continue  # skips code below and continues w next iteration of loop
+        log_message_n "getting desktop for win: [${BMon}$win${Boff}]"
+        desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
+        # get_desktop_for_window will exit status 1 for non-visible desktops
+        # ( so don't use log_handle_result with " || return 1" )
+        log_handle_result "$?" "${desktop}" "${desktop}"
+        log_message_n "Examining window [${BMon}$win${Boff}] on desktop [${BMon}$desktop${Boff}]"
+        if [[ $win -ne $control_window ]]
+        then
+            # use xprop to get the window's type and only close "normal" windows
+            # this is to avoid disrupting windowmanager/compositor (e.g. kwin) functionaliy
+            if xprop -id $win | grep -q "_NET_WM_WINDOW_TYPE_NORMAL" ; then
+                log_echo_e_n " (${BGon}Normal${Boff})"
+ #               xdotool windowclose $win 2>/dev/null
+                # gracefully close this window by sending it an exit command
+                # (--sync to wait till it actually has focus)
+                log_echo_e_n " (closing)"
+                xdotool windowactivate --sync "$win" && \
+                sleep $typeWait && \
+                    xdotool type "exit" && sleep $sleepWait && xdotool key Return
+                    sleep $typeWait
+#                log_handle_result "$?" "closed" "tried but failed to close" || return 1
+                # command chain will return failed exit status of first step that fails
+                # ( so don't use log_handle_result with " || return 1" )
+                log_handle_result "$?" "closed" "tried but failed to close"
+            else
+                sleep $sleepWait
+                log_echo_e_n " (${BMon}Special${Boff})"
+                log_handle_result "0" "skipping" "error while skipping" || return 1
+                debug_do 'xprop -id "$win" | grep -E "WM_NAME|WM_CLASS|_NET_WM_STATE" | sed "s|^|    |"' 4
+           fi
+        else
+            sleep $sleepWait
+            log_echo_e_n " (${BYon}control window${Boff})"
+            log_handle_result "0" "skipping" "error while skipping" || return 1
+        fi
+    done
+    # move the active window to desktop 0, if it isn't already there
+    if [[ ${current_desktop} -eq 0 ]]
+    then
+      log_message "control_window [${BMon}${control_window}${Boff}] is already on desktop 0; no action required"
+    else
+      log_message_n "moving control_window [${BMon}${control_window}${Boff}] to desktop 0 ..."
+      xdotool set_desktop_for_window ${control_window} 0
+      log_handle_result "$?" "desktop 0 set for ctrl" "failed to set_desktop_for_window 0 for ctrl" || return 1
+    fi
+    # now actually go to desktop 0 where we just sent the control window
+    log_message_n "re-setting to desktop 0"
+    xdotool set_desktop 0
+    log_handle_result "$?" "desktop 0 set" "failed to setset_desktop 0" || return 1
+
+    log_message_n "activating and re-setting focus to control_window"
+    xdotool windowactivate --sync "${control_window}"
+    log_handle_result "$?" "activated and re-set ctrl" "failed to re-activate control_window" || return 1
+    return 0
+}
+
 kill_pids() {
-    # kill processes identified by ${filter}
-    pids=($(eval "ps -aef | ${filter} | awk '{print \$2}'"))
-    filter_name="$(echo ${filter} | awk '{print $2}')"
+    # as a last resort, kill processes identified by ${myFilter}
+    local myFilter="$1"
+    myFilter_name="$(echo ${myFilter} | awk '{print $2}')"
+    log_message_n "identifying pids matching myFilter for [${BYon}${myFilter_name}${Boff}]"
+    pids=($(eval "ps -aef | ${myFilter} | awk '{print \$2}'"))
+    log_handle_result "$?" "${#pids[@]} pids" "failed to id pids!" || return 1
+
+    d_log_message "#pids: ${#pids[@]}" 5
+    log_message "Exterminating any rogue [${BYon}${myFilter_name}${Boff}] process..."
     if [[ -z "${pids[@]}" ]] ; then
-         message "Found [${#pids[@]}] processes for filter [${filter_name}]"
+         log_message "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
     else
         elapsed=0
         round=1
         while [[ ! -z "${pids[@]}" && $elapsed -le $timeout ]] ; do
-             message "Found [${#pids[@]}] processes for filter [${filter_name}]..."
+            log_message "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
             for x in ${pids[@]}
             do
-                message "(${round}) ${BRon}killing${Boff} process x: [$BMon}${x}${Boff}] for filter [${BYon}${filter_name}${Boff}]"
+                log_message_n "(${round}) ${BRon}killing${Boff} process x: [$BMon}${x}${Boff}]"
                 kill -9 $x 2>/dev/null
-                # To Do: get and handle result (exit/return status)
+                log_handle_result "$?" "killed" "kill failed!" || return 1
             done # for
             sleep $longWait
             elapsed=$(( $elapsed + $longWait ))
             round+=1
-            pids=($(eval "ps -aef | ${filter} | awk '{print \$2}'"))
+            pids=($(eval "ps -aef | ${myFilter} | awk '{print \$2}'"))
         done # while
         x=""
     fi # -z pids
     return 0
 }
 
-close_windows() {
-    my_window=$(xdotool getactivewindow)
-    message "my_window: ${my_window}"
-    # identify all terminal windows (use --any but not --onlyvisible to get minimized, too)
-    window_list=()
-    window_list=($(xdotool search --any lxterminal 2>/dev/null))
-    window_list+=($(xdotool search --any Konsole))
-    window_list+=($(xdotool search --any xterm 2>/dev/null))
-    message "Currently tracking [${#window_list[@]}] terminal windows"
-    d_message "Current window list:" 3
-    d_echo ${window_list[@]} 3 ; d_echo "" 3
-    message "Now closing all terminal windows except my_window [${my_window}] ..."
-    # close all these windows
-    for win in $(for x in ${window_list[@]}; do echo $x; done | sort -n)
-    do
-        desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
-        message_n "Examining window [ $win ] on desktop [ $desktop ] ... "
-        if [[ $win -ne $my_window ]]
-        then
-            # use xprop to get the window's type and only close "normal" windows
-            # this is to avoid disrupting windowmanager/compositor (e.g. kwin) functionaliy
-            if xprop -id $win | grep -q "_NET_WM_WINDOW_TYPE_NORMAL" ; then
-                echo -e -n " (${BGon}Normal${Boff})"
- #               xdotool windowclose $win 2>/dev/null
-                # gracefully close this window by sending it an exit command
-                # (--sync to wait till it actually has focus)
-                xdotool windowactivate "$win" --sync && \
-                sleep $typeWait
-                xdotool type "exit" && sleep $sleepWait && xdotool key Return && \
-                   echo " closed" || \
-                   echo "tried, but failed to close"
-            else
-                echo -e " (${BMon}Special, ${BRon}NOT Normal, ${BYon}skipping${Boff})"
-                debug_do 'xprop -id "$win" | grep -E "WM_NAME|WM_CLASS|_NET_WM_STATE" | sed "s|^|    |"' 4
-           fi
-        else
-            echo -e " (${BYon}My${Boff} window, ${BYon}skipping${Boff})"
-        fi
-#        sleep $sleepWait
-    done
-    return 0
-}
-
 #-----[ main script ]-----------------------------------------------
+d_message "now in main script" 3
+message_n "checking not root ..."
+checknotroot && right_status $? || die "failed checknotroot"
+validate_logfile || die "failed to validate logfile"
 
-exec 6>&1 2>/dev/null           # Link file descriptor #6 with stdout. Saves stdout.
-exec > $logFile  2>/dev/null    # stdout replaced with file.
-# ----------------------------------------------------------- #
-# All output from commands in this block sent to file $logFile
-separator "${PN}-${BUILD}" "(closing)"
-message "Exterminating any rogue xdotool_xxx process..."
+log_separator "$(hostname)" "${PN}-${BUILD}"
+log_message "starting script"
+
+# identify the control window (used to activate this program)
+log_message_n "Getting ID of current (control) window"
+control_window=$(xdotool getactivewindow)
+log_handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
+
+# identify the current desktop and log_message "starting script"
+current_desktop=$(xdotool get_desktop_for_window "${control_window}")
+log_message "current_desktop: ${current_desktop}"
 num_desktops=$(xdotool get_num_desktops)
-message "num_desktops: $num_desktops"
+log_message "num_desktops: $num_desktops"
 
-# kill any existing xdotoo_xxx processes
-filter="grep 'xdotool_' | grep -v 'color=auto' | grep -v $!"
-kill_pids || die "failed to kill_pids for filter [${filter}]"
-
-# close all terminal windows except the control_window (that activated this program)
+# run sequence
+show_config || die "failed to show_config"
 close_windows || die "failed to close_windows"
+kill_pids "${xdotool_filter}"  || die "failed to kill_pids for filter [${BYon}${filter}${Boff}]"
+kill_pids "${ssh_filter}" || die "failed to kill_pids for filter [${BYon}${filter}${Boff}]"
 
-# now kill any residual ssh sessions
-#message "Exterminating any rogue ssh processes ..."
-#filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
-#kill_pids || die "failed to kill_pids"
+log_message "${BGon}Done${Boff}"
 
-# move the active window to desktop 0, if it isn't already there
-my_window=$(xdotool getactivewindow)
-message "my_window: ${my_window}"
-my_desktop=$(xdotool get_desktop_for_window ${my_window})
-message "my_desktop: ${my_desktop}"
-if [[ ${my_desktop} -eq 0 ]]
-then
-  message "my_window [${my_window}] is already on desktop 0; no action required"
-else
-  message "moving my_window [${my_window}] to desktop 0 ..."
-  xdotool set_desktop_for_window ${my_window} 0
-fi
-# now actually go to desktop 0 where we just sent the control window
-message_n "re-setting to desktop 0"
-xdotool set_desktop 0
-[ $? -eq 0 ] && right_status $TRUE || right_status 1
-
-#    log_message_n "activating and re-setting focus to control_window"
-#    xdotool windowactivate "${control_window}" --sync
-#    log_handle_result "$?" "re-set ctrl success!" "failed to re-activate control_window"
-message_n "activating and re-setting focus to control_window"
-xdotool windowactivate "${control_window}" --sync
-[ $? -eq 0 ] && right_status $TRUE || right_status 1
-
-exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
-
-cat $logFile
+#d_message "${BMon}Debug Marker${Boff}" 3 ; exit 1
