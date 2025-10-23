@@ -132,29 +132,10 @@ current_window=""
 # log_right_status()
 # log_handle_result()
 # validate_logfile()
+# log_separator()
+# log_show_config()
+# show_config()
 
-log_separator() {
-    # regular separator AND separator to logFile
-    separator "$1" "$2"
-    echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile"
-}
-
-log_show_config() {
-    d_log_message "in lg_show_config" 5
-    log_separator "${PN}-${BUILD}" "(configuration)"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-    display_vars ${longest} ${varlist} >> "$logFile"
-}
-
-show_config() {
-    d_message "in show_config" 5
-    separator "${PN}-${BUILD}" "(configuration)"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-}
-
-# convert a percentage string (e.g., "46%") to a pixel integer.
 calculate_pixels() {
     local percentage=$1
     local total_dimension=$2
@@ -267,16 +248,20 @@ kill_pids() {
     else
         elapsed=0
         round=1
-        while [[ ! -z "${pids[@]}" && $elapsed -le $timeout ]] ; do
+        d_log_message "elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]" 5
+        # floating point math here...
+        while [[ ! -z "${pids[@]}" && "$( echo "$elapsed <= $timeout" | bc -l )" -eq 1 ]] ; do
+            d_log_message "round: ($round) elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]" 5
             log_message "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
             for x in ${pids[@]}
             do
-                log_message_n "(${round}) ${BRon}killing${Boff} process x: [$BMon}${x}${Boff}]"
+                log_message_n "(${round}) ${BRon}killing${Boff} process x: [${BMon}${x}${Boff}]"
                 kill -9 $x 2>/dev/null
                 log_handle_result "$?" "killed" "kill failed!" || return 1
             done # for
-            sleep $longWait
-            elapsed=$(( $elapsed + $longWait ))
+            sleep $sleepWait
+            # floating point math again here...
+            elapsed=$(echo "scale=2; ( ${elapsed:-0} + $sleepWait )" | bc -l );
             round+=1
             pids=($(eval "ps -aef | ${myFilter} | awk '{print \$2}'"))
         done # while

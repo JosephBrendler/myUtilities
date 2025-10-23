@@ -132,29 +132,10 @@ control_window=""
 # log_right_status()
 # log_handle_result()
 # validate_logfile()
+# log_separator()
+# log_show_config()
+# show_config()
 
-log_separator() {
-    # regular separator AND separator to logFile
-    separator "$1" "$2"
-    echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile"
-}
-
-log_show_config() {
-    d_log_message "in lg_show_config" 5
-    log_separator "${PN}-${BUILD}" "(configuration)"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-    display_vars ${longest} ${varlist} >> "$logFile"
-}
-
-show_config() {
-    d_message "in show_config" 5
-    separator "${PN}-${BUILD}" "(configuration)"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-}
-
-# convert a percentage string (e.g., "46%") to a pixel integer.
 calculate_pixels() {
     local percentage=$1
     local total_dimension=$2
@@ -224,7 +205,7 @@ detect_graphical_env_and_pick_wm_tool() {
                 wm_tool="unsupported"
                 log_echo_e_n " (${BRon}unsupported${Boff})"
                 right_status 1
-                log_E_message "unsupported desktop environment[$desktop_env]"
+                log_E_message "unsupported desktop environment[${BMon}$desktop_env${Boff}]"
                 return 1
             fi
             right_status $TRUE    # for select desktop env
@@ -237,25 +218,29 @@ detect_graphical_env_and_pick_wm_tool() {
 }
 
 dump_ssh_session_list() {
-  d_log_message "in ${FUNCNAME[0]}" 5
-  # i will count the dsktop, on each of which there are 2 slots for terminals j, k
-  # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5)
-  for ((i=0; i<${num_desktops}; i++ ))
-  do
-    j=$((2*$i))
-    k=$(($j+1))
-    ssh_target="${ssh_session_list[$j]}"
-    d_log_message "j: $[j] ssh_session_list[\$j]: [${ssh_session_list[$j]}] ssh_target: [$ssh_target}" 3
-    let k=$(( $j + 1 ))
-    ssh_target="${ssh_session_list[$k]}"
-    d_log_message "k: $[k] ssh_session_list[\$k]: [${ssh_session_list[$k]}] ssh_target: [$ssh_target}" 3
-  done
+    d_log_message "in ${FUNCNAME[0]}" 5
+    # i will count the dsktop, on each of which there are 2 slots for terminals j, k
+    # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5)
+    for ((i=0; i<${num_desktops}; i++ ))
+    do
+        j=$((2*$i))
+        k=$(($j+1))
+        if [ $j -le ${#ssh_session_list[@]} ] ; then
+            ssh_target="${ssh_session_list[$j]}"
+            d_log_message "j: [${BMon}$[j]${Boff}] ssh_session_list[\$j]: [${BYon}${ssh_session_list[$j]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
+        fi
+        if [ $j -le ${#ssh_session_list[@]} ] ; then
+            ssh_target="${ssh_session_list[$k]}"
+            d_log_message "k: [${BMon}$[k]${Boff}] ssh_session_list[\$k]: [${BYon}${ssh_session_list[$k]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
+        fi
+    done
+    return 0
 }
 
 setup_desktops() {
     # determine the number of desktops needed
     log_message_n "calculating numdesktops needed"
-    numdesktops=$(( ( num_ssh_sessions + 1 ) / 2 ))
+    numdesktops=$(( ( ${#ssh_session_list[@]} + 1 ) / 2 ))
     log_handle_result "$?" "${numdesktops}" "failed to calculate numdesktops" || return 1
     # if that is an odd number, add one so it's always even
     log_message_n "examining parity (want numdesktops even)"
@@ -271,14 +256,17 @@ setup_desktops() {
     log_message_n "setting numdesktops ..."
     xdotool set_num_desktops "${numdesktops}"
     log_handle_result "$?" "set # success!" "failed to set numdesktops" || return 1
-    sleep $longWait   # give the desktops time to manifest
+#    sleep $longWait   # give the desktops time to manifest
 
-    log_message_n "get-confirming num_desktops"
+    # explicitly verify that the number of desktops have been created
+    poll_for_num_desktops || return 1
+
+    log_message_n "double-checking confirmation of num_desktops"
     num_desktops=$(xdotool get_num_desktops) && [ ${num_desktops} -eq ${numdesktops} ]
     log_handle_result "$?" "${num_desktops}" "${num_desktops}" || return 1
 
-    d_log_message "need numdesktops .........: [${numdesktops}]" 3
-    d_log_message "calculated num_desktops ..: [${num_desktops}]" 3
+    d_log_message "need numdesktops .........: [${BMon}${numdesktops}${Boff}]" 3
+    d_log_message "calculated num_desktops ..: [${BMon}${num_desktops}${Boff}]" 3
 
     return 0
 }
@@ -316,28 +304,28 @@ open_windows() {
     # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5);  i=3 (j=6,k=7)
     for ((i=0; i<${num_desktops}; i++ )); do
         # set desktop
-        log_message_n "setting desktop [$i]"
+        log_message_n "setting desktop [${BMon}${i}${Boff}]"
         xdotool set_desktop "$i"
-        log_handle_result "$?" "set i success!" "failed to set desktop [$i]" || return 1
+        log_handle_result "$?" "set i success!" "failed to set desktop [${BMon}${i}${Boff}]" || return 1
 
         j=$((2*$i))  # even (left)
         k=$(($j+1))  # odd (right)
         # the even numbered terminals go on the left
         # terminal 0 is reserved for the control_window (no ssh sessions)
-        d_log_message "i: [$i]; j: [$j]; k: [$k]" 5
+        d_log_message "i: [${BMon}${i}${Boff}]; j: [${BMon}${j}${Boff}]; k: [${BMon}${k}${Boff}]" 5
         if [ ! "$j" -eq 0 ] && [ "$j" -lt "$num_ssh_sessions" ] ; then
-            log_message "setting up terminal j: [$j]"
+            log_message "setting up terminal j: [${BMon}${j}${Boff}]"
             setup_terminal "$j"
-            log_handle_result "$?" "setup j success!" "failed to setup terminal [$j]" || return 1
+            log_handle_result "$?" "setup j success!" "failed to setup terminal [${BMon}${j}${Boff}]" || return 1
         else
-            d_log_message "skipping setup for terminal [$j]] (should be 0)" 4
+            d_log_message "skipping setup for terminal [${BMon}${j}${Boff}]] (should be 0)" 4
         fi
         sleep $sleepWait
         # the odd numbered terminals go on the right
         if [ ! "$k" -eq 0 ] && [ "$k" -lt "$num_ssh_sessions" ] ; then
-            log_message "setting up terminal k: [$k]"
+            log_message "setting up terminal k: [${BMon}${k}${Boff}]"
             setup_terminal "$k"
-            log_handle_result "$?" "setup k success!" "failed to setup terminal [$k]" || return 1
+            log_handle_result "$?" "setup k success!" "failed to setup terminal [${BMon}${k}${Boff}]" || return 1
         fi
         sleep $sleepWait
     done
@@ -358,7 +346,7 @@ setup_terminal() {
     ssh_target="${ssh_session_list[$t]}"
     # if the ssh_target name begins "x_" we ignore it - it is intended to be blank (no window)
     if [[ ! "${ssh_target}" == "x_"* ]] ; then
-        log_message "openning terminal and ssh to [${ssh_target}]"
+        log_message "openning terminal and ssh to [${BYon}${ssh_target}${Boff}]"
         # take a baseline for comparison so we can find the new window for certain
         terminal_class="$(basename ${terminal_program})"
         before=($(xdotool search --class "${terminal_class}"))
@@ -368,13 +356,13 @@ setup_terminal() {
         # newterm=$(xdotool getactivewindow 2>/dev/null) ## <-- unreliable
         newterm=$(poll_for_new_window)
         if  [ ! -z "$newterm" ] ; then
-            log_message_n "setting window name for [${ssh_target}]"
+            log_message_n "setting window name for [${BYon}${ssh_target}${Boff}]"
             windowname="${ssh_target}_$(basename ${terminal_program})-${i}.${t}" && \
             xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${t}" "${newterm}"
             log_handle_result "$?" "${windowname}" "failed to set windowname" || return 1
-            log_message "opened new terminal for ${ssh_target} on desktop [$i]"
+            log_message "opened new terminal for ${BYon}${ssh_target}${Boff} on desktop [${BMon}${i}${Boff}]"
             # sizemove this windw
-            log_message_n "resizing window [$t]"
+            log_message_n "resizing window [${BMon}${t}${Boff}]"
             if [ $(($t % 2)) -eq 0 ] ; then
                 # even (Left)
                 eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
@@ -382,12 +370,12 @@ setup_terminal() {
                 # odd (Right)
                 eval "mw R $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
             fi # even/odd
-            log_handle_result "$result" "resize t success!" "failed to resize window [$t]" || return 1
+            log_handle_result "$result" "resize t success!" "failed to resize window [${BMon}${t}${Boff}]" || return 1
         else
             log_E_message "failed to get new window ID within time limit"
         fi # nonzero newterm
     else
-        log_message "not openning a terminal for (blank) [${ssh_target}]"
+        log_message "${BRon}not${Boff} openning a terminal for (${BMon}blank${Boff}) [${BYon}${ssh_target}${Boff}]"
     fi # non x_ (blank) ssh_target
     return 0
 }
@@ -422,6 +410,30 @@ poll_for_new_window() {
 
     echo "$new_wid"
     [[ -z "$new_wid" ]] && return 1 || return 0
+}
+
+poll_for_num_desktops() {
+    # to give a prior set_num_desktops command to complete,
+    # but rather than relying on an arbitarary sleep delay,
+    # this is to an explicit check to verify its completion
+    # Note: using bc -l for floating point math, and ${elapsed:-0}
+    # just in case it gets unset
+    local elapsed=0
+    while [[ ! $num_desktops -eq $numdesktops && "$( echo "$elapsed <= $timeout" | bc -l )" -eq 1 ]] ; do
+        d_log_message "elapsed: [${LBon}$elapsed${Boff}] num_desktops: [${BMon}$num_desktops${Boff}] numdesktops: [${BGon}$numdesktops${Boff}]" 2
+        sleep $sleepWait
+        elapsed=$(echo "scale=2; ( ${elasped:-0} + $sleepWait )" | bc -l )
+        d_log_message_n "checking num_desktops"
+        num_desktops=$(xdotool get_num_desktops)
+        log_handle_result "$?" "${num_desktops}" "${num_desktops}"  # don't return 1 for failure
+    done
+    # return 1 if this timed out
+    if [ $num_desktops -eq $numdesktops ] ; then
+        return 0
+    else
+        log_E_message "timed out while waiting for num_desktops to match numdesktops"
+        return 1
+    fi
 }
 
 #-----[ main script ]-----------------------------------------------------
