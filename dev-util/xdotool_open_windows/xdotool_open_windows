@@ -79,6 +79,9 @@ ssh_session_list=( \
 shopt -s expand_aliases
 alias mw='/usr/sbin/xdotool_sizemove_this_window'
 
+# no_msg is a space overwritten by a backspace, used to send null message with a non-null string
+no_msg=" \b"
+
 # get display geometry in pixels
 # Using 'xdpyinfo' b/c it is more stable/portable than 'xdotool getdisplaygeometry'
 SCREEN_DIMENSIONS=$(xdpyinfo | grep -oP 'dimensions:\s+\K\S+')
@@ -103,6 +106,9 @@ message_n "sourcing build_file: ${build_file} ..."
 [[ -f ${build_file} ]] || die "${build_file} does not exist"
 source ${build_file} || die "failed to source ${build_file}"
 right_status $?
+
+# set these after sourcing config
+num_ssh_sessions=${#ssh_session_list[@]}
 
 #-----[ functions ]----------------------------------------------------------
 
@@ -285,40 +291,67 @@ rotate_logfile() {
     return 0
 }
 
-setup_desktops() {
-    log_message_n "calculating numdesktops needed"
-#    numdesktops=$(( $(( ${#ssh_session_list[@]} + 1 )) / 2 )) ; result=$?
-    numdesktops=$(( ( ${#ssh_session_list[@]} + 1 ) / 2 )) ; result=$?
-    if [ $result -eq 0 ] ; then
-        echo -e -n " (${BGon}${numdesktops}${Boff})"
-        right_status $TRUE
+log_right_status() {
+    local msg status=$1;
+    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+    echo -e -n "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && \
+    echo -e " $msg" >> $logFile && return 0 || return 1
+}
+
+log_handle_result() {
+    # follow "log_message_n ...; command; result=$?"
+    # with log_handle_result "ok_msg" "err_msg"
+    # substitute no_msg=" \b" for either, to "suppress"
+    local exit_status="$1"
+    local ok_msg
+    local err_msg
+    # build ok_msg
+    if [[ "$2" == "${no_msg}" ]] ; then
+        ok_msg=""
     else
-        log_E_message "failed to calculate numdesktops"
-        right_status 1
+        ok_msg=" (${BGon}${2:-success!}${Boff})"
+    fi
+    # build err_msg
+    if [[ "$3" == "${no_msg}" ]] ; then
+        err_msg=""
+    else
+        err_msg=" (${BRon}${3:-error!}${Boff})"
+    fi
+    # now check exit statusand log/report result
+    if [ "$exit_status" -eq 0 ] ; then
+        log_echo_e_n "${ok_msg}"
+        log_right_status $TRUE
+    else
+        log_echo_e_n "${err_msg}"
+        log_right_status 1
         return 1
+    fi
+    return 0
+}
+
+setup_desktops() {
+    # determine the number of desktops needed
+    log_message_n "calculating numdesktops needed"
+    numdesktops=$(( ( num_ssh_sessions + 1 ) / 2 ))
+    log_handle_result "$?" "${numdesktops}" "failed to calculate numdesktops" || return 1
+    # if that is an odd number, add one so it's always even
+    log_message_n "examining parity (want numdesktops even)"
+    # re-initialize result since we'l only set it if the test is true
+    if [ ! "$(( $numdesktops % 2 ))" -eq 0 ] ; then
+        ((numdesktops+=1))
+        log_handle_result "$?" "${numdesktops}" "failed to make numdesktops even" || return 1
+    else
+        # necessary to complete the log action started by log_message_n which uses (echo -n)
+        log_handle_result "0" "even" "error!" || return 1
     fi
 
     log_message_n "setting numdesktops ..."
-    xdotool set_num_desktops ${numdesktops} ; result=$?
-    if [ $result -eq 0 ] ; then
-        right_status $TRUE
-    else
-        log_E_message "failed to set numdesktops"
-        right_status 1
-        return 1
-    fi
+    xdotool set_num_desktops "${numdesktops}"
+    log_handle_result "$?" "set # success!" "failed to set numdesktops" || return 1
 
-    log_message_n "get-confirming numdesktops"
-    num_desktops=$(xdotool get_num_desktops) ; result=$?
-    if [ $result -eq 0 ] ; then
-        echo -e -n " (${BGon}${num_desktops}${Boff})"
-        right_status $TRUE
-    else
-        log_E_message "failed to get numdesktops"
-        right_status 1
-        return 1
-    fi
-
+    log_message_n "get-confirming num_desktops"
+    num_desktops=$(xdotool get_num_desktops)
+    log_handle_result "$?" "${num_desktops}" "failed to get num_desktops" || return 1
 
     d_log_message "need numdesktops .........: [${numdesktops}]" 3
     d_log_message "calculated num_desktops ..: [${num_desktops}]" 3
@@ -347,36 +380,17 @@ open_windows() {
     # identify the control window (used to activate this program)
     log_message_n "Getting ID of current (control) window"
     control_window=$(xdotool getactivewindow) ; result=$?
-    if [ $result -eq 0 ] ; then
-        echo -e -n " (${BMon}${control_window}${Boff})"
-        right_status $TRUE
-    else
-        log_E_message "failed to id control_window"
-        right_status 1
-        return 1
-    fi
+    log_handle_result "$?" "${control_window}" "failed to id control_window" || return 1
 
     # move the control_window to desktop zero
     log_message_n "moving control_window to desktop 0 ..."
-    xdotool set_desktop_for_window ${control_window} 0 ; result=$?
-    if [ $result -eq 0 ] ; then
-        right_status $TRUE
-    else
-        log_E_message "failed to move control_window to desktop 0"
-        right_status 1
-        return 1
-    fi
+    xdotool set_desktop_for_window ${control_window} 0
+    log_handle_result "$?" "move ctrl success!" "failed to move control_window to desktop 0" || return 1
 
     # use xdotool_sizemove_this_window (alias mw) l|L|r|R [<width>%] [<height>%]
     log_message_n "resizing control_window"
-    eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
-    if [ $result -eq 0 ] ; then
-        right_status $TRUE
-    else
-        log_E_message "failed to resize control_window"
-        right_status 1
-        return 1
-    fi
+    eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"
+    log_handle_result "$?" "resize ctrl success!" "failed to resize control_window" || return 1
 
     # set window name for control_window
     log_message_n "setting window name for control_window"
@@ -384,69 +398,46 @@ open_windows() {
     control_term=$(xprop -id "$WINDOWID" WM_CLASS | awk -F'"' '{print $4}') && \
     windowname="$(hostname)_${control_term}-0.0" && \
     xdotool set_window --name "${windowname}" "${control_window}" ; result=$?
-    if [ $result -eq 0 ] ; then
-        echo -e -n " (${BMon}${windowname}${Boff})"
-        right_status $TRUE
-    else
-        log_E_message "failed to assign window name"
-        right_status 1
-        return 1
-    fi
+    log_handle_result "$?" "${windowname}" "failed to set windowname" || return 1
 
     # integer "i" will count the dsktops, on each of which we can put 2 terminals "j", "k"
     # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5);  i=3 (j=6,k=7)
     for ((i=0; i<${num_desktops}; i++ )); do
         # set desktop
         log_message_n "setting desktop [$i]"
-        xdotool set_desktop "$i" ; result=$?
-        if [ $result -eq 0 ] ; then
-            right_status $TRUE
-        else
-            log_E_message "failed to set desktop [$i]"
-            right_status 1
-            return 1
-        fi
+        xdotool set_desktop "$i"
+        log_handle_result "$?" "set i success!" "failed to set desktop [$i]" || return 1
+
         j=$((2*$i))  # even (left)
         k=$(($j+1))  # odd (right)
         # the even numbered terminals go on the left
         # terminal 0 is reserved for the control_window (no ssh sessions)
         d_log_message "i: [$i]; j: [$j]; k: [$k]" 5
-        if [ ! $j -eq 0 ] ; then
-            setup_terminal "$j" ; result=$?
-            if [ $result -eq 0 ] ; then
-                right_status $TRUE
-            else
-                log_E_message "failed to setup terminal [$j]"
-                right_status 1
-                return 1
-            fi
+        if [ ! "$j" -eq 0 ] && [ "$j" -lt "$num_ssh_sessions" ] ; then
+            log_message "setting up terminal j: [$j]"
+            setup_terminal "$j"
+            log_handle_result "$?" "setup j success!" "failed to setup terminal [$j]" || return 1
         else
             d_log_message "skipping setup for terminal [$j]] (should be 0)" 4
         fi
         sleep $sleepWait
         # the odd numbered terminals go on the right
-        d_log_message "calling setup_terminal [$k]" 2
-        setup_terminal "$k" ; result=$?
-        if [ $result -eq 0 ] ; then
-            right_status $TRUE
-        else
-            log_E_message "failed to setup terminal [$k]"
-            right_status 1
-            return 1
+        if [ ! "$k" -eq 0 ] && [ "$k" -lt "$num_ssh_sessions" ] ; then
+            log_message "setting up terminal k: [$k]"
+            setup_terminal "$k"
+            log_handle_result "$?" "setup k success!" "failed to setup terminal [$k]" || return 1
         fi
         sleep $sleepWait
     done
     # set desktop back to 0
     # set desktop
     log_message_n "re-setting desktop 0"
-    xdotool set_desktop "0" ; result=$?
-    if [ $result -eq 0 ] ; then
-        right_status $TRUE
-    else
-        log_E_message "failed to re-set desktop 0"
-        right_status 1
-        return 1
-    fi
+    xdotool set_desktop "0"
+    log_handle_result "$?" "re-set 0 success!" "failed to re-set desktop 0"
+    log_message_n "activating and re-setting focus to control_window"
+#    xdotool windowfocus "${control_window}"
+    xdotool windowactivate "${control_window}" --sync
+    log_handle_result "$?" "re-set ctrl success!" "failed to re-activate control_window"
     return 0
 }
 
@@ -461,30 +452,26 @@ setup_terminal() {
         terminal_class="$(basename ${terminal_program})"
         before=($(xdotool search --class "${terminal_class}"))
         # launch a new terminal with an ssh session as needed
-        "${terminal_program}" -e ssh "${ssh_target}" &
+        eval "\"${terminal_program}\" -e ssh \"${ssh_target}\" ${silent} &"
         sleep $longWait
         # newterm=$(xdotool getactivewindow 2>/dev/null) ## <-- unreliable
         newterm=$(poll_for_new_window)
         if  [ ! -z "$newterm" ] ; then
+            log_message_n "setting window name for [${ssh_target}]"
+            windowname="${ssh_target}_$(basename ${terminal_program})-${i}.${t}" && \
             xdotool set_window --name "$(hostname) $(basename ${terminal_program})_${i}.${t}" "${newterm}"
+            log_handle_result "$?" "${windowname}" "failed to set windowname" || return 1
             log_message "opened new terminal for ${ssh_target} on desktop [$i]"
             # sizemove this windw
+            log_message_n "resizing window [$t]"
             if [ $(($t % 2)) -eq 0 ] ; then
                 # even (Left)
-                log_message_n "resizing window [$t]"
                 eval "mw L $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
             else
                 # odd (Right)
-                log_message_n "resizing window [$t]"
                 eval "mw R $WINDOW_WIDTH $WINDOW_HEIGHT ${silent}"; result=$?
             fi # even/odd
-            if [ $result -eq 0 ] ; then
-                right_status $TRUE
-            else
-                log_E_message "failed to resize window [$t]"
-                right_status 1
-                return 1
-            fi # 0 result
+            log_handle_result "$result" "resize t success!" "failed to resize window [$t]" || return 1
         else
             log_E_message "failed to get new window ID within time limit"
         fi # nonzero newterm
@@ -541,7 +528,7 @@ set_terminal_window_dimensions || die "failed to set_terminal_window_dimensions"
 setup_desktops || die "failed to setup_desktops"
 show_config || die "failed to show_config"
 open_windows || die "failed to open_windows"
-d_log_message "${BGon}Done${Boff}"
+d_log_message "${BGon}Done${Boff}" 1
 
 #d_message "${BMon}Debug Marker${Boff}" 3 ; exit 1
 

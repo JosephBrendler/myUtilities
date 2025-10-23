@@ -56,6 +56,8 @@ sleepWait=0.5    # help avoid race conditions
 longWait=2       # help avoid race conditions
 timeout=10       # seconds to wait while trying to close a window or identify a new one
 
+typeWait=1.5
+
 #-----[ Debug Verbosity ]---------------------------------------------------------------
 #VERBOSE=$FALSE
 VERBOSE=$TRUE
@@ -93,7 +95,7 @@ kill_pids() {
              message "Found [${#pids[@]}] processes for filter [${filter_name}]..."
             for x in ${pids[@]}
             do
-                message "(${round}) killing process x: [${x}] for filter [${filter_name}]"
+                message "(${round}) ${BRon}killing${Boff} process x: [$BMon}${x}${Boff}] for filter [${BYon}${filter_name}${Boff}]"
                 kill -9 $x 2>/dev/null
                 # To Do: get and handle result (exit/return status)
             done # for
@@ -115,11 +117,12 @@ close_windows() {
     window_list=($(xdotool search --any lxterminal 2>/dev/null))
     window_list+=($(xdotool search --any Konsole))
     window_list+=($(xdotool search --any xterm 2>/dev/null))
-    message "Current window list:"
-    echo ${window_list[@]} ; echo
+    message "Currently tracking [${#window_list[@]}] terminal windows"
+    d_message "Current window list:" 3
+    d_echo ${window_list[@]} 3 ; d_echo "" 3
     message "Now closing all terminal windows except my_window [${my_window}] ..."
     # close all these windows
-    for win in ${window_list[@]}
+    for win in $(for x in ${window_list[@]}; do echo $x; done | sort -n)
     do
         desktop=$(xdotool get_desktop_for_window $win 2>/dev/null)
         message_n "Examining window [ $win ] on desktop [ $desktop ] ... "
@@ -129,15 +132,22 @@ close_windows() {
             # this is to avoid disrupting windowmanager/compositor (e.g. kwin) functionaliy
             if xprop -id $win | grep -q "_NET_WM_WINDOW_TYPE_NORMAL" ; then
                 echo -e -n " (${BGon}Normal${Boff})"
-                xdotool windowclose $win 2>/dev/null && echo " closed" || \
-                    echo "tried, but failed to close"
+ #               xdotool windowclose $win 2>/dev/null
+                # gracefully close this window by sending it an exit command
+                # (--sync to wait till it actually has focus)
+                xdotool windowactivate "$win" --sync && \
+                sleep $typeWait
+                xdotool type "exit" && sleep $sleepWait && xdotool key Return && \
+                   echo " closed" || \
+                   echo "tried, but failed to close"
             else
-                echo -e " (${BMon}Special, ${BRon}NOT Normal${Boff} window, ${BYon}skipping${Boff})"
-            fi
+                echo -e " (${BMon}Special, ${BRon}NOT Normal, ${BYon}skipping${Boff})"
+                debug_do 'xprop -id "$win" | grep -E "WM_NAME|WM_CLASS|_NET_WM_STATE" | sed "s|^|    |"' 4
+           fi
         else
             echo -e " (${BYon}My${Boff} window, ${BYon}skipping${Boff})"
         fi
-        sleep $sleepWait
+#        sleep $sleepWait
     done
     return 0
 }
@@ -161,9 +171,9 @@ kill_pids || die "failed to kill_pids for filter [${filter}]"
 close_windows || die "failed to close_windows"
 
 # now kill any residual ssh sessions
-message "Exterminating any rogue ssh processes ..."
-filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
-kill_pids || die "failed to kill_pids"
+#message "Exterminating any rogue ssh processes ..."
+#filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
+#kill_pids || die "failed to kill_pids"
 
 # move the active window to desktop 0, if it isn't already there
 my_window=$(xdotool getactivewindow)
@@ -177,6 +187,17 @@ else
   message "moving my_window [${my_window}] to desktop 0 ..."
   xdotool set_desktop_for_window ${my_window} 0
 fi
+# now actually go to desktop 0 where we just sent the control window
+message_n "re-setting to desktop 0"
+xdotool set_desktop 0
+[ $? -eq 0 ] && right_status $TRUE || right_status 1
+
+#    log_message_n "activating and re-setting focus to control_window"
+#    xdotool windowactivate "${control_window}" --sync
+#    log_handle_result "$?" "re-set ctrl success!" "failed to re-activate control_window"
+message_n "activating and re-setting focus to control_window"
+xdotool windowactivate "${control_window}" --sync
+[ $? -eq 0 ] && right_status $TRUE || right_status 1
 
 exec 1>&6 6>&-  2>/dev/null     # Restore stdout and close file descriptor #6.
 
