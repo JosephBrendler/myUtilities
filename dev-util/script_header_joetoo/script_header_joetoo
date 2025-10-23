@@ -318,7 +318,7 @@ pur()               # ping ip address $1 until it is ready (0% loss of 3 packets
 sap()               # pur and then ssh after 20s pause
 { pur $1 && echo "pausing to allow $1 to start sshd..." && sh_countdown 20 && ssh $1; }
 
-swr()               # ssh when ready (pur(), then ssh after nmap shows port)
+swr()               # ssh when nmap indicates port is ready (pur(), then ssh after nmap shows port)
 { pur $1 && \
   message "pausing to allow $1 to start sshd..." && \
   while [ ! $(nmap -p ssh $1 | grep 'ssh' | cut -d' ' -f2) == "open" ]; do sleep 1; done && \
@@ -334,7 +334,7 @@ show_result()       # show the result of vercomp comparison, in english
 
 timestamp()         # echo a simple timestamp (yyyymmdd-hh:mm:ss)
 { echo "$(date '+%Y%m%d-%H:%M:%S')" ; }
- 
+
 my_date()           # echo date string (DDD MM dd hh:mm:ss AP TZ yyyy)
 { day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
   timeofday=$(date +%X); timezone=$(date +%Z)
@@ -353,6 +353,70 @@ loggit()            # send a job completion status message to the cron logger
     * ) PRIORITY="err" && MESSAGE="failed with exit status ${EXIT_STATUS}";;
   esac
   /usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE" ; }
+
+log_handle_result() # output ok_/err_msg and right_stats to stdout and logFile
+{ local exit_status="$1"; local ok_msg; local err_msg
+  [[ "$2" == "${no_msg}" ]] && ok_msg="" || ok_msg=" (${BGon}${2:-success!}${Boff})"
+  [[ "$3" == "${no_msg}" ]] && err_msg="" || err_msg=" (${BRon}${3:-error!}${Boff})"
+  if [ "$exit_status" -eq 0 ] ; then
+      log_echo_e_n "${ok_msg}"
+      log_right_status $TRUE
+  else
+      log_echo_e_n "${err_msg}"
+      log_right_status 1
+      return 1
+  fi ; return 0 ; }
+# *()* usage - log_message_n ...; <command>] ; log_handle_result "$?" "ok_msg" "err_msg"
+# *()* notes - substitute no_msg=" \b" for either, to "suppress"
+
+validate_logfile()  # validate existence and ownership of logFile
+{ d_log_message "in validate_logfile" 5
+  log_message_n "looking for logFile [${logFile}]"
+  if [ ! -f ${logFile} ] ; then
+      log_echo_e_n " (${BRon}not found${Boff})"
+      log_right_status 1
+      msg="logFile [${logFile}] not found\n"
+      msg="${msg}${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
+      log_E_message "${msg}"
+      return 1
+  else
+      log_echo_e_n " (${BGon}found${Boff})"
+      log_right_status $TRUE
+      log_message_n "checking logFile ownership"
+      log_owner=$(stat -c '%U' "${logFile}")
+      log_group=$(stat -c '%G' "${logFile}")
+      if [[ "${log_owner}:${log_group}" == "${user}:${user}" ]] ; then
+          log_echo_e_n " (${BGon}${log_owner}:${log_group}${Boff})"
+          log_right_status $TRUE
+      else
+          log_echo_e_n "(${BRon}${log_owner}:${log_group}${Boff})"
+          right_status 1
+          msg="bad ownership on logFile [${logFile}]\n"
+          msg="${msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
+          log_E_message "${msg}"
+          return 1
+      fi # ownership
+  fi # existence
+  return 0 ; }
+# *()* reminder - no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
+# *()* reminder - in ash, the =+ operator works for arithmetic but not text concatenation
+# *()* reminder - logFile and user must be set apriori
+
+# deprecated but leave here for continuity - let linux logrotate take care of this
+rotate_logfile() {  # (deprecated) let linux logrotate do this 
+    d_log_message "in rotate_logfile" 5
+    log_message_n "archiving old logfile ..."
+    sudo sh -c "gzip -c ${logFile} > ${old_log_dir%/}/$(basename ${logFile})-$(timestamp).gz" || \
+        die "failed to archive logFile"
+    right_status $TRUE
+    log_message_n "removing old logfile ..."
+    sudo rm $logFile || die "failed to remove old logFile"
+    right_status $TRUE
+    log_message_n "creating new logfile ..."
+    sudo touch $logFile && \
+    sudo chown ${user}:${user} $logFile || die "failed to create new logFile"
+    right_status $TRUE
+    return 0 ; }
 
 repeat()            # output a repeated string of char $1 (of len $2)
 { local i thing limit
@@ -508,6 +572,12 @@ right_status()      # output 8 char [ ok/fail ] status at the right margin
   [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}"
   # go to start of line, *then* move fwd to 7 chars from the right margin ("[ xx ]" is 6)
   echo -en "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
+
+log_right_status()  # output rigit_status to stdout and logFile 
+{ local msg status=$1; [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || \
+  msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+  echo -e -n "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && \
+  echo -e " $msg" >> $logFile && return 0 || return 1 ; }
 
 d_right_status()    # output rigit_status IAW verbosity
 { # test with v=((verbosity+1)) and v=(($verbosity-1))
@@ -707,8 +777,8 @@ summarize_me()             # list functions in header ("source" to employ)
   E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && \
   echo && \
   msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${LBon}echo ${BGon}&& ${Boff}" && \
-  msg+="${BBon}message_n${Boff} \"" && \
-  msg+="Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  msg="${msg}${BBon}message_n${Boff} \"" && \
+  msg="${msg}Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
   message "${msg}" && \
   sh_countdown 3 && echo && \
   message_n "Finishing with status of summarization --->" ; right_status $?; echo
