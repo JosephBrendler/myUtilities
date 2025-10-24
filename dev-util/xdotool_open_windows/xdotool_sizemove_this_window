@@ -78,10 +78,6 @@ ssh_session_list=( \
 
 #-----[ program variables (do not edit) ]--------------------------------------------
 
-# use xdotool_sizemove_this_window (alias mw) l|L|r|R [<width>%] [<height>%]
-shopt -s expand_aliases
-alias mw='/usr/sbin/xdotool_sizemove_this_window'
-
 # no_msg is a space overwritten by a backspace, used to send null message with a non-null string
 no_msg=" \b"
 
@@ -91,22 +87,20 @@ SCREEN_DIMENSIONS=$(xdpyinfo | grep -oP 'dimensions:\s+\K\S+')
 SCREEN_WIDTH=$(echo $SCREEN_DIMENSIONS | cut -dx -f1)
 SCREEN_HEIGHT=$(echo $SCREEN_DIMENSIONS | cut -dx -f2)
 
-silent=">/dev/null 2>&1"  # append this to a command to silence it
-
 varlist="PN BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
 varlist+=" BREAK control_window LR X"
 varlist+=" width height X1 Y1 X2 SCREEN_WIDTH SCREEN_HEIGHT WINDOW_WIDTH"
 varlist+=" WINDOW_HEIGHT POS_X1 POS_Y1 POS_X2"
-varlist+=" BREAK num_desktops sleepWait longWait timeout"
+varlist+=" BREAK num_desktops sleepWait longWait typeWait timeout"
 varlist+=" bool.VERBOSE verbosity"
 
 # load custom configuration, if it exists
-message_n "sourcing config_file: ${config_file} ..."
+d_message_n "sourcing config_file: ${config_file} ..." 1
 [[ -f ${config_file} ]] || die "${config_file} does not exist"
 source ${config_file} || die "failed to source ${config_file}"
 right_status $?
 
-message_n "sourcing build_file: ${build_file} ..."
+d_message_n "sourcing build_file: ${build_file} ..." 1
 [[ -f ${build_file} ]] || die "${build_file} does not exist"
 source ${build_file} || die "failed to source ${build_file}"
 right_status $?
@@ -191,7 +185,7 @@ process_cmdline() {
             1) LR="$1";;
             2) width="$1";;
             3) height="$1";;
-            *) E_message "Error in command line argument $idx [$1]"; usage;;
+            *) log_E_message "Error in command line argument $idx [$1]"; usage;;
         esac
         shift
     done
@@ -203,16 +197,16 @@ setup_LR_X() {
     case $LR in
         [lL]) X="${X1}";;
         [rR]) X="${X2}";;
-        *   ) log_E_message "Error in variable LR [$LR]"; usage;;
+        *   ) log_E_message "Error in variable LR [$LR]" 1; usage;;
     esac
     return 0
 }
 
 sizemove_window() {
-    log_message_n "moving window [${control_window}] to position [$X $Y1] ..."
+    d_log_message_n "moving window [${control_window}] to position [$X $Y1] ..." 1
     xdotool windowmove ${control_window} $X $Y1
     log_handle_result "$?" "moved" "window move failed!" || return 1
-    log_message_n "resizing window [${control_window}] to size [$width $height] ..."
+    d_log_message_n "resizing window [${control_window}] to size [$width $height] ..." 1
     xdotool windowsize ${control_window} $width $height
     log_handle_result "$?" "resized" "window resize failed!" || return 1
     return 0
@@ -220,29 +214,29 @@ sizemove_window() {
 
 #------[ main script ]-----------------------------------------------
 d_message "now in main script" 3
-message_n "checking not root ..."
+d_message_n "checking not root ..." 1
 checknotroot && right_status $? || die "failed checknotroot"
 validate_logfile || die "failed to validate logfile"
 
 log_separator "$(hostname)" "${PN}-${BUILD}"
-log_message "starting script"
+d_log_message "starting script" 1
 
 # identify the control window (used to activate this program)
-log_message_n "Getting ID of current (control) window"
+d_log_message_n "Getting ID of current (control) window" 1
 control_window=$(xdotool getactivewindow)
 log_handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
 
 # identify the current desktop and log_message "starting script"
 current_desktop=$(xdotool get_desktop_for_window "${control_window}")
-log_message "current_desktop: ${current_desktop}"
+d_log_message "current_desktop: ${current_desktop}" 1
 num_desktops=$(xdotool get_num_desktops)
-log_message "num_desktops: $num_desktops"
+d_log_message "num_desktops: $num_desktops" 1
 
 # run sequence
 process_cmdline $@ || die "failed to process_cmdline"
 set_terminal_window_dimensions || die "failed to set_terminal_window_dimensions"
 setup_LR_X || die "failed to setup_LR_X"
-log_show_config  || die "failed to log_show_config"
+debug_do log_show_config 1 || die "failed to log_show_config"
 sizemove_window || die "failed to sizemove_window"
 
 d_log_message "${BGon}Done${Boff}" 1
