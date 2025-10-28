@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# Function to calculate the job limit for a single host
+calculate_job_limit() {
+  local host="$1"
+  local cores="$2"
+  local ram_gb="$3"
+
+  # Divide total RAM by 2GB to get the memory-based job limit
+  local ram_jobs=$((ram_gb / 2))
+
+  # Determine the minimum of cores and RAM-based jobs
+  if [[ "$cores" -lt "$ram_jobs" ]]; then
+    echo "$cores"
+  else
+    echo "$ram_jobs"
+  fi
+}
+
+# --- Main script ---
+total_remote_limit=0
+
+# Process the hosts file to get a clean list of hostnames.
+# Ignore comments, empty lines, and localhost.
+# The sed command strips options like ',lzo' or '/limit'.
+host_list=$(grep -v '^#\|^[[:space:]]*$' /etc/distcc/hosts | grep -v 'localhost' | sed -E 's/,lzo.*//; s/\/(.*)//')
+
+# Use readarray to read the lines from the generated host_list into an array.
+# '-t' removes the trailing newline from each line.
+# A here-string is still used here because `readarray` reads from standard input.
+readarray -t hosts <<< "$host_list"
+
+if [[ "${#hosts[@]}" -eq 0 ]]; then
+  echo "No remote distcc hosts found in /etc/distcc/hosts (excluding localhost). Remote limit R is 0."
+  exit 0
+fi
+
+echo "Calculating remote resource limit (R) from the following hosts:"
+
+# Set a variable for the SSH command for cleaner code.
+SSH_CMD='nproc && free -g | awk "/Mem:/{print \$2}"'
+
+# Iterate over the array of hosts using a for loop.
+for host in "${hosts[@]}"; do
+  # Skip any empty array elements that may have resulted from odd formatting.
+  if [[ -z "$host" ]]; then
+    continue
+  fi
+
+  echo "--- Querying $host ---"
+
+  # Use SSH to get cores and RAM from the remote host.
+  remote_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" "$SSH_CMD" 2>/dev/null)
+
+  # Check if remote commands succeeded.
+  if [[ -n "$remote_output" ]]; then
+    remote_cores=$(echo "$remote_output" | sed -n '1p')
+    remote_ram_gb=$(echo "$remote_output" | sed -n '2p')
+
+    job_limit=$(calculate_job_limit "$host" "$remote_cores" "$remote_ram_gb")
+    echo "  Cores: $remote_cores, RAM: ${remote_ram_gb}GB -> Job Limit: $job_limit"
+    total_remote_limit=$((total_remote_limit + job_limit))
+  else
+    echo "  Failed to retrieve info from $host. Check SSH access or remote commands."
+  fi
+done
+
+echo "-------------------------------------"
+echo "Final remote resource limit (R): $total_remote_limit"

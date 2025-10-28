@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Function to calculate the job limit for a single host
+calculate_job_limit() {
+  local cores="$1"
+  local ram_gb="$2"
+  local ram_jobs=$((ram_gb / 2))
+
+  if [[ "$cores" -lt "$ram_jobs" ]]; then
+    echo "$cores"
+  else
+    echo "$ram_jobs"
+  fi
+}
+
+# --- Main script ---
+total_remote_limit=0
+declare -a host_benchmarks
+
+echo "Starting data collection for distcc server farm..."
+
+# Define the command to be run locally and remotely
+CMD_LOCAL='nproc && free -g | awk "/Mem:/{print \$2}"'
+SSH_SYSBENCH_CMD='nproc && free -g | awk "/Mem:/{print \$2}" && sysbench --threads=1 cpu run | grep "events per second" | awk "{print \$4}"'
+
+# --- Process localhost ---
+echo "--- Querying localhost ---"
+local_output=$(eval "$CMD_LOCAL")
+local_cores=$(echo "$local_output" | sed -n '1p')
+local_ram_gb=$(echo "$local_output" | sed -n '2p')
+local_job_limit=$(calculate_job_limit "$local_cores" "$local_ram_gb")
+local_benchmark=$(sysbench --threads=1 cpu run | grep "events per second" | awk '{print $4}')
+host_benchmarks+=("localhost:$local_benchmark:$local_job_limit")
+echo "  Cores: $local_cores, RAM: ${local_ram_gb}GB -> Job Limit: $local_job_limit"
+
+# --- Process /etc/distcc/hosts ---
+host_list=$(grep -v '^#\|^[[:space:]]*$' /etc/distcc/hosts | sed -E 's/,lzo.*//; s/\/(.*)//')
+readarray -t hosts <<< "$host_list"
+
+if [[ "${#hosts[@]}" -eq 0 ]]; then
+  echo "No remote distcc hosts found in /etc/distcc/hosts (excluding localhost)."
+else
+  for host in "${hosts[@]}"; do
+    if [[ -z "$host" ]]; then
+      continue
+    fi
+    echo "--- Querying $host ---"
+    remote_output=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" "$SSH_SYSBENCH_CMD" 2>/dev/null)
+
+    if [[ -n "$remote_output" ]]; then
+      remote_cores=$(echo "$remote_output" | sed -n '1p')
+      remote_ram_gb=$(echo "$remote_output" | sed -n '2p')
+      benchmark_score=$(echo "$remote_output" | sed -n '3p')
+      job_limit=$(calculate_job_limit "$remote_cores" "$remote_ram_gb")
+      host_benchmarks+=("$host:$benchmark_score:$job_limit")
+      echo "  Cores: $remote_cores, RAM: ${remote_ram_gb}GB, Sysbench: $benchmark_score -> Job Limit: $job_limit"
+      total_remote_limit=$((total_remote_limit + job_limit))
+    else
+      echo "  Failed to retrieve info from $host. Check SSH access or sysbench installation."
+    fi
+  done
+fi
+
+echo "-------------------------------------"
+echo "Final remote resource limit (R): $total_remote_limit"
+echo ""
+echo "Recommended /etc/distcc/hosts order (descending power):"
+
+sorted_hosts=($(printf "%s\n" "${host_benchmarks[@]}" | sort -t: -k2 -nr))
+
+for entry in "${sorted_hosts[@]}"; do
+  host=$(echo "$entry" | cut -d: -f1)
+  limit=$(echo "$entry" | cut -d: -f3)
+  echo "$host/${limit}"
+done
