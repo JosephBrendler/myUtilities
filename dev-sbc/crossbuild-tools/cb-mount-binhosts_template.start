@@ -46,8 +46,8 @@ VERBOSE=$TRUE
 #verbosity=5
 #VERBOSE=$FALSE
 # set default verbosity only if it is not already set
-#[ -z $verbosity ] && verbosity=3
-[ -z $verbosity ] && verbosity=5
+[ -z $verbosity ] && verbosity=3
+#[ -z $verbosity ] && verbosity=5
 
 bh=""     # identify binhost name for board
 link=""   # identify weblink to binpkgs for board
@@ -62,21 +62,38 @@ backing_file=""
 
 #-----[ functions ]--------------------------------------------------------------------------
 
+# list boards - maybe useful but not used here
+list_boards() {
+    # send sorted list of boards to stdout
+    for board in ${boards[@]} ; do echo $board; done | sort -u || return 1
+    # HINT: run this command manually to create a list and then pick which you want to include above
+    return 0
+}
+
+# list backing files - maybe useful but not used here
+list_backing_files() {
+    # send sorted list of backing files to stdout
+    for file in ${backing_files[@]}; do echo $file; done
+}
+
 load_boards() {
     d_message "in ${FUNCNAME[0]}" 5
     # populate array with names of boards for which we have .emv or .img files available in stockpile
+    # -z flag tells sed to use null char (\0) as line delimiter instead of newline (\n)
+    # first substitution: (s|.*/||) removes the leading path
+    #   (delim: | regex: .*/ = any char . zero+ times followed by /)
+    # second substitution: (s/\.\(env\|img\)$//) removes .env or .img filename extensions
+    #   (delim: / regex \. = dot \( \) = escaped parens for \| = escaped "or" between env & img ; $ = right end of line)
+    # third substitution: (s/_[^_]*$//) removes any remaining suffix following underscore
+    #   (e.g. _hostname in board_hostname.img)
+    #   (delim: / regex: _ = underscore ; [^_]*$ = any # of non-underscore chars; $ = at the right end of line)
+    # tr translates the null char line delimiters back to newlines for mapfile -t
+    # sort -u eliminates duplicates and passes an ordered list to mapfile (aka readarray)
     mapfile -t boards < <(find "$stockpile_dir" -maxdepth 1 -type f \
         \( -name '*.env' -o -name '*.img' \) -print0 \
         | sed -z 's|.*/||; s/\.\(env\|img\)$//; s/_[^_]*$//' \
         | tr '\0' '\n' \
         | sort -u)  || return 1
-    return 0
-}
-
-list_boards() {
-    d_message "in ${FUNCNAME[0]}" 6
-    for board in ${boards[@]} ; do echo $board; done | sort -u || return 1
-    # HINT: run this command manually to create a list and then pick which you want to include above
     return 0
 }
 
@@ -89,13 +106,16 @@ load_backing_files() {
     id_binhost_and_link_for_board ${brd}
     d_message "  bh: $bh ; link: $link" 3
     id_boards_for_binhost ${bh}  # loads array bh_boards
-    backing_files=()       # re-initialize arrays
-    backing_file_chunck=() # re-initialize arrays
+    backing_files=()             # re-initialize arrays
+    backing_file_chunck=()       # re-initialize arrays
     # load filenames that are a binhost-match for brd
     for bh_board in ${bh_boards[@]}; do
-        d_message_n "loading backing files for binhost-[${bh}]-matching board [${bh_board}]" 3
+        d_message_n "  loading backing files for binhost-[${bh}]-matching board [${bh_board}]" 3
+        # match all backing file candidates that start <board>. or <board>_ (but not <board>-)
+        # (e.g. for bcm2710-rpi-3-b, match bcm2710-rpi-3-b.env and bcm2710-rpi-3-b_raspi332q1.img,
+        #    but NOT bcm2710-rpi-3-b-plus.env or bcm2710-rpi-3-b-plus_raspi36402.img )
         mapfile -t backing_file_chunck < <(find "$stockpile_dir" -maxdepth 1 -type f \
-            \( -name '*.env' -o -name '*.img' \) -printf '%f\n' | grep ${bh_board})
+            \( -name '*.env' -o -name '*.img' \) -printf '%f\n' | grep ${bh_board}[._] )
         # add chunk to array if it isn't empty
         if [ ${#backing_file_chunck[@]} -gt 0 ] ; then
             backing_files+=(${backing_file_chunck[@]})
@@ -106,15 +126,11 @@ load_backing_files() {
                 die "failed to load backing files for bh_board [$bh_board]"
             fi # 0 result
         else
-            d_message "no backing files found for candidate board [${bh_board}]" 3
+            echo
+            dE_message "no backing files found for candidate board [${bh_board}]" 3
         fi # -gt 0
     done
     return 0
-}
-
-list_backing_files() {
-    d_message "in ${FUNCNAME[0]}" 5
-    for file in ${backing_files[@]}; do echo $file; done
 }
 
 # moved id_binhost_and_link_for_board() to cb-common-functions
@@ -192,7 +208,7 @@ find_newest_file() {
 
 pick_and_mount_best_backing_file() {
     separator "${PN}" "(${FUNCNAME[0]})"
-    d_message "in ${FUNCNAME[0]}" 5
+#    d_message "in ${FUNCNAME[0]}" 5
 
     # re-initialize arrays
     backing_files=()
@@ -207,26 +223,30 @@ pick_and_mount_best_backing_file() {
         # (should only apply when run manually, since this is a .start scrit run at boot time)
         d_message "${LBon}examining situation for board [${BMon}${board}${LBon}]${Boff}" 2
         if [[ ! -z $(losetup -a | grep "${board}") ]] ; then
-            d_message "${BMon}loop device already active for board [${LBon}${board}${BMon}]${Boff}"
+            d_message "${BMon}loop device already active for board [${LBon}${board}${BMon}]${Boff}" 2
             continue; # continue jumps out to next iteration in for loop
         fi
         # identify the binhost appropriate for this board and determine if it is already in use with another board
         id_binhost_and_link_for_board ${board}
         d_message "${LBon}examining situation for board [${BMon}${board}${LBon}]'s binhost [${bh}]${Boff}" 2
         if [[ ! -z $(findmnt -lno TARGET,SOURCE,FSTYPE | grep "${bh}_binhost") ]] ; then
-            d_message "${BMon}mountpoint(s) already in use for binhost [${LBon}${bh}${BMon}]${Boff}"
+            d_message "${BMon}mountpoint(s) already in use for binhost [${LBon}${bh}${BMon}]${Boff}" 2
             continue; # continue jumps out to next iteration in for loop
         fi
         # identify candidate backing file(s)
         load_backing_files "${board}"
         d_message "${BYon}available backing files:${Boff}" 2
+        d_message "${BYon}#: [${Mon}${#backing_files[@]}${BYon}] list: [${Mon}${backing_files[*]}${BYon}]${Boff}" 2
         # if there are more than one candidate, pick the "best" ; rules --
         # (1) prefer .img to .env (more complete) ; (2) prefer newest
+        best_pick=""       # (re)initialize
+        img_candidates=()
+        env_candidates=()
         if [[ ${#backing_files[@]} -eq 0 ]] ; then
             die "no backing files available for board [$board]"
             logger -p cron.err "no backing files available for board [$board]"
         elif [[ ${#backing_files[@]} -eq 1 ]] ; then
-            d_message "picking the only candidate" 5
+            d_message "picking the only candidate" 2
             best_pick="${backing_files[0]}"
         elif [[ ${#backing_files[@]} -gt 1 ]] ; then
             # sort them by type since .img is preferred
@@ -243,10 +263,12 @@ pick_and_mount_best_backing_file() {
             done
             # apply rule (1) prefer .img file if available; in either case if more than 1, pick newest
             if [[ ${#img_candidates[@]} -gt 0 ]] ; then
-                d_message "picking from [${#img_candidates[@]}]] img_candidates" 5
+                # note use "${img_candidates[*]}" which expands to single string
+                # whereas "${img_candidates[@]}" expands to multiple strings
+                d_message "${BYon}picking from [${Mon}${#img_candidates[@]}${BYon}] img_candidates: [${LBon}${img_candidates[*]}${BYon}]${Boff}" 2
                 best_pick=$(find_newest_file "${img_candidates[@]}")
             elif [[ ${#env_candidates[@]} -gt 0 ]] ; then
-                d_message "picking from [${#env_candidates[@]}] env_candidates" 5
+                d_message "${BYon}picking from [${Mon}${#env_candidates[@]}${BYon}] env_candidates: [${LBon}${env_candidates[*]}${BYon}]${Boff}" 2
                 best_pick=$(find_newest_file "${env_candidates[@]}")
             else  # nonsense case, should have been caught above
                 die "nonsense case in elif comparisons #img_candidates: [${#img_candidates[@]}] #env_candidates: [${#env_candidates[@]}]"
@@ -255,13 +277,12 @@ pick_and_mount_best_backing_file() {
             die "nonsense case in elif comparisons #backingfiles: [${#backing_files[@]}]"
         fi
         # now proceed with best_pick as the backing file
-
         # if it exists, mount backend on binhost mountpoint
-        d_message "chose best_pick: [${best_pick}]" 4
+        d_message "${BYon}chose best_pick: [${Mon}${best_pick}${BYon}]${Boff}" 1
 
         backing_file="${stockpile_dir%/}/${best_pick}"
         if [ -f ${backing_file} ] ; then
-            d_message "${BMon}trying to mount backing file [${LBon}${backing_file}${BMon}] ...${Boff}" 4
+            d_message "${BMon}trying to mount backing file [${LBon}${backing_file}${BMon}] ...${Boff}" 1
             # new syntax: cb-mount-binhost <BACKINGFILE> # (which takes basename only; no path)
 #            cb-mount-binhost "${backing_file}" "${binhost_mountpoint_dir%/}/${bh}_binhost" >/dev/null 2>&1
             if [ $verbosity -gt 0 ] ; then
@@ -272,7 +293,7 @@ pick_and_mount_best_backing_file() {
                 result=$?
             fi
         else
-            d_message "${backing_file} doesn't exist" 5
+            d_message "${backing_file} doesn't exist" 1
             # didn't exist
             result=2
         fi
@@ -296,7 +317,10 @@ pick_and_mount_best_backing_file() {
 separator "$(hostname)" "${PN}"
 d_message "in main script; verbosity: $verbosity" 5
 d_message "AUTOMATIC: $(status_color ${AUTOMATIC})$(TrueFalse ${AUTOMATIC})${Boff}" 2
-d_message "boards: ${boards[@]}" 2
+#d_message "boards: ${boards[@]}" 2
+# "${array[@]}"	Expands to N separate, safely quoted arguments
+# "${array[*]}"	Expands to a single, safely quoted argument
+d_message "boards: ${boards[*]}" 2
 
 setup_mountpoints_and_weblinks || die "failed to setup_mountpoints_and_weblinks"
 
@@ -305,3 +329,4 @@ pick_and_mount_best_backing_file || die "failed to pick_and_mount_best_backing_f
 d_message "done!" 2
 
 #echo -e "${BMon}Debug Marker${Boff}"; exit
+
