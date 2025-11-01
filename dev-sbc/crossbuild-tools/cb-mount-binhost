@@ -77,14 +77,16 @@ validate_mountpoint() {
     return 0
 }
 
-mount-board-image-as-crossbuild-binhost() {
+mount-board-image-as-read-only-binhost() {
     d_message "in ${FUNCNAME[0]}" 5
     # inspect target (mount point) - is anything mounted? (un-mount)
     d_message "MOUNTPOINT ......: ${MOUNTPOINT}" 1
     d_echo 1
     if [ ! -z "$(findmnt -n -M ${MOUNTPOINT})" ] ; then
-        E_message "${BYon}the following devices are already mounted on ${MOUNTPOINT} --${Boff}"
-        mount | grep "on ${MOUNTPOINT}" | sed 's|^|    |'
+#        E_message "${BYon}the following devices are already mounted on ${MOUNTPOINT} --${Boff}"
+#        mount | grep "on ${MOUNTPOINT}" | sed 's|^|    |'
+        E_message "${BYon}the following device is already mounted on ${MOUNTPOINT} --${Boff}"
+        findmnt -n -M ${MOUNTPOINT} | sed 's|^|    |'
         exit 1
     else
         message "nothing is mounted on ${MOUNTPOINT} ; continuing"
@@ -98,8 +100,11 @@ mount-board-image-as-crossbuild-binhost() {
     else
         message "no loop device is yet attached to ${stockpile_dir%/}/${BACKING_FILE}; continuing"
     fi
-    message_n "attaching loop device"
-    img_loop_dev=$(losetup --find --show --partscan ${stockpile_dir%/}/${BACKING_FILE}) && \
+    # mount the binhost backing file with kernel-level read-only protection
+    message_n "attaching loop device (read-only)"
+#    img_loop_dev=$(losetup --find --show --partscan ${stockpile_dir%/}/${BACKING_FILE}) && \
+#        ( echo -n " (${img_loop_dev})" && right_status $? ) || ( right_status $? && exit 1 )
+    img_loop_dev=$(losetup --find --show --partscan --read-only ${stockpile_dir%/}/${BACKING_FILE}) && \
         ( echo -n " (${img_loop_dev})" && right_status $? ) || ( right_status $? && exit 1 )
     # Get partition device names
     message_n "getting device name for partition 1 ..."
@@ -110,11 +115,13 @@ mount-board-image-as-crossbuild-binhost() {
     img_partition2_dev="${img_loop_dev}p2" && result=$? && \
     echo -n " ( ${img_partition2_dev} )" && \
     right_status ${result} || ( right_status $? && exit 1 )
-    # now mount the partitions
-    message_n "mounting rootfs (${img_partition2_dev}) on ${MOUNTPOINT}/ ..."
-    mount ${img_partition2_dev} ${MOUNTPOINT}/ && right_status $? || ( right_status $? && exit 1 )
-    message_n "mounting bootfs (${img_partition1_dev}) on ${MOUNTPOINT}/boot/ ..."
-    mount ${img_partition1_dev} ${MOUNTPOINT}/boot/ && right_status $? || ( right_status $? && exit 1 )
+    # now mount the partitions with mount-layer (filesystem) read-only protection
+    message_n "mounting rootfs (${img_partition2_dev}) on ${MOUNTPOINT}/ (read-only) ..."
+#    mount ${img_partition2_dev} ${MOUNTPOINT}/ && right_status $? || ( right_status $? && exit 1 )
+    mount -o ro ${img_partition2_dev} ${MOUNTPOINT}/ && right_status $? || ( right_status $? && exit 1 )
+    message_n "mounting bootfs (${img_partition1_dev}) on ${MOUNTPOINT}/boot/ (read-only) ..."
+#    mount ${img_partition1_dev} ${MOUNTPOINT}/boot/ && right_status $? || ( right_status $? && exit 1 )
+    mount -o ro ${img_partition1_dev} ${MOUNTPOINT}/boot/ && right_status $? || ( right_status $? && exit 1 )
     return 0
 }
 
@@ -148,7 +155,8 @@ old_dir="$(pwd)"
 cd $(dirname ${MOUNTPOINT}) || die "Failed to change director to parent of mountpoint [${MOUNTPOINT}]"
 message "now working in parent of crossbuild binhost MOUNTPOINT directory: [${Mon}$(pwd)${Boff}]"
 
-mount-board-image-as-crossbuild-binhost || die "failed to mount-board-image-as-crossbuild-binhost"
+#mount-board-image-as-crossbuild-binhost || die "failed to mount-board-image-as-crossbuild-binhost"
+mount-board-image-as-read-only-binhost || die "failed to mount-board-image-as-read-only-binhost"
 
 echo
 cd $old_dir

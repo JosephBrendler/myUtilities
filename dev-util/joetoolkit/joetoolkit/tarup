@@ -5,18 +5,27 @@
 source /usr/sbin/script_header_joetoo
 
 VERBOSE=$TRUE
-verbosity=3
+[ -z $verbosity ] && verbosity=3  # assign default if null; allow calling program to dictate
 
 PN=$(basename $0)
 
 separator ${PN} $(hostname)
 
-taroptions="-cvjpf"
-current_version_numbers=( 0 0 0 )
-new_version_numbers=()
-latest_tarball_version=""
-new_tarball_version=""
-output_tarball_filename=""
+user="joe"
+archived_tarballs_dir="/home/${user}/archived_tarballs"
+
+#-----[ variables ]--------------------------------------------------
+
+taroptions="-cvjpf"                # options for tar command
+to_be_archived_tarball_version=""  # oldest (to-be-archived) version string (to be determined)
+latest_tarball_version=""          # latest version string (to be determined)
+new_tarball_version=""             # new version string (to be calculated)
+output_tarball_filename=""         # filename for the new version's tarball
+
+declare -a tarball_versions        # array of version strings
+
+current_version_numbers=( 0 0 0 )  # array of digits constituting the parts (major minor patch) of current version number
+new_version_numbers=()             # array to hold new version's digits, when calculated
 
 #-----[ functions ]--------------------------------------------------
 usage() {
@@ -32,12 +41,24 @@ usage() {
     exit 1
 }
 
+load-tarball_versions() {
+    # load the tarball_versions array
+    # load array of version numbers for tarballs matching the name of SOURCE_DIR
+    # use \0 as newline delimter for whitespace-safe handling of filenames
+    # subsititutions strip the package name and .tbz2 extension to leave just the version number
+    # sort -rV puts them in reverse version order , -z tells sort to use the \0 delimiter
+    readarray -d $'\0' tarball_versions < <(
+        find ./ -name "${SOURCE_DIR}*.tbz2" -printf '%f\0' |
+        sed -z "s|${SOURCE_DIR}-||g" |
+        sed -z "s|.tbz2$||g" |
+        sort -rVz
+    )
+    return $?
+}
+
 get-current-version() {
-    # find tarballs matching the name of SOURCE_DIR
-    tarball_versions=( $(find ./ -name "${SOURCE_DIR}*.tbz2" -printf '%f\n' | \
-        sed "s|^${SOURCE_DIR}-||" | \
-        sed "s|.tbz2$||" | \
-        sort -rV) )    # reverse-order version sort
+    # put the latest version number string into latest_tarball_version variable
+    local result=""
     d_message "tarball_versions #: ${#tarball_versions[@]}" 2
     # identify the latest version
     if [ ${#tarball_versions[@]} -eq 0 ] ; then
@@ -47,20 +68,41 @@ get-current-version() {
         message " so current tarball version = 0.0.0 [i.e. none]"
     else
         latest_tarball_version="${tarball_versions[0]}"
-        message "current version: ${latest_tarball_version}"
+        message "current version: [${latest_tarball_version}]"
         # split version into ( major minor patch )
         IFS='.' read -ra current_version_numbers <<< $latest_tarball_version
+        result=$?
         # Reset IFS to its default value
         IFS=$' \t\n'
     fi
     message "  current major: ${current_version_numbers[0]}"
     message "  current minor: ${current_version_numbers[1]}"
     message "  current patch: ${current_version_numbers[2]}"
+    return $result
 }
 
-get-new-version() {
+get-archive-version() {
+    # put the oldest (to-be-archived) version number string into to_be_archived_tarball_version variable
+    d_message "tarball_versions #: ${#tarball_versions[@]}" 2
+    # identify the latest version
+    if [ ${#tarball_versions[@]} -eq 0 ] ; then
+        # there are no tarballs matching SOURCE_DIR,
+        # so archive tarball version = 0.0.0 [i.e. none]
+        message "no tarballs matching SOURCE_DIR [${SOURCE_DIR}] found"
+        message "  (so there is nothing to archive)"
+        to_be_archived_tarball_version="none"
+    else
+        to_be_archived_tarball_version="${tarball_versions[ -1 ]}" || die "failed to assign to_be_archived_tarball_version="
+        message "archive version: [${to_be_archived_tarball_version}]"
+    fi
+    return 0
+}
+
+calculate-new-version() {
     # increment the version number appropriately
-    case ${UPGRADE} in
+    local result=""
+    local UPGR="$1"
+    case ${UPGR} in
         "major" )
             # increment major number and reset minor patch number to 0
             new_version_numbers[0]="$(( ${current_version_numbers[0]} + 1 ))"
@@ -79,15 +121,52 @@ get-new-version() {
             new_version_numbers[1]="${current_version_numbers[1]}"
             new_version_numbers[2]="$(( ${current_version_numbers[2]} + 1 ))"
             ;;
-        * )  E_message "invalid UPGRADE type [${UPGRADE}]" && exit ;;
+        * )  E_message "invalid UPGRADE type [${UPGR}]" && exit ;;
     esac
     message "  new major: ${new_version_numbers[0]}"
     message "  new minor: ${new_version_numbers[1]}"
     message "  new patch: ${new_version_numbers[2]}"
     new_tarball_version="${new_version_numbers[0]}.${new_version_numbers[1]}.${new_version_numbers[2]}"
+    result=$?
     message "new version: ${new_tarball_version}"
+    return $result
 }
 
+archive-old-version() {
+    # move the oldest version to the archived_tarballs_dir
+    archive_tarball_filename="${SOURCE_DIR}-${to_be_archived_tarball_version}.tbz2"
+    if [[ "${archive_tarball_filename}" == "none" ]] ; then
+        d_message "no tarball to archive" 3
+    elif [ -f "${archive_tarball_filename}" ] ; then
+        response=""
+        msg="${BYon}About to run command:\n${Boff}"
+        msg+="    ${BGon}mv  ${archive_tarball_filename} ${archived_tarballs_dir%/}/${Boff}\n"
+        msg+="    ${BYon}Please confirm ( ${BWon}y|Y[es]: yes; s|S[kip]: skip; n|N[o]: No (abort program)${Boff} )"
+        new_prompt "${msg}"
+        case ${response:0:1} in
+            [yY] )
+                 mv "${archive_tarball_filename}" "${archived_tarballs_dir%/}/" || die "failed to archive old tarball" ;;
+            [sS] ) message "${BMon}Skipping archive as instructed${Boff}" ;;
+            [nN] ) E_message "Aborting as instructed" ; return 1;;
+            *    ) E_message "Invalid response [$response]" ; return 1;;
+        esac
+    else
+        E_message "Error: tarball [${archive_tarball_filename}] not found"
+        return 1
+    fi
+    return 0
+}
+
+create-new-tarball() {
+    output_tarball_filename="${SOURCE_DIR}-${new_tarball_version}.tbz2"
+
+    msg="${BYon}About to run command:\n${Boff}"
+    msg+="    ${BGon}tar ${taroptions} ${output_tarball_filename} ${SOURCE_DIR}${Boff}"
+    message "${msg}"
+    confirm_continue_or_exit
+    tar "${taroptions}" "${output_tarball_filename}" "${SOURCE_DIR}"
+    return $?
+}
 
 #-----[ main script ]------------------------------------------------
 checknotroot
@@ -108,13 +187,14 @@ else
     UPGRADE="patch"; message "initiating patch upgrade (as default) ..."
 fi
 
-get-current-version
-get-new-version
+load-tarball_versions || die "failed to load-tarball_versions"
+get-current-version || die "failed to get-current-version"
+get-archive-version || die "failed to get-archive-version"
 
-output_tarball_filename="${SOURCE_DIR}-${new_tarball_version}.tbz2"
+archive-old-version || die "failed to archive-old-version"
 
-msg="${BYon}About to run command:\n${Boff}"
-msg+="    ${BGon}tar ${taroptions} ${output_tarball_filename} ${SOURCE_DIR}${Boff}"
-message "${msg}"
-confirm_continue_or_exit
-tar "${taroptions}" "${output_tarball_filename}" "${SOURCE_DIR}"
+calculate-new-version "${UPGRADE}" || die "failed to calculate-new-version ${UPGRADE}"
+
+create-new-tarball || die "failed to create-new-tarball"
+
+message "${BGon}Done${Boff}"
