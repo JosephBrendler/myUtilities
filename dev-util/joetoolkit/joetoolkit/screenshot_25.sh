@@ -17,13 +17,13 @@ done
 touch ${FNAME}
   
 if [ "$1" != "window" ]; then
-  if xwd -root | convert - "${FNAME}"; then
+  if xwd -root | magick - "${FNAME}"; then
     notify-send "Desktop screenshot saved!" "Desktop screenshot was saved as:\n ${FNAME}"
   else
     notify-send "Desktop screenshot could not be saved!" "There was an error."
   fi
 else
-  if xwd | convert - "${FNAME}"; then
+  if xwd | magick - "${FNAME}"; then
     notify-send "Window screenshot saved!" "Window screenshot was saved as:\n ${FNAME}"
   else
     notify-send "Window screenshot could not be saved!" "There was an error."
