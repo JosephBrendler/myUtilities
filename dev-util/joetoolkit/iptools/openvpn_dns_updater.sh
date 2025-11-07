@@ -8,7 +8,7 @@ source /usr/sbin/script_header_joetoo
 PN=$(basename $0)
 
 log_file=/var/log/openvpn-status.log
-openVPN_hosts_file="/etc/hosts,d/20_openVPN_clients"
+openVPN_hosts_file="/etc/hosts.d/20_openVPN_clients"
 
 #-----[ local variables ]------------------
 subnet="192.168.63"
