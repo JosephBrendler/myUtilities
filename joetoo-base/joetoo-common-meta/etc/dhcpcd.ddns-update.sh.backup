@@ -1,0 +1,114 @@
+#!/bin/bash
+#
+# This script performs a secure DDNS update using nsupdate
+#
+PN=$(basename $0)
+
+#-----[ user configured variables ]---------------------------------------------------
+LOG_FACILITY="local5"
+user="joe"
+ssh_key_id="id_ddns_update"
+ddns_server="elrond"
+domain="brendler"
+
+debugging_log="/tmp/dhcpcd.ddns-update.debug.log"
+
+#-----[ derived variables ]----------------------------------------------------------
+# SSH Configuration ---
+# The key is owned by '${user}' and used via 'sudo -u ${user}'
+SSH_KEY_PATH="/home/${user}/.ssh/${ssh_key_id}"
+DDNS_SSH_TARGET="${user}@${ddns_server}.${domain}"
+# The Fully Qualified Domain Name
+FQDN="$(hostname).${domain}"
+
+# 0. Get parameters passed as arguments by hook script
+#    /lib/dhcpcd/dhcpcd-hooks/99-ddns-update, which must be executable
+#    for this script to get hooked if these events fire
+REASON="$1"
+# We only care about UP/RENEW/EXPIRE events for IPv6 addresses
+if [[ "$REASON" != *"IPV6"* && "$REASON" != *"DECONFIG"* ]]; then
+    exit 0
+fi
+INTERFACE="$2"
+OLD_ADDR="$3"
+NEW_ADDR="$4"
+
+# debugging
+echo "DEBUG: DDNS_UPDATE Script Invoked. REASON: [$REASON] INTERFACE: [$INTERFACE]" > "${debugging_log}"
+echo "DEBUG: DDNS_UPDATE Script Invoked. REASON: [$REASON] INTERFACE: [$INTERFACE]" | \
+    logger -p "${LOG_FACILITY}.debug" -t "${PN}"
+echo "DEBUG: OLD_ADDR: [$OLD_ADDR] NEW_ADDR: [$NEW_ADDR]" >> "${debugging_log}"
+echo "DEBUG: OLD_ADDR: [$OLD_ADDR] NEW_ADDR: [$NEW_ADDR]" | \
+    logger -p "${LOG_FACILITY}.debug" -t "${PN}"
+
+# Extract the ULA IPv6 address from the passed new and old address variables (removes /64 netmask)
+# These variables are supplied by dhcpcd hooks when an IPv6 address is available,
+# and this assignment SHOULD pass valid ULA addresses to the input validateion below
+NEW_IPV6_ADDRESS=$(echo "$NEW_ADDR" | cut -d/ -f1)
+OLD_IPV6_ADDRESS=$(echo "$OLD_ADDR" | cut -d/ -f1)
+
+#-----[ main script ]---------------------------------------------------------
+
+# 1. input validation and ACTION_MSG assignment
+
+# a) we need to check the reason we got hooked before we know whether to
+#    validate a new/renewed address or the old one we are going to delete
+if [ "$REASON" = "IPV6L_RENEW" ] || [ "$REASON" = "IPV6_RENEW" ] || \
+     [ "$REASON" = "IPV6L_UP" ] || [ "$REASON" = "IPV6_UP" ]; then
+    # this is a renewal or addition of the ip address we assigned above
+    ACTION_MSG="Updated"
+    ACTION_IPV6_ADDRESS="${NEW_IPV6_ADDRESS}"
+elif [[ "$REASON" == *"EXPIRE"* || "$REASON" == "DECONFIG" ]]; then
+    # On expiry/deconfig we use the OLD address provided by the hook script ($3) instead
+    ACTION_MSG="Deleted"
+    ACTION_IPV6_ADDRESS="${OLD_IPV6_ADDRESS}"
+else
+    # this shouldn't happen (hook script logic)
+    msg="DDNS_UPDATE: Reason: [$REASON] does not require update."
+    logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+    exit 0
+fi
+
+# now that we know which address matters, validate it
+if [ -z "$ACTION_IPV6_ADDRESS" ]; then
+    # the variable is an "empty" string
+    msg="DDNS_UPDATE: Empty address provided by hook script for reason: [$REASON]" 
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+    exit 0
+elif [[ ! "$ACTION_IPV6_ADDRESS" =~ ^[fF][dD][0-9a-fA-F:]*$ ]] ; then
+    # this string does not match the format expected for a valid ULA address
+    msg="DDNS_UPDATE: address provided by hook script for reason: [$REASON] is not a valid ULA address"
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+    exit 0
+else
+    # looks good; just log progress
+    msg="DDNS_UPDATE: reason: [] and address: [] look ok,\n"
+    msg+="continuing with action: []"
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+fi
+
+
+# 2. Execute the secure SSH command as ${user}
+# CRITICAL: We pass the FQDN and IPV6_ADDRESS as a single, quoted argument string
+/usr/bin/sudo -u ${user} /usr/bin/ssh \
+    -i "$SSH_KEY_PATH" \
+    -o StrictHostKeyChecking=yes \
+    -o BatchMode=yes \
+    "$DDNS_SSH_TARGET" \
+    "${FQDN} ${ACTION_IPV6_ADDRESS}"
+
+# 3. Log the action taken
+if [ $? -eq 0 ]; then
+    msg="DDNS_UPDATE: ${ACTION_MSG} AAAA record for ${FQDN} on $INTERFACE."
+    logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+else
+    msg="DDNS_UPDATE: FAILED to update AAAA record for ${FQDN}."
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    echo "${msg}" >> "${debugging_log}"
+fi
+exit 0
