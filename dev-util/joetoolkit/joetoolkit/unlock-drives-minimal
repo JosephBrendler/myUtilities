@@ -1,0 +1,76 @@
+#!/bin/bash
+
+CSI="\033["    # control sequence initiator == hex "\x1b["
+BOLD="1"       # bold on
+SGRoff="0"     # Bold off (reset all SGR (e.g. blink, underline)
+RED="31"       # foreground red
+GREEN="32"     # foreground green
+YELLOW="33"    # foreground yellow
+BRon="${CSI}${RED};${BOLD}m"
+BGon="${CSI}${GREEN};${BOLD}m"
+BYon="${CSI}${YELLOW};${BOLD}m"
+Boff="${CSI}${SGRoff}m"
+
+die() {
+    echo "${BRon}Error:$Boff} $@"
+    exit 1
+}
+
+echo -e "${BYon}looking${Boff} for key_device ..."
+key_device=$(blkid | grep -i 'key\|card\|thumb' | cut -d':' -f1 | head -n1)
+
+if [ -z "${key_device}" ] ; then
+    echo "no key_device found; you will be asked for passphrase"
+else
+    echo -e "${BGon}found${Boff} key_device: [${key_device}]"
+    if [ -d /mnt/key ] ; then
+        echo -e "key_device mountpoint /mnt/key ${BGon}found${Boff}"
+    else
+        echo -e -n "${BYon}creating${Boff} key_device mountpoint /mnt/key ..."
+        mkdir /mnt/key || die "failed to mkdir /mnt/key"
+        echo -e " (${BGon}success${Boff})"
+    fi
+    echo -e -n "${BYon}mounting${Boff} key_device [$key_device] on mountpoint /mnt/key ..."
+    mount "${key_device}" /mnt/key || die "failed to mount key_device"
+    echo -e " (${BGon}success${Boff})"
+fi
+
+echo -e "${BYon}looking${Boff} for luks encrypted block devices ..."
+for x in $(blkid | grep -i luks | cut -d':' -f1 | cut -d'/' -f3)
+do
+    echo -e "${BYon}unlocking${Boff} $x..."
+    p_dev="/dev/${x}"; c_dev=$(echo $x | sed 's|sd|ed|')
+    if [ -z "${key_device}" ] ; then
+        cryptsetup luksOpen "${p_dev}" "${c_dev}" || die "failed cryptsetup luksOpen ${p_dev} (w/o key)"
+    else
+        cryptsetup luksOpen -d /mnt/key/crypt/dat "${p_dev}" "${c_dev}" || die "failed cryptsetup luksOpen ${p_dev} (with key)"
+    fi
+    echo -e "${p_dev} ${BGon}unlocked${Boff} as crypt device ${c_dev}"
+done
+
+echo -e "${BYon}vgscan; vgchange -ay${Boff}"
+vgscan; vgchange -ay
+
+echo -e "${BYon}identifying${Boff} root_vg ..."
+root_vg=$(lvs | grep root | awk '{print $2}') || die "failed to identify root_vg"
+
+if [ ! -z "${root_vg}" ] ; then
+    echo -e -n "${BYon}mounting${Boff} [${root_vg}-root] ..."
+    mount "/dev/mapper/${root_vg}-root" /mnt/gentoo || die "failed to mount ${root_vg}-root"
+    echo -e " (${BGon}success${Boff})"
+
+else
+    die "no root_vg found"
+fi
+
+echo -e "${BYon}unmounting${Boff} /mnt/key..."
+umount /mnt/key || die "failed to umount /mnt/key"
+echo -e " (${BGon}success${Boff})"
+
+echo -e "${BGon}mount | grep gentoo ${Boff} ..."
+mount | grep gentoo | sed "s/^/ |   /"
+
+echo
+echo -e "now cd /mnt/gentoo, run ${BGon}./mount-the-rest.xxxx${Boff}, and cat chroot-commands..."
+echo
+echo "don't forget to also mount /boot before or after chroot..."
