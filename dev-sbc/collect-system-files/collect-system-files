@@ -4,8 +4,9 @@
 # for crossbuild-tools setup or for system rebuild)
 # collect appropriate template files for crossbuild target filesystem
 #
-
+#
 source /usr/sbin/script_header_joetoo
+# script_header_joetoo_unicode is sourced in initialize_variables
 
 #-----[ variables ]---------------------------------------------------
 VERBOSE=$TRUE
@@ -16,32 +17,32 @@ INTERACTIVE=$TRUE
 PN=$(basename $0)
 
 varlist="PN BPN BUILD"
-varlist+=" BREAK user collection_directory"
+varlist+=" BREAK user sync_root collection_directory SSH_KEY"
 varlist+=" BREAK starting_step stopping_step statusfile"
 varlist+=" bool.INTERACTIVE bool.VERBOSE verbosity"
 
 command_sequence=(
+'start_ssh_agent $SSH_KEY'
 'maybe_create_collection_directory'
 'copy_dirs'
 'copy_files'
-'change_ownership_to_user'
-'report_results'
+'show_tree'
+'load_key'             # <-- BEGINS 606 EXPOSURE & LOADS KEY
+'transfer_results'
+'unload_key'           # <-- ENDS 606 EXPOSURE & UNLOADS KEY
+'stop_ssh_agent'
 )
 
 msg1_sequence=(
+'start ssh agent'
 'maybe create collection_directory'
-'copy target directories'
-'copy target files'
-'change collection ownership to user'
+'copy dirs'
+'copy files'
 'report results'
-)
-
-msg2_sequence=(
-'maybe creating collection_directory'
-'copying target directories'
-'copying target files'
-'changing collection ownership to user'
-'reporting results'
+'load ssh key'             # <-- BEGINS 606 EXPOSURE & LOADS KEY
+'transfer results'
+'unload ssh key'           # <-- ENDS 606 EXPOSURE & UNLOADS KEY
+'stop ssh agent'
 )
 
 #-----[ functions ]---------------------------------------------------
@@ -67,8 +68,15 @@ initialize_variables() {
     # set default values that will be over-ridden by sourcing ${PN}.conf
     d_message_n "setting default user = joe ..." 2
     user=joe && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default sync_root = /home/${user} ..." 2
+    sync_root="/home/${user}" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default SSH_KEY = \"\" ..." 2
+    SSH_KEY="" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "setting default collection_directory = content_for_mkimg_$(hostname) ..." 2
     collection_directory="content_for_mkimg_$(hostname)" && \
+        d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default remotehosts array ..." 2
+    remotehosts=('gmki91' 'gmki92' 'yorsqui') && \
         d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
     d_message_n "populating source_dirs array with defaults ..." 2
     source_dirs=( '/etc/openvpn' "/home/${user}/.ssh" ) && \
@@ -100,6 +108,8 @@ initialize_variables() {
     # now source ext. script header to enable advanced script management
     message_n "sourcing /usr/sbin/script_header_joetoo_extended ..."
     source /usr/sbin/script_header_joetoo_extended && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    message_n "sourcing /usr/sbin/script_header_joetoo_unicode ..."
+    source /usr/sbin/script_header_joetoo_unicode && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
 
     if [[ $FLAGGED ]] ; then
         E_message "failed clean exit; note red flags above"
@@ -111,30 +121,37 @@ initialize_variables() {
 }
 
 maybe_mkdir() {
-    # don't flag; die over error
+    # don't flag; posix_die over error
     my_z=$1
-    message_n "maybe making collection_directory"
+        bremoji "$axe"
+        message_n "maybe making directory"
     if [ ! -d /home/${user}/${collection_directory%/}/${my_z} ] ; then
-        mkdir -p /home/${user}/${collection_directory%/}/${my_z} && \
-            echo -en " (dir ${BGon}created${Boff} dir)" || \
-            die "failed to mkdir -p /home/${user}/${collection_directory%/}/${my_z}"
+        mkdir -p /home/${user}/${collection_directory%/}/${my_z}  || \
+            posix_die "failed to mkdir -p /home/${user}/${collection_directory%/}/${my_z}" "$?"
+            echo -e -n " (${my_z} ${BGon}created${Boff})"
     else
-        echo -en " (dir ${BGon}exists${Boff})"
+        echo -e -n " (dir ${BGon}exists${Boff})"
     fi
+    right_status $TRUE
     return 0
 }
 
 copy_dirs() {
-    # flag, but don't die over error
+    # flag, but don't posix_die over error
     for ((i=0; i<${#source_dirs[@]}; i++)); do
-        message_n "copying ${BMon}dir${BYon} ${source_dirs[$i]}${Boff} content"
         z=$(echo ${source_dirs[$i]} | sed 's|^/||')
         maybe_mkdir "${z}"
-        echo -en " copying ..."
+        bremoji "$tree_deciduous"
+        message_n "copying ${BMon}dir${BYon} ${source_dirs[$i]}${Boff} content"
+        # To copy all files, including those with and without a leading '.',
+        # from a source directory (source_dir) to a destination directory (destination_dir)
+        # using cp -a, you can use one of the following methods
+        #   cp -a source_dir/. destination_dir
+        #   cp -a source_dir/{.,}* destination_dir   # didn't work here
         if [[ ${VERBOSE} ]] && [ ${verbosity} -gt 3 ] ; then
-            cp -av ${source_dirs[$i]%/}/* /home/${user}/${collection_directory%/}/${z}/
+            cp -av ${source_dirs[$i]%/}/. /home/${user}/${collection_directory%/}/${z%/}
         else
-            cp -a ${source_dirs[$i]%/}/* /home/${user}/${collection_directory%/}/${z}/
+            cp -a ${source_dirs[$i]%/}/. /home/${user}/${collection_directory%/}/${z%/}
         fi
         result=$? ; right_status $result ; [ $result -ne 0 ] && FLAGGED=$TRUE
     done
@@ -142,12 +159,12 @@ copy_dirs() {
 }
 
 copy_files() {
-    # flag, but don't die over error
+    # flag, but don't posix_die over error
     for source_file in ${source_files[@]}; do
-        message_n "copying ${LBon}file${Boff} ${source_file}"
         z=$(dirname ${source_file} | sed 's|^/||')
         maybe_mkdir "${z}"
-        echo -en " copying ..."
+        bremoji "$fluttering_leaf"
+        message_n "copying ${LBon}file${Boff} ${source_file}"
         if [[ ${VERBOSE} ]] && [ ${verbosity} -gt 3 ] ; then
             cp -av ${source_file} /home/${user}/${collection_directory%/}/${z}/
         else
@@ -159,8 +176,9 @@ copy_files() {
 }
 
 maybe_create_collection_directory() {
-    # don't flag; die over error
+    # don't flag; posix_die over error
     message "maybe creating collection directory"
+    bremoji "$hammer"
     message_n "  collection directory: [${collection_directory}]"
     if [ -d /home/${user}/${collection_directory} ] ; then
         echo -en " (${BGon}exists${Boff})"
@@ -168,24 +186,405 @@ maybe_create_collection_directory() {
     else
         mkdir /home/${user}/${collection_directory} && result=$? && \
             echo -en " (${BGon}created${Boff})" && right_status $result || \
-            die "failed to mkdir ${collection_directory} "
+            posix_die "failed to mkdir ${collection_directory} "
     fi
     return 0
 }
 
-change_ownership_to_user() {
-    message_n "setting ownership of collection_directory to user: ${user} ..."
-    chown -R ${user}:${user} /home/${user}/${collection_directory} && \
-        right_status $? || \
-        die "failed to chown -R ${user}:${user} /home/${user}/${collection_directory}"
-}
-
-report_results() {
+show_tree() {
+    bremoji "$splatter"
     message "please inspect results in /home/${user}/${collection_directory} ..."
     tree -a /home/${user}/${collection_directory}
     echo
     [[ $FLAGGED ]] && return 1 || return 0
 }
+
+transfer_results() {
+    # sudo -E rsync to access files as root and pass the environment containing SSH_AUTH_SOCK, etc
+    # since rsync destination is ${user}@${remotehost}:... it runs as user (who can authenticate)
+    local msg=""
+    local AGENT_ENV_FILE="/root/.ssh_agent_env"
+    response=""
+
+    # NEW STEP: Source environment variables to guarantee persistence.
+    if [ -f "${AGENT_ENV_FILE}" ]; then
+        message_n "sourcing AGENT_ENV_FILE..."
+        source "${AGENT_ENV_FILE}" || posix_die "failed to source AGENT_ENV_FILE" 1
+        right_status $TRUE
+    else
+        E_message "AGENT_ENV_FILE not found"
+        return 2
+    fi
+
+    for remotehost in "${remotehosts[@]}"; do
+        bremoji "$hammer"
+        msg="${BYon}Transfer to ${LBon}${remotehost}?${Boff}"
+        new_prompt "$msg"
+        case "${response:0:1}" in
+            [nN] ) E_message "aborting as instructed"; return 1 ;;
+            [sS] ) message "skipping transfer to $remotehost, as instructed" ;;
+            [yY] )
+                message "Validating availability of environment variables:"
+                env | grep SSH
+                message "Validating accessibility of SSH_AUTH_SOCK"
+                ls -l "$SSH_AUTH_SOCK" 2>/dev/null || posix_die "No access to SSH_AUTH_SOCK, or variable is empty" 2
+                echo -e -n " (${BGon}confirmed${BOff})"
+                right_status $TRUE
+                message "Validation complete"
+                # Execute as ROOT (to read root-owned 0600 files)
+                # Now with guaranteed SSH environment for authentication as ${user}
+                rsync -avzhe ssh -A --rsync-path="sudo rsync" \
+                    "${sync_root%/}/${collection_directory%/}" \
+                    "${user}@${remotehost}:${sync_root%/}/"
+
+                if [ ! $? -eq 0 ] ; then
+                    bremoji "$explosion"
+                    E_message "${BYon}rsync command ${BRon}failed${Boff}"
+                    return 1
+                else
+                    bremoji "$face_beam"
+                    message "${BYon}rsync transfer ${BGon}succeeded${Boff}"
+                fi ;;
+            *    ) E_message "invalid case [${response}] in ${FUNCNAME[0]}"; return 2 ;;
+        esac
+    done # next remotehost
+}
+
+#-----[ TODO: move functions below to script_header_joetoo ]--------------------------------
+start_ssh_agent() {
+    # partner among POSIX compliant functions sourced for ssh key management
+    # (start_ssh_agent, load_key, unload_key, stop_ssh_agent used in that
+    #  order, mitigating risk of 0606 environment compromise by keeping it
+    #  open only for the duration of the command that requires access to the key)
+    # (used with cleanup_stale_ssh_environment() and posix_die() to further mitigate
+    #  risk entailed by two failure modes: software error or system failure)
+    # No 'local' keyword in POSIX sh
+    AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+    # Run cleanup first to ensure a clean slate
+    cleanup_stale_ssh_environment
+
+    printf "Starting ssh-agent as user %s...\n" "$user"
+
+    # Start the agent as the unprivileged user and capture the environment.
+    # POSIX sh: eval is used the same way
+    message_n "loading AGENT_ENV ..."
+    AGENT_ENV=$(sudo -u "$user" ssh-agent -s) || posix_die "failed loading AGENT_ENV" 1
+    eval "$AGENT_ENV" || posix_die "failed running eval AGENT_ENV" 2
+    right_status $TRUE
+
+    if [ -z "$SSH_AUTH_SOCK" ] ; then
+        printf "ERROR: Failed to start ssh-agent as user %s\n" "$user"
+        return 1
+    fi
+#    printf "SSH_AUTH_SOCK set to: %s\n" "$SSH_AUTH_SOCK"
+    message "SSH_AUTH_SOCK: [$SSH_AUTH_SOCK]"
+
+    # WRITE/STORE THE ENVIRONMENT VARIABLES
+    printf "export SSH_AUTH_SOCK=\"%s\"\n" "$SSH_AUTH_SOCK" > "$AGENT_ENV_FILE"
+    printf "export SSH_AGENT_PID=\"%s\"\n" "$SSH_AGENT_PID" >> "$AGENT_ENV_FILE"
+
+#    printf "Agent started, environment stored. Key is NOT yet loaded\n"
+    message "${BGon}Agent started${Boff}, ${BYon}environment stored${Boff}. ${Mon}Key is NOT yet loaded${Boff}\n"
+    return 0
+}
+
+load_key() {
+    # partner among POSIX compliant functions sourced for ssh key management
+    # (start_ssh_agent, load_key, unload_key, stop_ssh_agent used in that
+    #  order, mitigating risk of 0606 environment compromise by keeping it
+    #  open only for the duration of the command that requires access to the key)
+    # (used with cleanup_stale_ssh_environment() and posix_die() to further mitigate
+    #  risk entailed by two failure modes: software error or system failure)
+    AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+    # POSIX sh: Use the dot operator for sourcing
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        message_n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || posix_die "failed sourcing AGENT_ENV_FILE"  1
+        right_status $TRUE
+    fi
+
+    # 1. CRITICAL: Loosen socket permission (POSIX check: -S = socket)
+    if [ -S "$SSH_AUTH_SOCK" ] ; then
+        message_n "setting socket permissions ..."
+        chmod 606 "$SSH_AUTH_SOCK" 2>/dev/null || die "failed setting socket permissions" 1
+        right_status $TRUE
+    fi
+
+#    printf "Loading user's ssh key [%s]... (Passphrase required)\n" "$SSH_KEY"
+    message "Loading user's ssh key [$SSH_KEY]... (Passphrase required)"
+
+    # 2. Add the key as the unprivileged user (Passphrase prompt occurs here)
+    # The -E flag is passed through sudo, and is POSIX compliant here
+    sudo -E -u "$user" ssh-add "$SSH_KEY" || return 2
+
+#    printf "Key loaded. Socket permissions are temporarily 606 for transfer\n"
+    message "Key loaded. Socket permissions are temporarily 606 for transfer"
+    return 0
+}
+
+unload_key() {
+    # partner among POSIX compliant functions sourced for ssh key management
+    # (start_ssh_agent, load_key, unload_key, stop_ssh_agent used in that
+    #  order, mitigating risk of 0606 environment compromise by keeping it
+    #  open only for the duration of the command that requires access to the key)
+    # (used with cleanup_stale_ssh_environment() and posix_die() to further mitigate
+    #  risk entailed by two failure modes: software error or system failure)
+    AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        message_n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || posix_die "failed sourcing AGENT_ENV_FILE" 1
+        right_status $TRUE
+    fi
+
+    # 1. Remove the key from the agent's memory
+#    printf "Removing key from agent memory...\n"
+    message_n "Removing key from agent memory..."
+    sudo -E -u "$user" ssh-add -d "$SSH_KEY" >/dev/null 2>&1 || \
+        posix_die "failed running sudo -E -u \$user ssh-add -d \$SSH_KEY"
+    right_status $TRUE
+
+    # 2. CRITICAL: Re-secure the socket file immediately
+    if [ -S "$SSH_AUTH_SOCK" ] ; then
+#        printf "Re-securing socket permissions to 600...\n"
+        message "Re-securing socket permissions to 600..."
+        chmod 600 "$SSH_AUTH_SOCK" 2>/dev/null || \
+            posix_die "failed to chmod 600 \$SSH_AUTH_SOCK"
+        right_status $TRUE
+    fi
+
+    printf "Key unloaded and socket secured\n"
+    message "${Gon}Key unloaded and ${BGon}socket secured${Boff}"
+    return 0
+}
+
+stop_ssh_agent() {
+    # partner among POSIX compliant functions sourced for ssh key management
+    # (start_ssh_agent, load_key, unload_key, stop_ssh_agent used in that
+    #  order, mitigating risk of 0606 environment compromise by keeping it
+    #  open only for the duration of the command that requires access to the key)
+    # (used with cleanup_stale_ssh_environment() and posix_die() to further mitigate
+    #  risk entailed by two failure modes: software error or system failure)
+    AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        . "$AGENT_ENV_FILE" || return 1
+    fi
+
+    if [ -n "$SSH_AGENT_PID" ] ; then
+#        printf "Killing SSH agent (PID: [%s])\n" "$SSH_AGENT_PID"
+        message_n "Killing SSH agent (PID: [$SSH_AGENT_PID]) ..."
+        kill "$SSH_AGENT_PID" >/dev/null 2>&1 || posix_die "failed to kill SSH_AGENT_PID" 1
+        right_status $TRUE
+    fi
+
+    # Cleanup: Remove the socket file and persistence file
+    if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ] ; then
+        message_n "removing SSH_AUTH_SOCK ..."
+        rm -f "$SSH_AUTH_SOCK" 2>/dev/null || posix_die "failed to remove SSH_AUTH_SOCK" 2
+        right_status $TRUE
+    fi
+
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        message_n "removing AGENT_ENV_FILE ..."
+        rm -f "$AGENT_ENV_FILE" 2>/dev/null || posix_die "failed to remove AGENT_ENV_FILE" 3
+        right_status $TRUE
+    fi
+
+    # Unset the variables in the current shell (POSIX compliant)
+    message_n "un-setting SSH_AUTH_SOCK and SSH_AUTH_SOCK ..."
+    unset SSH_AUTH_SOCK SSH_AGENT_PID || posix_die "failed to unset SSH_AUTH_SOCK SSH_AGENT_PID" 4
+    right_status $TRUE
+
+    return 0
+}
+
+posix_die() {
+    # POSIX compliant evolution of die(), with ssh key management cleanup
+    # $1: Error message
+    # $2: Exit status (optional, usually $?)
+
+    # Call unload_key and stop_ssh_agent
+    # Redirect all output to /dev/null so the cleanup itself does not clutter the error report
+    # Ignore the exit status of the cleanup, as the script is already failing
+
+    # TODO Note: If called by 'trap ERR' (not yet implemented) these functions must be sourced and available
+    unload_key >/dev/null 2>&1
+    stop_ssh_agent >/dev/null 2>&1
+
+    # Report Failure and Exit
+
+    # Use standard 'printf' to send the error message to standard error (>&2)
+    printf "\n" >&2
+    printf "${BRon}!!! FATAL ERROR: %s${Boff}\n" "$1" >&2
+    if [ -n "$2" ] ; then
+        printf "${BWon}!!! Exit Status: [${Mon}%s${BWon}]${Boff}\n" "$2" >&2
+    fi
+
+    # Exit the script with a non-zero status
+    exit 1
+}
+
+cleanup_stale_ssh_environment() {
+    # This is a POSIX function to mitigate risk of ssh_agent environmet variable exposure
+    # in the event of either "software error" or "system failure" failure modes
+    # that is sh-compatible across both my typical bash shell and my busybox (ash) boot shell
+    # (thus the boot process's intramfs-launched init script can use it to cleanup the
+    #  artifacts left pver in the second category of failure mode)
+    # ToDo - port to script_header
+    #
+    # Define variables using sh-compatible syntax (no 'local')
+    AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+    # Check if the persistence file exists
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        # Source the variables using POSIX dot operator (must be space-separated)
+        message_n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || posix_die "failed sourcing AGENT_ENV_FILE"  1
+        right_status $TRUE
+
+        # Check if a PID was defined and is still running - if so, just return 0
+        # 'kill -0' is a POSIX-compliant check - does process exist? (without killing it)
+        if [ -n "$SSH_AGENT_PID" ] && kill -0 "$SSH_AGENT_PID" 2>/dev/null ; then
+            # Agent is ALIVE. Do nothing.
+            message "ssh-agent is running; returning without action"
+            return 0
+        fi
+
+        # 1. Remove the stale socket file (if the variable is set and the file exists)
+        if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ] ; then
+            # Use 'rm -f' for silent, forceful removal
+            message_n "removing SSH_AUTH_SOCK ..."
+            rm -f "$SSH_AUTH_SOCK" 2>/dev/null || posix_die "failed to remove SSH_AUTH_SOCK" 2
+            right_status $TRUE
+        fi
+
+        # 2. Remove the persistence file
+        message_n "removing AGENT_ENV_FILE ..."
+        rm -f "$AGENT_ENV_FILE" 2>/dev/null || posix_die "failed to remove AGENT_ENV_FILE" 3
+        right_status $TRUE
+
+        # 3. Unset variables (to be thorough)
+        unset SSH_AUTH_SOCK SSH_AGENT_PID
+    fi
+    return 0
+}
+
+#-----[ override these functions in current script_header_joetoo with POSIX variants ]------------------
+# (until incorporated in script_header_joetoo)
+
+# first printf: hard-coded colored asterisk one space in, followed by space
+# second printf: Uses "$@" as format string to ebabke backslash escape interpretation, followed by newline
+message()   # (POSIX) display text message $@
+{ printf " ${BGon}*${Boff} " ; printf "$@\n" ; }
+message_n()   # (POSIX) display text message $@ w/o newline
+{ printf " ${BGon}*${Boff} " ; printf "$@" ; }
+W_message()   # (POSIX) display text warning message $@
+{ printf " ${BYon}*${Boff} " ; printf "$@\n" ; }
+E_message()   # (POSIX) display text error message $@
+{ printf " ${BRon}*${Boff} " ; printf "$@\n" ; }
+d_message()   # (POSUX) IAW verbosity, display text debugging message $@
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ $_i -lt $_count ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf " ${BGon}*${Boff} " ; printf "$@\n"
+    )
+  fi # level
+}
+
+CUF() # (POSIX) Cursor Up Forward $1 (default 1), only if $1 is a number
+{ reps=1; if isnumber "$1"; then reps="$1"; fi ; printf "${CSI}${reps}C" ; }
+# ${1:-1} sets the default value of reps to 1, in case there is no argument
+
+right_status()
+{
+  _msg="";
+  _status=$1;
+  if [ "$_status" -eq 0 ] ; then
+    _msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" ;
+  else
+    _msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+  fi
+  printf "\r" ;
+  CUF $(( $(termwidth) - 7 )) ;
+  printf "${_msg}\n" "" ;
+}
+
+
+isnumber() # (POSIX) Tests if $1 is a non-negative integer; returns 0 (true) or 1 (false)
+{
+  [ $# -eq 0 ] && return 1  # Guard clause: Check if an argument was provided
+  case $1 in
+    ""       ) return 1 ;;
+    *[!0-9]* ) return 1 ;;
+    *        ) return 0 ;;
+  esac
+}
+# ""      ) Matches if $1 is empty (to be thorough)
+# *[!0-9]*) Matches if $1 contains at least one character that is NOT a digit (0-9)
+# *       ) Matches if $1 contains only digits (the successful case)
+
+# temporary override of fn in script header
+run_sequence()         # run start to stop steps in ${command_sequeyce[@]} and output status to $1
+{
+    # run the sequence of commands stored in the command_sequence array
+    # for each step, store updated status in a status file provided as arg $1
+    [ $# -ne 1 ] && E_message "run_sequence requires exactly one argument (cmdseq_statusfile) " && E_message "exiting process [$$]" && exit 1
+    cmdseq_statusfile=$1 ; echo ; separator "${PN}-${BUILD}" "(running command sequence)" ; echo
+    d_message "starting_step: [ ${starting_step} ]" 3
+    d_message "stopping_step: [ ${stopping_step} ]" 3
+    for ((step=${starting_step}; step<=${stopping_step}; step++))
+    do
+        separator "${PN}-${BUILD}" "(${step}: ${command_sequence[${step}]})"
+        d_message "Writing step [ $step ] to cmdseq_statusfile ( $cmdseq_statusfile )" 2
+        echo $step > ${cmdseq_statusfile}
+        if [[ ${INTERACTIVE} ]] ; then
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will prompt to ${step}: (${msg1_sequence[${step}]})"
+            d_message "${msg}" 2
+            response=""
+            # confirm user is ready/wants to run the next command
+            new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step}]}${BMon}?${Boff}"
+        else  # automatically execute other steps for non-interactive
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will automatically ${step}: (${msg1_sequence[${step}]})"
+            d_message "${msg}" 2
+            message "${BMon}Beginning ${BGon}${command_sequence[${step}]}${BMon} as instructed ...${Boff}"
+            response="y"
+       fi  ## interactive
+       case $response in
+           [Yy] )  # execute this command and continue
+               d_message "${LBon}About to run ${BYon}${command_sequence[${step}]}${LBon} ...${Boff}" 1
+               eval ${command_sequence[${step}]} ; result=$?
+               if [ $result -eq 0 ] ; then
+                   d_message "${BYon}Note:${Boff} ${command_sequence[${step}]} ${BGon}completed successfully${Boff}" 1
+               else
+                   posix_die "Failed to ${msg1_sequence[${step}]} [${command_sequence[${step}]}]"
+               fi
+               ;;
+           [Ss] )
+               d_message "${BYon}As requested, skipping ${Boff} ${msg1_sequence[${step}]} ${BGon}${command_sequence[${step}]}${Boff}" 1
+               ;;
+           *    )  # abort due to negative response
+               d_message "${BRon}As instructed, not running ${BGon}${command_sequence[${step}]}${BRon}. Quitting...${Boff}" 1 ; \
+               E_message "exiting process [$$]" && exit ;;
+        esac
+    done
+    echo
+}
+
 
 #-----[ main script ]---------------------------------------------
 checkroot
@@ -193,22 +592,37 @@ separator "${PN}" "($(hostname))"
 
 message "my PID: $$"
 
-initialize_variables || die "failed to initialize variables"
-validate_status_file ${statusfile} || die "Failed to validate_status_file"
+initialize_variables || posix_die "failed to initialize variables" "$?"
+# NOTE: trap ERR is temporarily disabled due to conflicts with POSIX-incompatible
+# syntax and short-circuit error handling in script_header functions.
+# TODO: Employ trap ERR once script_header has been updated to use control structures
+# such as if/then/else in place of [...]&&...|... as code-blocks for control flow
+# and fully POSIX-compliant code, particularly in error handling short-circuits
+# such as "[ ! $# -eq 1 ] && usage ... or <any_form_of_test> || return <non-zero>
+# (if/then/else control structures manage the non-zero status internally and avoid trap)
+# and bash-specific syntax such as subsring expansion like ${var:0:1}
+# (e.g. 1. use of POSIX ${1#-}, or ${var%${var#?}}, etc, or echo ... | cut meet this intent)
+# In [[ "${1}" =~ ^(-t|-b|-o)$ ]], both the [[...]] test and the =~ operator are not POSIX compliant.
+# (e.g. 2. case ... esac is POSIX, as is a switch to case ${full_var} in ... -[sS]* )  or ...
+# trap 'posix_die "Script interrupted or failed unexpectedly" $?' ERR
+
+validate_status_file ${statusfile} || posix_die "Failed to validate_status_file" "$?"
 
 # over-ride configuration with commandline input
 d_message "cmdline: $*" 5
 d_message "processing cmdline args: $@" 5
 separator ${PN} "(process_cmdline)"
 process_cmdline ${@} || usage
-display_configuration || die "Failed to display_configuration"
+display_configuration || posix_die "Failed to display_configuration" "$?"
 echo
+bremoji "$seedling"
 message "${BYon}Copy/create/set configuration (/etc/${PN}/${PN}.conf)${Boff}"
+bremoji "$tree_palm"
 message "${BYon}using ${BGon}eselect$ ${PN} ${BWon}list|set n${Boff}"
-#sanity_check  || die "Failed sanity_check"
+#sanity_check  || posix_die "Failed sanity_check" "$?"
 FLAGGED=$FALSE
-run_sequence ${statusfile} && message "run_sequence complete" || die "Failed to run_sequence"
+run_sequence ${statusfile} && message "run_sequence complete" || posix_die "Failed to run_sequence" "$?"
 
-#E_message "breakpoint reached"; exit
+#E_message "${BMon}Debug breakpoint${Boff}"; exit
 
 exit 0
