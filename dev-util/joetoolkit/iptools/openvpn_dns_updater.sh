@@ -57,7 +57,7 @@ update_hosts_file() {
     for ((i=0; i<${#client_list[@]}; i++)); do
         # put data in 2 columns ip (20 char), client_name (35 char)
         printf "%-20s %-35s\n" "${ip_list[i]}" "${client_list[i]}"
-    done | sort -k1.22,2 > "$temp_file"
+    done | LC_COLLATE="en_US.UTF-8" sort -k1.22,2 > "$temp_file"
 #    done | sort -k2.2 > "$temp_file"
 
     # Re-initialize openVPN hosts file with a header
