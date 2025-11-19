@@ -65,7 +65,7 @@ update_hosts_file() {
         # LC_COLLATE applied here ensures uppercase Z does not precede lowercase a
         LC_COLLATE="en_US.UTF-8" awk '{last[$2]=$0} END {for (a in last) print last[a]}' | \
             # Sort alphabetically by hostname using key/column position (avoid confusing punctuation in col 1)
-            LC_COLLATE="en_US.UTF-8" sort -k1.22,2
+            LC_COLLATE="en_US.UTF-8" sort -k1.22,2 > "$temp_file"
 
 #    done | LC_COLLATE="en_US.UTF-8" sort -k1.22,2 -k1.55,3  > "$temp_file"
 #    done | sort -k2.2 > "$temp_file"
@@ -77,7 +77,7 @@ update_hosts_file() {
     cat "$temp_file" >> "${openVPN_hosts_file}"
 
     # Clean up temporary file
-#    rm "$temp_file"
+    rm "$temp_file"
 
     # Output the newly created hosts file content (optional, for logging/debug)
     cat "${openVPN_hosts_file}"
