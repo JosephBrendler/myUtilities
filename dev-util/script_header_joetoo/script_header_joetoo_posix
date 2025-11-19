@@ -1,0 +1,832 @@
+#!/bin/sh
+####!/bin/bash   ### switched so it's also valid in busybox (ash) shell
+#   script header with basic functions
+# Author: joe brendler 19 Jul 2014
+#         24 June 2025 - v1.0.0 moved to /usr/sbin/ and consolidated as script_header_joetoo
+#
+
+#-----[ Define common variables ]---------------------------------------------
+BUILD="0.0.0 (19620207)"  #redefine in base script
+ROOT_UID=0       # Only users with $UID 0 have root privileges
+script_header_installed_dir="/usr/sbin"
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+
+#  Error message used by various scripts
+E_NOTROOT="Must be root to run this script"
+E_ROOT="Please run this script as user, not root"
+E_BAD_ARGS="Improperly formatted command line argument"
+E_BAD_OPT="Invalid option"
+E_BAD_COLOR="Invalid color argument"
+
+# pseudo-boolean values for most shells which have none
+TRUE=0    # will evaluate to be logically true in a boolean operation
+FALSE=""  # will evaluate to be logically false in a boolean operation
+  # play with test function:
+  # test ( ) { [ $1 ] && echo "$1 is true" || echo "$1 is false"; }
+# check set null vs unset and assign default VERBOSE and verbosity,
+#  but only if not yet assigned by calling program
+VERBOSE="${VERBOSE:-$FALSE}" # Set default ($FALSE) if VERBOSE is UNSET or NULL (already "$FALSE")
+verbosity="${verbosity:-2}"  # Set default (2) if verbosity is UNSET or NULL
+
+non_interactive_header="${script_header_installed_dir%/}/script_header_joetoo_noninteractive"
+
+#--[ Easy ANSI Escape sequences to put color in my scripts ]---
+#  see http://en.wikipedia.org/wiki/ANSI_escape_code
+#  see also http://ascii-table.com/ansi-escape-sequences.php
+
+CSI="\033["             # control sequence initiator == hex "\x1b["
+#-----[ Select Graphics Rendition on/off ]------------------------------------------
+BOLD="1"         # bold on
+UL="4"           # underline on
+BLINK="5"        # slow blink on
+BLINKFAST="6"    # fast blink on
+REVERSE="7"      # image: inverse (reverse video)
+ULoff="24"       # underline off
+BLINKoff="25"    # blink off
+SGRoff="0"       # Bold off (reset all SGR (e.g. blink, underline)
+#-----[ Set Text Color, Foreground ]------------------------------------------------
+BLACK="30"       # foreground black
+RED="31"         # foreground red
+GREEN="32"       # foreground green
+YELLOW="33"      # foreground yellow
+BLUE="34"        # foreground blue
+MAG="35"         # foreground magenta (it's like fucia)
+LBLUE="36"       # foreground light blue (cyan)
+WHITE="37"       # foreground white (cyan)
+FG_DEFAULT="39"  # foreground to terminad default
+#FG_SPEC="38"    # foreground to specified (e.g., 2 for RGB or 5 for a 256-color palette)
+# For example, ${CSI}38;2;255;165;${SGRoff}m sets the foreground to orange
+# NOT USED HERE. used in RGB_FG() in script_header_joetoo_extended
+#-----[ Set Background Color ]------------------------------------------------------
+BACKoff="40"     # background black
+RBACK="41"       # background red
+GBACK="42"       # background green
+YBACK="43"       # background yellow
+BBACK="44"       # background blue
+MBACK="45"       # background magenta
+LBACK="46"       # background light blue (cyan)
+WBACK="47"       # background white
+BG_DEFAULT="49"  # foreground to terminad default
+#BG_SPECB="38"   # background to specified (e.g., 2 for RGB or 5 for a 256-color palette)
+# For example, ${CSI}48;2;0;0;${SGRoff}m sets the background to black
+# NOT USED HERE. used in RGB_BG() in script_header_joetoo_extended
+#-----[ My Favorite Colors (terminate with ${Boff} ]---------------------------------
+Ron="${CSI}${RED}m"
+Gon="${CSI}${GREEN}m"
+Yon="${CSI}${YELLOW}m"
+Bon="${CSI}${BLUE}m"
+Mon="${CSI}${MAG}m"
+Lon="${CSI}${LBLUE}m"
+Won="${CSI}${WHITE}m"
+BRon="${CSI}${RED};${BOLD}m"
+BGon="${CSI}${GREEN};${BOLD}m"
+BYon="${CSI}${YELLOW};${BOLD}m"
+BBon="${CSI}${BLUE};${BOLD}m"
+BMon="${CSI}${MAG};${BOLD}m"
+LBon="${CSI}${LBLUE};${BOLD}m"
+BWon="${CSI}${WHITE};${BOLD}m"
+RVon="${CSI}${REVERSE}m"
+Boff="${CSI}${SGRoff}m"          # Bold off (reset all SGR (e.g. blink, underline)
+#-----[ Here setting background as well ]--------------------------------------------
+BBonY="${CSI}${BLUE};${YBACK};${BOLD}m"
+
+color() {          # (POSIX) set FG $1, optional [bold $2], optional [BG $3]
+    local FG=""    # Foreground (3x)
+    local BG=""    # Background (4x)
+    local B=""     # Bold (0/1)
+    local V_FG="${1:-39}"  # Default FG is 39 (terminal default)
+    local V_B="${2:-0}"    # Default Bold is 0 (Normal)
+    local V_BG="${3:-49}"  # Default BG is 49 (terminal default)
+    # validate foreground (3x) or set default 39; set bold appropriately
+    case "$V_FG" in
+        3[0-7])  # foreground is set
+            FG="$V_FG" ;
+            # validate bold (0/1)
+            case "$V_B" in
+                0|1) B=";$V_B" ;;
+                *) echo "$E_BAD_COLOR: Bold attr ($V_B)(0/1)"; return 1 ;;
+            esac  # B
+            ;;
+        39)     # unset foreground for default
+            FG="" ;
+            # validate bold (0/1) - omit leading ; since no $1
+            case "$V_B" in
+                0|1) B="$V_B" ;;
+                *) echo "$E_BAD_COLOR: Bold attr ($V_B)(0/1)"; return 1 ;;
+            esac  # B
+            ;;  # allow unset args $(color) to equate to ${Boff}
+        *) echo "$E_BAD_COLOR: Foreground ($V_FG)(3x)"; return 1 ;;
+    esac # FG
+
+    # validate background (4x) or set default (unset)
+    case "$V_BG" in
+        4[0-7]) BG=";$V_BG" ;;
+        49) BG="" ;;  # allow unset BG to imply terminal default
+        *) echo "$E_BAD_COLOR: Background ($V_BG)(4x)"; return 1 ;;
+    esac
+    # output the raw ANSI escape sequence
+    printf "%s%s%s%s%s\n" "${CSI}" "${FG}" "${B}" "${BG}" "m"
+}
+
+#####################-----[ fully POSIX checked above this line -]-----#########################
+
+
+#---[ Box Drawing escape sequence stuff ]--------------------------
+#  See: https://en.wikipedia.org/wiki/Box-drawing_character
+ESCon='\e(0'
+ESCoff='\e(B'
+H_wall='\x71'
+V_wall='\x78'
+UL_wall='\x6C'
+UR_wall='\x6B'
+LL_wall='\x6D'
+LR_wall='\x6A'
+# we can also use unicode characters, which do not require the esc seq intro
+uH_wall='\u2500'
+uV_wall='\u2502'
+uUL_wall='\u250C'
+uUR_wall='\u2510'
+uLL_wall='\u2514'
+uLR_wall='\u2518'
+uD_H_wall='\u2550'
+uD_V_wall='\u2551'
+uD_UL_wall='\u2554'
+uD_UR_wall='\u2557'
+uD_LL_wall='\u255A'
+uD_LR_wall='\u255D'
+
+
+#---[ Cursor Movement Commands ]-----------------------------------
+SCP()    # save the current cursor position
+{ echo -en "${CSI}s" && return 0 || return 1; }
+RCP()    # restore the cursor to the saved position
+{ echo -en "${CSI}u" && return 0 || return 1; }
+HCU()    # Hide the cursor (Note: the trailing character is lowercase L)
+{ echo -en "${CSI}?25l" && return 0 || return 1; }
+SCU()    # Show the cursor
+{ echo -en "${CSI}?25h" && return 0 || return 1; }
+HVP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+{ local row col ;
+  [ ! -z "$1" ] && row=$1 || row=1 ;
+  [ ! -z "$2" ] && col=$2 || col=1 ;
+  echo -en "${CSI}${row};${col}f" && return 0 || return 1 ; }
+CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+{ local row col ;
+  [ ! -z "$1" ] && row=$1 || row=1 ;
+  [ ! -z "$2" ] && col=$2 || col=1 ;
+  echo -en "${CSI}${row};${col}H" && return 0 || return 1 ; }
+CLR()    # Clear stdout
+{ echo -en "${CSI}2J" && return 0 || return 1; }
+CUU()    # Move the cursor up ($1 cells)
+{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} + 1 ))"A" && return 0 || return 1; }
+CUD()    # Move the cursor down ($1 cells)
+{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} - 1 ))"B" && return 0 || return 1; }
+CUF()    # Move the cursor forward ($1 cells)
+{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
+CUB()    # Move the cursor back ($1 cells)
+{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
+
+# ---[ common function blocks ]------------------------------------------
+
+isnumber()          # test if $1 is a decimal number; return true/false
+{ re='^[0-9]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
+
+ishex()             # test if $1 is a hexadecimal number; return true/false
+{ re='^[0-9a-fA-F]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
+
+checkroot()         # Run as root, of course.
+{ if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
+
+checknotroot()      # Run as not root, of course.
+{ if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
+
+checkboot()         # check to see if /boot is a mountpoint and is properly mounted
+{ [[ -z $(grep '[[:space:]]/boot[[:space:]]' /etc/fstab | grep -v '^#') ]] && return 2  # not supposed to be a mountpoint
+  [[ ! -z $(findmnt -nl /boot) ]] && return 0 || return 1 ; }  # return 1 if it is a mountpoint that is not mounted
+
+checkshell()        # reset colors if this shell is not interactive
+{ [[ ! -t 0 && ! -t 1 ]] && source ${non_interactive_header}; }
+
+message()           # echo a simply formatted message $1 to stdout
+{ echo -e " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
+
+message_n()         # echo -n a simply formatted message $1 to stdout
+{ echo -en " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
+
+E_message()         # echo a simply formatted error message $1 to stdout
+{ echo -e " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
+
+E_message_n()       # echo -n a simply formatted error message $1 to stdout
+{ echo -en " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
+
+log_message()       # message() to stdout and $logFile owned by $user
+{ local msg="$1" ; message "$(timestamp) - $msg" | tee -a "$logFile" ; }
+
+log_message_n()     # message_n() to stdout and $logFile owned by $user
+{ local msg="$(timestamp) - $1" ; message_n "$msg" ; message_n "$msg" >> $logFile ; }
+
+log_echo()          # echo to stdout and $logFile owned by $user
+{ local msg="$1" ; echo "$msg" | tee -a "$logFile" ; }
+
+log_echo_e()        # echo -e to stdout and $logFile owned by $user
+{ local msg="$1" ; echo -e "$msg" | tee -a "$logFile" ; }
+
+log_echo_n()        # echo -n "$1" to stdout and $logFile owned by $user
+{ local msg="$1" ; echo -n "$msg" ; echo -n "$msg" >> $logFile ; }
+
+log_echo_e_n()      # echo -e -n "$1" to stdout and $logFile owned by $user
+{ local msg="$1" ; echo -e -n "$msg" ; echo -e -n "$msg" >> $logFile ; }
+
+log_E_message()     # E_message() to stdout and $logFile owned by $user
+{ local msg="$1" ; E_message "$(timestamp) - $msg" | tee -a "$logFile" ; }
+
+log_E_message_n()   # E_message_n() to stdout and $logFile owned by $user
+{ local msg="$1" ; E_message_n "$(timestamp) - $msg" | tee -a "$logFile" ; }
+
+d_log_message()     # pass $1 to log_message() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_message "$1"; }
+
+d_log_message_n()   # pass $1 to log_message_n() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_message_n "$1"; }
+
+d_log_echo()        # pass $1 to log_echo() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo "$1"; }
+
+d_log_echo_e()      # pass $1 to log_echo_e() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_e "$1"; }
+
+d_log_echo_n()      # pass $1 to log_echo_n() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_n "$1"; }
+
+d_log_echo_e_n()    # pass $1 to log_echo_e_n() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_e_n "$1"; }
+
+d_log_E_message()   # pass $1 to log_E_message() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_E_message "$1"; }
+
+d_log_E_message_n() # pass $1 to log_E_message_n() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_E_message "$1"; }
+
+d_message()         # pass $1 to message() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && message "$1"; }
+
+d_message_n()       # pass $1 to message_n() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && message_n "$1"; }
+
+dE_message()        # pass $1 to E_message() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && E_message "$1"; }
+
+dE_message_n()      # pass $1 to E_message() if IAW verbosity
+{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && E_message_n "$1"; }
+
+d_echo()            # echo all but last (level) argument if IAW verbosity
+{ input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
+  E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
+  [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
+
+de_echo()           # echo -e all but last (level) argument if IAW verbosity
+{ input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
+  E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
+  [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo -e $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
+
+d_do()              # conditionally execute properly escaped $@, IAW verbosity
+{ input="$@"; set $input; bw_input=$(echo $@ | rev) ;
+level=$(echo $bw_input | cut -d' ' -f1) ; cmd=$(echo $bw_input | cut -d' ' -f2- | rev ) ;
+# echo "level: $level"; echo "cmd: $cmd";
+if ! isnumber $level ; then E_message "final arg must be decimal verbosity level" ;
+elif [[ $VERBOSE ]] && [[ $verbosity -ge $level ]] ; then eval "${cmd}" ;
+else echo ; fi ; }
+
+debug_do()          # conditionally execute properly escaped $1, IAW verbosity
+{ [ $VERBOSE ] && [[ $verbosity -ge $2 ]] && eval "$1" ; }
+
+status_color()      # emit escape seq for color per arg $1
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -en ${BGon};;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -en ${BRon};;
+           *) echo -en ${BYon};; esac ; }
+
+TrueFalse()         # echo "True" or "False", depending on truth of arg $1
+{ # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
+case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -n "True" ;;
+           [nN]*|[fF]*|"down"|$FALSE    ) echo -n "False" ;;
+           *) echo -en "unset" ;; esac ; }
+
+prompt()            # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Y/n]: " && read answer; # '=~' not in busybox
+while ! expr "${answer:0:1}" : [yYnN] >/dev/null;  # answer not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Y/n]: " && read answer; done; }
+
+old_prompt()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; SCP; echo -en "$ps [Y/n]: "   ### Not using '=~' because it's not in busybox
+  while read answer && ! expr "${answer:0:1}" : [yYnN] >/dev/null;  # answer not a regex match
+    do case ${answer:0:1} in [yY1]|"$TRUE") answer="n";; [nN0]|"$FALSE") answer="x";; esac
+  RCP; echo -en "$(repeat ' ' $(termwidth))"; RCP; message_n "$ps [Y/n]: " ; done; }
+
+new_prompt()        # set external variable $response based on reponse to prompt $1
+{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
+while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
+do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+
+right_most() {      # echo the right-most character in a string variable $1
+mystring=$1 ; echo ${mystring#${mystring%?}} ; }
+# echo ${mystring:$((${#mystring}-1)):1};        # other way 1
+# echo ${mystring} | sed "s|${mystring:0:-1}||"  # other way 2
+# echo ${mystring} | rev | cut -c 1 ; }          # other way 3
+
+alpha_words()       # alphabetize the words in a quoted input string
+{ echo $(for x in $@; do echo $x; done | sort -db ) ; }
+
+pur()               # ping ip address $1 until it is ready (0% loss of 3 packets)
+{ SCP; count=1; hits=0; status=""; hit_color="${Boff}"; while [[ $hits -lt 3 ]];
+  do status=$(ping -c1 -i1 -t2 $1 2>/dev/null |  grep transmitted | awk '{print $6}' | sed 's/\%$//');
+  [[ "$status" == "0" ]] && let "hits+=1" || let "hits=0";
+  case $hits in [01]) hit_color=${BRon};; 2) hit_color=${BYon};; 3) hit_color=${BGon};; esac;
+  RCP; echo -en "not ready -- try: [${count}], hits: [${hit_color}${hits}${Boff}]"; let "count+=1"; sleep 1;
+  done; echo; echo OK - ready now ; }
+
+sap()               # pur and then ssh after 20s pause
+{ pur $1 && echo "pausing to allow $1 to start sshd..." && sh_countdown 20 && ssh $1; }
+
+swr()               # ssh when nmap indicates port is ready (pur(), then ssh after nmap shows port)
+{ pur $1 && \
+  message "pausing to allow $1 to start sshd..." && \
+  while [ ! $(nmap -p ssh $1 | grep 'ssh' | cut -d' ' -f2) == "open" ]; do sleep 1; done && \
+  ssh $1 ; }
+
+vercomp()           # compare versions return [0:equal|1:greaterthan|2:lessthan]
+{ if [[ "$1" == "$2" ]]; then return 0; else first=$(echo -en "$1\n$2" | sort -V | head -n1);
+  [[ "$first" == "$2" ]] && return 1 || return 2; fi }
+
+show_result()       # show the result of vercomp comparison, in english
+{ case $1 in 1) echo "${LBon}>${Boff}";; 2) echo "${BRon}<${Boff}";; \
+             0) echo "${BGon}=${Boff}";; *) echo "${BYon}*** Error ***${Boff}";; esac }
+
+timestamp()         # echo a simple timestamp (yyyymmdd-hh:mm:ss)
+{ echo "$(date '+%Y%m%d-%H:%M:%S')" ; }
+
+my_date()           # echo date string (DDD MM dd hh:mm:ss AP TZ yyyy)
+{ day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
+  timeofday=$(date +%X); timezone=$(date +%Z)
+  echo "$day $month $monthday $timeofday $timezone $year" ; }
+
+my_short_date()     # echo shorter date string (yyyymmdd)
+{ month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
+  echo "${monthday}${month}${year}-${timehack}" ; }
+
+loggit()            # send a job completion status message to the cron logger
+{ [[ $# -gt 2 ]] && E_message "invalid loggit arguments" && exit 1
+  [[ -z $2 ]] && EXIT_STATUS=0 || EXIT_STATUS="$2"
+  [[ -z $1 ]] && PROGRAM=Unspecified || PROGRAM="$1"
+  case $EXIT_STATUS in
+    0 ) PRIORITY="notice" && MESSAGE="succeeded.";;
+    * ) PRIORITY="err" && MESSAGE="failed with exit status ${EXIT_STATUS}";;
+  esac
+  /usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE" ; }
+
+log_handle_result() # output ok_/err_msg and right_stats to stdout and logFile
+{ local exit_status="$1"; local ok_msg; local err_msg
+  [[ "$2" == "${no_msg}" ]] && ok_msg="" || ok_msg=" (${BGon}${2:-success!}${Boff})"
+  [[ "$3" == "${no_msg}" ]] && err_msg="" || err_msg=" (${BRon}${3:-error!}${Boff})"
+  if [ "$exit_status" -eq 0 ] ; then
+      log_echo_e_n "${ok_msg}"
+      log_right_status $TRUE
+  else
+      log_echo_e_n "${err_msg}"
+      log_right_status 1
+      return 1
+  fi ; return 0 ; }
+# *()* usage - log_message_n ...; <command>] ; log_handle_result "$?" "ok_msg" "err_msg"
+# *()* notes - substitute no_msg=" \b" for either, to "suppress"
+
+validate_logfile()  # validate existence and ownership of logFile
+{ d_log_message "in validate_logfile" 5
+  log_message_n "looking for logFile [${logFile}]"
+  if [ ! -f ${logFile} ] ; then
+      log_echo_e_n " (${BRon}not found${Boff})"
+      log_right_status 1
+      msg="logFile [${logFile}] not found\n"
+      msg="${msg}${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
+      log_E_message "${msg}"
+      return 1
+  else
+      log_echo_e_n " (${BGon}found${Boff})"
+      log_right_status $TRUE
+      log_message_n "checking logFile ownership"
+      log_owner=$(stat -c '%U' "${logFile}")
+      log_group=$(stat -c '%G' "${logFile}")
+      if [[ "${log_owner}:${log_group}" == "${user}:${user}" ]] ; then
+          log_echo_e_n " (${BGon}${log_owner}:${log_group}${Boff})"
+          log_right_status $TRUE
+      else
+          log_echo_e_n "(${BRon}${log_owner}:${log_group}${Boff})"
+          right_status 1
+          msg="bad ownership on logFile [${logFile}]\n"
+          msg="${msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
+          log_E_message "${msg}"
+          return 1
+      fi # ownership
+  fi # existence
+  return 0 ; }
+# *()* reminder - no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
+# *()* reminder - in ash, the =+ operator works for arithmetic but not text concatenation
+# *()* reminder - logFile and user must be set apriori
+
+# deprecated but leave here for continuity - let linux logrotate take care of this
+rotate_logfile() {  # (deprecated) let linux logrotate do this 
+    d_log_message "in rotate_logfile" 5
+    log_message_n "archiving old logfile ..."
+    sudo sh -c "gzip -c ${logFile} > ${old_log_dir%/}/$(basename ${logFile})-$(timestamp).gz" || \
+        die "failed to archive logFile"
+    right_status $TRUE
+    log_message_n "removing old logfile ..."
+    sudo rm $logFile || die "failed to remove old logFile"
+    right_status $TRUE
+    log_message_n "creating new logfile ..."
+    sudo touch $logFile && \
+    sudo chown ${user}:${user} $logFile || die "failed to create new logFile"
+    right_status $TRUE
+    return 0 ; }
+
+repeat()            # output a repeated string of char $1 (of len $2)
+{ local i thing limit
+  thing="$1"; limit=$2; out_str=""; i=0
+  while [ $i -lt $limit ]; do out_str="${out_str}${thing}"; let "i++"; done
+  echo -en "$out_str" && return 0 || return 1 ; }
+
+termwidth()         # calculate and output the width of the terminal
+{ echo -n $(stty size | sed 's/[0-9]* *//') && return 0 || return 1; }
+
+termheight()        # calculate and output the height of the terminal
+{ echo -n $(stty size | cut -d' ' -f1) && return 0 || return 1; }
+
+separator()         # draw a horizontal line with preface $1 and title $2
+{ # to facilitate separation of portions of the output of various scripts
+  local msg preface title msg_len
+  [ ! -z "$1" ] && preface="$1" || preface=$(hostname)
+  [ ! -z "$2" ] && title="$2" || title=$(basename $0)
+  msg="${BYon}---[${BRon} ${preface} ${LBon}${title} ${BYon}]"
+  msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ))
+  echo -en "$msg" && \
+  echo -n $(repeat "-" $(( $(termwidth) - $(( $msg_len + ${#Boff} )) )) ) && echo -e ${Boff} && \
+  return 0 || return 1 ; }
+
+log_separator()     # output separator() to stdout and similar to logFile
+{ separator "$1" "$2"
+  echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile" ; }
+
+show_config()       # show config with get_longest() and display_vars()
+{ d_message "in show_config" 5 ; separator "${PN}-${BUILD}" "(configuration)"
+  longest=$(get_longest ${varlist}) ; display_vars ${longest} ${varlist} ; }
+
+log_show_config()   # show & log config w get_longest() and display_vars()
+{ d_log_message "in lg_show_config" 5 ; log_separator "${PN}-${BUILD}" "(configuration)"
+  longest=$(get_longest ${varlist}) ; display_vars ${longest} ${varlist}
+  display_vars ${longest} ${varlist} >> "$logFile" ; }
+
+get_longest()       # echo length of longest string in input $@
+{ ans=0; for x in $@; do [ ${#x} -gt $ans ] && ans=${#x}; done ; echo $ans ; }
+
+display_vars()      # show vals for vars in $@; incl bool/lv/; $1=longest
+{
+  if ! isnumber $1 ; then
+    E_message "Error: arg \$1 must be numeric longest expected input var name"
+    exit
+  fi
+  if [ $# -le 1 ] ; then set $@ "<empty>"; fi  # insert placeholder "<empty>" as $2
+  maxlen=$(($1 + 2))
+  shift
+  for var_name in $@
+  do
+    if echo $var_name | grep -q "\."; then
+      # display by type
+      type="$(echo $var_name | awk -F \. '{print $1}')"
+      var="$(echo $var_name | awk -F \. '{print $2}')"
+      pad=" $(repeat '.' $(( ${maxlen} - ${#var})) )"
+      case ${type:0:1} in
+        [bB] )
+          eval "key=\$${var}"
+          message "${LBon}${var}${pad}: [ $(status_color ${key})$(TrueFalse ${key}) ${LBon}]${Boff}"
+        ;;
+        [yY]   )
+          eval "key=\$${var}"
+          message "${LBon}${var}${pad}: [ $(status_color ${key})${key} ${LBon}]${Boff}"
+        ;;
+        [lL]   )
+          eval "key=\$${var}"
+          message_n "${LBon}${var}${pad}: [ ${Boff}"
+          echo_n_long ${maxlen} ${key}; echo -e " ${LBon}]${Boff}"
+        ;;
+        *      )
+          # invalid variable type
+          E_message "  (${type}) invalid variable type [${type}] for variable [${var_name}]"
+          exit
+        ;;
+      esac
+    elif [[ "$var_name" == "BREAK" ]] ; then
+      echo
+    else
+      # untyped
+      type=""
+      var="$var_name"
+      eval "key=\$${var}"
+      pad=" $(repeat '.' $(( ${maxlen} - ${#var})) )"
+      message "${LBon}${var}${pad}: [ ${Boff}${key} ${LBon}]${Boff}"
+    fi
+  done
+}
+
+initialize_vars()   # initialize values for vars in $@; incl bool. lv.
+{
+  [ $# -lt 1 ] && return
+  parmlist=$(echo $@ | sed 's|verbosity||' | sed 's|bool.VERBOSE||')
+  d_message "initializing vars: $parmlist" 5
+  for var_name in $parmlist
+  do
+    if echo $var_name | grep -q "\."; then
+      # initialize by type
+      type="$(echo $var_name | awk -F \. '{print $1}')"
+      var="$(echo $var_name | awk -F \. '{print $2}')"
+      case ${type:0:1} in
+        [bB] )
+          # boolean convention: parameter is "bool.${var}" where ${var} is e.g. "VERBOSE"
+          # initialize booleans $FALSE
+          d_message_n "  (${type}) initializing ${var} FALSE ..." 2
+          eval "${var}=\$FALSE" ; d_right_status $? 2
+        ;;
+        [yY]   )
+          # yes/no convention: parameter is "yn.${var}" where ${var} is e.g. "EIX"
+          # initialize yes/no to "no"
+          d_message_n "  (${type}) initializing ${var} (no) ..." 2
+          eval "${var}=''" ; d_right_status $? 2
+        ;;
+        [lL]   )
+          # lonstring convention: parameter is "lv.${var}" where ${var} is e.g. "CMDLINE"
+          # initialize longstring to null string
+          d_message_n "  (${type}) initializing ${var} NULL ..." 2
+          eval "${var}=''" ; d_right_status $? 2
+        ;;
+        *      )
+          # invalid variable type
+          E_message "  (${type}) invalid variable type [${type}] for variable [${var_name}]"
+          exit
+        ;;
+      esac
+    elif [[ "$var_name" == "BREAK" ]] ; then
+      # ignore BREAK
+      type=""
+      d_message_n "  ignoring BREAK ..." 2
+      d_right_status $TRUE 2
+    else
+      # untyped - initialize null
+      type=""
+      var="$var_name"
+      d_message_n "  (${type}) initializing ${var} NULL ..." 2
+      eval "${var}=''" ; d_right_status $? 2
+    fi
+    d_message "about to initialize $var_name of type: [ $type ]" 4
+  done
+}
+
+echo_n_long()       # echo long string over several lines, if need. $1=start
+{
+  if ! isnumber $1 ; then E_message "Error: arg \$1 must be numeric starting caracter position"; exit; fi
+  if [ $# -le 1 ] ; then set $@ "<empty>"; fi
+  left=" * "; right=": [ "
+  start=$(( $1 + ${#left} + ${#right} )); shift; input="$@"; tw=$(termwidth); newline=""
+  for x in $input
+  do
+    d_echo "start: $start  #newline: ${#newline}   #x: ${#x}  tw: $tw   sum: $(( ${start} + ${#newline} + ${#x} + 1))" 6
+    if [[  $(( ${start} + ${#newline} + ${#x} + 1)) -le ${tw} ]] ; then
+      [[ ${#newline} -eq 0 ]] && newline="${x}" || newline="${newline} ${x}"
+    else
+      echo "${newline}"
+      start=0   # since next will be a new line
+      newline="${x}"
+    fi
+  done
+  echo -n "${newline}"
+}
+
+right_status()      # output 8 char [ ok/fail ] status at the right margin
+{ # test message_n "good_test" ; right_status $?
+  #      E_message_n "fail_test" && cat unexistent 2>/dev/null; right_status $?
+  local msg status=$1
+  [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}"
+  # go to start of line, *then* move fwd to 7 chars from the right margin ("[ xx ]" is 6)
+  echo -en "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
+
+log_right_status()  # output rigit_status to stdout and logFile 
+{ local msg status=$1; [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || \
+  msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+  echo -e -n "\r" && CUF $(( $(termwidth) - 7 )) && echo -e "$msg" && \
+  echo -e " $msg" >> $logFile && return 0 || return 1 ; }
+
+d_right_status()    # output rigit_status IAW verbosity
+{ # test with v=((verbosity+1)) and v=(($verbosity-1))
+  # d_message_n "good_test" $v; d_right_status $? $v
+  #      dE_message_n "fail_test" $v && cat unexistent 2>/dev/null; d_right_status $? $v
+  local status=$1
+  [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && right_status $status && return 0 || return 1 ; }
+
+sh_countdown()      # count-down seconds (arg $1)
+{ # special note: bb sh cannot use base#number notation with prefix 10# to ensure interpretation as base 10
+  if [[ ! -z $1 ]]
+  then rem_time="${1}" ;
+  else
+    message "no argument given, defaulting to 30 seconds"
+    rem_time=30
+  fi
+  # execute countdown
+  while [[ "${rem_time}" -gt "0" ]]
+  do
+    [[ "$rem_time" -lt "10" ]] && r_time="0"${rem_time} || r_time=${rem_time}
+    echo -en "\r${BGon}*${Boff} Pausing. [ ${BGon}${r_time}${Boff} ] seconds remaining..."
+    sleep 1
+    let "rem_time--"
+  done
+  [[ "$rem_time" -lt "10" ]] && r_time="0"${rem_time} || r_time=${rem_time}
+  echo -en "\r${BGon}*${Boff} Pausing. [ ${BGon}${r_time}${Boff} ] seconds remaining..."
+  echo
+  return 0
+}
+
+progress()          # show progress arrow (visualize $1 of $2 steps complete)
+{
+  [ $# -ne 2 ] && E_message "${BRon}Error - two arguments required (${BYon}step ${BRon}and ${BYon}number_of_steps${BRon})${Boff}"
+  step=$1; number_of_steps=$2
+  #---[ user configurable variables ]---------------------------------------------------------------------------------------------
+  margin=10; marker="-"
+  #---[ analytically determined variables ]---------------------------------------------------------------------------------------
+  range=$(( $(termwidth) - 3 - $(( $margin * 2 )) ))   # the -3 accounts for the two brackets (|) and the arrow head (>)
+  myprogress=$(( $range * $step / $number_of_steps ))    # this is how many $marker to draw to represent a single step of progress
+  start=$(($margin + 1)); end=$(( $(termwidth) - $margin -1 ))
+  myrow=$(termheight)
+  startofline=$(($start +1))
+  [ $step -lt $number_of_steps ] && endofline=$(($startofline + $myprogress)) || endofline=$(($end - 2))
+  lengthofline=$(($endofline - $startofline + 1))
+  percent=$((100 * $step / $number_of_steps))
+  middlestart=$(( $(( $(termwidth) / 2 )) - $(( ${#percent} / 2 )) - 4 ))
+  if [ $percent -ge 90 ]; then pct_color=${BGon}; else
+  if [ $percent -lt 70 ]; then pct_color=${BRon}; else pct_color=${BYon}; fi; fi
+  #---/ action: move to start, draw "|", draw line and ">", move to end and draw "|",
+  #     move middle, show percent, return to original position /------------------------------------------------------------------
+  SCP; CUP $myrow $start; echo -en "|"
+  repeat $marker $lengthofline; echo -en ">"
+  CUP $myrow $end; echo -en "|"
+  CUP $myrow $middlestart; echo -en "( ${pct_color}$percent%${Boff} )"; RCP
+}
+
+fe()                # find ebuild files matching filter "*$1*"
+{ echo "looking for ebuild(s) matching filter: $1"; find / -iname "*$1*.ebuild" -type f -print 2>/dev/null; }
+
+non_stty_separator()       # expects TERMWIDTH to be set in environment
+{
+  local msg preface title msg_len
+  [ ! -z "$1" ] && preface="$1" || preface=$(hostname)
+  [ ! -z "$2" ] && title="$2" || title=$(basename $0)
+  msg="${BYon}---[${BRon} ${preface} ${LBon}${title} ${BYon}]"
+  msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ));
+  echo -en "$msg" && echo -n $(repeat "-" $(( ${TERMWIDTH} - $(( $msg_len + ${#Boff} )) ))) && echo -e ${Boff} && return 0 || return 1
+}
+
+non_stty_right_status()    # expects TERMWIDTH to be set in environment
+{
+    local msg status=$1;
+    [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}";
+    echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1
+}
+
+confirm_continue_or_exit() # use prompt() to confirm user wants to continue
+{ answer="" ; msg="${BYon}Do you want to continue?" ; prompt "${msg}"
+    case ${answer:0:1} in
+        [yY] ) message "Affirmative response from user; continuing" ;;
+        [nN] ) E_message "Negative response from user; quitting"; exit 1 ;;
+        * ) E_message "invalid response to confirm_continue_or_exit"; exit 1 ;;
+    esac ; return 0 ; }
+
+die()                      # display reason with E_message and exit with status 1
+{ msg="${1}" ; E_message "${msg}" ; exit 1 ; }
+
+get_luks_keyfile()         # use arg1 (crypt_keydev) to identify keyfile
+{
+    # determine keydev type
+    # if it starts with "/" it is a device name
+    # if it contains "-" it may be a UUID
+    # if it does not, it may be a LABEL
+    message_n "examining crypt_keydev [ ${crypt_keydev} ] ..."
+    if [ -b ${crypt_keydev} ] ; then
+        crypt_keydev_type=devicename
+    elif echo ${crypt_keydev} | grep "-" ; then
+        crypt_keydev_type=UUID
+    else
+        crypt_keydev_type=LABEL
+    fi
+    # if it is not mounted, try to mount it
+    if [[ ! -z "$( mount | grep ${crypt_keydev_mountpoint%/} )" ]] ; then
+        echo -en " ${BGon}(mounted)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " trying to mount (${crypt_keydev_type}) [${crypt_keydev}] ..."
+        case $crypt_keydev_type in
+             "devicename" ) mount ${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             "UUID"       ) mount UUID=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+
+             "LABEL"      ) mount LABEL=${crypt_keydev} ${crypt_keydev_mountpoint} && right_status $? || \
+                  ( right_status $? && die "could not mount crypt_keydev ($crypt_keydev_type)") ;;
+             * )  right_status 1 ; die "invalid crypt_keydev" ;;
+        esac
+    fi
+    # set keyfile pathname
+    export keyfile=${crypt_keydev_mountpoint%/}/crypt/dat
+    return 0
+}
+
+get_luks_edev_name()       # determine an edev name to use with this device
+{
+    # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
+    d_message_n "determining edev name ..." 3
+    bn=$(basename ${luks_partition_device})
+    case ${bn:0:2} in
+      "sd" ) # scsi device
+        myedev=$(echo ${bn} | sed 's/^s/e/')
+        ;;
+      "nv" ) # nvme device
+        myedev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
+        ;;
+      "mm" ) # mmc device
+        myedev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
+        ;;
+      *    ) # tbd
+        d_echo "" 3 ; d_E_message "Error: bad luks device name [${OUTPUTDEVICE}]" 3
+        ;;
+    esac ; result=$?
+    d_echo " (${myedev})" 3 ; d_right_status $result 3
+    export edev=${myedev}
+    return $result
+}
+
+summarize_me()             # list functions in header ("source" to employ)
+{
+  echo
+  separator "script_header_joetoo-$BUILD | content summary" && \
+  message "This script header defines some ${BYon}common variables${Boff} for" && \
+  message "  use in various scripts, it provides pre-formatted ${BYon}easy-to-use${Boff}" && \
+  message "  ${BYon}ANSI Escape sequences${Boff} to facilitate the use of ${BMon}color${Boff} and" && \
+  message "  ${BYon}cursor${Boff} movement in my scripts, and it provides a number of" && \
+  message "  useful ${BGon}functions${Boff}, for some routine tasks, as described below\n" && \
+  grep "()" ${script_header_installed_dir%/}/script_header_joetoo | grep -v "grep" && echo && \
+  msg="${BGon}* ${Boff}  ${BYon}About to run:\n        ${BBon}message${Boff}" && \
+  msg="${msg}  ${BYon}\""'${BYon}VERBOSE is currently ' && \
+  msg="${msg}${BGon}\$(${BBon}status_color \\\"${BRon}\$VERBOSE${BBon}\\\"${BGon})${Boff}" && \
+  msg="${msg}${BGon}\$(${BBon}TrueFalse \\\"${BRon}\$VERBOSE${BBon}\\\"" && \
+  msg="${msg}${BGon})${BYon}\"${BGon}; ${BBon}echo${Boff}" && echo -e "${msg}" && \
+  echo && \
+  cmd="${BGon}message${BWon} \"  \${BYon}VERBOSE is currently \$(${BGon}status_color ${BRon}\$VERBOSE)${BWon}\$(${BGon}TrueFalse ${BRon}\$VERBOSE${BWon})\${Boff}\"${Boff}"
+  message "About to run ${cmd}"
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}" && echo && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 1${Boff}  " && \
+  vercomp 1 1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}2 ${BYon}to${BWon} 1${Boff}  " && \
+  vercomp 2 1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 2${Boff}  " && \
+  vercomp 1 2; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.2.0 ${BYon}to${BWon} 1.2.1${Boff}  " && \
+  vercomp 1.2.0 1.2.1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.2.0-r1 ${BYon}to${BWon} 1.2.0${Boff}  " && \
+  vercomp 1.2.0-r1 1.2.0; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1..1 ${BYon}to${BWon} 1.2${Boff}  " && \
+  vercomp 1..1 1.2; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.0 ${BYon}to${BWon} 1.0-r10${Boff}  " && \
+  vercomp 1.0 1.0-r10; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}3.4 ${BYon}to${BWon} 3.4-r2${Boff}  " && \
+  vercomp 3.4 3.4-r2; echo -e "$(show_result $?)" && echo && \
+  message "${BYon}Conditionally execute \$@ IAW verbosity (3) with ${BGon}d_do ${Boff}echo \"line 1.1\" \\; echo \"line 1.2\" 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  d_do echo "line 1.1" \; echo "line 1.2" 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message "${BYon}Conditionally execute \$1 IAW verbosity (3) with ${BGon}debug_do ${Boff}'echo \"line 2.1\" ; echo \"line 2.2\"' 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  debug_do 'echo "line 2.1" ; echo "line 2.2"' 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && echo "" && \
+  message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}( ) and ${BGon}TrueFalse${Boff}( ) --" && \
+  for x in y Y t T up n N f F down 0 1 z "" ; do message "  ${BWon}testing: [${LBon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}" ; done && \
+  message "  ${BWon}testing: [${LBon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}" && \
+  message "  ${BWon}testing: [${LBon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}" && \
+  E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && \
+  echo && \
+  msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${LBon}echo ${BGon}&& ${Boff}" && \
+  msg="${msg}${BBon}message_n${Boff} \"" && \
+  msg="${msg}Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  message "${msg}" && \
+  sh_countdown 3 && echo && \
+  message_n "Finishing with status of summarization --->" ; right_status $?; echo
+
+  return 0
+}
