@@ -71,9 +71,9 @@ if echo "$REASON" | grep -E 'IPV6L_RENEW|IPV6_RENEW|IPV6L_UP|IPV6_UP|BOUND|CARRI
     if [ -z "$ACTION_IPV6_ADDRESS" ]; then
         msg="[$(timestamp)] WARNING: \$NEW_ADDR was empty for [$REASON]. Falling back to manual lookup (after delay) ..." >> "$debugging_log"
         # Temporary Delay for Slow SLAAC
-    if echo "$REASON" | grep -E 'BOUND|IPV6L_UP|IPV6_UP' >/dev/null ; then
+        if echo "$REASON" | grep -E 'BOUND|IPV6L_UP|IPV6_UP' >/dev/null ; then
             # Delay for 1 minute (60 seconds) to ensure the ULA is attached
-      �msg="[$(timestamp)] INFO: Delaying 60s for slow SLAAC/RA on [$REASON] event..." >> "$debugging_log"
+            msg="[$(timestamp)] INFO: Delaying 60s for slow SLAAC/RA on [$REASON] event..." >> "$debugging_log"
             sleep 60
         fi  # (delay)
         if [ -z "$INTERFACE" ] ; then
