@@ -69,13 +69,7 @@ if echo "$REASON" | grep -E 'IPV6L_RENEW|IPV6_RENEW|IPV6L_UP|IPV6_UP|BOUND|CARRI
     # Try to use the address passed by dhcpcd (most relevant if populated)
     ACTION_IPV6_ADDRESS="${NEW_IPV6_ADDRESS}"
     if [ -z "$ACTION_IPV6_ADDRESS" ]; then
-        msg="[$(timestamp)] WARNING: \$NEW_ADDR was empty for [$REASON]. Falling back to manual lookup (after delay) ..." >> "$debugging_log"
-        # Temporary Delay for Slow SLAAC
-        if echo "$REASON" | grep -E 'BOUND|IPV6L_UP|IPV6_UP' >/dev/null ; then
-            # Delay for 1 minute (60 seconds) to ensure the ULA is attached
-            msg="[$(timestamp)] INFO: Delaying 60s for slow SLAAC/RA on [$REASON] event..." >> "$debugging_log"
-            sleep 60
-        fi  # (delay)
+        msg="[$(timestamp)] WARNING: \$NEW_ADDR was empty for [$REASON]. Falling back to manual lookup..." >> "$debugging_log"
         if [ -z "$INTERFACE" ] ; then
             msg="FAILURE: \$INTERFACE was empty (reliable lookup not possible)..." >> "$debugging_log"
             exit 0
@@ -119,6 +113,7 @@ else
     msg="[$(timestamp)] UPDATE READY: action: [$ACTION_MSG] address: [$ACTION_IPV6_ADDRESS]"
     logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
     echo "${msg}" >> "${debugging_log}"
+fi
 
 # Final command arguments: ADDRESS, FQDN, INTERFACE, and timestamp
 # (INTERFACE to be used in NS hosts file '#' comment field
