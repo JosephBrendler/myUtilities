@@ -120,21 +120,24 @@ update_hosts_file() {
         LC_COLLATE="en_US.UTF-8" sort -k1.24,2 > "$temp_ipv6"
 
     # Re-initialize openVPN hosts file with separator and IPv4 header
-    echo -e "\n# ------------------------------------------------------------------" > "${openVPN_hosts_file}"
-    echo "# /etc/hosts.d/20_openVPN_clients (IPv4 Section)" >> "${openVPN_hosts_file}"
-    echo -e "# ------------------------------------------------------------------" > "${openVPN_hosts_file}"
+    echo -e -n "" > "${openVPN_hosts_file}"
+#    echo -e "\n" > "${openVPN_hosts_file}"
+#    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
+#    echo "# /etc/hosts.d/20_openVPN_clients (IPv4 Section)" >> "${openVPN_hosts_file}"
+    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
 #    echo "# IP Address (20)    Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
-    echo "# IP Address (17) Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
+    echo "# IPv4 Addr (17)  Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
 
     # Add the IPv4 content
     cat "$temp_ipv4" >> "${openVPN_hosts_file}"
 
     # Add separator and IPv6 header
-    echo -e "\n# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
-    echo "# /etc/hosts.d/20_openVPN_clients (IPv6 Section)" >> "${openVPN_hosts_file}"
-    echo -e "# ------------------------------------------------------------------" > "${openVPN_hosts_file}"
+#    echo -e "\n" >> "${openVPN_hosts_file}"
+#    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
+#    echo "# /etc/hosts.d/20_openVPN_clients (IPv6 Section)" >> "${openVPN_hosts_file}"
+    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
 #    echo "# IP Address (40)                         Hostname (20)        Timestamp" >> "${openVPN_hosts_file}"
-    echo "# IP Address (22)      Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
+    echo "# IPv6 Addr (22)       Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
 
     # Add the IPv6 content
     cat "$temp_ipv6" >> "${openVPN_hosts_file}"
