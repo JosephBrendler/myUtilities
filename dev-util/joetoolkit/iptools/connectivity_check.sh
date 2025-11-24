@@ -7,29 +7,35 @@ PN=$(basename $0)
 targets=(nuthuvia gmki92 sandbox raspicm46401 lcsp6402 rock5c6403 elrond google.com)
 
 show_result() {
+  end="$SECONDS"
+  elapsed=$(($end - $start))
   echo -e -n "${BWon}result: [${Mon}$1${BWon}] ${Boff}"
   if [ $1 -eq 0 ] ; then
     bremoji $face_beam
-    echo -e "${BGon}Success${Boff}"
+    echo -e -n "${BGon}Success${Boff}"
   else
     bremoji $no_entry
-    echo -e "${BRon}Failed${Boff}"
+    echo -e -n "${BRon}Failed${Boff}"
   fi
+  echo -e " (${Bon}elapsed: [${Mon}${elapsed}${Bon}]${Boff})"
 }
 
 for x in "${targets[@]}"; do
   separator "${PN}" "(${x})"
   message "${BYon}pinging ${LBon}-4 ${BMon}${x}${Boff}"
-  ping -4 -c3 -w5 "$x"
+  start="$SECONDS"
+  ping -4 -c3 -w10 "$x"
   show_result $?
 
   if [[ "$x" == "google.com" ]] ; then
     message "${BYon}pinging ${LBon}-6 ${BMon}${x}${Boff}"
-    ping -6 -c3 -w5 "$x"
+    start="$SECONDS"
+    ping -6 -c3 -w10 "$x"
     show_result $?
   else
     message "${BYon}pinging ${LBon}-6 ${BMon}${x}.brendler${Boff}"
-    ping -6 -c3 -w5 "$x.brendler"
+    start="$SECONDS"
+    ping -6 -c3 -w10 "$x.brendler"
     show_result $?
   fi
 done
