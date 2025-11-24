@@ -13,6 +13,8 @@ openVPN_hosts_file="/etc/hosts.d/20_openVPN_clients"
 #-----[ script "global" variables ]------------------
 ipv4_subnet="192.168.63"
 ipv6_prefix="fd62"
+domain="brendler"
+
 client_list=()  # client names
 ip_list=()      # client vpn subnet ip address
 ts_list=()      # timestamp: last reference this addr/route
@@ -70,6 +72,11 @@ read_routing_table() {
       #  each such certificant name has the form "Elrondclient_${client_name}"
       client_name=$(echo "${client_raw}" | sed 's/Elrondclient_//' )
 
+      # for ipv6 addresses, append domain to hostname, to form fully qualified domain name (fqdn)
+      if [ "$ip_type" == "ipv6" ]; then
+        client_name="${client_name}.${domain}"
+      fi
+
       # append to arrays
       ip_list+=("${ip}")
       client_list+=("${client_name}")
@@ -97,11 +104,9 @@ update_hosts_file() {
     #   Second awk prints in fixed-width columns appropriate for ipv4 address info
     grep -E "${W1}ipv4$" "$temp_raw" | \
         LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' |
-#        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-20s %-20s %-20s\n", $1, $2, $3 }' | \
         # re-do space needed is 4xoctet + 3x'.' = 15 + pad = 17 char
         LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
         # Sort alphabetically by hostname. Hostname is now field 2, starting at column 22.
-#        LC_COLLATE="en_US.UTF-8" sort -k1.22,2 > "$temp_ipv4"
         LC_COLLATE="en_US.UTF-8" sort -k1.19,2 > "$temp_ipv4"
 
     # Process IPv6 Entries (grep picks only ipv6 entries)
@@ -110,34 +115,24 @@ update_hosts_file() {
     #   Second awk prints in fixed-width columns appropriate for ipv4 address info
     grep -E "${W1}ipv6$" "$temp_raw" | \
         LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' |
-#        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-40s %-20s %-20s\n", $1, $2, $3 }' | \
         # dont need 40 char (128bit 8xhextet + 7x':') since openvpn assigns shorthand addresses
         # of the form: fd62:6262:6263::xxxx - short for: fd62:6262:6263:0000:0000:0000:0000:xxxx
         # so space needed is 4xhextet + 4x':' = 20 + pad = 22 char
-        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-22s %-20s %-20s\n", $1, $2, $3 }' | \
+        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-22s %-25s %-20s\n", $1, $2, $3 }' | \
          # Sort alphabetically by hostname. Hostname is now field 2, starting at column 42.
-#        LC_COLLATE="en_US.UTF-8" sort -k1.42,2 > "$temp_ipv6"
         LC_COLLATE="en_US.UTF-8" sort -k1.24,2 > "$temp_ipv6"
 
     # Re-initialize openVPN hosts file with separator and IPv4 header
     echo -e -n "" > "${openVPN_hosts_file}"
-#    echo -e "\n" > "${openVPN_hosts_file}"
-#    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
-#    echo "# /etc/hosts.d/20_openVPN_clients (IPv4 Section)" >> "${openVPN_hosts_file}"
     echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
-#    echo "# IP Address (20)    Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
     echo "# IPv4 Addr (17)  Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
 
     # Add the IPv4 content
     cat "$temp_ipv4" >> "${openVPN_hosts_file}"
 
     # Add separator and IPv6 header
-#    echo -e "\n" >> "${openVPN_hosts_file}"
-#    echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
-#    echo "# /etc/hosts.d/20_openVPN_clients (IPv6 Section)" >> "${openVPN_hosts_file}"
     echo -e "# ------------------------------------------------------------------" >> "${openVPN_hosts_file}"
-#    echo "# IP Address (40)                         Hostname (20)        Timestamp" >> "${openVPN_hosts_file}"
-    echo "# IPv6 Addr (22)       Hostname (20)        Timestamp (20)" >> "${openVPN_hosts_file}"
+    echo "# IPv6 Addr (22)       FQDN (25)                 Timestamp (20)" >> "${openVPN_hosts_file}"
 
     # Add the IPv6 content
     cat "$temp_ipv6" >> "${openVPN_hosts_file}"
