@@ -31,7 +31,10 @@ non_interactive_header=${script_header_installed_dir%/}/script_header_joetoo_non
 #  see http://en.wikipedia.org/wiki/ANSI_escape_code
 #  see also http://ascii-table.com/ansi-escape-sequences.php
 
-CSI="\033["             # control sequence initiator == hex "\x1b["
+# define the control sequence initiator: ascii "\e[", octal "\033[", or hex "\x1b["
+# which is used for Parameterized Control (e.g., cursor positioning, setting colors, clearing screen)
+# The sequence is always followed by numbers and a final letter (e.g., \e[31m for red text).
+CSI="\033["
 #---[ Select Graphics Rendition on/off ]---------------------------
 BOLD="1"       # bold on
 UL="4"         # underline on
@@ -78,7 +81,7 @@ RVon="${CSI}${REVERSE}m"
 Boff="${CSI}${SGRoff}m"          # Bold off (reset all SGR (e.g. blink, underline)
 #---[ Here setting background as well ]-----------------------------
 BBonY="${CSI}${BLUE};${YBACK};${BOLD}m"
-color()  # set both foreground and background color; optional bold
+color()   # set both foreground and background color; optional bold
 {
   local FG=""  # foreground
   local BG=""  # optional background
@@ -101,57 +104,87 @@ color()  # set both foreground and background color; optional bold
 }
 
 #---[ Box Drawing escape sequence stuff ]--------------------------
-#  See: https://en.wikipedia.org/wiki/Box-drawing_character
-ESCon='\e(0'
-ESCoff='\e(B'
-H_wall='\x71'
-V_wall='\x78'
-UL_wall='\x6C'
-UR_wall='\x6B'
-LL_wall='\x6D'
-LR_wall='\x6A'
-# we can also use unicode characters, which do not require the esc seq intro
-uH_wall='\u2500'
-uV_wall='\u2502'
-uUL_wall='\u250C'
-uUR_wall='\u2510'
-uLL_wall='\u2514'
-uLR_wall='\u2518'
-uD_H_wall='\u2550'
-uD_V_wall='\u2551'
-uD_UL_wall='\u2554'
-uD_UR_wall='\u2557'
-uD_LL_wall='\u255A'
-uD_LR_wall='\u255D'
+# See: https://en.wikipedia.org/wiki/Box-drawing_character
+# Note: this is from Digital Equipment Corporation (DEC) command language (DCL) experiance
+# I had at Nordson Corporation (Amherst, OH) Robotics EE Research department in 1982
+# (though that was actual VT102 terminals connected by serial lines to a Vax-11/70 mainframe)
+# DEC was the pioneer that developed the VT100 terminal in the late 1970s. DCL programs for the VT100
+# used of escape sequences (\e or ESC) to control cursor movement, colors, and special character sets,
+# and this became the industry standard. Most modern terminal emulators (like xterm, Konsole, or the
+# console in BusyBox) still implement compatibility with these original VT series terminals
+#
+# Define the escape sequence initiator (ESCon) not to be confused with the CSI defined above
+# with a Single Shift Unlock (SSU) followed by a character set selection.
+# The SSU is: ascii "\e(", octal "\033(", or hex "\x1b(" ,  and appending character "0" makes ESCon
+# a Character Set Selection that tells the terminal to switch the current font mapping
+# (the G0 character set) from the standard ASCII font to the DEC Special Graphics font.
+# (VT100-compatible terminals maintain four character sets, known as G0, G1, G2, and G3 -
+#  G0 is the primary character set. It's what the terminal uses by default for all incoming
+#  characters; G1-G3 are secondary sets)
+# ESCon and ESCoff are thus SSU sequences that permanently map G0 to another G-set until
+# another sequence shifts it again
+
+# ESC(C Sequences (Explicit G0 Selection)
+ESCon='\033(0'     # Maps G0 to DEC Special Graphics (Enable Graphics)
+ESCoff='\033(B'    # Maps G0 to Standard ASCII (Disable Graphics)
+# ESC)C Sequence (Explicit G1 Selection)
+ESGon='\033)0'     # Maps G1 to DEC Special Graphics (Setup for SI/SO)
+
+# Shift In/Out Control Characters (Fast G0/G1 Toggling)
+SO='\016'          # Shift Out (Activate G1, Graphics ON - ASCII 14, hex \x0E)
+SI='\017'          # Shift In (Activate G0, Standard ASCII ON - ASCII 15, hex \x0F)
+
+vt_init() # set G0/G1 mappings to support SI/SO method (faster than ESCon/off)
+{  printf "%b%b" "$ESCoff" "$ESGon" ; }
+# *()* test first, the SI/SO method is supported on MOST, not ALL modern terminals
+
+# Graphics Character Codes (Using portable octal escapes)
+H_wall='\161'      # Horizontal line (0x71)
+V_wall='\170'      # Vertical line (0x78)
+UL_wall='\154'     # Upper-Left corner (0x6C)
+UR_wall='\153'     # Upper-Right corner (0x6B)
+LL_wall='\155'     # Lower-Left corner (0x6D)
+LR_wall='\152'     # Lower-Right corner (0x6A)
+
+# unicode line/box characters moved to script_header_joetoo_unicode (do not require the esc seq intro)
+
+#---[ regex character class patterns ]-----------------------------
+W0="[[:space:]]*" # regex match for zero or more whitespaces
+W1="[[:space:]]+" # regex match for one or more whitespaces
+P0="[[:print:]]*" # regex match for zero or more printable characters (incl. whitespace)
+P1="[[:print:]]+" # regex match for one or more printable characters (incl. whitespace)
+G0="[[:graph:]]*" # regex match for zero or more printable characters (excl. whitespace)
+G1="[[:graph:]]+" # regex match for one or more printable characters (excl. whitespace)
+
 
 #---[ Cursor Movement Commands ]-----------------------------------
-SCP()    # save the current cursor position
+SCP()     # save the current cursor position
 { echo -en "${CSI}s" && return 0 || return 1; }
-RCP()    # restore the cursor to the saved position
+RCP()     # restore the cursor to the saved position
 { echo -en "${CSI}u" && return 0 || return 1; }
-HCU()    # Hide the cursor (Note: the trailing character is lowercase L)
+HCU()     # Hide the cursor (Note: the trailing character is lowercase L)
 { echo -en "${CSI}?25l" && return 0 || return 1; }
-SCU()    # Show the cursor
+SCU()     # Show the cursor
 { echo -en "${CSI}?25h" && return 0 || return 1; }
-HVP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+HVP()     # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
 { local row col ;
   [ ! -z "$1" ] && row=$1 || row=1 ;
   [ ! -z "$2" ] && col=$2 || col=1 ;
   echo -en "${CSI}${row};${col}f" && return 0 || return 1 ; }
-CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+CUP()     # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
 { local row col ;
   [ ! -z "$1" ] && row=$1 || row=1 ;
   [ ! -z "$2" ] && col=$2 || col=1 ;
   echo -en "${CSI}${row};${col}H" && return 0 || return 1 ; }
-CLR()    # Clear stdout
+CLR()     # Clear stdout
 { echo -en "${CSI}2J" && return 0 || return 1; }
-CUU()    # Move the cursor up ($1 cells)
+CUU()     # Move the cursor up ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} + 1 ))"A" && return 0 || return 1; }
-CUD()    # Move the cursor down ($1 cells)
+CUD()     # Move the cursor down ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} - 1 ))"B" && return 0 || return 1; }
-CUF()    # Move the cursor forward ($1 cells)
+CUF()     # Move the cursor forward ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
-CUB()    # Move the cursor back ($1 cells)
+CUB()     # Move the cursor back ($1 cells)
 { [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
 
 # ---[ common function blocks ]------------------------------------------

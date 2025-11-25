@@ -34,7 +34,10 @@ non_interactive_header="${script_header_installed_dir%/}/script_header_joetoo_no
 #  see http://en.wikipedia.org/wiki/ANSI_escape_code
 #  see also http://ascii-table.com/ansi-escape-sequences.php
 
-CSI="\033["             # control sequence initiator == hex "\x1b["
+# define the control sequence initiator: ascii "\e[", octal "\033[", or hex "\x1b["
+# which is used for Parameterized Control (e.g., cursor positioning, setting colors, clearing screen)
+# The sequence is always followed by numbers and a final letter (e.g., \e[31m for red text)
+CSI="\033["
 #-----[ Select Graphics Rendition on/off ]------------------------------------------
 BOLD="1"         # bold on
 UL="4"           # underline on
@@ -91,391 +94,586 @@ Boff="${CSI}${SGRoff}m"          # Bold off (reset all SGR (e.g. blink, underlin
 BBonY="${CSI}${BLUE};${YBACK};${BOLD}m"
 
 color() {          # (POSIX) set FG $1, optional [bold $2], optional [BG $3]
-    local FG=""    # Foreground (3x)
-    local BG=""    # Background (4x)
-    local B=""     # Bold (0/1)
-    local V_FG="${1:-39}"  # Default FG is 39 (terminal default)
-    local V_B="${2:-0}"    # Default Bold is 0 (Normal)
-    local V_BG="${3:-49}"  # Default BG is 49 (terminal default)
+    _FG=""    # Foreground (3x)
+    _BG=""    # Background (4x)
+    _B=""     # Bold (0/1)
+    _V_FG="${1:-39}"  # Default _FG is 39 (terminal default)
+    _V_B="${2:-0}"    # Default Bold is 0 (Normal)
+    _V_BG="${3:-49}"  # Default _BG is 49 (terminal default)
     # validate foreground (3x) or set default 39; set bold appropriately
-    case "$V_FG" in
+    case "$_V_FG" in
         3[0-7])  # foreground is set
-            FG="$V_FG" ;
+            _FG="$_V_FG" ;
             # validate bold (0/1)
-            case "$V_B" in
-                0|1) B=";$V_B" ;;
-                *) echo "$E_BAD_COLOR: Bold attr ($V_B)(0/1)"; return 1 ;;
-            esac  # B
+            case "$_V_B" in
+                1) _B=";1" ;;
+                0) _B="" ;;
+                *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
+            esac  # _B
             ;;
         39)     # unset foreground for default
-            FG="" ;
+            _FG="" ;
             # validate bold (0/1) - omit leading ; since no $1
-            case "$V_B" in
-                0|1) B="$V_B" ;;
-                *) echo "$E_BAD_COLOR: Bold attr ($V_B)(0/1)"; return 1 ;;
-            esac  # B
+            case "$_V_B" in
+                0|1) _B="$_V_B" ;;
+                *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
+            esac  # _B
             ;;  # allow unset args $(color) to equate to ${Boff}
-        *) echo "$E_BAD_COLOR: Foreground ($V_FG)(3x)"; return 1 ;;
-    esac # FG
+        *) echo "$E_BAD_COLOR: Foreground ($_V_FG)(3x)"; return 1 ;;
+    esac # _FG
 
     # validate background (4x) or set default (unset)
-    case "$V_BG" in
-        4[0-7]) BG=";$V_BG" ;;
-        49) BG="" ;;  # allow unset BG to imply terminal default
-        *) echo "$E_BAD_COLOR: Background ($V_BG)(4x)"; return 1 ;;
+    case "$_V_BG" in
+        4[0-7]) _BG=";$_V_BG" ;;
+        49) _BG="" ;;  # allow unset _BG to imply terminal default
+        *) echo "$E_BAD_COLOR: Background ($_V_BG)(4x)"; return 1 ;;
     esac
     # output the raw ANSI escape sequence
-    printf "%s%s%s%s%s\n" "${CSI}" "${FG}" "${B}" "${BG}" "m"
+    printf "%s%s%s%s%s" "${CSI}" "${_FG}" "${_B}" "${_BG}" "m"
 }
 
-#####################-----[ fully POSIX checked above this line -]-----#########################
-
-
 #---[ Box Drawing escape sequence stuff ]--------------------------
-#  See: https://en.wikipedia.org/wiki/Box-drawing_character
-ESCon='\e(0'
-ESCoff='\e(B'
-H_wall='\x71'
-V_wall='\x78'
-UL_wall='\x6C'
-UR_wall='\x6B'
-LL_wall='\x6D'
-LR_wall='\x6A'
-# we can also use unicode characters, which do not require the esc seq intro
-uH_wall='\u2500'
-uV_wall='\u2502'
-uUL_wall='\u250C'
-uUR_wall='\u2510'
-uLL_wall='\u2514'
-uLR_wall='\u2518'
-uD_H_wall='\u2550'
-uD_V_wall='\u2551'
-uD_UL_wall='\u2554'
-uD_UR_wall='\u2557'
-uD_LL_wall='\u255A'
-uD_LR_wall='\u255D'
+# See: https://en.wikipedia.org/wiki/Box-drawing_character
+# Note: this is from Digital Equipment Corporation (DEC) command language (DCL) experiance
+# I had at Nordson Corporation (Amherst, OH) Robotics EE Research department in 1982
+# (though that was actual VT102 terminals connected by serial lines to a Vax-11/70 mainframe)
+# DEC was the pioneer that developed the VT100 terminal in the late 1970s. DCL programs for the VT100
+# used of escape sequences (\e or ESC) to control cursor movement, colors, and special character sets,
+# and this became the industry standard. Most modern terminal emulators (like xterm, Konsole, or the
+# console in BusyBox) still implement compatibility with these original VT series terminals
+#
+# Define the escape sequence initiator (ESCon) not to be confused with the CSI defined above
+# with a Single Shift Unlock (SSU) followed by a character set selection.
+# The SSU is: ascii "\e(", octal "\033(", or hex "\x1b(" ,  and appending character "0" makes ESCon
+# a Character Set Selection that tells the terminal to switch the current font mapping
+# (the G0 character set) from the standard ASCII font to the DEC Special Graphics font.
+# (VT100-compatible terminals maintain four character sets, known as G0, G1, G2, and G3 -
+#  G0 is the primary character set. It's what the terminal uses by default for all incoming
+#  characters; G1-G3 are secondary sets)
+# ESCon and ESCoff are thus SSU sequences that permanently map G0 to another G-set until
+# another sequence shifts it again
 
+# ESC(C Sequences (Explicit G0 Selection)
+ESCon='\033(0'     # Maps G0 to DEC Special Graphics (Enable Graphics)
+ESCoff='\033(B'    # Maps G0 to Standard ASCII (Disable Graphics)
+# ESC)C Sequence (Explicit G1 Selection)
+ESGon='\033)0'     # Maps G1 to DEC Special Graphics (Setup for SI/SO)
 
-#---[ Cursor Movement Commands ]-----------------------------------
+# Shift In/Out Control Characters (Fast G0/G1 Toggling)
+SO='\016'          # Shift Out (Activate G1, Graphics ON - ASCII 14, hex \x0E)
+SI='\017'          # Shift In (Activate G0, Standard ASCII ON - ASCII 15, hex \x0F)
+
+vt_init() # set G0/G1 mappings to support SI/SO method (faster than ESCon/off)
+{  printf "%b%b" "$ESCoff" "$ESGon" ; }
+# *()* test first, the SI/SO method is supported on MOST, not ALL modern terminals
+
+# Graphics Character Codes (Using portable octal escapes)
+H_wall='\161'      # Horizontal line (0x71)
+V_wall='\170'      # Vertical line (0x78)
+UL_wall='\154'     # Upper-Left corner (0x6C)
+UR_wall='\153'     # Upper-Right corner (0x6B)
+LL_wall='\155'     # Lower-Left corner (0x6D)
+LR_wall='\152'     # Lower-Right corner (0x6A)
+
+# unicode line/box characters moved to script_header_joetoo_unicode (do not require the esc seq intro)
+
+#---[ regex character class patterns ]-----------------------------
+W0="[[:space:]]*" # regex match for zero or more whitespaces
+W1="[[:space:]]+" # regex match for one or more whitespaces
+P0="[[:print:]]*" # regex match for zero or more printable characters (incl. whitespace)
+P1="[[:print:]]+" # regex match for one or more printable characters (incl. whitespace)
+G0="[[:graph:]]*" # regex match for zero or more printable characters (excl. whitespace)
+G1="[[:graph:]]+" # regex match for one or more printable characters (excl. whitespace)
+
+#---[ Simple Cursor State Control ]-----------------------------------
 SCP()    # save the current cursor position
-{ echo -en "${CSI}s" && return 0 || return 1; }
+{ printf "%b" "${CSI}s" ; return $?; }
 RCP()    # restore the cursor to the saved position
-{ echo -en "${CSI}u" && return 0 || return 1; }
+{ printf "%b" "${CSI}u" ; return $?; }
 HCU()    # Hide the cursor (Note: the trailing character is lowercase L)
-{ echo -en "${CSI}?25l" && return 0 || return 1; }
+{ printf "%b" "${CSI}?25l" ; return $?; }
 SCU()    # Show the cursor
-{ echo -en "${CSI}?25h" && return 0 || return 1; }
-HVP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
-{ local row col ;
-  [ ! -z "$1" ] && row=$1 || row=1 ;
-  [ ! -z "$2" ] && col=$2 || col=1 ;
-  echo -en "${CSI}${row};${col}f" && return 0 || return 1 ; }
-CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
-{ local row col ;
-  [ ! -z "$1" ] && row=$1 || row=1 ;
-  [ ! -z "$2" ] && col=$2 || col=1 ;
-  echo -en "${CSI}${row};${col}H" && return 0 || return 1 ; }
+{ printf "%b" "${CSI}?25h" ; return $?; }
 CLR()    # Clear stdout
-{ echo -en "${CSI}2J" && return 0 || return 1; }
-CUU()    # Move the cursor up ($1 cells)
-{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} + 1 ))"A" && return 0 || return 1; }
-CUD()    # Move the cursor down ($1 cells)
-{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} - 1 ))"B" && return 0 || return 1; }
-CUF()    # Move the cursor forward ($1 cells)
-{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"C" && return 0 || return 1; }
+{ printf "%b" "${CSI}2J" ; return $?; }
+#---[ Cursor Absolute Positioning ]-----------------------------------
+HVP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+{ _row="${1:-1}"; _col="${2:-1}"; if isnumber "$_row" && isnumber "$_col"; then
+  printf "%b" "${CSI}${_row};${_col}f" ; return 0; else return 1; fi }
+CUP()    # move cursor to position row=$1, col=$2 (both default to 1 if omitted)
+{ _row="${1:-1}"; _col="${2:-1}"; if isnumber "$_row" && isnumber "$_col"; then
+  printf "%b" "${CSI}${_row};${_col}H" ; return 0; else return 1; fi }
+#---[ Cursor Relative Movement ]-----------------------------------
+CUU()    # Move the cursor back ($1 cells)
+{ _reps="${1:-1}"; if isnumber "$_reps"; then printf "%b" "${CSI}${_reps}A" ; return 0;
+  else return 1; fi; }
+CUD()    # Move the cursor back ($1 cells)
+{ _reps="${1:-1}"; if isnumber "$_reps"; then printf "%b" "${CSI}${_reps}B" ; return 0;
+  else return 1; fi; }
+CUF()    # Move the cursor back ($1 cells)
+{ _reps="${1:-1}"; if isnumber "$_reps"; then printf "%b" "${CSI}${_reps}C" ; return 0;
+  else return 1; fi; }
 CUB()    # Move the cursor back ($1 cells)
-{ [ ! -z "$1" ] && reps=$1 || reps=1; echo -en "${CSI}"$(( ${reps} ))"D" && return 0 || return 1; }
+{ _reps="${1:-1}"; if isnumber "$_reps"; then printf "%b" "${CSI}${_reps}D" ; return 0;
+  else return 1; fi; }
 
 # ---[ common function blocks ]------------------------------------------
 
-isnumber()          # test if $1 is a decimal number; return true/false
-{ re='^[0-9]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
+isnumber()          # (POSIX) tests if $1 is a non-negative integer
+{ [ $# -eq 0 ] && return 1  # Guard clause: Check if an argument was provided
+  case $1 in
+    ""       ) return 1 ;;
+    *[!0-9]* ) return 1 ;;
+    *        ) return 0 ;;
+  esac ; }
 
-ishex()             # test if $1 is a hexadecimal number; return true/false
-{ re='^[0-9a-fA-F]+$'; if echo "$1" | egrep -q "$re"; then return $TRUE; else return $FALSE; fi ; }
+ishex()             # (POSIX) test if $1 is a hexadecimal number
+{ [ $# -eq 0 ] && return 1  # Guard clause: Check if an argument was provided
+  case $1 in
+    ""       ) return 1 ;;
+    *[!0-9a-fA-F]* ) return 1 ;;
+    *        ) return 0 ;;
+  esac ; }
 
 checkroot()         # Run as root, of course.
-{ if [ "$UID" -ne "$ROOT_UID" ]; then E_message "${E_NOTROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
+{ _UID=$(id -u); if [ "$_UID" -ne "$ROOT_UID" ]; then
+ E_message "${E_NOTROOT}"; echo;
+ E_message "exiting process [$$]" && exit 1; fi; }
 
 checknotroot()      # Run as not root, of course.
-{ if [ "$UID" -eq "$ROOT_UID" ]; then E_message "${E_ROOT}"; echo; E_message "exiting process [$$]" && exit 1; else return 0; fi; }
+{ _UID=$(id -u); if [ "$_UID" -eq "$ROOT_UID" ]; then
+ E_message "${E_ROOT}"; echo;
+ E_message "exiting process [$$]" && exit 1; fi; }
 
 checkboot()         # check to see if /boot is a mountpoint and is properly mounted
-{ [[ -z $(grep '[[:space:]]/boot[[:space:]]' /etc/fstab | grep -v '^#') ]] && return 2  # not supposed to be a mountpoint
-  [[ ! -z $(findmnt -nl /boot) ]] && return 0 || return 1 ; }  # return 1 if it is a mountpoint that is not mounted
+{ _fstab_check=$(grep -E "${W1}/boot${W1}" /etc/fstab | grep -v '^#')
+  if [ -z "$_fstab_check" ]; then return 2; fi # not supposed to be a mountpoint
+  if grep -q "${W1}/boot${W1}" /proc/mounts 2>/dev/null || \
+     grep -q "${W1}/boot${W1}" /etc/mtab 2>/dev/null); then
+    return 0; # properly mounted
+  else
+    return 1; # Listed in fstab but NOT mounted
+  fi; }
 
 checkshell()        # reset colors if this shell is not interactive
-{ [[ ! -t 0 && ! -t 1 ]] && source ${non_interactive_header}; }
+{ [ -z "$PS1" ] && . ${non_interactive_header}; }
 
-message()           # echo a simply formatted message $1 to stdout
-{ echo -e " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
+message()     # (POSIX) display text message $@
+{ printf " ${BGon}*${Boff} " ; printf "$@\n" ; }
+message_n()   # (POSIX) display text message $@ w/o newline
+{ printf " ${BGon}*${Boff} " ; printf "$@" ; }
+W_message()   # (POSIX) display text warning message $@
+{ printf " ${BYon}*${Boff} " ; printf "$@\n" ; }
+E_message()   # (POSIX) display text error message $@
+{ printf " ${BRon}*${Boff} " ; printf "$@\n" ; }
+E_message_n()       # (POSIX) display text error message $@ (no CR)
+{ printf " ${BRon}*${Boff} " ; printf "$@" ; }
 
-message_n()         # echo -n a simply formatted message $1 to stdout
-{ echo -en " ${BGon}*${Boff} ${1}" && return 0 || return 1; }
+d_message()   # (POSIX) IAW verbosity, display text debugging message $@
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf " ${BGon}*${Boff} " ; printf "%b\n" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-E_message()         # echo a simply formatted error message $1 to stdout
-{ echo -e " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
+d_message_n() # (POSIX) IAW verbosity, display text debugging message $@ (no CR)
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf " ${BGon}*${Boff} " ; printf "%b" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-E_message_n()       # echo -n a simply formatted error message $1 to stdout
-{ echo -en " ${BRon}*${Boff} ${1}" && return 0 || return 1; }
+d_echo()      # (POSIX) IAW verbosity, display debugging information
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf "%s\n" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-log_message()       # message() to stdout and $logFile owned by $user
-{ local msg="$1" ; message "$(timestamp) - $msg" | tee -a "$logFile" ; }
+de_echo()      # (POSIX) IAW verbosity, display debugging information
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf "%b\n" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-log_message_n()     # message_n() to stdout and $logFile owned by $user
-{ local msg="$(timestamp) - $1" ; message_n "$msg" ; message_n "$msg" >> $logFile ; }
+de_echo_n()      # (POSIX) IAW verbosity, display debugging information
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf "%b" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-log_echo()          # echo to stdout and $logFile owned by $user
-{ local msg="$1" ; echo "$msg" | tee -a "$logFile" ; }
+dE_message()   # (POSIX) IAW verbosity, display text debugging message $@
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf " ${BRon}*${Boff} " ; printf "%b\n" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-log_echo_e()        # echo -e to stdout and $logFile owned by $user
-{ local msg="$1" ; echo -e "$msg" | tee -a "$logFile" ; }
+dE_message_n() # (POSIX) IAW verbosity, display text debugging message $@ (no CR)
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the message parts
+      printf " ${BRon}*${Boff} " ; printf "%b" "$*"
+    )
+  fi # level
+}
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
 
-log_echo_n()        # echo -n "$1" to stdout and $logFile owned by $user
-{ local msg="$1" ; echo -n "$msg" ; echo -n "$msg" >> $logFile ; }
+#---[ common logging functions ]-----------------------------------------
 
-log_echo_e_n()      # echo -e -n "$1" to stdout and $logFile owned by $user
-{ local msg="$1" ; echo -e -n "$msg" ; echo -e -n "$msg" >> $logFile ; }
+timestamp()         # (POSIX) echo a simple timestamp (yyyymmdd-hh:mm:ss)
+{ printf "%s\n" "$(date +'%Y%m%d-%H:%M:%S')"; }
 
-log_E_message()     # E_message() to stdout and $logFile owned by $user
-{ local msg="$1" ; E_message "$(timestamp) - $msg" | tee -a "$logFile" ; }
+log_message()       # (POSIX) message() to stdout and $logFile owned by $user
+{ _msg="$1" ; message "$(timestamp) - $_msg" | tee -a "$logFile" ; }
 
-log_E_message_n()   # E_message_n() to stdout and $logFile owned by $user
-{ local msg="$1" ; E_message_n "$(timestamp) - $msg" | tee -a "$logFile" ; }
+log_message_n()     # (POSIX) message_n() to stdout and $logFile owned by $user
+{ _msg="$(timestamp) - $1" ; message_n "$_msg" ; message_n "$_msg" >> $logFile ; }
 
-d_log_message()     # pass $1 to log_message() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_message "$1"; }
+log_echo()          # (POSIX) echo to stdout and $logFile owned by $user
+{ _msg="$1" ; printf "%s\n" "$_msg" | tee -a "$logFile" ; }
 
-d_log_message_n()   # pass $1 to log_message_n() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_message_n "$1"; }
+log_echo_e()        # (POSIX) echo -e to stdout and $logFile owned by $user
+{ _msg="$1" ; printf "%b\n" "$_msg" | tee -a "$logFile" ; }
 
-d_log_echo()        # pass $1 to log_echo() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo "$1"; }
+log_echo_n()        # (POSIX) echo -n "$1" to stdout and $logFile owned by $user
+{ _msg="$1" ; printf "%s" "$_msg" | tee -a "$logFile" ; }
 
-d_log_echo_e()      # pass $1 to log_echo_e() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_e "$1"; }
+log_echo_e_n()      # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user
+{ _msg="$1" ; printf "%b" "$_msg" | tee -a "$logFile" ; }
 
-d_log_echo_n()      # pass $1 to log_echo_n() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_n "$1"; }
+log_E_message()     # (POSIX) E_message() to stdout and $logFile owned by $user
+{ _msg="$1" ; E_message "$(timestamp) - $_msg" | tee -a "$logFile" ; }
 
-d_log_echo_e_n()    # pass $1 to log_echo_e_n() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_echo_e_n "$1"; }
+log_E_message_n()   # (POSIX) E_message_n() to stdout and $logFile owned by $user
+{ _msg="$1" ; E_message_n "$(timestamp) - $_msg" | tee -a "$logFile" ; }
 
-d_log_E_message()   # pass $1 to log_E_message() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_E_message "$1"; }
+d_log_message()     # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    d_message $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-d_log_E_message_n() # pass $1 to log_E_message_n() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && log_E_message "$1"; }
+d_log_message_n()   # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    d_message_n $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-d_message()         # pass $1 to message() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && message "$1"; }
+d_log_echo()        # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    d_echo $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-d_message_n()       # pass $1 to message_n() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && message_n "$1"; }
+d_log_echo_e()      # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    de_echo $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-dE_message()        # pass $1 to E_message() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && E_message "$1"; }
+d_log_echo_n()      # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    d_echo_n $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-dE_message_n()      # pass $1 to E_message() if IAW verbosity
-{ [ "$VERBOSE" ] && [ "$2" -le "$verbosity" ] && E_message_n "$1"; }
+d_log_echo_e_n()    # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    de_echo_n $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-d_echo()            # echo all but last (level) argument if IAW verbosity
-{ input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
-  E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
-  [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
+d_log_E_message()   # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    dE_message $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-de_echo()           # echo -e all but last (level) argument if IAW verbosity
-{ input="$@"; set $input; level=$(echo $@ | cut -d' ' -f$#); if ! isnumber $level ; then \
-  E_message "final arg must be decimal verbosity level"; elif [[ $VERBOSE ]] && \
-  [[ $verbosity -ge $level ]] ; then [[ $# -eq 1 ]] && echo || echo -e $@ | cut -d' ' -f1-$(($# - 1)); fi ; }
+d_log_E_message_n() # (POSIX) pass $1 to log_message() if IAW verbosity
+{ _ts_msg="$(timestamp) - "; ( eval "set -- \"$_ts_msg\" \"$@\"";
+    dE_message_n $@ | tee -a "$logFile" ) ; return $?; }
+# uses a sub-shell to safely rebuild the arguments to include the timestamp
 
-d_do()              # conditionally execute properly escaped $@, IAW verbosity
-{ input="$@"; set $input; bw_input=$(echo $@ | rev) ;
-level=$(echo $bw_input | cut -d' ' -f1) ; cmd=$(echo $bw_input | cut -d' ' -f2- | rev ) ;
-# echo "level: $level"; echo "cmd: $cmd";
-if ! isnumber $level ; then E_message "final arg must be decimal verbosity level" ;
-elif [[ $VERBOSE ]] && [[ $verbosity -ge $level ]] ; then eval "${cmd}" ;
-else echo ; fi ; }
+debug_do()          # (POSIX) IAW verbosity, display debugging information
+{ [ $# -lt 2 ] && return 1  # Guard. check fo min. 2 args (word + level)
+  level="${!#}" # POSIX syntax to get the value of the last argument
+  if [ "$level" -le "$verbosity" ]; then
+    # Use a subshell to avoid changing the original positional parameters
+    ( _count=$# ; _temp_args="" ; _i=1 ;
+      # Loop over all arguments EXCEPT the last one
+      while [ "$_i" -lt "$_count" ]; do
+        # Safely capture the argument content, explicitly adding quotes around it
+        _temp_args="$_temp_args \"${!_i}\"" ; _i=$((_i + 1))
+      done
+      # Use eval + set to rebuild the quoted positional parameter list and restore quoting safely
+      eval "set -- $_temp_args"
+      # Now "$@" safely holds the command parts
+      eval "$@"
+    ) ; return $? # Propagate the exit status of the command run in the subshell
+  fi # level
+  return 0   # Must return 0 if the command was skipped due to verbosity
+}
+# $* vs. $@ (Quoted) in the final eval statement: Inside double quotes, "$*" joins all positional
+# parameters into a single string, which will not always be what we want, the reassembly info
+# properly quoted arguments is better, requireing eval "$@"
 
-debug_do()          # conditionally execute properly escaped $1, IAW verbosity
-{ [ $VERBOSE ] && [[ $verbosity -ge $2 ]] && eval "$1" ; }
-
-status_color()      # emit escape seq for color per arg $1
+status_color()      # (POSIX) emit escape seq for color per arg $1
 { # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
-case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -en ${BGon};;
-           [nN]*|[fF]*|"down"|$FALSE    ) echo -en ${BRon};;
-           *) echo -en ${BYon};; esac ; }
+case $1 in [yY]*|[tT]*|[uU]*|"$TRUE"|"0" ) printf "%b" ${BGon};;
+           [nN]*|[fF]*|[dD]*|"$FALSE"    ) printf "%b" ${BRon};;
+           *) printf "%b" ${BWon};; esac ; }
 
-TrueFalse()         # echo "True" or "False", depending on truth of arg $1
+TrueFalse()         # (POSIX) echo "True" or "False", depending on truth of arg $1
 { # (T/F Y/N up/down)(1=0=$TRUE [Green], ""=$FALSE [Red])
-case $1 in [yY]*|[tT]*|"up"|$TRUE|"1"   ) echo -n "True" ;;
-           [nN]*|[fF]*|"down"|$FALSE    ) echo -n "False" ;;
-           *) echo -en "unset" ;; esac ; }
+case $1 in [yY]*|[tT]*|[uU]*|"$TRUE"|"0" ) printf "%s" "True" ;;
+           [nN]*|[fF]*|[dD]*|"$FALSE"    ) printf "%s" "False" ;;
+           *) printf "%s" "unset" ;; esac ; }
 
-prompt()            # set external variable $answer based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Y/n]: " && read answer; # '=~' not in busybox
-while ! expr "${answer:0:1}" : [yYnN] >/dev/null;  # answer not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Y/n]: " && read answer; done; }
+repeat()            # (POSIX) output a repeated string of char $1 (of len $2)
+{ _thing="${1:- }"; _limit="${2:-1}"; _i=0;_out_str="";
+  while [ "$_i" -lt "$_limit" ]; do _out_str="${_out_str}${_thing}"; _i=$((_i + 1)); done
+  printf "%s" "$_out_str"; }
 
-old_prompt()        # set external variable $answer based on reponse to prompt $1
-{ ps=$1; SCP; echo -en "$ps [Y/n]: "   ### Not using '=~' because it's not in busybox
-  while read answer && ! expr "${answer:0:1}" : [yYnN] >/dev/null;  # answer not a regex match
-    do case ${answer:0:1} in [yY1]|"$TRUE") answer="n";; [nN0]|"$FALSE") answer="x";; esac
-  RCP; echo -en "$(repeat ' ' $(termwidth))"; RCP; message_n "$ps [Y/n]: " ; done; }
 
-new_prompt()        # set external variable $response based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '=~' not in busybox
-while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+prompt()            # (POSIX) set external variable $answer based on reponse to prompt $1
+{ _ps="$1"; answer=""; printf "%b" "\n\n"; CUU; SCP;
+while ! expr "$answer" : '[yYnN]' >/dev/null; do
+RCP; printf "%b" "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$_ps [Y/n]: " && read answer; done; }
 
-right_most() {      # echo the right-most character in a string variable $1
-mystring=$1 ; echo ${mystring#${mystring%?}} ; }
-# echo ${mystring:$((${#mystring}-1)):1};        # other way 1
-# echo ${mystring} | sed "s|${mystring:0:-1}||"  # other way 2
-# echo ${mystring} | rev | cut -c 1 ; }          # other way 3
+new_prompt()        # (POSIX) set external variable $answer based on reponse to prompt $1
+{ _ps="$1"; response=""; printf "%b" "\n\n"; CUU; SCP;
+while ! expr "$response" : '[yYnNsS]' >/dev/null; do
+RCP; printf "%b" "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; message_n "$_ps [Yes/no/skip|Yns]: " && read response; done; }
 
-alpha_words()       # alphabetize the words in a quoted input string
-{ echo $(for x in $@; do echo $x; done | sort -db ) ; }
+right_most() {      # (POSIX) echo the right-most character in a string variable $1
+mystring="$1"; [ -z "$mystring" ] && return 1; printf "%s" "${mystring#${mystring%?}}"; }
+# echo ${mystring:$((${#mystring}-1)):1};        # other way 1 (non-POSIX string slicing; slower external echo)
+# echo ${mystring} | sed "s|${mystring:0:-1}||"  # other way 2 (non-POSIX string slicing; slower external sed)
+# echo ${mystring} | rev | cut -c 1 ; }          # other way 3 (non-POSIX rev/cut -c and slower external cut/rev)
 
-pur()               # ping ip address $1 until it is ready (0% loss of 3 packets)
-{ SCP; count=1; hits=0; status=""; hit_color="${Boff}"; while [[ $hits -lt 3 ]];
-  do status=$(ping -c1 -i1 -t2 $1 2>/dev/null |  grep transmitted | awk '{print $6}' | sed 's/\%$//');
-  [[ "$status" == "0" ]] && let "hits+=1" || let "hits=0";
-  case $hits in [01]) hit_color=${BRon};; 2) hit_color=${BYon};; 3) hit_color=${BGon};; esac;
-  RCP; echo -en "not ready -- try: [${count}], hits: [${hit_color}${hits}${Boff}]"; let "count+=1"; sleep 1;
-  done; echo; echo OK - ready now ; }
+alpha_words()       # (POSIX) alphabetize the words in a quoted input string
+{ _output=$(for x in "$@"; do printf "%s\n" "$x"; done | sort -db ); printf "%s\n" "$_output" ; }
 
-sap()               # pur and then ssh after 20s pause
-{ pur $1 && echo "pausing to allow $1 to start sshd..." && sh_countdown 20 && ssh $1; }
+pur()               # (POSIX) ping ip address $1 until it is ready (0% loss of 3 packets)
+{ _target="$1"; SCP; count=1; hits=0; status=""; hit_color="${Boff}"; while [ "$hits" -lt 3 ]; do
+  if ping -c1 -W1 "$_target" >/dev/null 2>&1 ; then hits=$((hits + 1)); else hits=0; fi;
+  case "$hits" in [01]) hit_color="${BRon}";; 2) hit_color="${BYon}";; 3) hit_color="${BGon}";; esac;
+  RCP; printf "%b" "not ready -- try: [${count}], hits: [${hit_color}${hits}${Boff}]";
+  count=$((count + 1)); sleep 1; done; RCP; printf "%s" "$(repeat ' ' $(termwidth))"; # Clear the line
+  RCP; printf "\n%s\n" "OK - ready now" ; }
 
-swr()               # ssh when nmap indicates port is ready (pur(), then ssh after nmap shows port)
-{ pur $1 && \
-  message "pausing to allow $1 to start sshd..." && \
-  while [ ! $(nmap -p ssh $1 | grep 'ssh' | cut -d' ' -f2) == "open" ]; do sleep 1; done && \
-  ssh $1 ; }
+swr()               # (POSIX) ssh when nmap indicates port is ready (pur(), then ssh after nmap shows port)
+{ _target="$1"; pur "$_target" ; _status=1; _ssh_port=22
+  message "confirming $1 has started sshd ..."
+  while [ "$_status" -ne 0 ]; do
+  (exec 3<> /dev/tcp/"$_target"/"$_ssh_port") 2>/dev/null ; _status=$?; sleep 1; done
+  ssh "$_target" ; }
 
-vercomp()           # compare versions return [0:equal|1:greaterthan|2:lessthan]
-{ if [[ "$1" == "$2" ]]; then return 0; else first=$(echo -en "$1\n$2" | sort -V | head -n1);
-  [[ "$first" == "$2" ]] && return 1 || return 2; fi }
+vercomp()           # (almost POSIX) compare versions return [0:equal|1:greaterthan|2:lessthan]
+{ _candidate1="$1"; _candidate2="$2"; if [ "$_candidate1" == "$_candidate2" ]; then return 0;
+  else _first=$(printf "%b" "$1\n$2" | sort -V | head -n1);
+  if [ "$_first" == "$_candidate2" ] ; then return 1; else return 2; fi; fi; }
 
-show_result()       # show the result of vercomp comparison, in english
-{ case $1 in 1) echo "${LBon}>${Boff}";; 2) echo "${BRon}<${Boff}";; \
-             0) echo "${BGon}=${Boff}";; *) echo "${BYon}*** Error ***${Boff}";; esac }
+show_result()       # (POSIX) show the result of vercomp comparison, in english
+{ case $1 in 1) printf "%b\n" "${LBon}>${Boff}";; 2) printf "%b\n" "${BRon}<${Boff}";; \
+             0) printf "%b\n" "${BGon}=${Boff}";; *) printf "%b\n" "${BYon}*** Error ***${Boff}";; esac }
 
-timestamp()         # echo a simple timestamp (yyyymmdd-hh:mm:ss)
-{ echo "$(date '+%Y%m%d-%H:%M:%S')" ; }
+my_date()           # (POSIX) echo date string (DDD MM dd hh:mm:ss AP TZ yyyy)
+{ _date_string=$(date "+%a %b %d %H:%M:%S %Z %Y"); printf "%s\n" "$_date_string" ; }
 
-my_date()           # echo date string (DDD MM dd hh:mm:ss AP TZ yyyy)
-{ day=$(date +%a); month=$(date +%b); monthday=$(date +%d); year=$(date +%Y)
-  timeofday=$(date +%X); timezone=$(date +%Z)
-  echo "$day $month $monthday $timeofday $timezone $year" ; }
+my_short_date()     # (POSIX) echo shorter date string (yyyymmdd-timehack)
+{ _date_string=$(date "+%Y%m%d-%H:%M:%S"); printf "%s\n" "$_date_string" ; }
 
-my_short_date()     # echo shorter date string (yyyymmdd)
-{ month=$(date +%b); monthday=$(date +%d); year=$(date +%Y); timehack=$(date +%H:%M:%S);
-  echo "${monthday}${month}${year}-${timehack}" ; }
-
-loggit()            # send a job completion status message to the cron logger
-{ [[ $# -gt 2 ]] && E_message "invalid loggit arguments" && exit 1
-  [[ -z $2 ]] && EXIT_STATUS=0 || EXIT_STATUS="$2"
-  [[ -z $1 ]] && PROGRAM=Unspecified || PROGRAM="$1"
-  case $EXIT_STATUS in
-    0 ) PRIORITY="notice" && MESSAGE="succeeded.";;
-    * ) PRIORITY="err" && MESSAGE="failed with exit status ${EXIT_STATUS}";;
+loggit()            # (POSIX) send a job completion status message to the cron logger
+{ [ $# -gt 2 ] && { E_message "invalid loggit arguments" ; exit 1 }
+if [ -z "$2" ] ; then EXIT_STATUS=0; else EXIT_STATUS="$2"; fi
+if [ -z "$1" ] ; then PROGRAM=Unspecified; else PROGRAM="$1"; fi
+  case "$EXIT_STATUS" in
+    0 ) PRIORITY="notice"; MESSAGE="succeeded.";;
+    * ) PRIORITY="err"; MESSAGE="failed with exit status ${EXIT_STATUS}";;
   esac
-  /usr/bin/logger -p cron.$PRIORITY "$PROGRAM $MESSAGE" ; }
+  /usr/bin/logger -p "cron.$PRIORITY" "$PROGRAM $MESSAGE" ; }
 
-log_handle_result() # output ok_/err_msg and right_stats to stdout and logFile
-{ local exit_status="$1"; local ok_msg; local err_msg
-  [[ "$2" == "${no_msg}" ]] && ok_msg="" || ok_msg=" (${BGon}${2:-success!}${Boff})"
-  [[ "$3" == "${no_msg}" ]] && err_msg="" || err_msg=" (${BRon}${3:-error!}${Boff})"
-  if [ "$exit_status" -eq 0 ] ; then
-      log_echo_e_n "${ok_msg}"
+log_handle_result() # output ok_/_err_msg and right_stats to stdout and logFile
+{ _exit_status="$1";
+  if [ "$2" == "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$3" == "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  if [ "$_exit_status" -eq 0 ] ; then
+      log_echo_e_n "${_ok_msg}"
       log_right_status $TRUE
   else
-      log_echo_e_n "${err_msg}"
+      log_echo_e_n "${_err_msg}"
       log_right_status 1
       return 1
   fi ; return 0 ; }
-# *()* usage - log_message_n ...; <command>] ; log_handle_result "$?" "ok_msg" "err_msg"
+# *()* usage - log_message_n ...; <command>] ; log_handle_result "$?" "_ok_msg" "_err_msg"
 # *()* notes - substitute no_msg=" \b" for either, to "suppress"
 
 validate_logfile()  # validate existence and ownership of logFile
 { d_log_message "in validate_logfile" 5
+  _logFile_owner_uid=""; _logFile_group_gid=""
+  _user_uid=""; _user_gid=""
+  _msg=""
   log_message_n "looking for logFile [${logFile}]"
-  if [ ! -f ${logFile} ] ; then
+  if [ ! -f "${logFile}" ] ; then
       log_echo_e_n " (${BRon}not found${Boff})"
       log_right_status 1
-      msg="logFile [${logFile}] not found\n"
-      msg="${msg}${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
-      log_E_message "${msg}"
+      _msg="logFile [${logFile}] not found\n"
+      _msg="${_msg}${BRon}Please run (as root) ${BGon}touch ${logFile}; chown ${user}:${user} ${logFile}${Boff}"
+      log_E_message "${_msg}"
       return 1
   else
       log_echo_e_n " (${BGon}found${Boff})"
       log_right_status $TRUE
       log_message_n "checking logFile ownership"
-      log_owner=$(stat -c '%U' "${logFile}")
-      log_group=$(stat -c '%G' "${logFile}")
-      if [[ "${log_owner}:${log_group}" == "${user}:${user}" ]] ; then
-          log_echo_e_n " (${BGon}${log_owner}:${log_group}${Boff})"
+      _logFile_owner_uid=$(ls -n "${logFile}" | awk '{print $3}')
+      _logFile_group_gid=$(ls -n "${logFile}" | awk '{print $4}')
+      _user_uid=$(id -u "${user}")
+      _user_gid=$(id -g "${user}")
+      if [ "${_logFile_owner_uid}:${_logFile_group_gid}" = "${_user_uid}:${_user_gid}" ] ; then
+          log_echo_e_n " (${BGon}${_logFile_owner_uid}:${_logFile_group_gid}${Boff})"
           log_right_status $TRUE
       else
-          log_echo_e_n "(${BRon}${log_owner}:${log_group}${Boff})"
+          log_echo_e_n "(${BRon}${_logFile_owner_uid}:${_logFile_group_gid}${Boff})"
           right_status 1
-          msg="bad ownership on logFile [${logFile}]\n"
-          msg="${msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
-          log_E_message "${msg}"
+          _msg="bad ownership on logFile [${logFile}]\n"
+          _msg="${_msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
+          log_E_message "${_msg}"
           return 1
       fi # ownership
   fi # existence
-  return 0 ; }
+}
 # *()* reminder - no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
 # *()* reminder - in ash, the =+ operator works for arithmetic but not text concatenation
 # *()* reminder - logFile and user must be set apriori
 
-# deprecated but leave here for continuity - let linux logrotate take care of this
-rotate_logfile() {  # (deprecated) let linux logrotate do this 
-    d_log_message "in rotate_logfile" 5
-    log_message_n "archiving old logfile ..."
-    sudo sh -c "gzip -c ${logFile} > ${old_log_dir%/}/$(basename ${logFile})-$(timestamp).gz" || \
-        die "failed to archive logFile"
-    right_status $TRUE
-    log_message_n "removing old logfile ..."
-    sudo rm $logFile || die "failed to remove old logFile"
-    right_status $TRUE
-    log_message_n "creating new logfile ..."
-    sudo touch $logFile && \
-    sudo chown ${user}:${user} $logFile || die "failed to create new logFile"
-    right_status $TRUE
-    return 0 ; }
-
-repeat()            # output a repeated string of char $1 (of len $2)
-{ local i thing limit
-  thing="$1"; limit=$2; out_str=""; i=0
-  while [ $i -lt $limit ]; do out_str="${out_str}${thing}"; let "i++"; done
-  echo -en "$out_str" && return 0 || return 1 ; }
-
 termwidth()         # calculate and output the width of the terminal
-{ echo -n $(stty size | sed 's/[0-9]* *//') && return 0 || return 1; }
+{ _columns=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f2)
+if [ -z "$_columns" ] ; then printf "%s" "80"; return 1;
+else  printf "%s" "$_columns"; return 0; fi ; }
+# uses stty size < /dev/tty (redirection) to read from the actaul tty and avoid ioctl errors
+# when stdin and stdout are redirected like in a while read ... do ... done <<<$(source) loop
 
 termheight()        # calculate and output the height of the terminal
-{ echo -n $(stty size | cut -d' ' -f1) && return 0 || return 1; }
+{ _rows=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f1)
+if [ -z "$_rows" ] ; then printf "%s" "25"; return 1;
+else  printf "%s" "$_rows"; return 0; fi ; }
+# uses stty size < /dev/tty (redirection) to read from the actaul tty and avoid ioctl errors
+# when stdin and stdout are redirected like in a while read ... do ... done <<<$(source) loop
 
 separator()         # draw a horizontal line with preface $1 and title $2
 { # to facilitate separation of portions of the output of various scripts
-  local msg preface title msg_len
-  [ ! -z "$1" ] && preface="$1" || preface=$(hostname)
-  [ ! -z "$2" ] && title="$2" || title=$(basename $0)
-  msg="${BYon}---[${BRon} ${preface} ${LBon}${title} ${BYon}]"
-  msg_len=$(( ${#msg} - $(( ${#BYon} + ${#BRon} + ${#BBon} + ${#BYon} + ${#Boff} )) ))
-  echo -en "$msg" && \
-  echo -n $(repeat "-" $(( $(termwidth) - $(( $msg_len + ${#Boff} )) )) ) && echo -e ${Boff} && \
-  return 0 || return 1 ; }
+_msg=""; _msg_len=0;
+_preface=${1:-$(hostname)}; _title=${2:-$(basename $0)}
+_msg="${BYon}---[${BRon} ${_preface} ${LBon}${_title} ${BYon}]"
+_reps=$(( $(termwidth) - ( ${#_preface} + ${#_title} + 8 ) ))
+printf "%b" "$_msg" ; printf "%s" "$(repeat '-' $_reps)"; printf "%b\n" "${Boff}"; }
 
 log_separator()     # output separator() to stdout and similar to logFile
-{ separator "$1" "$2"
-  echo -e "${BYon}-----[${BRon} ${1} ${LBon}${2} ${BYon}]---------------------------" >> "$logFile" ; }
+{ _preface=${1:-$(hostname)}; _title=${2:-$(basename $0)}
+separator "$_preface" "$_title" | tee -a "$logFile" ; }
+
+#####################-----[ POSIX checked above this line -]-----#########################
 
 show_config()       # show config with get_longest() and display_vars()
 { d_message "in show_config" 5 ; separator "${PN}-${BUILD}" "(configuration)"
