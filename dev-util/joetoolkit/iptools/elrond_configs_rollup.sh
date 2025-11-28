@@ -35,11 +35,21 @@ for x in "${configs[@]}" ; do
   grep -Ev --color=auto "(^\s*$|^#)" 2>/dev/null $x;
 done >> "${rollup_file}" || die "failed to roll up configs"
 
-cat "${rollup_file}"
+#cat "${rollup_file}"
+
+bremoji $hammer
+message "now converting ${rollup_file} to ${rollup_file}.pdf with text2pdf ..."
+text2pdf "${rollup_file}" "${rollup_file}.pdf" || die "failed to convert text2pdf"
+bremoji $beam_face
+echo -e " (${BGon}success!${Boff})"
 
 bremoji $hammer
 message "now transferring ${rollup_file} to ${target} with scp ..."
 sudo -u ${user} scp "${rollup_file}" "${target}"  || die "failed to scp rollup to ${target}"
+
+bremoji $hammer
+message "now transferring ${rollup_file}.pdf to ${target} with scp ..."
+sudo -u ${user} scp "${rollup_file}.pdf" "${target}"  || die "failed to scp rollup to ${target}"
 
 bremoji $face_beam
 echo -e "${BGon}Success${Boff}"
