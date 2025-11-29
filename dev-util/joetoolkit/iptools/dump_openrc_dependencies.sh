@@ -9,6 +9,9 @@ service_list=(
   shorewall6
   net.br0
   net.eth0
+  node_exporter
+  prometheus
+  grafana
 )
 
 for x in "${service_list[@]}"; do

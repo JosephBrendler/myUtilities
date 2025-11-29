@@ -18,7 +18,9 @@ configs=(
 /etc/ulogd.conf /etc/syslog.conf /etc/logrotate.conf
 /etc/ssh/sshd_config /etc/ssh/sshd_config.d/01_joetoo_sshd_config.conf
 /etc/ssh/sshd_config.d/9999999gentoo-pam.conf /etc/ssh/sshd_config.d/9999999gentoo-subsystem.conf
-/etc/ssh/sshd_config.d/9999999gentoo.conf
+/etc/ssh/sshd_config.d/9999999gentoo.conf /etc/conf.d/net /etc/conf.d/apache2
+/etc/conf.d/distccd /etc/conf.d/dnsmasq /etc/conf.d/shorewall /etc/conf.d/shorewall6
+/etc/conf.d/stubby /etc/conf.d/node_exporter /etc/conf.d/prometheus
 )
 
 timestamp() {
@@ -35,21 +37,11 @@ for x in "${configs[@]}" ; do
   grep -Ev --color=auto "(^\s*$|^#)" 2>/dev/null $x;
 done >> "${rollup_file}" || die "failed to roll up configs"
 
-#cat "${rollup_file}"
-
-bremoji $hammer
-message "now converting ${rollup_file} to ${rollup_file}.pdf with text2pdf ..."
-text2pdf "${rollup_file}" "${rollup_file}.pdf" || die "failed to convert text2pdf"
-bremoji $beam_face
-echo -e " (${BGon}success!${Boff})"
+cat "${rollup_file}"
 
 bremoji $hammer
 message "now transferring ${rollup_file} to ${target} with scp ..."
 sudo -u ${user} scp "${rollup_file}" "${target}"  || die "failed to scp rollup to ${target}"
-
-bremoji $hammer
-message "now transferring ${rollup_file}.pdf to ${target} with scp ..."
-sudo -u ${user} scp "${rollup_file}.pdf" "${target}"  || die "failed to scp rollup to ${target}"
 
 bremoji $face_beam
 echo -e "${BGon}Success${Boff}"
