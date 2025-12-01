@@ -25,6 +25,7 @@ configs=(
 /etc/rsyncd.conf /etc/conf.d/rsyncd
 /etc/openvpn/server.conf /etc/conf.d/openvpn
 /etc/haveged.conf /etc/conf.d/haveged
+/etc/samba/smb.conf /etc/conf.d/samba
 /etc/conf.d/stubby /etc/conf.d/node_exporter /etc/conf.d/prometheus
 /etc/prometheus/prometheus.yml /etc/sysconfig/node_exporter
 /etc/sysstat /etc/sysstat.ioconf
