@@ -10,6 +10,7 @@ archives=(
 '/usr/local/share/ca-certificates/server_certs/archive/'
 '/usr/local/share/ca-certificates/server_certs/'
 '/usr/local/share/ca-certificates/archive/'
+'/usr/local/share/ca-certificates/'
 )
 
 #-----[ functions ]-----------------------------------------
@@ -21,7 +22,16 @@ die() {
 
 clean_archive() {
     _archive="$1"
-    for x in $(find "${_archive}" -type f -printf '%f\n' | sed 's|.crt||'); do
+    # load array of certs found in this archive (excluding ones to keep)
+    mapfile -t _certs_list < <(
+        find "${_archive}" -type f \
+            ! -name "imjoe*" \
+            ! -name "Brendler_Consulting*" \
+            -printf '%f\n' | \
+        sed 's|\.crt||'
+    )
+
+    for x in "${_certs_list[@]}"; do
         # remove the symlink in /etc/ssl/certs
         message_n "removing /etc/ssl/certs/ symlink [$x.pem] ... "
         if [ -L "/etc/ssl/certs/$x.pem" ] ; then
@@ -42,15 +52,19 @@ clean_archive() {
         fi
     done
 
-    #now remove the parent directory (${_archive})
-    message_n "removing ${_archive} ... "
-    if [ -d "${_archive}" ] ; then
-        rm -r "${_archive}" || die "failed to rm -r ${_archive}"
-        bremoji "$check_mark_button"
-        right_status $TRUE
+    #now remove ${_archive} if it is a sub-directory
+    if [ "${_archive}" != "/usr/local/share/ca-certificates/" ] ; then
+        message_n "removing ${_archive} ... "
+        if [ -d "${_archive}" ] ; then
+            rm -r "${_archive}" || die "failed to rm -r ${_archive}"
+            bremoji "$check_mark_button"
+            right_status $TRUE
+        else
+            "No ${_archive} directory exists on this system"
+        fi # directory exists
     else
-        "No ${_archive} directory exists on this system"
-    fi
+        E_message "Not deleting parent directory /usr/local/share/ca-certificates/"
+    fi # subdirectory
 }
 
 
