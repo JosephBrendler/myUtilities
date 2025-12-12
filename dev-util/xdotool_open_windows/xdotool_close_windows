@@ -3,11 +3,17 @@
 # Notes:
 # (1) Use legit bash assignments only. this file will be sourced by the scripts.
 # (2) See sections for geometry, filesystem, timing, and ssh sessions.
-# (3) A key purpose is to populate the list of ssh sessions to be opened by the script.
+# (3) A key part of this is to populate the list of ssh sessions to be opened by the script
 # (4) If an ${ssh_session_list[@]} entry begins with the characters "x_" it will be ignored
 # (5) The _open_ script will set up to two ssh-terminal windows per desktop
 # (6) The -open_ script will determine the number of desktops needed (but always even #)
-# (7) The example array assignment below thus has two hostnames per line for readability
+# (7) The example ssh_session_list array assignment below has two hostnames per line for readability
+# (8) The -set- (terminal) script will open one terminal window, resize/move it, and then open an ssh sess>
+#     [ver 0.2.0 would open the terminal program with " -e ssh ${ssh_target}" in one step, but this
+#      delays the opening of the terminal window until the ssh session is established
+#      ver 0.2.1 de-couples those (back into two steps as done previously.  The consequence
+#      is that the ssh sessions may survive closure of the terminal, and the xdotool_close_windows
+#      program may have to resort to finding and killing them directly]
 #
 
 ### to-do:
@@ -78,10 +84,6 @@ ssh_session_list=( \
 
 #-----[ program variables (do not edit) ]--------------------------------------------
 
-# use xdotool_sizemove_this_window (alias mw) l|L|r|R [<width>%] [<height>%]
-shopt -s expand_aliases
-alias mw='/usr/sbin/xdotool_sizemove_this_window'
-
 # no_msg is a space overwritten by a backspace, used to send null message with a non-null string
 no_msg=" \b"
 
@@ -96,9 +98,6 @@ silent=">/dev/null 2>&1"  # append this to a command to silence it
 varlist="PN BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
 varlist+=" BREAK control_window numdesktops sleepWait longWait typeWait timeout"
 varlist+=" bool.VERBOSE verbosity"
-
-
-
 
 # load custom configuration, if it exists
 message_n "sourcing config_file: ${config_file} ..."
@@ -178,7 +177,14 @@ close_windows() {
         # necessary since we are using top-level terminal application windows as the search scope
         # see versions prior to 0.1.8 for use of check here for control_window and use of xprop
         log_echo_e_n " (${BRon}closing${Boff})"
-        wmctrl -ic "$win"
+        # wmctrl -ic is equivalent to clicking the red "X" in the upper right corner of a window
+        #  (sends the WM_DELETE_WINDOW protocol message, a polite request, which can be intercepted
+        #   by the terminal window application (e.g. Konsole), which will generate a confirmation
+        #   dialog pop-up window).
+        #  xdotool windowkill sends a much stronger request, often the XKillClient
+        #   (equivalent to finding the pid and using kill -9 $pid)
+#        wmctrl -ic "$win"
+        xdotool windowkill "$win"
         poll_for_window_closed "$win"
         log_handle_result "$?" "closed" "failed to close"
     done
@@ -203,6 +209,7 @@ close_windows() {
 }
 
 poll_for_window_closed() {
+    # wait until the window manager (wmctl) confirms the window is gone (or timeout)
     local myWin="$1"
     local elapsed=0
     while [[ ! -z $(wmctrl -l | grep -q "$myWin") ]] && [[ "$( echo "$elapsed <= $timeout" | bc -l )" -eq 1 ]] ; do

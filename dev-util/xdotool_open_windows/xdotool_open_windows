@@ -3,11 +3,17 @@
 # Notes:
 # (1) Use legit bash assignments only. this file will be sourced by the scripts.
 # (2) See sections for geometry, filesystem, timing, and ssh sessions.
-# (3) A key purpose is to populate the list of ssh sessions to be opened by the script.
+# (3) A key part of this is to populate the list of ssh sessions to be opened by the script
 # (4) If an ${ssh_session_list[@]} entry begins with the characters "x_" it will be ignored
 # (5) The _open_ script will set up to two ssh-terminal windows per desktop
 # (6) The -open_ script will determine the number of desktops needed (but always even #)
-# (7) The example array assignment below thus has two hostnames per line for readability
+# (7) The example ssh_session_list array assignment below has two hostnames per line for readability
+# (8) The -set- (terminal) script will open one terminal window, resize/move it, and then open an ssh session in it
+#     [ver 0.2.0 would open the terminal program with " -e ssh ${ssh_target}" in one step, but this
+#      delays the opening of the terminal window until the ssh session is established
+#      ver 0.2.1 de-couples those (back into two steps as done previously.  The consequence
+#      is that the ssh sessions may survive closure of the terminal, and the xdotool_close_windows
+#      program may have to resort to finding and killing them directly]
 #
 
 ### to-do:
@@ -92,7 +98,6 @@ varlist+=" BREAK control_window width height X1 Y1 X2 SCREEN_WIDTH SCREEN_HEIGHT
 varlist+=" WINDOW_WIDTH WINDOW_HEIGHT POS_X1 POS_Y1 POS_X2"
 varlist+=" BREAK numdesktops sleepWait longWait typeWait timeout"
 varlist+=" bool.VERBOSE verbosity"
-
 
 # load custom configuration, if it exists
 message_n "sourcing config_file: ${config_file} ..."
@@ -215,17 +220,18 @@ dump_ssh_session_list() {
     d_log_message "in ${FUNCNAME[0]}" 5
     # i will count the dsktop, on each of which there are 2 slots for terminals j, k
     # e.g. i=0 (j=0,k=1); i=1 (j=2,k=3); i=2 (j=4,k=5)
+    d_log_message "num_desktops: [${num_desktops}]; num_ssh_sessions: [${#ssh_session_list[@]}]" 2
     for ((i=0; i<${num_desktops}; i++ ))
     do
         j=$((2*$i))
         k=$(($j+1))
         if [ $j -le ${#ssh_session_list[@]} ] ; then
             ssh_target="${ssh_session_list[$j]}"
-            d_log_message "j: [${BMon}$[j]${Boff}] ssh_session_list[\$j]: [${BYon}${ssh_session_list[$j]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
+            d_log_message "desktop: [${BMon}${i}${Boff}] j: [${BMon}$j${Boff}] ssh_session_list[\$j]: [${BYon}${ssh_session_list[$j]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
         fi
         if [ $j -le ${#ssh_session_list[@]} ] ; then
             ssh_target="${ssh_session_list[$k]}"
-            d_log_message "k: [${LBon}$[k]${Boff}] ssh_session_list[\$k]: [${BYon}${ssh_session_list[$k]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
+            d_log_message "desktop: [${BMon}${i}${Boff}] k: [${LBon}$k${Boff}] ssh_session_list[\$k]: [${BYon}${ssh_session_list[$k]}${Boff}] ssh_target: [${BYon}$ssh_target${Boff}]" 3
         fi
     done
     return 0
@@ -324,9 +330,10 @@ open_windows() {
         # 1 = ping failure (unhealthy:100% loss) --> skip to next iteration in loop
         # 2 = ping critical failure (dead) --------> skip to next iteration in loop
         # 3 = ssh scan nmap failure ---------------> skip to next iteration in loop
-        # 4 = ssh launch failure ------------------> skip to next iteration in loop
+        # 4 = terminal open failure ---------------> skip to next iteration in loop
         # 5 = set window name failure -------------> drive on
         # 6 = sizemove failure --------------------> drive on
+        # 7 = ssh launch failure ------------------> drive on
         # terminal 0 is reserved for the control_window (no ssh sessions)
         d_log_message "i: [${BRon}${i}${Boff}]; j: [${BMon}${j}${Boff}]; k: [${LBon}${k}${Boff}]" 5
         if [ ! "$j" -eq 0 ] && [ "$j" -lt "$num_ssh_sessions" ] ; then
@@ -341,7 +348,7 @@ open_windows() {
             if [ ! $result -eq 0 ] ; then
                 case $result in
                     1|2|3|4) continue ;;  # skip to next iteration in loop (next terminal/ssh_target)
-                    5|6    ) log_message "note non-fatal error above. driving on" ;;
+                    5|6|7  ) log_message "note non-fatal error above. driving on" ;;
                     *      ) log_E_message "invalid exit status returned from setup_terminal for j: [${BMon}${j}${Boff}]"
                 esac
             fi
@@ -396,8 +403,19 @@ is_ready_for_ssh() {
     run_silent ping -c3 -i0.1 -W2 "${target}"
     log_handle_result "$?" "ping!" "failed to ping!" || return $?
     # use nmap to see if target is running ssh server
+    #  -n/R (never/always do reverse (rDNS) lookup of hostname -- don't need this)
+    #  -T<0-5>: Set timing template (higher is faster) (sets optimized timeouts and parallelism)
+    #    but overriding manual settings --host-timeout/--max-rtt-timeout
+    #    ok for local, reliable networks; but don't use if that is in question
+    #  -Pn (no ping [already did that])
+    #  -sV (service version detection - look for "OpenSSH" to be in this)
+    #  -p22 (port 22 for ssh)
+    #  --host-timeout N (max time (s) to discover/scan a target host; else discard the host and move on)
+    #  --max-rtt-timeout Ns max time to wait for response to probe packet; else retransmit the probe
+    #    or mark the port as unresponsive; often necessary for stability on slow or lossy networks
     log_message_n "${BGon}nmap${Boff} scanning [${BYon}${target}${Boff}] for ssh service"
-    nmap_output=$(nmap -Pn -sV -p22 "${target}" --host-timeout 10 --max-rtt-timeout 2s)
+#    nmap_output=$(nmap -Pn -sV -p22 "${target}" --host-timeout 10 --max-rtt-timeout 2s)
+    nmap_output=$(nmap -n -Pn -sV -p22 "${target}" --host-timeout 2 --max-rtt-timeout 0.25s)
     if [[ "$nmap_output" == *"22/tcp open"* ]] && [[ "$nmap_output" == *"ssh"* ]]; then
         log_handle_result "0" "ssh!" ""
         return 0
@@ -416,9 +434,10 @@ setup_terminal() {
     # 1 = ping failure (not healthy: name resolved but all packets lost)
     # 2 = ping critical failure (not alive: Name or service not known//Network is unreachable)
     # 3 = ssh scan nmap failure
-    # 4 = ssh launch failure
+    # 4 = terminal launch failure
     # 5 = set window name failure
     # 6 = sizemove failure
+    # 7 = ssh launch failure
     local result=""
     local t="$1"  # terminal number
     ssh_target="${ssh_session_list[$t]}"
@@ -432,10 +451,14 @@ setup_terminal() {
         # take a baseline for comparison so we can find the new window for certain
         terminal_class="$(basename ${terminal_program})"
         before=($(xdotool search --class "${terminal_class}"))
-        # launch a new terminal with an ssh session as needed
-        log_message_n "openning terminal t: [${BMon}${t}${Boff}] and ssh to [${BYon}${ssh_target}${Boff}]"
-        run_silent "${terminal_program}" -e ssh "${ssh_target}" &
-        log_handle_result "$?" "launched" "failed to launch ssh" || return 4
+#        # launch a new terminal with an ssh session as needed
+#        log_message_n "openning terminal t: [${BMon}${t}${Boff}] and ssh to [${BYon}${ssh_target}${Boff}]"
+#        run_silent "${terminal_program}" -e ssh "${ssh_target}" &
+#        log_handle_result "$?" "launched" "failed to launch ssh" || return 4
+        # launch a new terminal (for ssh ssh session to be openned below)
+        log_message_n "openning terminal t: [${BMon}${t}${Boff}]"
+        run_silent "${terminal_program}" &
+        log_handle_result "$?" "opened" "failed to open ${terminal_program}" || return 4
         sleep $sleepWait
         newterm=$(poll_for_new_window)
         if  [ ! -z "$newterm" ] ; then
@@ -457,6 +480,11 @@ setup_terminal() {
         else
             log_E_message "failed to get new window ID within time limit"
         fi # nonzero newterm
+        # now open an ssh session
+        log_message_n "now openning ssh session to [${ssh_target}]"
+        run_silent xdotool type "ssh ${ssh_target}" && \
+            run_silent xdotool key Return
+        log_handle_result "$?" "launched" "failed to launch ssh for target [${ssh_target}]" || return 7
     else
         log_message "${BRon}not${Boff} openning a terminal for (${BMon}blank${Boff}) [${BYon}${ssh_target}${Boff}]"
     fi # non x_ (blank) ssh_target
@@ -506,7 +534,7 @@ poll_for_num_desktops() {
         d_log_message "elapsed: [${LBon}$elapsed${Boff}] num_desktops: [${BMon}$num_desktops${Boff}] numdesktops: [${BGon}$numdesktops${Boff}]" 2
         sleep $sleepWait
         elapsed=$(echo "scale=2; ( ${elasped:-0} + $sleepWait )" | bc -l )
-        d_log_message_n "checking num_desktops"
+        d_log_message_n "checking num_desktops" 2
         num_desktops=$(xdotool get_num_desktops)
         log_handle_result "$?" "${num_desktops}" "${num_desktops}"  # don't return 1 for failure
     done
@@ -521,14 +549,14 @@ poll_for_num_desktops() {
 
 run_silent() {
     # facilitate dynamic redirection in silencing output
-    local result=""
+    local _result=""
 #    local old_verbosity=$verbosity
     # The "$@" safely passes all arguments to the command
 #    verbosity=0 "$@" >/dev/null 2>&1
     "$@" >/dev/null 2>&1
-    result=$?
+    _result=$?
 #    verbosity=$old_verbosity
-    return $result
+    return $_result
 }
 
 #-----[ main script ]-----------------------------------------------------
