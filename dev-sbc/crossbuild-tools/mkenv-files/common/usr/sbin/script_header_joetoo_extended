@@ -28,24 +28,23 @@ isfloat()       # test if $1 is a floating point number; return true/false
 
 # isfloat moved here due to ash-incompatibility (uses isfloat())
 map()           # linearly map input number from input range to output range
-{ # trap non-numeric input  
+{ # trap non-numeric input
 ! isfloat $1 && E_message "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
 ! isfloat $2 && E_message "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
 ! isfloat $3 && E_message "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
 ! isfloat $4 && E_message "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
 ! isfloat $5 && E_message "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
-[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1  
+[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
  map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
  scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
 # trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
 (( $(echo "$map_val < $from_lower" | bc -l) )) || \
     (( $(echo "$map_val > $from_upper" | bc -l) )) && \
     E_message "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
-  
 # trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
 #[ $to_upper -lt $to_lower ] && E_message "invalid input range [ $to_upper - $to_lower ]" && return 1
 #[ $from_upper -lt $from_lower ] && E_message "invalid input range [ $from_upper - $from_lower ]" && return 1
-# initialize result variable  
+# initialize result variable
 result=999999
 # calculate scaling factor
  from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
@@ -54,10 +53,8 @@ result=999999
  map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
 # ratio > 1 means scaling up to a "wider" range (even if lower numbers)
 # ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
-
 # scale the input offset against the output range
  to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
-
 # now offset (above the to_lower bound) the scaled number into the output range
 result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
 return 0
@@ -179,6 +176,38 @@ RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxte
 { local FG="38;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${FG};${R};${G};${B}m" ; }
 RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
 { local BG="48;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${BG};${R};${G};${B}m" ; }
+
+list_unused_disks()    # list block devices with no active mountpoint
+{  # set TERMWIDTH now, or it would be an inappropriate use of io control
+   # for stdin during while loop's redirection for "read line"
+   TERMWIDTH=$(termwidth)
+    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
+    while read line ; do
+        # use eval to interpret the -P pairs as variable assignments
+        eval ${line}
+        if [[ "${TYPE}" == "disk" ]] ; then
+            # look for disks with no children (TYPE crypt, part, lvm) mounted
+            candidate_name=$NAME ; candidate_type=$TYPE
+            INUSE=$FALSE
+            message_n "checking ${candidate_type} ${candidate_name} ..."
+            while read innerline; do
+                eval ${innerline}
+                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
+                    INUSE=$TRUE
+                fi
+            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
+            if [[ ! $INUSE ]] ; then
+                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status $TRUE
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
+            else
+                echo -en "${BRon}(in use)${Boff}"
+                non-stty-right_status 1
+            fi
+        fi
+    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
+    return 0
+}
 
 modular_msg()          # w/in margins, output externally assigned ${MSG} to array ${LINE[@]}
 {
@@ -504,15 +533,19 @@ process_cmdline()      # process command line arguments
     # if arg begins with a single dash, process it alone
     if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
       d_message "processing [ $1 ] alone as single-dash argument" 3
-      process_argument $1 $2   # incl $2 in case $1 is -t or -b
-      [[ "${1}" =~ ^(-t|-b|-o)$ ]] && shift  # extra shift to clear target, board, or outputdevice
-      shift
+      process_argument $1 $2   # incl $2 in case $1 uses an operand
+      result=$?
+####      [[ "${1}" =~ ^(-t|-b|-o)$ ]] && shift  # extra shift to clear target, board, or outputdevice
+      [[ "${result}" -eq 6 ]] && shift  # extra shift to clear operand
+      shift  # normal shift to next argument
     # if arg begins with a double dash, process it alone
     elif [ "${1:0:2}" == "--" ] ; then
       d_message "processing [ $1 ] alone as double-dash argument" 3
-      process_argument $1 $2   # incl $2 in case $1 is --target
-      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
-      shift
+      process_argument $1 $2   # incl $2 in case $1 uses an operand
+      result=$?
+####      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
+      [[ "${result}" -eq 6 ]] && shift  # extra shift to clear operand
+      shift  # normal shift to next argument
     else
       d_message "does not start with - or --" 3
       usage; E_message "exiting process [$$]" && exit
@@ -524,6 +557,9 @@ process_cmdline()      # process command line arguments
 
 process_argument()     # process one argument (considering the next a potential operand)
 {
+  # return 0 if success and processed no operand
+  # return 6 if success and processed an operand $2
+  # return 1 if error
   d_message "about to process [ $* ]" 2
   d_message "1: [ $1 ], 2: [ $2 ]" 2
   d_message "my PID: $$" 5
@@ -533,6 +569,7 @@ process_argument()     # process one argument (considering the next a potential 
       # display status
       d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
       read starting_step < ${cmdseq_statusfile};
+      result=$?
       if [ $starting_step -eq 0 ] ; then
           msg="${BWon}Status: $starting_step ;"
       else
@@ -548,6 +585,7 @@ process_argument()     # process one argument (considering the next a potential 
       d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
       export RESUME=${TRUE}
       read starting_step < ${cmdseq_statusfile};
+      result=$?
       msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
       msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
       d_message "${msg}" 2
@@ -559,6 +597,7 @@ process_argument()     # process one argument (considering the next a potential 
         if $(isnumber ${myarg}) && [ ${myarg} -ge 0 ] && \
           [ ${myarg} -lt ${#command_sequence[@]} ] ; then
             export starting_step=${myarg};
+            result=$?
             msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
             msg+=" to status file [${Boff}${cmdseq_statusfile}${BYon}]${Boff}"
             d_message "${msg}" 2
@@ -569,41 +608,58 @@ process_argument()     # process one argument (considering the next a potential 
         else
             # it may be a combination of numbers and letters - hand off to process_compound_arg
             process_compound_arg $1
+            result=$?
         fi
         ;;
     "-"[iI] | "--interactive"    )
       # interactive
       export INTERACTIVE=${TRUE};
+      result=$?
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
     "-"[nN] | "--noninteractive" )
       # non-interactive
       export INTERACTIVE=${FALSE}
+      result=$?
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
       ;;
     "-"[qQ] | "--quiet"          )
       # decrease verbosity
-      [[ ${verbosity} -gt 0 ]] && let verbosity--
-      [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
-      d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      if [[ ${verbosity} -gt 0 ]] ; then
+          let verbosity--
+          result=$?
+      elif [[ ${verbosity} -eq 0 ]] ; then
+          export VERBOSE=${FALSE}
+          result=$?
+          d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      else
+          # error
+          result=1
+          dE_message "${BWon}error: negative verbosity: ${verbosity}${Boff}" 2
+      fi
       ;;
     "-"[vV] | "--verbose"        )
       # increase verbosity
-      [[ ${verbosity} -lt 6 ]] && let verbosity++
       export VERBOSE=${TRUE}
-      d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      if [[ ${verbosity} -lt 6 ]] ; then
+          let verbosity++
+          result=$?
+          d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      fi
       ;;       # note: "numeric" args like -4 should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg $1 ;;")
       if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
           source /etc/${BPN}/local.cmdline_arguments
+          # each should set result as shown above, and if needed USED_OPERAND
       else
           process_compound_arg $1
+          result=$?
       fi
       ;;
   esac
   d_message "done with process_argument" 3
-  return 0
+  return $result
 }
 
 process_compound_arg()    # process a compount argument

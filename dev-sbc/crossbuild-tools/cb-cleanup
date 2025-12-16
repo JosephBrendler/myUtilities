@@ -35,27 +35,47 @@ cleanup-crossdev-environment() {
         d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
         if [[ $INTERACTIVE ]] ; then
             msg="${BYon}Do you want to delete image file /usr/${BOARD}.img ?\n"
-            msg+="     y: delete | s: no, but continue cleanup | n: no, and exit now"
+            msg+="     y: delete | s: skip, but continue cleanup | n: no, abort"
             response="" ; new_prompt "${msg}"
         else
             response="s"  # take the safe course. don't non-interactively destroy stuff
         fi
         case ${response:0:1} in
-            [yY] ) message_n "deleting /usr/${BOARD}.img ..." ;
-                   rm /usr/${BOARD}.img && right_status $? || ( right_status $? && exit 1 ) ;;
-            [sS] ) message "OK; no action; continuing" ;;
+            [yY] ) message "deleting /usr/${BOARD}.img ..." ;
+                   rm /usr/${BOARD}.img || die "failed to rm /usr/${BOARD}.img"
+                   right_status $TRUE
+                   ;;
+            [sS] ) message "Skipping as instructed [ ${response} ]" ;;
             [nN] ) E_message "Exiting as instructed [ ${response} ]" ; exit 1 ;;
-            * ) E_message "Invalid response; exiting" ; exit ;;
+            * ) E_message "Invalid response [ ${response} ]; exiting" ; exit ;;
         esac
     else
         message "no /usr/${BOARD}.img file exists ; continuing"
     fi
 
-    # use crossdev -C to cleanup crossdev crosscompiler and its TARGET directory
-
-    message "${BYon}Cleaning up crossdev cross-compiler and environment /usr/${TARGET} ..."
-    message "if asked, remove target tree by responding ${BMon}y${Boff} to the ${BYon}remove-recursive?${Boff} question"
-    crossdev -C -t ${TARGET} ; right_status $?
+    # examine crossdev situation and offer to use crossdev -C to cleanup crossdev crosscompiler and its TARGET directory; ask what to do with it
+    if [ -d /usr/${TARGET} ] || [ -d /var/db/repos/crossdev/cross-${TARGET} ] ; then
+        d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
+        if [[ $INTERACTIVE ]] ; then
+            msg="${BYon}Do you want to cleanup with ${BBon}crossdev ${BMon}-C -t ${LBon}${TARGET}${Boff}?\n"
+            msg+="     y: clean | s: no, but continue update | n: no, abort"
+            response="" ; new_prompt "${msg}"
+        else
+            response="s"  # take the safe course. don't non-interactively destroy stuff
+        fi
+        case ${response:0:1} in
+            [yY] ) message "removing crossdev toolchain for $TARGET"
+                   message "Note: you may also remove the mountpoint tree (say yes to rm recursive? prompt)"
+                   crossdev -C -t ${TARGET} || die "failed to crossdev -C -t ${TARGET}"
+                   right_status $TRUE
+                   ;;
+            [sS] ) message "Skipping as instructed [ ${response} ]" ;;
+            [nN] ) die "Aborting as instructed [ ${response} ]" ;;
+            * ) die "Invalid response [ ${response} ]; exiting" ;;
+        esac
+    else
+        E_message "no crossdev mountpoint nor repository for target exists (${BGon}Ok; will build${Boff})"
+    fi
 
     return 0
 }
