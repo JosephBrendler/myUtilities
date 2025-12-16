@@ -63,10 +63,21 @@ source /root/.cb-config   # assigns cb_BOARD, cb_TARGET, cb_TARGET_ARCH, cb_QEMU
 install_my_local_ca_certificates
 source /etc/bash/bashrc.d/emerge-chroot
 rerunmsg="first-run chroot configuration not requested by presense of marker"
-[ -e /root/firstenvlogin ] && /usr/sbin/finalize-chroot || \
+if [ -e /root/firstenvlogin ] ; then
+    /usr/sbin/finalize-chroot
+else
     echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
-[ -e /root/firstimglogin ] && /usr/sbin/finalize-chroot-for-image || \
+fi
+if [ -e /root/firstimglogin ] ; then
+    /usr/sbin/finalize-chroot-for-image
+else
     echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
+fi
+if [ -e /root/firstupdatelogin ] ; then
+    /usr/sbin/finalize-chroot-for-update
+else
+    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
+fi
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
 echo
