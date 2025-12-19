@@ -66,7 +66,13 @@ log_handle_result $?; show-result $?
 log_separator "$PN" "(iptables -vnL --line-numbers)"
 iptables -vnL --line-numbers | tee -a "${logFile}"
 log_handle_result $?; show-result $?
+log_separator "$PN" "(ip6tables -vnL --line-numbers)"
+ip6tables -vnL --line-numbers | tee -a "${logFile}"
+log_handle_result $?; show-result $?
 log_separator "$PN" "(ip route show)"
+ip route show | tee -a "${logFile}"
+log_handle_result $?; show-result $?
+log_separator "$PN" "(ip -6 route show)"
 ip route show | tee -a "${logFile}"
 log_handle_result $?; show-result $?
 
@@ -119,13 +125,16 @@ log_handle_result $?; show-result $?
 
 # show sysstat logging reports
 log_separator "$PN" "(sar CPU utilization trends)"
-sar -u -f /var/log/sa/sa28 | tee -a "${logFile}"
+#sar -u -f /var/log/sa/sa28 | tee -a "${logFile}"
+sar -u -f /var/log/sa/sa$(date '+%d') | tee -a "${logFile}"
 log_handle_result $?; show-result $?
 log_separator "$PN" "(sar network activity trends)"
-sar -n DEV -f /var/log/sa/sa28 | tee -a "${logFile}"
+#sar -n DEV -f /var/log/sa/sa28 | tee -a "${logFile}"
+sar -n DEV -f /var/log/sa/sa$(date '+%d') | tee -a "${logFile}"
 log_handle_result $?; show-result $?
 log_separator "$PN" "(sar memory/swap utilization trends)"
-sar -r -f /var/log/sa/sa28 | tee -a "${logFile}"
+#sar -r -f /var/log/sa/sa28 | tee -a "${logFile}"
+sar -r -f /var/log/sa/sa$(date '+%d') | tee -a "${logFile}"
 log_handle_result $?; show-result $?
 
 # convert report to pdf format
