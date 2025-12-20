@@ -28,22 +28,33 @@ usage() {
 }
 
 umount-board() {
-    # zero-fill and remove empty space to facilitate "resparsification" of sparse image
-    message "zero-filling empty space"
-    # zero-fill and ignore "No space left on device" ...
-    dd if=/dev/zero of=/usr/${TARGET}/ZERO_FILL bs=1M status=progress 2>&1 | grep -v "No space left"
-    true # reset error code and continue
-    sync; echo -e "${BGon}done${Boff}" ; right_status $TRUE
-    message_n "removing zero-fill"
-    rm /usr/${TARGET}/ZERO_FILL 2>/dev/null || die "failed to remove zero-fill"
-    sync; echo -e -n " (${BGon}done${Boff})" ; right_status $TRUE
-    # note: complete "resparsification" with fallocate after detaching
-
     # inspect target (mount point) - is anything mounted? (un-mount)
     if [ ! -z "$(findmnt -n -M /usr/${TARGET})" ] ; then
-        # something is mounted - un-mount it
+        # something is mounted - display, offer to zero-fill, and then un-mount it
         E_message "${BYon}the following devices are mounted on /usr/${TARGET} --${Boff}"
         mount | grep "on /usr/${TARGET}" | sed 's|^|    |'
+
+        response=""
+        msg="${BYon}Do you want to zero-fill and resparsify this image?${Boff}\n"
+        msg+="${BWon}(y|Y: yes; s|S: skip; n|N: no, abort) ${Boff}"
+        new_prompt "${msg}"
+        case ${response:0:1} in
+            [yY] )  # zero-fill and remove empty space to facilitate "resparsification" of sparse image
+                message "zero-filling empty space"
+                # zero-fill and ignore "No space left on device" ...
+                dd if=/dev/zero of=/usr/${TARGET}/ZERO_FILL bs=1M status=progress 2>&1 | grep -v "No space left"
+                true # reset error code and continue
+                sync; echo -e "${BGon}done${Boff}" ; right_status $TRUE
+                message_n "removing zero-fill"
+                rm /usr/${TARGET}/ZERO_FILL 2>/dev/null || die "failed to remove zero-fill"
+                sync; echo -e -n " (${BGon}done${Boff})" ; right_status $TRUE
+                # note: complete "resparsification" with fallocate after detaching
+                ;;
+            [sS] ) message "skipping, as instructed" ;;
+            *    ) die "aborting, as instructed" ;;
+        esac
+
+        # now un-mount the image (recursively)
         message_n "recursively umounting /usr/${TARGET} ..."
 	umount -l /usr/${TARGET}/dev{/shm,/pts,} 2>/dev/null || E_message "failed to umount -l /usr/${TARGET}/dev{/shm,/pts,}"
         umount -R /usr/${TARGET} || die "failed to umount -R /usr/${TARGET}"
