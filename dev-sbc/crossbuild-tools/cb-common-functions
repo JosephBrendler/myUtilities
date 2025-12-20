@@ -898,137 +898,6 @@ rebuild-rust-and-llvm() {
     return $result
 }
 
-prepare-cross-rust() {
-    # Some packages (such as gnome-base/librsvg) depend on a rust cross toolchain
-    # so build the rust cross toolchain
-
-    # change this if we have to modify the system
-    export RUST_LLVM_CHANGE_FLAG=$FALSE
-
-    host_package_use="/etc/portage/package.use/joetoo"
-    # verify that USE flag "dev-lang/rust rust-src" is in CHOST's package.use
-    message_n "looking for \"dev-lang/rust rust-src\" in ${host_package_use}"
-    if grep -qF -- "dev-lang/rust rust-src" "${host_package_use}" ; then
-        echo -en " (${BGon}found${Boff}))"
-    else
-        echo -en " (${BRon}not found${Boff}))"
-        echo -e "\ndev-lang/rust rust-src" >> "${host_package_use}" || die "failed to append rust-src use fl>
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
-
-    # verify that USE flag "dev-lang/rust-bin rust-src" is in CHOST's package.use
-    message_n "looking for \"dev-lang/rust-bin rust-src\" in ${host_package_use}"
-    if grep -qF -- "dev-lang/rust-bin rust-src" "${host_package_use}" ; then
-        echo -en " (${BGon}found${Boff}))"
-    else
-        echo -en " (${BRon}not found${Boff}))"
-        echo -e "\ndev-lang/rust-bin rust-src" >> "${host_package_use}" || die "failed to append rust-src us>
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
-
-    # verify or correct LLVM_TARGETS in CHOST's make.conf
-    # not sure this is really necessary -- all targets may be unconditionally enabled in llvm-core/llvm(?)
-    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 -- news regarding adjustment of profiles' pack>
-        # Micha ^b G  rny <mgorny@gentoo.org> (2021-11-04)
-        # Enable all LLVM targets unconditionally.  Unfortunately, disabling
-        # targets tend to break reverse dependencies (e.g. Rust) and we are yet
-        # to find a clean way of resolving that.  Compared to the damage
-        # potential, the increase of build time is a minor problem.  Users who
-        # really insist of building a smaller system can un-force the flags
-        # at their own responsibility.
-    # see more in footnote at the bottom of this file
-    # anyway, do this for now
-    # if make.conf doesn't contain LLVM_TARGETS, then add them
-    host_make_conf="/etc/portage/make.conf"
-    message "examining LLVM_TARGETS in ${host_make_conf}"
-    message_n "looking for ${LLVM_TARGET}"
-    if grep -qF "LLVM_TARGETS=" "${host_make_conf}" ; then
-        # make.conf contains an assigment for LLVM_TARGETS - is this board's target in it?
-        source "${host_make_conf}"  # activate the current assignemt so we can check it
-        if [[ "${LLVM_TARGETS}" == *"${LLVM_TARGET}"* ]] ; then
-            # our target is already included
-            echo -en " (${BGon}found${Boff})"
-        else
-            echo -en " (${BRon}not found${Boff})"
-            echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX P>
-                echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.con>
-            export RUST_LLVM_CHANGE_FLAG=$TRUE
-        fi
-    else
-        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
-        echo -en " (${BRon}not found${Boff})"
-        echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX Power>
-            echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.conf"
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
-
-    # now set up cross-rust in CHOSTs crossdev repo
-    VALID_LINK=$FALSE
-    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
-    old_dir="$(pwd)"
-    cd /var/db/repos/crossdev/cross-${TARGET} && \
-    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
-    message_n "looking for link"
-    if [ -L rust-std ] ; then
-        echo -en " (found, "
-        # link forund - right target?
-        target_path=$(readlink -f rust-std)
-#        olv_verbosity=$verbosity ; verbosity=5
-#        d_message "target_path: [${target_path}]" 4
-#        verbosity=$old_verbosity
-        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
-            # link points to correct target
-            echo -en "${BGon}valid${Boff})"
-            VALID_LINK=$TRUE
-        else
-            # link does not point to correct target -- remove it
-            echo -en "${BRon}invalid${Boff})"
-            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
-        fi
-    else
-        echo -en " (not found)"
-        # no link found
-    fi
-    if [ ! $VALID_LINK ] ; then
-        # valid link does not yet exist or invalid one was removed -- create it
-        ln -s /var/db/repos/gentoo/sys-devel/rust-std && \
-            echo -en "(${BGon}created${Boff})" || die "failed to create link for rust-std"
-    fi
-    # if we got here (didn't die above) close action as OK
-    right_status $TRUE
-    echo
-    cd $old_dir
-    message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
-
-    # now unmask rust-std in CHOSTs package.accept_keywords
-    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
-    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std && \
-        right_status $? || die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
-
-    # now validate or create /etc/portage/env/dev-lang/rust per-package env setting
-    # (should be installed by this package's ebuild)
-    message_n "examining /etc/portage/env/dev-lang/rust"
-    if [ -e /etc/portage/env/dev-lang/rust ] ; then
-        echo -en " (${BGon}found${Boff})"
-    else
-        # not found - create
-        echo -en " (${BRon}not found${Boff})"
-        CONTENT="RUST_CROSS_TARGETS=(\n"
-        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
-        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
-        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
-        CONTENT+=" )"
-        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust && \
-            echo -en "(${BGon}created${Boff})" || die "failed to create /etc/portage/env/dev-lang/rust"
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
-    return 0
-}
-
 run-dispatch-conf() {
     # run dispatch-conf to activate newly installed configs
     ROOT="/usr/${TARGET}/" dispatch-conf
@@ -1119,3 +988,143 @@ create-new-cross-compiler() {
         message "cross-compiler creation complete" ; return 0
     fi
 }
+
+prepare-cross-rust() {
+    # Some packages (such as gnome-base/librsvg) depend on a rust cross toolchain
+    # so build the rust cross toolchain
+
+    # change this if we have to modify the system
+    export RUST_LLVM_CHANGE_FLAG=$FALSE
+
+    host_package_use="/etc/portage/package.use/joetoo"
+    # verify that USE flag "dev-lang/rust rust-src" is in CHOST's package.use
+    message_n "looking for \"dev-lang/rust rust-src\" in ${host_package_use}"
+    if grep -qF -- "dev-lang/rust rust-src" "${host_package_use}" ; then
+        echo -en " (${BGon}found${Boff}))"
+    else
+        echo -en " (${BRon}not found${Boff}))"
+        echo -e "\ndev-lang/rust rust-src" >> "${host_package_use}" || \
+            die "failed to append rust-src use flag"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # verify that USE flag "dev-lang/rust-bin rust-src" is in CHOST's package.use
+    message_n "looking for \"dev-lang/rust-bin rust-src\" in ${host_package_use}"
+    if grep -qF -- "dev-lang/rust-bin rust-src" "${host_package_use}" ; then
+        echo -en " (${BGon}found${Boff}))"
+    else
+        echo -en " (${BRon}not found${Boff}))"
+        echo -e "\ndev-lang/rust-bin rust-src" >> "${host_package_use}" || \
+            die "failed to append rust-src use flag"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # verify or correct LLVM_TARGETS in CHOST's make.conf
+    # not sure this is really necessary --
+    #   all targets may be unconditionally enabled in llvm-core/llvm(?)
+    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 --
+    # ( news regarding adjustment of profiles' package.use.force ) --
+        # Michał Górny <mgorny@gentoo.org> (2021-11-04)
+        # Enable all LLVM targets unconditionally.  Unfortunately, disabling
+        # targets tend to break reverse dependencies (e.g. Rust) and we are yet
+        # to find a clean way of resolving that.  Compared to the damage
+        # potential, the increase of build time is a minor problem.  Users who
+        # really insist of building a smaller system can un-force the flags
+        # at their own responsibility.
+    # see more in footnote at the bottom of this file
+    # anyway, do this for now
+    # if make.conf doesn't contain LLVM_TARGETS, then add them
+    host_make_conf="/etc/portage/make.conf"
+    message "examining LLVM_TARGETS in ${host_make_conf}"
+    message_n "looking for ${LLVM_TARGET}"
+    if grep -qF "LLVM_TARGETS=" "${host_make_conf}" ; then
+        # make.conf contains an assigment for LLVM_TARGETS - is this board's target in it?
+        source "${host_make_conf}"  # activate the current assignemt so we can check it
+        if [[ "${LLVM_TARGETS}" == *"${LLVM_TARGET}"* ]] ; then
+            # our target is already included
+            echo -en " (${BGon}found${Boff})"
+        else
+            echo -en " (${BRon}not found${Boff})"
+            echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" || \
+                die "failed to append LLVM_TARGETS to CHOSTs make.conf"
+            echo -en "(${BGon}appended${Boff})"
+            export RUST_LLVM_CHANGE_FLAG=$TRUE
+        fi
+    else
+        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
+        echo -en " (${BRon}not found${Boff})"
+        echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" || \
+            die "failed to append LLVM_TARGETS to CHOSTs make.conf"
+        echo -en "(${BGon}appended${Boff})"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # now set up cross-rust in CHOSTs crossdev repo
+
+    VALID_LINK=$FALSE
+    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
+    old_dir="$(pwd)"
+    cd /var/db/repos/crossdev/cross-${TARGET} && \
+    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
+    message_n "looking for link"
+    if [ -L rust-std ] ; then
+        echo -en " (found, "
+        # link forund - right target?
+        target_path=$(readlink -f rust-std)
+#        olv_verbosity=$verbosity ; verbosity=5
+#        d_message "target_path: [${target_path}]" 4
+#        verbosity=$old_verbosity
+        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
+            # link points to correct target
+            echo -en "${BGon}valid${Boff})"
+            VALID_LINK=$TRUE
+        else
+            # link does not point to correct target -- remove it
+            echo -en "${BRon}invalid${Boff})"
+            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
+        fi
+    else
+        echo -en " (not found)"
+        # no link found
+    fi
+    if [ ! $VALID_LINK ] ; then
+        # valid link does not yet exist or invalid one was removed -- create it
+        ln -s /var/db/repos/gentoo/sys-devel/rust-std || die "failed to create link for rust-std"
+        echo -en "(${BGon}created${Boff})"
+    fi
+    # if we got here (didn't die above) close action as OK
+    right_status $TRUE
+    echo
+    cd $old_dir
+    message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+
+    # now unmask rust-std in CHOSTs package.accept_keywords
+    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
+    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std || \
+         die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
+    right_status $TRUE
+
+    # now validate or create /etc/portage/env/dev-lang/rust per-package env setting
+    # (should be installed by this package's ebuild)
+    message_n "examining /etc/portage/env/dev-lang/rust"
+    if [ -e /etc/portage/env/dev-lang/rust ] ; then
+        echo -en " (${BGon}found${Boff})"
+    else
+        # not found - create
+        echo -en " (${BRon}not found${Boff})"
+        CONTENT="RUST_CROSS_TARGETS=(\n"
+        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
+        CONTENT+=" )"
+        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust || die "failed to create /etc/portage/env/dev-lang/rust"
+        echo -en "(${BGon}created${Boff})"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+    return 0
+}
+
