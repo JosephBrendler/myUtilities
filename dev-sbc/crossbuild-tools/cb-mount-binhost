@@ -100,7 +100,7 @@ mount-board-image-as-read-only-binhost() {
     else
         message "no loop device is yet attached to ${stockpile_dir%/}/${BACKING_FILE}; continuing"
     fi
-    # mount the binhost backing file with kernel-level read-only protection
+    # attach the binhost backing file with kernel-level read-only protection
     message_n "attaching loop device (read-only)"
 #    img_loop_dev=$(losetup --find --show --partscan ${stockpile_dir%/}/${BACKING_FILE}) && \
 #        ( echo -n " (${img_loop_dev})" && right_status $? ) || ( right_status $? && exit 1 )
@@ -115,13 +115,28 @@ mount-board-image-as-read-only-binhost() {
     img_partition2_dev="${img_loop_dev}p2" && result=$? && \
     echo -n " ( ${img_partition2_dev} )" && \
     right_status ${result} || ( right_status $? && exit 1 )
+
+    # Run a non-destructive fsck (-n opens fs RO and assumes 'no' to all repairs - ok for RO images)
+    message_n "checking filesystem integrity (RO check)..."
+    e2fsck -n ${img_partition2_dev} >/dev/null 2>&1
+    result=$?
+    case $result in
+        0   ) echo -e -n " (${BGon}clean${Boff})"; mount_opts="ro" ;;
+        1|2 ) echo -e -n " (${BYon}recoverable dirty journal${Boff})"; mount_opts="ro,noload" ;;
+        *   ) die "${BRon}e2fsck detected corruption on ${img_partition2_dev}!${Boff} Fix before continuing"
+    esac
+    right_status $TRUE
+
     # now mount the partitions with mount-layer (filesystem) read-only protection
     message_n "mounting rootfs (${img_partition2_dev}) on ${MOUNTPOINT}/ (read-only) ..."
 #    mount ${img_partition2_dev} ${MOUNTPOINT}/ && right_status $? || ( right_status $? && exit 1 )
-    mount -o ro ${img_partition2_dev} ${MOUNTPOINT}/ && right_status $? || ( right_status $? && exit 1 )
+    mount -o ${mount_opts} ${img_partition2_dev} ${MOUNTPOINT}/ || die "failed to mount -o ro ${img_partition2_dev} ${MOUNTPOINT}/"
+    right_status $TRUE
     message_n "mounting bootfs (${img_partition1_dev}) on ${MOUNTPOINT}/boot/ (read-only) ..."
 #    mount ${img_partition1_dev} ${MOUNTPOINT}/boot/ && right_status $? || ( right_status $? && exit 1 )
-    mount -o ro ${img_partition1_dev} ${MOUNTPOINT}/boot/ && right_status $? || ( right_status $? && exit 1 )
+    mount -o ro ${img_partition1_dev} ${MOUNTPOINT}/boot/ || die "failed to mount -o ro ${img_partition1_dev} ${MOUNTPOINT}/boot/"
+    right_status $TRUE
+
     return 0
 }
 

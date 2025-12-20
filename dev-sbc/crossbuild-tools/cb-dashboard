@@ -4,6 +4,7 @@
 # mount a crossbuild image file on its associated TARGET
 #
 source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_unicode
 VERBOSE=$TRUE
 # set default verbosity only if it is not already set
 [ -z $verbosity ] && verbosity=3
@@ -27,11 +28,12 @@ PN=$(basename $0)
 declare -a TARGETS
 # load TARGETS array with selected directory names (starting "cross") output by find command
 # use -print0 to safely pass filenames potentially containing whitespace
-# use readarray -d $'\0' /// NOT -d '' 
+# use readarray -d $'\0' /// NOT -d ''
 #/// also provide final null terminator with ; printf '\0'
 #readarray -d $'\0' -t TARGETS < <(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -print0; printf '\0')
 # apparently don't need the final \0 terminator - it creates a blank element
-readarray -d $'\0' -t TARGETS < <(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 -type d -name 'cross*' -print0)
+readarray -d $'\0' -t TARGETS < <(find /var/db/repos/crossdev/ -mindepth 1 -maxdepth 1 \
+                                    -type d -name 'cross*' -print0)
 
 #-----[ functions ]--------------------------------------------------------------------------
 
@@ -49,35 +51,63 @@ show-dashboard() {
     local selector=""  # string used to target various function calls
 
     echo
-    separator "${PN}-${BUILD}" "( crossdev TARGETs in /var/db/repos/crossdev/ )"
-    for TARGET in ${TARGETS[@]}; do echo -e "    ${LBon}${TARGET}${Boff}"; done
-    echo
+    OUTPUT=$(for TARGET in ${TARGETS[@]}; do echo -e "    ${LBon}${TARGET}${Boff}"; done)
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "( crossdev TARGETs in /var/db/repos/crossdev/ )"
+        echo -e "${OUTPUT}"
+    else
+        d_message "crossdev TARGETS loop poduced no output" 4
+    fi
+
+
     # crossbuild stuff first (selected by '/usr/')
     # for each active loopdevice, show backing file and mounts
-    separator "${PN}-${BUILD}" "(active crossbuild loop devices)"
-    show-loopdev-backfile-and-mounts "/usr/"
-    [ $? -eq 0 ] && echo   ## echo only if something was presented in output (don't waste space if not)
+    OUTPUT=$(show-loopdev-backfile-and-mounts "/usr/")
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "(active crossbuild loop devices)"
+        echo -e "${OUTPUT}"
+    else
+        d_message "show-loopdev-backfile-and-mounts produced no output" 4
+    fi
 
     # now display anything else mounted on one of our TARGETs (e.g. proc, dev, sys for chroot...)
-    separator "${PN}-${BUILD}" "(other mounts - e.g. for chroot)"
-    for TARGET in ${TARGETS[@]}; do
-        selector="${TARGET}"
-        show-mounts "${selector}" | grep -v "loop"
-    done
+    OUTPUT=$(for TARGET in ${TARGETS[@]}; do selector="${TARGET}"; show-mounts "${selector}" | grep -v "loop"; done)
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "(other mounts - e.g. for chroot)"
+        echo -e "${OUTPUT}"
+    else
+        d_message "show-mounts TARGET loop produced no output" 4
+    fi
 
     # now show any other mounts on /dev/sd devices
     selector="/dev/sd"
-    separator "${PN}-${BUILD}" "(${selector} - possible OUTPUTDEVICE)"
-    show-mounts "${selector}"
+    OUTPUT=$(show-mounts "${selector}")
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "(${selector} - possible OUTPUTDEVICE)"
+        echo -e "${OUTPUT}"
+    else
+        d_message "show-mounts (${selector}) produced no output" 4
+        d_message "show-mounts /dev/sd  produced no output" 4
+    fi
 
     # now display anything mounted on /mnt/gentoo (possible outputdevice)
     selector="/mnt/gentoo"
-    separator "${PN}-${BUILD}" "(${selector} - mounted root_fs)"
-    show-mounts "${selector}"
+    OUTPUT=$(show-mounts "${selector}")
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "(${selector} - mounted root_fs)"
+        echo -e "${OUTPUT}"
+    else
+        d_message "show-mounts (${selector}) produced no output" 4
+    fi
 
     # display status of repositories in various /usr/${TARGET} directories
-    separator "${PN}-${BUILD}" "(crossbuild repository status)"
-    show-target-repositories-status
+    OUTPUT=$(show-target-repositories-status)
+    if [ -n "${OUTPUT}" ] ; then
+        separator "${PN}-${BUILD}" "(crossbuild repository status)"
+        echo -e "${OUTPUT}"
+    else
+        d_message "crossbuild repository status produced no output" 4
+    fi
 
     echo
     # now do binhosts (selected by 'stockpile')

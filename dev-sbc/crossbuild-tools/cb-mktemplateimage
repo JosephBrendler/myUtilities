@@ -41,7 +41,7 @@ usage() {
 
 initialize_variables() {
     d_message "in ${FUNCNAME[0]}" 5
-    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    if [ $verbosity -lt 2 ] ; then message_n "initializing ..." ; else message "initializing ..."; fi
     # save variables we have in varlist but dont want to lose
     oldVERBOSE=$VERBOSE; oldverbosity=$verbosity
     initialize_vars ${varlist}
@@ -49,28 +49,45 @@ initialize_variables() {
     # set default values
     FLAGGED=$FALSE
     d_message_n "sourcing BUILD ..." 2
-    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    source /etc/crossbuild-tools/BUILD ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting PN = $(basename $0)" 2
-    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    PN=$(basename $0) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "sourcing BPN ..." 2
-    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    source /etc/crossbuild-tools/BPN ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
 
     d_message_n "re-setting IMAGE_TYPE = ${myIMAGE_TYPE}" 2
-    IMAGE_TYPE="${myIMAGE_TYPE}" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    IMAGE_TYPE="${myIMAGE_TYPE}" ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default imagefile = /etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img" 2
-    imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img && \
-        d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    imagefile=/etc/crossbuild-tools/admin_files/TEMPLATE_SBC_IMAGE_FILE.img ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default image_size_mb = 20480" 2
-    image_size_mb=20480 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    image_size_mb=20480 ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default partition1_size_mb = 512" 2
-    partition1_size_mb=512 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    partition1_size_mb=512 ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default partition2_size_mb = $((image_size_mb - partition1_size_mb))" 2
-    partition2_size_mb=$((image_size_mb - partition1_size_mb)) && \
-        d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    partition2_size_mb=$((image_size_mb - partition1_size_mb)) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "re-setting VERBOSE to $(TrueFalse $oldVERBOSE)" 2
-    export VERBOSE=$oldVERBOSE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export VERBOSE=$oldVERBOSE ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "re-setting verbosity = $oldverbosity" 2
-    export verbosity=$oldverbosity && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export verbosity=$oldverbosity ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     if [[ $FLAGGED ]] ; then
         E_message "failed clean exit; note red flags above"
         return 1
@@ -88,7 +105,10 @@ prepare() {
     # there may be other checks to do, so save the FLAGGED structure for now
 
     # shouldn't have been called if it already exists, but in case invoked manually, check this
-    [ -f "${imagefile}" ] && E_message "imagefile ${imagefile} already exists" && FLAGGED=$TRUE
+    if [ -f "${imagefile}" ] ; then
+        E_message "imagefile ${imagefile} already exists"
+        FLAGGED=$TRUE
+    fi
     if [[ $FLAGGED ]] ; then
         E_message "Note red flags above. Please clean up before continuing"
         exit 1
@@ -100,63 +120,103 @@ mksparseimagetemplate() {
     d_message "in ${FUNCNAME[0]}" 5
     # Create empty image file
     message_n "creating sparse image file [ ${imagefile} ] ..."
-    dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M && right_status $? && \
-    mktemplate-common || ( right_status $? && exit 1 )
+    dd if=/dev/zero of=${imagefile} bs=1 count=0 seek=${image_size_mb}M || \
+        die "failed to create sparse image file [ ${imagefile} ]"
+    right_status $TRUE
+    mktemplate-common ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) die "mktemplate-common failed!${Boff} exit status: [${Mon}$result${Boff}]" ;;
+    esac
+    return $result
 }
 
 mkimagetemplate() {
     d_message "in ${FUNCNAME[0]}" 5
     # Create empty image file
     message_n "creating fixed-size image file [ ${imagefile} ] ..."
-    dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb} && right_status $? || ( right_status $? && exit 1 )
-    mktemplate-common && right_status $? || ( right_status $? && exit 1 )
+    dd if=/dev/zero of=${imagefile} bs=1M count=${image_size_mb}|| \
+        die "failed to fixed-size image file [ ${imagefile} ]"
+    right_status $TRUE
+    mktemplate-common ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) die "mktemplate-common failed!${Boff} exit status: [${Mon}$result${Boff}]" ;;
+    esac
+    return $result
 }
 
 mktemplate-common() {
     d_message "in ${FUNCNAME[0]}" 5
     # Set up loop device
     message_n "setting up loop device"
-    loop_device="$(losetup --find --show ${imagefile})" && result=$? && \
-    echo -n " ( ${loop_device} )" && \
-    right_status ${result} || ( right_status $? && exit 1 )
+    loop_device="$(losetup --find --show ${imagefile})" || die "failed to setup loop device"
+    echo -n " (${loop_device})"
+    right_status $TRUE
+
     # Create partition table
     message_n "making dos disk label ..."
-    parted -s "$loop_device" mklabel msdos && right_status $? || ( right_status $? && exit 1 )
+    parted -s "$loop_device" mklabel msdos || die "failed to create dos disk label"
+    right_status $TRUE
+
     # Create partitions
     message_n "creating partition 1 ..."
     # create partition 1 starting at 0 and going until designated size
-    parted -s "$loop_device" mkpart primary 0% ${partition1_size_mb}MiB && right_status $? || ( right_status $? && exit 1 )
+    parted -s "$loop_device" mkpart primary 0% ${partition1_size_mb}MiB || die "failed to create partition 1"
+    right_status $TRUE
+
     message_n "creating partition 2 ..."
     # create partition 2 starting at the end of partition 1 and using the rest of the device
-    parted -s "$loop_device" mkpart primary ${partition1_size_mb}MiB 100% && right_status $? || ( right_status $? && exit 1 )
-    # Get partition device names
-    message_n "getting device name for partition 1 ..."
-    partition1_device="${loop_device}p1" && result=$? && \
-    echo -n " ( ${partition1_device} )" && \
-    right_status ${result} || ( right_status $? && exit 1 )
-    message_n "getting device name for partition 1 ..."
-    partition2_device="${loop_device}p2" && result=$? && \
-    echo -n " ( ${partition2_device} )" && \
-    right_status ${result} || ( right_status $? && exit 1 )
+    parted -s "$loop_device" mkpart primary ${partition1_size_mb}MiB 100% || die "failed to create partition 2"
+    right_status $TRUE
+
+    # assign partition device names
+    message_n "assigning device name for partition 1 ..."
+    partition1_device="${loop_device}p1" || die "failed to assign device name for partition 1"
+    echo -n " (${partition1_device})"
+    right_status $TRUE
+    message_n "assigning device name for partition 2 ..."
+    partition2_device="${loop_device}p2" || die "failed to assign device name for partition 2"
+    echo -n " (${partition2_device})"
+    right_status $TRUE
+
+    # ensures loopXp1 and loopXp2 actually appear in /dev
+    message_n "triggering kernel partition re-scan ..."
+    partx -u "$loop_device" || partprobe "$loop_device"
+    udevadm settle  --timeout=5 # Wait for /dev nodes to be created, but not too long
+    right_status $?
+
     # Format partitions
     message "formatting partition 1 ..."
-    mkfs.vfat -F 32 -n bootfs "$partition1_device" && right_status $? || ( right_status $? && exit 1 )
+    mkfs.vfat -F 32 -n bootfs "$partition1_device" || die "failed to format partition 1"
+    right_status $TRUE
     message "formatting partition 2 ..."
-    mkfs.ext4 -L rootfs "$partition2_device" && right_status $? || ( right_status $? && exit 1 )
+    mkfs.ext4 -L rootfs "$partition2_device" || die "failed to format partition 2"
+    right_status $TRUE
+
     # mount rootfs, mkdir boot
     if [ ! -d /mnt/image ] ; then
         message_n "creating mountpoint /mnt/image ..."
-        mkdir /mnt/image && right_status $? || ( right_status $? && exit 1 )
+        mkdir /mnt/image || die "failed to mkdir /mnt/image"
+        right_status $TRUE
     fi
     message_n "mounting rootfs ..."
-    mount "${partition2_device}" /mnt/image && right_status $? || ( right_status $? && exit 1 )
+    mount "${partition2_device}" /mnt/image || die "failed to mount ${partition2_device} /mnt/image"
+    right_status $TRUE
+
     message_n "creating boot directory ..."
-    mkdir /mnt/image/boot && right_status $? || ( right_status $? && exit 1 )
+    mkdir /mnt/image/boot || die "failed to create boot directory"
+    right_status $TRUE
+
     message "un-mounting rootfs ..."
-    umount /mnt/image && right_status $? || ( right_status $? && exit 1 )
+    umount /mnt/image || die "failed to umount /mnt/image"
+    right_status $TRUE
+
     # Clean up loop device
     message_n "cleaning up loop device [ ${loop_device} ]"
-    losetup -d "$loop_device" && right_status $? || ( right_status $? && exit 1 )
+    losetup -d "$loop_device" || die "failed to detach loop device"
+    right_status $TRUE
+
     echo "Image ${imagefile} created with two partitions:"
     echo "Partition 1: $partition1_size_mb MB, formatted as vfat"
     echo "Partition 2: $partition2_size_mb MB, formatted as ext4"
@@ -170,7 +230,10 @@ d_message "in main script with verbosity [$verbosity] and args [$@]" 5
 [ $# -ne 1 ] && usage
 
 myIMAGE_TYPE="$1"
-[[ "${myIMAGE_TYPE:0:1}" != [sSfF] ]] && E_message "Invalid argument [ ${myIMAGE_TYPE} ]" && usage
+if [[ "${myIMAGE_TYPE:0:1}" != [sSfF] ]] ; then
+    E_message "Invalid argument [ ${myIMAGE_TYPE} ]"
+    usage
+fi
 
 # initialize variables and set default values
 initialize_variables || die "Failed to initialize_variables"

@@ -46,7 +46,7 @@ response=""
 
 varlist="PN BPN BUILD BOARD TARGET TARGET_ARCH QEMU_ARCH"
 varlist+=" LLVM_TARGET default_profile"
-varlist+=" BREAK starting_step stopping_step mkimgstatusfile"
+varlist+=" BREAK starting_step stopping_step mkimgstatusfile user STOCKPILE"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" BREAK bool.VERBOSE verbosity old_dir"
 
@@ -64,17 +64,17 @@ command_sequence=(
 msg1_sequence=(
 'repopulate image additional content'
 'cb-chroot into target image ${BOARD}'
-'save hostname for use in stockpile image name'
+'save hostname for use in STOCKPILE image name'
 'un-mount BOARD image'
-'add image to deployable image stockpile'
+'add image to deployable image STOCKPILE'
 )
 
 msg2_sequence=(
 'repopulating image additional content'
 'cb-chrooting into target image ${BOARD}'
-'saving hostname for use in stockpile image name'
+'saving hostname for use in STOCKPILE image name'
 'un-mounting BOARD image'
-'adding image to deployable image stockpile'
+'adding image to deployable image STOCKPILE'
 )
 
 #-----[ functions ]-----------------------------------------------------
@@ -95,25 +95,53 @@ initialize_variables() {
     # set default values
     FLAGGED=$FALSE
     d_message_n "sourcing BUILD ..." 2
-    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    source /etc/crossbuild-tools/BUILD ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting PN = $(basename $0)" 2
-    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    PN=$(basename $0) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "sourcing BPN ..." 2
-    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    source /etc/crossbuild-tools/BPN ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting old_dir = $(pwd)" 2
-    export old_dir=$(pwd) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export old_dir=$(pwd) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting user = joe" 2
+    export user="joe" ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting STOCKPILE = /home/${user}/sbc-stockpile" 2
+    export STOCKPILE="/home/${user}/sbc-stockpile" ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default starting_step = 0" 2
-    export starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export starting_step=0 ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default stopping_step = $(( ${#command_sequence[@]} - 1 ))" 2
-    export stopping_step=$(( ${#command_sequence[@]} - 1 )) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export stopping_step=$(( ${#command_sequence[@]} - 1 )) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default mkimgstatusfile = /root/bin/mkcrossbuildimg_status" 2
-    export mkimgstatusfile="/root/bin/mkcrossbuildimg_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export mkimgstatusfile="/root/bin/mkcrossbuildimg_status" ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default INTERACTIVE true" 2
-    export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export INTERACTIVE=$TRUE ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default VERBOSE = $(TrueFalse $oldVERBOSE)" 2
-    export VERBOSE=$oldVERBOSE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export VERBOSE=$oldVERBOSE ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     d_message_n "setting default verbosity = $oldverbosity" 2
-    export verbosity=$oldverbosity && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    export verbosity=$oldverbosity ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
     if [[ $FLAGGED ]] ; then
         E_message "failed clean exit; note red flags above"
         return 1
@@ -145,7 +173,10 @@ validate-image() {
     fi
     # verify the loop device is mounted on the target
     mountpoint=$(mount | grep "${loop_dev}p2" | awk '{print $3}')
-    [[ ! "${mountpoint}" == "/usr/${TARGET}" ]] && E_message "no rootfs (loop_dev p2) is mounted on target /usr/${TARGET}" && FLAGGED=$TRUE
+    if [[ ! "${mountpoint}" == "/usr/${TARGET}" ]] ; then
+        E_message "no rootfs (loop_dev p2) is mounted on target /usr/${TARGET}"
+        FLAGGED=$TRUE
+    fi
     mountpoint=$(mount | grep "${loop_dev}p1" | awk '{print $3}')
     if [[ ! "${mountpoint}" == "/usr/${TARGET}/boot" ]] ; then
         E_message "no bootfs (loop_dev p1) is mounted on target /usr/${TARGET}/boot"
@@ -201,30 +232,14 @@ stockpile-img() {
     # start point for development of the scpecific system for which it was created
     # receive hostname as $1
 
-    stockpile=/home/joe/sbc-stockpile
-
     # use my_hostname to create output filename
-    message_n "assigning stockpile output filename"
-    outfile="${BOARD}_${my_hostname}.img" && \
-        echo -en " (${BGon}ok${Boff})" || die "failed to assign stockpile filename"
+    message_n "assigning STOCKPILE output filename"
+    outfile="${BOARD}_${my_hostname}.img" || die "failed to assign STOCKPILE filename"
+    echo -en " (${BGon}ok${Boff})"
     right_status $TRUE
 
-    # create stockpile directory if it doesn't exist
-    message_n "examining stockpile"
-    if [ ! -d ${stockpile} ] ; then
-        echo -en " (${BRon}not found${Boff})"
-        mkdir -p ${stockpile} && \
-            echo -en " (${BGon}created${Boff})" || die "failed to create stockpile"
-    else
-        echo -en " (${BGon}found${Boff})"
-    fi
-    right_status $TRUE
+    copy-to-stockpile "/usr/${BOARD}.img" "${STOCKPILE%/}/${outfile}"
 
-    # copy /usr/${BOARD}.img to ${stockpile}/${BOARD}.env
-    message_n "stockpiling as ${outfile}"
-    cp /usr/${BOARD}.img ${stockpile%/}/${outfile} && \
-        echo -en " (${BGon}copied${Boff})" || die "failed copy to stockpile"
-    right_status $TRUE
     return 0
 }
 

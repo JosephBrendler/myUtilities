@@ -775,3 +775,347 @@ buildtarget-qemu() {
     message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
     return 0
 }
+
+copy-to-stockpile(){
+    source_file="$1"   # full path to source file
+    dest_file="$2"     # full path to destination file (in STOCKPILE)
+    # copy ${source_file} to ${STOCKPILE}/${dest_file}
+    # create STOCKPILE directory if it doesn't exist
+    # assumes STOCKPILE to be assigned in the environment
+
+    # check for existence of STOCKPILE directory (create if needed)
+    message_n "examining STOCKPILE"
+    if [ ! -d ${STOCKPILE} ] ; then
+        echo -en " (${BRon}not found${Boff})"
+        mkdir -p ${STOCKPILE} && \
+            echo -en " (${BGon}created${Boff})" || die "failed to create STOCKPILE"
+    else
+        echo -en " (${BGon}found${Boff})"
+    fi
+    right_status $TRUE
+
+    # Check for existing file and handle immutability
+    message_n "looking for backing file"
+    if [ -f "${dest_file}" ] ; then
+        # If it's already there, we must UNSET immutable flag to allow backup/overwrite
+        echo -e -n " (${BGon}found${Boff})"
+        chattr -i "${dest_file}" 2>/dev/null || die "failed to unset immutability"
+        echo -e -n " (${BGon}unset immutable attribute${Boff})"
+        right_status $TRUE
+
+        response=""
+        msg="${BYon}${dest_file} already exists. ${BRon}Create backup?\n${Boff}"
+        msg+="${BWon}(y|Y: backup; n|N: abort; s|S: skip/overwrite)${Boff}"
+        new_prompt "${msg}"
+        case ${response:0:1} in
+            [yY] )
+                message_n "backing up image file"
+                cp "${dest_file}" "${dest_file}.bak" || die "failed to create backup"
+                echo -e -n " (${BGon}backed-up${Boff})"
+                right_status $TRUE
+                ;;
+            [sS] ) message_n "will overwrite image file"
+                right_status $TRUE
+                ;;
+            * ) die "aborting as instructed [$response]" ;;
+        esac
+    fi
+    # copy /usr/${BOARD}.img to ${STOCKPILE}/${UPDATEIMAGE}
+    message_n "stockpiling ${source_file} as $(basename ${dest_file})"
+    cp "${source_file}" "${dest_file}" >/dev/null 2>&1 || die "failed to cp ${source_file} ${dest_file}"
+    echo -en " (${BGon}copied${Boff})"
+    right_status $TRUE
+
+    # make the stockpiled image file immutable
+    message_n "protecting production image (chattr +i)"
+    chattr +i "${dest_file}" || die "failed to set immutable flag"
+    echo -e -n " (${BGon}immutable${Boff})"
+    right_status $TRUE
+
+    return 0
+
+}
+
+emerge-host-world() {
+    options="--update --verbose --deep --newuse --getbinpkg --usepkg --keep-going"
+    [ $INTERACTIVE ] && options+=" --ask"
+    emerge @world ${options} ; result=$?
+    return $result
+}
+
+configure-make-conf-for-crossbuilding() {
+    # remove any pending version of make.conf and accept delivery of chroot and crossbuild versions
+    message_n "accepting pending ._cfgxxxx_make.conf installs ..."
+    for x in /etc/portage/._cfg*make.conf; do rm $x ; done
+    for x in /etc/portage/._cfg*make.conf.crossbuild; do 
+        mv $x make.conf.crossbuild
+    done
+    for x in /etc/portage/._cfg*make.conf.chroot; do
+        mv $x make.conf.chroot
+    done
+    right_status $TRUE
+    # change to the chroot version of make.conf installed by joetoo-platform-meta
+    message_n "configuring make.conf for crossbuilding ..."  
+    newfile="/usr/${TARGET}/etc/portage/make.conf.crossbuild"
+    oldfile="/usr/${TARGET}/etc/portage/make.conf"
+    cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
+    right_status $TRUE
+    return 0
+}
+
+configure-make-conf-for-chroot() {
+    # change to the chroot version of make.conf installed by joetoo-platform-meta
+    newfile="/usr/${TARGET}/etc/portage/make.conf.chroot"
+    oldfile="/usr/${TARGET}/etc/portage/make.conf"
+    message_n "configuring make.conf for chroot ..."
+    cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
+    right_status $TRUE
+    return 0
+}
+
+emerge-cross-rust-std() {
+    # build cross-${TARGET}/rust-std
+    options="--verbose --getbinpkg --usepkg"
+    [ $INTERACTIVE ] && options+=" --ask"
+    emerge cross-${TARGET}/rust-std ${options} ; result=$?
+    return $result
+}
+
+rebuild-rust-and-llvm() {
+    # rebuild rust and llvm with the new configuration, if it changed
+    if [ $RUST_LLVM_CHANGE_FLAG ] ; then
+        # configuration changed - rebuild
+        message "${BYon}rust/llvm configuration ${BMon}changed -- rebuilding${Boff}"
+        options="--update --verbose --deep --newuse --getbinpkg --usepkg"
+        [ $INTERACTIVE ] && options+=" --ask"
+        emerge @world ${options} ; result=$?
+    else
+        # configuration unchanged - just continue
+        message "${BYon}rust/llvm configuration ${BGon}unchanged -- continuing${Boff}"
+        right_status $TRUE
+        result=0
+    fi
+    return $result
+}
+
+prepare-cross-rust() {
+    # Some packages (such as gnome-base/librsvg) depend on a rust cross toolchain
+    # so build the rust cross toolchain
+
+    # change this if we have to modify the system
+    export RUST_LLVM_CHANGE_FLAG=$FALSE
+
+    host_package_use="/etc/portage/package.use/joetoo"
+    # verify that USE flag "dev-lang/rust rust-src" is in CHOST's package.use
+    message_n "looking for \"dev-lang/rust rust-src\" in ${host_package_use}"
+    if grep -qF -- "dev-lang/rust rust-src" "${host_package_use}" ; then
+        echo -en " (${BGon}found${Boff}))"
+    else
+        echo -en " (${BRon}not found${Boff}))"
+        echo -e "\ndev-lang/rust rust-src" >> "${host_package_use}" || die "failed to append rust-src use fl>
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # verify that USE flag "dev-lang/rust-bin rust-src" is in CHOST's package.use
+    message_n "looking for \"dev-lang/rust-bin rust-src\" in ${host_package_use}"
+    if grep -qF -- "dev-lang/rust-bin rust-src" "${host_package_use}" ; then
+        echo -en " (${BGon}found${Boff}))"
+    else
+        echo -en " (${BRon}not found${Boff}))"
+        echo -e "\ndev-lang/rust-bin rust-src" >> "${host_package_use}" || die "failed to append rust-src us>
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # verify or correct LLVM_TARGETS in CHOST's make.conf
+    # not sure this is really necessary -- all targets may be unconditionally enabled in llvm-core/llvm(?)
+    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 -- news regarding adjustment of profiles' pack>
+        # Micha ^b G  rny <mgorny@gentoo.org> (2021-11-04)
+        # Enable all LLVM targets unconditionally.  Unfortunately, disabling
+        # targets tend to break reverse dependencies (e.g. Rust) and we are yet
+        # to find a clean way of resolving that.  Compared to the damage
+        # potential, the increase of build time is a minor problem.  Users who
+        # really insist of building a smaller system can un-force the flags
+        # at their own responsibility.
+    # see more in footnote at the bottom of this file
+    # anyway, do this for now
+    # if make.conf doesn't contain LLVM_TARGETS, then add them
+    host_make_conf="/etc/portage/make.conf"
+    message "examining LLVM_TARGETS in ${host_make_conf}"
+    message_n "looking for ${LLVM_TARGET}"
+    if grep -qF "LLVM_TARGETS=" "${host_make_conf}" ; then
+        # make.conf contains an assigment for LLVM_TARGETS - is this board's target in it?
+        source "${host_make_conf}"  # activate the current assignemt so we can check it
+        if [[ "${LLVM_TARGETS}" == *"${LLVM_TARGET}"* ]] ; then
+            # our target is already included
+            echo -en " (${BGon}found${Boff})"
+        else
+            echo -en " (${BRon}not found${Boff})"
+            echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX P>
+                echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.con>
+            export RUST_LLVM_CHANGE_FLAG=$TRUE
+        fi
+    else
+        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
+        echo -en " (${BRon}not found${Boff})"
+        echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX Power>
+            echo -en "(${BGon}appended${Boff})" || die "failed to append LLVM_TARGETS to CHOSTs make.conf"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # now set up cross-rust in CHOSTs crossdev repo
+    VALID_LINK=$FALSE
+    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
+    old_dir="$(pwd)"
+    cd /var/db/repos/crossdev/cross-${TARGET} && \
+    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
+    message_n "looking for link"
+    if [ -L rust-std ] ; then
+        echo -en " (found, "
+        # link forund - right target?
+        target_path=$(readlink -f rust-std)
+#        olv_verbosity=$verbosity ; verbosity=5
+#        d_message "target_path: [${target_path}]" 4
+#        verbosity=$old_verbosity
+        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
+            # link points to correct target
+            echo -en "${BGon}valid${Boff})"
+            VALID_LINK=$TRUE
+        else
+            # link does not point to correct target -- remove it
+            echo -en "${BRon}invalid${Boff})"
+            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
+        fi
+    else
+        echo -en " (not found)"
+        # no link found
+    fi
+    if [ ! $VALID_LINK ] ; then
+        # valid link does not yet exist or invalid one was removed -- create it
+        ln -s /var/db/repos/gentoo/sys-devel/rust-std && \
+            echo -en "(${BGon}created${Boff})" || die "failed to create link for rust-std"
+    fi
+    # if we got here (didn't die above) close action as OK
+    right_status $TRUE
+    echo
+    cd $old_dir
+    message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+
+    # now unmask rust-std in CHOSTs package.accept_keywords
+    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
+    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std && \
+        right_status $? || die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
+
+    # now validate or create /etc/portage/env/dev-lang/rust per-package env setting
+    # (should be installed by this package's ebuild)
+    message_n "examining /etc/portage/env/dev-lang/rust"
+    if [ -e /etc/portage/env/dev-lang/rust ] ; then
+        echo -en " (${BGon}found${Boff})"
+    else
+        # not found - create
+        echo -en " (${BRon}not found${Boff})"
+        CONTENT="RUST_CROSS_TARGETS=(\n"
+        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
+        CONTENT+=" )"
+        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust && \
+            echo -en "(${BGon}created${Boff})" || die "failed to create /etc/portage/env/dev-lang/rust"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+    return 0
+}
+
+run-dispatch-conf() {
+    # run dispatch-conf to activate newly installed configs
+    ROOT="/usr/${TARGET}/" dispatch-conf
+    return $?
+}
+
+edit-make-conf() {
+    # use system editor to edit config file
+    ${EDITOR} /usr/${TARGET}/etc/portage/make.conf
+    return $?
+}
+
+edit-package-use-platform() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_${BOARD}")
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+edit-package-use-common() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_common")
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+edit-package-accept-keywords() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+    configfile=$(find /usr/${TARGET}/etc/portage/package.accept_keywords/ -iname "*joetoo")
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+create-new-cross-compiler() {
+    message "creating new crossdev cross compiler. Done after stage3 extraction"
+    message "because crossdev may produce split-usr layout, and I prefer the"
+    message "merged-usr layout that modern stage3 provides ..."
+    echo
+    FLAGGED=$FALSE
+    for x in profiles metadata; do
+        target_dir="/var/db/repos/crossdev/${x}"
+        message_n "validating ${target_dir} ..."
+        if [ ! -d ${target_dir} ] ; then
+            echo -en " (${BYon}creating${Boff})"
+            mkdir -p ${target_dir} && right_status $? || ( right_status $? && FLAGGED=$TRUE )
+        else
+            echo -en " (${BGon}valid${Boff})"
+            right_status $TRUE
+        fi
+    done
+
+    # validate or populate /var/db/repos/crossdev/metadata/layout.conf
+    message_n "validating /var/db/repos/crossdev/metadata/layout.conf ..."
+    if [ ! -f /var/db/repos/crossdev/metadata/layout.conf ] || \
+       [ -z "$(grep 'masters = gentoo' /var/db/repos/crossdev/metadata/layout.conf 2>/dev/null)" ] ; then
+        echo -en " ${BYon}(populating)${Boff} ..."
+        echo 'masters = gentoo' > /var/db/repos/crossdev/metadata/layout.conf && \
+        right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    else
+        echo -en " (${BGon}valid${Boff})"
+        right_status $TRUE
+    fi
+
+    # validate or populate /var/db/repos/crossdev/profiles/repo_name
+    message_n "validating /var/db/repos/crossdev/profiles/repo_name ..."
+    if [ ! -f /var/db/repos/crossdev/profiles/repo_name ] || \
+       [ -z "$(grep 'crossdev' /var/db/repos/crossdev/profiles/repo_name)" ] ; then
+        echo -en " ${BYon}(populating)${Boff} ..."
+        echo 'crossdev' > /var/db/repos/crossdev/profiles/repo_name && \
+        right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    else
+        echo -en " (${BGon}valid${Boff})"
+        right_status $TRUE
+    fi
+
+    # set permissions
+    message_n "setting permission for portage on /var/db/repos/crossdev ..."
+    chown -R portage:portage /var/db/repos/crossdev && \
+    right_status $? || ( right_status $? && FLAGGED=$TRUE )
+
+    # now actually build the new cross-compiler
+    message "building new cross-compiler ..."
+    crossdev -S -t ${TARGET} && \
+    right_status $? || ( right_status $? && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above" ; return 1
+    else
+        message "cross-compiler creation complete" ; return 0
+    fi
+}

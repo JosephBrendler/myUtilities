@@ -46,23 +46,43 @@ mount-board() {
     else
         message "no loop device is yet attached to /usr/${BOARD}.img; continuing"
     fi
+
+    # attach loop device (read-write)
     message_n "attaching loop device"
-    img_loop_dev=$(losetup --find --show --partscan /usr/${BOARD}.img) && \
-        ( echo -n " (${img_loop_dev})" && right_status $? ) || ( right_status $? && exit 1 )
-    # Get partition device names
-    message_n "getting device name for partition 1 ..."
-    img_partition1_dev="${img_loop_dev}p1" && result=$? && \
-    echo -n " ( ${img_partition1_dev} )" && \
-    right_status ${result} || ( right_status $? && exit 1 )
-    message_n "getting device name for partition 2 ..."
-    img_partition2_dev="${img_loop_dev}p2" && result=$? && \
-    echo -n " ( ${img_partition2_dev} )" && \
-    right_status ${result} || ( right_status $? && exit 1 )
+    img_loop_dev=$(losetup --find --show --partscan /usr/${BOARD}.img) || die "failed to attach loop device"
+    echo -n " (${img_loop_dev})"
+    right_status $TRUE
+
+    # assign partition device names
+    message_n "assigning device name for partition 1 ..."
+    img_partition1_dev="${img_loop_dev}p1" || die "failed to assign img_partition1_dev"
+    echo -n " ( ${img_partition1_dev} )"
+    right_status $TRUE
+    message_n "assigning device name for partition 2 ..."
+    img_partition2_dev="${img_loop_dev}p2" || die "failed to assign img_partition2_dev"
+    echo -n " ( ${img_partition2_dev} )"
+    right_status $TRUE
+
+    # use fsck to preen bootfs (vfat)
+    message_n "preening bootfs (vfat) ..."
+    fsck.vfat -a ${img_partition1_dev} >/dev/null 2>&1
+    right_status $?
+
+    # use fsck to preen rootfs (ext4)
+    message_n "preening rootfs (ext4) ..."
+    e2fsck -p ${img_partition2_dev} >/dev/null 2>&1 ; result=$?
+    case $result in
+        0|1|2 ) right_status $TRUE ;; # 0: clear; 1: fixed; 2: fixed->reboot (N/A for .img)
+        *     ) die "${BRon}e2fsck failed!${Boff} exit code: [${Mon}$result${Boff}]. Fix before continuing"
+    esac
+
     # now mount the partitions
     message_n "mounting rootfs (${img_partition2_dev}) on /usr/${TARGET}/ ..."
-    mount ${img_partition2_dev} /usr/${TARGET}/ && right_status $? || ( right_status $? && exit 1 )
+    mount ${img_partition2_dev} /usr/${TARGET}/ || die "failed to mount img_partition2_dev"
+    right_status $TRUE
     message_n "mounting bootfs (${img_partition1_dev}) on /usr/${TARGET}/boot/ ..."
-    mount ${img_partition1_dev} /usr/${TARGET}/boot/ && right_status $? || ( right_status $? && exit 1 )
+    mount ${img_partition1_dev} /usr/${TARGET}/boot/ || die "failed to mount img_partition1_dev"
+    right_status $TRUE
     return 0
 }
 

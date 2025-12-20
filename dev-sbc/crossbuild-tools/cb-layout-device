@@ -11,6 +11,7 @@
 #   rather than load the BPN file created by the parent package which uses BPN= its own PN
 
 source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_unicode
 export LC_NUMERIC="en_US.UTF-8"
 declare -A lv_size  # user later, for size of LVs (root, usr, var, opt, home, tmp, srv, extra, swap)
 
@@ -280,21 +281,30 @@ source_templates() {
     d_message "sfdisk_template: $sfdisk_template" 5
     # (1) ingest sfdisk_template
     message_n "checking sfdisk_template ..."
-    [ -f "${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template}" ] && \
-        right_status $? || die "sfdisk_template does not exist"
-        ingest_sfdisk_template || die "failed to ingest_sfdisk_template"
+    if [ -f "${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template}" ] ; then
+        right_status $TRUE
+    else
+        die "sfdisk_template does not exist"
+    fi
+    ingest_sfdisk_template || die "failed to ingest_sfdisk_template"
 
     # (2) ingest blkid_template
     message_n "checking blkid_template ..."
-    [ -f "${config_dir%/}/${blkid_template_dir%/}/${blkid_template}" ] && \
-        right_status $? || die "blkid_template does not exist"
-        ingest_blkid_template || die "failed to ingest_blkid_template"
+    if [ -f "${config_dir%/}/${blkid_template_dir%/}/${blkid_template}" ] ; then
+        right_status $TRUE
+    else
+        die "blkid_template does not exist"
+    fi
+    ingest_blkid_template || die "failed to ingest_blkid_template"
 
     # (3) ingest lsblk_template
     message_n "checking lsblk_template ..."
-    [ -f "${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template}" ] && \
-        right_status $? || die "lsblk_template does not exist"
-        ingest_lsblk_template || die "failed to ingest_lsblk_template"
+    if [ -f "${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template}" ] ; then
+        right_status $TRUE
+    else
+        die "lsblk_template does not exist"
+    fi
+    ingest_lsblk_template || die "failed to ingest_lsblk_template"
 
     # (4) set luks_partition_device (so it can be used and displayed in config)
     # luks_partition_device= (last on OUTPUTDEVICE)
@@ -303,12 +313,12 @@ source_templates() {
     message_n "assigning luks_partition_device = ${OUTPUTDEVICE}${p_prefix}${partition_count}"
     luks_partition_device="${OUTPUTDEVICE}${p_prefix}${partition_count}" || \
         die "failed to set luks_partition_device"
-    right_status $?
+    right_status $TRUE
 
     # (5) set luks container name - get_luks_edev_name operates on luks_partition_device and sets edev
     message_n "assigning luks container name (edev ="
     get_luks_edev_name || die "failed to get_luks_edev_name"
-    echo -n " ${edev})" ; right_status $?
+    echo -n " ${edev})" ; right_status $TRUE
 
     return 0
 }
@@ -1038,17 +1048,27 @@ write_mount_the_rest_script() {
     # populate the mount-the-rest.<hostname> script, to mount other LVs and/or partitions
     # initialize script file by writing header line with ">"
     message_n "creating ${mount_the_rest_script} ..."
-    echo "#!/bin/bash" > ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "#!/bin/bash" > ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
     # append mountpoint line
     message_n "appending mountpoint=${root_dev_mountpoint} to ${mount_the_rest_script}"
-    echo "mountpoint=${root_dev_mountpoint}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "mountpoint=${root_dev_mountpoint}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # if LUKS, append a root_vg line to identify the VG parent of all LVs
     if [ $LUKS ] ; then
         message_n "appending root_vg line to identify the VG parent of all LVs"
-        echo "root_vg=vg_${DEV_HOSTNAME}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-        right_status $? || (right_status $?; ERROR=$TRUE)
+        echo "root_vg=vg_${DEV_HOSTNAME}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1; ERROR=$TRUE ;;
+        esac
     fi
     # append a partition_list line and look up uuid while we're at it
     # (use live blkid data to get var/val pairs for LABEL, TYPE, UUID)
@@ -1088,15 +1108,24 @@ write_mount_the_rest_script() {
 #    d_message "recap partition_uuids[@]: ${partition_uuids[@]}" 5
     debug_do 'echo -e "${BMon} * ${Boff}recap partition_uuids[@]: ${partition_uuids[@]}"' 5
     message_n "appending partition_list assignment line"
-    echo "partition_list=\"${pnames}\"" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "partition_list=\"${pnames}\"" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # now append uuid assignments for all partitions, using partition_uuids already saved
     for selector in ${pnames} ; do
         uuid_assignment="${selector}_uuid=${partition_uuids[${selector}]}"
         message_n "appending uuid assignment: [${uuid_assignment}]"
-        echo "${uuid_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
+        echo "${uuid_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1; ERROR=$TRUE ;;
+        esac
         non_stty_right_status $? || (non_stty_right_status $?; ERROR=$TRUE)
     done
+
     # now append mountpoint assignments for all partitions
     # (use blkid to get partitions again, lsblk template to get mountpoins)
     for selector in ${pnames} ; do
@@ -1115,58 +1144,97 @@ write_mount_the_rest_script() {
         fi
         mp_assignment="${selector}_mountpoint=${mp}"
         message_n "appending mountpoint assignment: [${mp_assignment}]"
-        echo "${mp_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-        non_stty_right_status $? || (non_stty_right_status $?; ERROR=$TRUE)
+        echo "${mp_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        case $result in
+            0 ) non_stty_right_status $TRUE ;;
+            * ) non_stty_right_status 1; ERROR=$TRUE ;;
+        esac
     done
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # now append (concatenate) a standard script to mount partitions
     message_n "concatenating standard script to mount partitions"
-    cat ${config_dir%/}/mkdev-files/mount-PARTs_template >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    cat ${config_dir%/}/mkdev-files/mount-PARTs_template >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$? 
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # if LUKS, append (concatenate) a standard script to mount LVs
     if [ $LUKS ] ; then
         message_n "concatenating standard script to mount LVs"
-        cat ${config_dir%/}/mkdev-files/mount-LVs_template.luks >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-        right_status $? || (right_status $?; ERROR=$TRUE)
+        cat ${config_dir%/}/mkdev-files/mount-LVs_template.luks >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1; ERROR=$TRUE ;;
+        esac
     fi
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # append a line that will generate a blank line in output, for format clarity
     message_n "appending a line to generate a blank line, for format clarity"
-    echo "echo" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "echo" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     # append lines that will display what was mounted
     message_n "appending lines to display what was mounted (indented)"
     echo "echo 'here is what was mounted --'" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    echo "mount | grep ${root_dev_mountpoint} | sed 's|^|    |'" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "mount | grep ${root_dev_mountpoint} | sed 's|^|    |'" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
 
     # capture and append the blkid data for each partition
     # (prefix each line with # to comment it out)
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1; ERROR=$TRUE ;;
+    esac
+
     for selector in ${pnames} ; do
         # get blkid data to append to file
         message_n "capturing blkid data for ${selector} ..."
         blkid_data="$(blkid | grep ${partition_uuids[${selector}]} | sed 's|^|#|')" && \
-        echo "# ${blkid_data}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-        right_status $? || (right_status $?; ERROR=$TRUE)
+        echo "# ${blkid_data}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1; ERROR=$TRUE ;;
+        esac
     done
     # make the script executable
     message_n "making ${root_dev_mountpoint%/}/${mount_the_rest_script} executable"
-    chmod +x ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    right_status $? || (right_status $?; ERROR=$TRUE)
+    chmod +x ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1; ERROR=$TRUE ;;
+        esac
     return 0
 }
 
