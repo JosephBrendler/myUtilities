@@ -88,14 +88,15 @@ if you only want the cross-build environment and binhost.
     cb-mktemplateimage -- create a new template image file, if needed
     cb-setup -- create BOARD image if needed
     cb-mount -- attach a loop device to the BOARD image, and mount it on the TARGET
-    cb-populate-target -- populate the target image with configuration needed for cross-building
+    cb-populate-env -- populate the target environment with configuration needed for cross-building
     cb-chroot-env -- qemu-chroot into the target minimal environment, to enable native compiling
       (auto-runs finalize-chroot-env script)
   cb-mkimg (workflow) -- starting from the cb-mkenv cross-built environment image file, make a deployable image
-    cb-populate-image -- add content to image so it can be deployed to a real system
+    cb-populate-img -- add content to image so it can be deployed to a real system
     cb-chroot-img -- qemu-chroot into the target maturing image file, to enable native compiling
       (auto-runs finalize-chroot-img script)
   cb-mkupd (workflow) -- starting from the cb-mkimg deployable image, update
+    cb-populate-upd -- add content to image as part of an update process
     cb-chroot-env -- qemu-chroot into the target mature to-be-updated image, to enable native compiling
       (auto-runs finalize-chroot-upd script)
   cb-mkdev (workflow) -- starting from the cb-mkimg/upd deployable image, format a physical block device
