@@ -1,0 +1,241 @@
+#!/bin/bash
+# finalize-chroot-common-functions        (c)  joe brendler 2025-9976
+# functions consolidated from finalize-chroot-env -img and -upd
+#
+
+protect-qemu-for-chroot() {
+    separator ${PN} "${FUNCNAME[0]}"
+    # confirm qemu is installed - maybe silly since we assume this script is running in a qemu chroot :-)
+    qemu_pkg="app-emulation/qemu"
+    message_n "looking for ${qemu_pkg}"
+    if [ -z "$(qlist -e ${qemu_pkg}" ] ; then
+        die "${qemu_pkg} is not installed - exit chroot and re-run cb-mkimg or cb-mkupd"
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        # get version - to use in mask
+        VERSION=$(equery l "${qemu_pkg}" -F '$version') || die "failed to get version of qemu"
+        echo -e -n " (${BMon}${VERSION}${Boff})"
+        right_status $TRUE
+    fi
+
+    return 0
+}
+
+run-dispatch-conf() {
+    separator ${PN} "${FUNCNAME[0]}"
+    message "about to run dispatch-conf"
+    ROOT=/ dispatch-conf ; result=$?
+    case $result in
+        0 ) message "run-dispatch-conf ${BGon}succeeded${Boff}" ;;
+        * ) E_message "run-dispatch-conf ${BRon}failed${Boff}" ;;
+    esac
+    return $result
+}
+
+chroot_emerge-world() {
+    separator ${PN} "${FUNCNAME[0]}"
+    # re-run chroot_emerge -uavDN @world --keep-going
+    message "about to run chroot_emerge -uavDN @world --keep-going"
+    [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
+    eval "${chroot_emerge} ${emerge_opts} @world --keep-going" ; result=$?
+    case $result in
+        0 ) message "chroot_emerge-world ${BGon}succeeded${Boff}" ;;
+        * ) E_message "chroot_emerge-world ${BRon}failed${Boff}" ;;
+    esac
+    return $result
+}
+
+sync-repo() {
+    separator ${PN} "${FUNCNAME[0]}"
+    REPO=$1
+    # check again; if the eix database directory does not exist, create it and give portage permission to use it
+    if [ ! -d /var/cache/eix ] ; then
+        message_n "eix database directory does not exist; creating ..."
+        mkdir -p /var/cache/eix ; right_status $?
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    else
+        message "eix database /var/cache/eix already exists"
+        message_n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    fi
+
+    # just notify which case we have - empty or existing repo
+    if [[ -z $(find var/db/repos/${REPO}/ -mindepth 1) ]] ; then
+        E_message "Repository ${REPO} is empty"
+    else
+        message "Repository ${REPO} exists"
+    fi
+
+    # run ${chroot_emerge} --sync (explicitly rather than with alias) for this repo
+    message 'synchronizing portage tree with ${chroot_emerge} -av --sync'" ${REPO} ..."
+    d_message "chroot_emerge = ${chroot_emerge}" 3
+
+    eval "${chroot_emerge} -av --sync ${REPO}" ; result=$?
+    message_n "exit status - "
+    case $result in
+        0 ) right_status $TRUE ;;
+        * ) right_status 1 ;;
+    esac
+    return $result
+}
+
+check-reload-config() {
+    separator ${PN} "${FUNCNAME[0]}"
+    # check/reload config
+    message "checking/reloading config ..."
+    gcc-config -l && \
+    ldconfig -v && \
+    ROOT=/ env-update && \
+    source /etc/profile ; result=$?
+    [ $result -ne 0 ] && COMPLETE=$FALSE
+    right_status $result
+    return $result
+}
+
+build-chroot_emerge-command() {
+    # set these explicitly, just in case the make.conf wan't put back to a chroot configuration
+    # and to ensure HOSTCC is set correctly since make.conf doesn't set that
+    export chroot_emerge="ROOT=/ CBUILD=${TARGET} \
+        PORTAGE_TMPDIR=/tmp/ DISTDIR=/var/cache/distfiles \
+        PKGDIR=/var/cache/binpkgs PORT_LOGDIR=/var/log/portage \
+        HOSTCC=${TARGET}-gcc emerge" || return 1
+    return 0
+}
+
+get-check-config() {
+    # source /root/.cb-config and validate TARGET (fatal if failure)
+    # also assign BOARD, etc. I am ... (non-fatal if failure)
+    if [ -e /root/.cb-config ] ; then
+        source /root/.cb-config || die "failed to source /root/.cb-config"
+    else
+        E_message "/root/.cb-config not found"
+    fi
+
+    # use indirect variable assignment to load data from name-spaced
+    # variables with values stored in /root/.cb-config
+    # (e.g. cb_BOARD has val for BOARD)
+    # necessary because cb-config is sourced by /root/.bashrc to enable
+    # chroot-update automation AND (e.g.) the TARGET_ARCH variable name used here
+    # is also used for implicit functionality by MANY ebuilds.
+    # (run grep -iR target_arch /var/db/repos/gentoo/ to see this)
+    configvarlist="BOARD TARGET TARGET_ARCH QEMU_ARCH"
+    configvarlist+=" STAGE3_SELECTOR default_profile LLVM_TARGET"
+    for x in ${configvarlist}; do
+        varname="cb_${x}" ; eval $x=${!varname}
+    done
+
+    message_n "validating BOARD, TARGET and qemu-chroot config ..."
+    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
+        echo -en " ${BGon}(match)${Boff}"
+        right_status $TRUE
+        message "  BOARD ............: $BOARD"
+        message "  TARGET ...........: $TARGET"
+        message "  TARGET_ARCH ......: $TARGET_ARCH"
+        message "  QEMU_ARCH ........: $QEMU_ARCH"
+        message "  STAGE3_SELECTOR ..: $STAGE3_SELECTOR"
+        message "  default_profile ..: $default_profile"
+        message "  LLVM_TARGET ......: $LLVM_TARGET"
+
+        return 0
+    else
+        echo -en " ${BRon}(mismatch)${Boff}"
+        right_status 1
+        E_message "TARGET mismatch; exiting"
+        FLAGGED=$TRUE
+        return 1
+    fi
+}
+
+get-target() {
+    # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
+    message_n "determining TARGET ..."
+    apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+    if [ $result -eq 0 ] ; then
+        message "apparent_TARGET: $apparent_TARGET"
+    else
+        E_message "failed to determine apparent_TARGET"
+        FLAGGED=$TRUE
+        return 1
+    fi
+    return 0
+}
+
+validate-eix-db-dir() {
+    separator ${PN} "${FUNCNAME[0]}"
+    SOFARSOGOOD=$TRUE
+    # prepare the directory that will hold the eix database
+    message "validating the eix database directory ..."
+    message_n "looking for /var/cache/eix"
+    if [ ! -d /var/cache/eix ] ; then
+        echo -en " (creating)"
+        mkdir -p /var/cache/eix/ ; result=$?
+        if [ $result -eq 0 ] ; then
+            echo -en " ${BGon}(success)${Boff}"
+            right_status $TRUE
+        else
+            echo -en " ${BRon}(fail)${Boff}"
+            right_status 1
+            SOFARSOGOOD=$FALSE
+        fi
+    else
+        echo -en " (found)" ; right_status $TRUE
+    fi
+    message_n "setting permissions for /var/cache/eix"
+    chown portage:portage /var/cache/eix ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -en " ${BGon}(success)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status 1
+        SOFARSOGOOD=$FALSE
+    fi
+
+    if [[ ! $SOFARSOGOOD ]] ; then
+        FLAGGED=$TRUE
+        return 1
+    fi
+    return 0
+}
+
+validate-pre-existing-var-link() {
+    #   user should have already run cb-mkimg/upd, incl cb-chroot-img/upd,
+    #   (and the finalize-chroot-img/upd on first login prior to now)
+    #   the image resulting from that process should be mounted on /usr/${TARGET}
+    #   confirm by checking for /usr/${TARGET}/var - which should be a link to /var
+    #   (a "safety" measure I adopted to intercept prduction of binaries if user
+    #    mistakenly uses both ROOT=/usr/${TARGET} cmdline prefix
+    #    *AND* a chroot version of make.conf, which sets the same.
+    #    the redundant setting will refer to /usr/${TARGET}/usr/${TARGET} and resulting
+    #    binaries will be sent to /usr/${TARGET}/usr/${TARGET}/var/cache/binpkgs.
+    #    So - preclude that by linking /usr/${TARGET}/usr/${TARGET}/var --> /usr/${TARGET}/var)
+    message_n "checking if /usr/${TARGET}/var is already linked --> /var ..."
+    check_target=/usr/${TARGET}/var
+    check_status=$(file ${check_target} | sed "s|${check_target}: ||")
+    case $(echo $check_status | awk '{print $1}') in
+        "symbolic"  )
+            # link exists (validate it)
+            echo -en " (link found)"
+            if [[ "${check_status}" == "symbolic link to /var" ]] ; then
+                # valid
+                echo -en " (valid link)"
+                result=$TRUE
+                right_status $result
+            else
+                echo -en " (invalid link)"
+                result=1
+                right_status $result
+            fi
+            ;;
+        * )
+            echo -en "  (not linked)"
+            right_status $result
+            E_message "invalid chroot layout: ${check_target} is [${check_status}]"
+            E_message "fix layout; conisder re-running cb-chroot-img ${BOARD} (and its finalize-c>
+            E_message "and/or rebuild with cb-mkenv from dev-sbc/crossbuild-tools::joetoo"
+            result=2
+            ;;
+    esac
+    return $result
+}

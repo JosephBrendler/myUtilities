@@ -1,0 +1,611 @@
+#!/bin/bash
+#
+# finalize-chroot-img    joe brendler 14 May 2025
+#
+# should be run automatically by /root/.bashrc if file ${firstrunmarker} exists
+#
+# can be run separately by user at any time when in proper context -
+#   must be running inside a qemu-chroot
+# (don't want to run this for an actual deployed image)
+#
+# if all goes well, remove the ${firstrunmarker} file
+#   so .bashrc won't try to run it again
+
+# look for /root/firstlogin (which is removed upon completion of this script)
+firstrunmarker=/root/firstimglogin
+
+source /usr/sbin/script_header_joetoo
+message_n "sourcing script_header_joetoo_unicode "
+source /usr/sbin/script_header_joetoo_unicode || die "failed to source /usr/sbin/script_header_joetoo_unicode"
+bremoji "$face_beam"
+right_status $TRUE
+source /usr/sbin/finalize-chroot-common-functions  || die "failed to source /usr/sbin/finalize-chroot-common-functions"
+bremoji "$face_beam"
+right_status $TRUE
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
+#-----[ variables ]---------------------------------------------------------------------
+
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+PN=$(basename $0)
+
+COMPLETE=$TRUE  # (tentatively; any step below can change this)
+FLAGGED=$FALSE
+result=0
+mytimezone="America/New_York"
+
+varlist="PN BUILD BOARD TARGET"
+varlist+=" starting_step stopping_step finishupstatusfile"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" bool.COMPLETE bool.FLAGGED"
+varlist+=" BREAK bool.VERBOSE verbosity"
+varlist+=" BREAK lv.chroot_emerge"
+
+command_sequence=(
+'set-hostname'
+'set-password root'
+'set-timezone'
+'remove-kernelsources-mountpoint'
+'sync-repo joetoo'
+'add-user'
+'fix-inittab'
+'write-fstab'
+'make-mountpoints'
+'chroot_emerge-world'
+'run-dispatch-conf'
+'add-default-runlevel-services'
+'setup-clock'
+'install-boot-firmware'
+'display-next-steps-img'
+)
+
+msg1_sequence=(
+'set hostname'
+'set root password'
+'set timezone'
+'remove kernel sources mountpoint'
+'sync repo joetoo'
+'add user'
+'fix inittab'
+'write fstab'
+'make mountpoints'
+'chroot_emerge world'
+'run dispatch-conf'
+'add default runlevel services'
+'set up clock'
+'install boot firmware'
+'display next steps'
+)
+
+#-----[ functions ]---------------------------------------------------------------------
+
+# usage .................... moved to script_header_joetoo_extended,
+#     which will source /etc/${BPN}/local.usage
+# validate_status_file() ... moved to script_header_joetoo_extended
+# linear_search() .......... moved to script_header_joetoo_extended
+# display_configuration()... moved to script_header_joetoo_extended
+# process_commandline()..... moved to script_header_joetoo_extended
+# process_argument()........ moved to script_header_joetoo_extended
+# process_compound_arg().... moved to script_header_joetoo_extended
+# new_prompt().............. moved to script_header_joetoo_extended
+# run_sequence()............ moved to script_header_joetoo_extended
+
+# protect-qemu-for-chroot() ....... moved to finalize-chroot-common-functions
+# run-dispatch-conf().............. moved to finalize-chroot-common-functions
+# chroot_emerge-world()............ moved to finalize-chroot-common-functions
+# sync-repo()...................... moved to finalize-chroot-common-functions
+# check-reload-config() ........... moved to finalize-chroot-common-functions
+# build-chroot_emerge-command() ... moved to finalize-chroot-common-functions
+# get-check-config() .............. moved to finalize-chroot-common-functions
+# get-target()..................... moved to finalize-chroot-common-functions
+# validate-eix-db-dir() ........... moved to finalize-chroot-common-functions
+
+initialize_variables-img() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+    # set default values
+    FLAGGED=$FALSE
+    d_message_n "sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting PN = $(basename $0)" 2
+    PN=$(basename $0) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "sourcing BPN ..." 2
+    source /etc/crossbuild-tools/BPN && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default starting_step = 0" 2
+    export starting_step=0 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default stopping_step = $(( ${#command_sequence[@]} - 1 ))" 2
+    export stopping_step=$(( ${#command_sequence[@]} - 1 )) && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default finishupstatusfile = /root/bin/finishup_status" 2
+    export finishupstatusfile="/root/bin/finishup_status" && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default INTERACTIVE true" 2
+    export INTERACTIVE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default VERBOSE true" 2
+    export VERBOSE=$TRUE && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    d_message_n "setting default verbosity = 3" 2
+    export verbosity=3 && d_right_status $? 2 || ( d_right_status $? 2 && FLAGGED=$TRUE )
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
+}
+
+validate-prerequisites-img() {
+    separator ${PN} "${FUNCNAME[0]}"
+    # build a command with which to run the emerge program in this chroot environment
+    message_n "building chroot_emerge command"
+    build-chroot_emerge-command >/dev/null 2>&1 || die "failed to build-chroot_emerge-command"
+    echo -e -n " (${BGon}success${Boff}"
+    right_status $TRUE
+
+    # validate the eix database directory
+    message "calling function to validate eix database directory"
+    validate-eix-db-dir || die "failed to validate-eix-db-dir"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # need to sync gentoo repo in order to have a valid profile with which to get-target, get-che>
+    message "calling function to sync repo gentoo (ensure valid profile)"
+    sync-repo gentoo || die "failed to sync-repo gentoo"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # read /root/.cb-config and assign name-spaced environment variables
+    message "calling get-target function to read /root/.cb-config"
+    get-target || die "failed to get-target"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # check/reload config
+    message "calling function to check/reload configuration"
+    get-check-config || die "failed to get-check-config"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # check that qemu is installed and protected
+    protect-qemu-for-chroot || die "general failure of protect-qemu-for-chroot"
+
+}
+
+set-password() {
+    # set passwd for user $1
+    [ $# -ne 1 ] && E_message "invalid argument for set-password()" && return 1
+    user="$1"
+    message "please set the password for user [${user}] on this image"
+    passwd "${user}" ; result=$?
+    if [ $result -eq 0 ] ; then
+        message "${BGon}(success)${Boff}"
+        return 0
+    else
+        E_message "failed to set passwd for user [${user}]"
+        FLAGGED=$TRUE
+        return 1
+    fi
+}
+
+set-timezone() {
+    #  set timezone
+    message_n "setting local timezone (America/New_York) for joetoo ..."
+    ln -sf ../usr/share/zoneinfo/${mytimezone} /etc/localtime && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+}
+
+set-hostname() {
+    MSG="${BYon}Please verify or (re)set the hostname for this system${Boff}"
+    message $MSG
+    MSG="  ${BMon}Note:${Boff} If you are providing apache ssl or openvpn keys\n"
+    MSG+="  via the /etc/crossbuild-tools/mkimg-files/ structure of this build,\n"
+    MSG+="  then they must correspond to this hostname\n"
+    echo -e "${MSG}"
+    HAVE_CANDIDATE=$FALSE
+    message_n "checking /etc/hostname"
+    #  check hostname (/etc/hostname first, then /etc/conf.d/hostname and confirm or change
+    if [ -f /etc/hostname ] ; then
+        echo -e " (${BGon}exists${Boff})" ; right_status $TRUE
+        # /etc/hostname exists -- check it (read only first word of /etc/hostname)
+        IFS=' ' read -a myarray < /etc/hostname ; candidate=${myarray[0]}
+        [ ! -z "${candidate}" ] && HAVE_CANDIDATE=$TRUE
+    else
+        # /etc/hostname does not exist; chech /etc/conf.d/hostname
+        echo -e " (${BRon}does not exist${Boff})" ; right_status 1
+        message_n "checking /etc/conf.d/hostname"
+        if [ -f /etc/conf.d/hostname ] ; then
+            echo -e " (${BGon}exists${Boff})" ; right_status $TRUE
+            eval "$(grep '^hostname=' /etc/conf.d/hostname | sed 's|hostname|candidate|')"
+            [ ! -z "${candidate}" ] && HAVE_CANDIDATE=$TRUE
+        else
+            echo -e " (${BRon}does not exist${Boff})" ; right_status 1
+            # rare - same implication as neither of the above setting HAVE_CANDIDATE
+        fi
+    fi
+    if [ $HAVE_CANDIDATE ] ; then
+        message "candidate hosthame: [ ${candidate} ]"
+    else
+        echo
+        message "Neither /etc/hostname nor /etc/conf.d/hostname appears to contain"
+        message_n "a candidate hostname.  ${BYon}Please choose and enter a hostname here:${Boff} "
+        IFS=' ' read -a myarray ; candidate=${myarray[0]}  # use only the first word of input
+        message "candidate hosthame: [ ${candidate} ]"
+    fi
+    # now validate this candidate hostname with the user
+    response=""
+    new_prompt "${BYon}is this correct?${BWon} (y: yes; n: no, try again; s: exit program) "
+    echo
+    while [[ ! "${response}" == [yYsS] ]] ; do
+        message_n "${BYon}Please choose and enter a hostname here:${Boff} "
+        IFS=' ' read -a myarray ; candidate=${myarray[0]} # use only the first word of input
+        message "candidate hosthame: [ ${candidate} ]"
+        new_prompt "${BYon}is this correct?${BWon} (y: yes; n: no, try again; s: skip for now) "
+    done
+    if [[ "${response}" == [yY] ]] ; then
+        message_n "setting hostname: ${candidate}"
+        echo "${candidate}" > /etc/hostname && \
+            echo -en " ${BGon}(success)${Boff}" || die "failed to set hostname"
+            right_status $TRUE
+    else
+        E_message "candidate hostname provided, then rejected"
+        message "please make a note to manually run the following command when you have time --"
+        message "    ${BBon}echo ${BYon}<hostname> ${BGon}> ${Boff}/etc/hostname"
+        return 1
+    fi
+    return 0
+}
+
+remove-kernelsources-mountpoint() {
+    message_n "removing kernel sources mountpoint to install symlink"
+    [ -d /usr/src/linux ] && rm -r /usr/src/linux ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -en " ${BGon}(success)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status 1
+        FLAGGED=$TRUE
+        return 1
+    fi
+    return 0
+}
+
+prep-eix-db-dir() {
+    SOFARSOGOOD=$TRUE
+    # prepare the directory that will hold the eix database
+    message "preparing the eix database directory ..."
+    message_n "looking for /var/cache/eix"
+    if [ ! -d /var/cache/eix ] ; then
+        echo -en " (creating)"
+        mkdir -p /var/cache/eix/ ; result=$?
+        if [ $result -eq 0 ] ; then
+            echo -en " ${BGon}(success)${Boff}"
+            right_status $TRUE
+        else
+            echo -en " ${BRon}(fail)${Boff}"
+            right_status 1
+            SOFARSOGOOD=$FALSE
+        fi
+    else
+        echo -en " (found)" ; right_status $TRUE
+    fi
+    message_n "setting permissions for /var/cache/eix"
+    chown portage:portage /var/cache/eix ; result=$?
+    if [ $result -eq 0 ] ; then
+        echo -en " ${BGon}(success)${Boff}"
+        right_status $TRUE
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status 1
+        SOFARSOGOOD=$FALSE
+    fi
+    [[ $SOFARSOGOOD ]] && return 0 || ( FLAGGED=$TRUE && return 1)
+}
+
+add-user() {
+    # populate-user -- cb-populate-image should have loaded whatever structure
+    #    was found in /etc/crossbuild-tools/mkimg-files ...
+    #    including .bashrc, .ssh/keys...
+    #    as long as user populated that structure after emerging crossbuild-tools
+    response=""
+    while [[ ! "${response}" == [yYsS] ]] ; do
+        echo
+        echo -en "${BGon}*${Boff} set username for routine daily user: "
+        read candidate
+        message "you responded [ ${candidate} ]"
+        new_prompt "is this correct?"
+    done
+    if [[ "${response}" == [yY] ]] ; then
+        message_n "setting up user ${candidate}"
+        useradd -m -G wheel,console,audio,cdrom,video,cdrw,usb,users,portage -s /bin/bash ${candidate} && \
+        ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+        ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    else
+        E_message "candidate username provided, then rejected"
+        message "please make a note to manually run the following command when you have time --"
+        message "    useradd ${BMon}-m -G${Boff} wheel,console,audio,cdrom,video,cdrw,usb,users,portage ${BMon}-s${Boff} /bin/bash ${BRon}\${username}${Boff}"
+        return 2
+    fi
+
+    # set password for this user
+    set-password ${candidate} && right_status $? || \
+        ( right_status $? && FLAGGED=$TRUE && return 1 )
+
+    # assign ownership of all content in the users home directory to the user
+    message_n "recursively assigning ownership of /home/${candidate} to ${candidate}"
+    chown -R "${candidate}":"${candidate}" "/home/${candidate}" && \
+        echo -en " (${BGon}success${Boff})" || die "failed to assign ownership for ${candidate}"
+    right_status $TRUE
+    return 0
+}
+
+fix-inittab() {
+    message_n "fixing /etc/inittab s0..."
+    sed -i 's|^s0:|#s0:|' /etc/inittab && result=$? && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    message_n "fixing /etc/inittab f0..."
+    sed -i 's|^f0:|#f0:|' /etc/inittab && result=$? && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+}
+
+write-fstab() {
+    # get root_dev
+    message_n "determining root_dev ..."
+    root_mountpoint="/"
+    root_dev=$(mount | grep " ${root_mountpoint} " | awk '{print $1}') && \
+    ( echo -en " (${root_dev})" && right_status $result ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    # get boot_dev
+    boot_mountpoint="/boot"
+    message_n "determining boot_dev ..."
+    boot_dev=$(mount | grep " ${boot_mountpoint} " | awk '{print $1}') && \
+    ( echo -en " (${boot_dev})" && right_status $result ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE && return 1 )
+    # get blkid data for root_dev
+    message_n "getting blkid data for root_dev"
+    eval $(blkid | grep ${root_dev} | sed "s|${root_dev}: ||") ; result=$?
+    if [ $result -eq 0 ] ; then
+        root_fstype=${TYPE}
+        root_uuid=${UUID}
+        root_partuuid=${PARTUUID}
+        echo -en " (fstype: [${root_fstype=}] partuuid: [${root_partuuid}])"
+        right_status $result
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status $result
+        FLAGGED=$TRUE
+        return 1
+    fi
+    # get blkid data for boot_dev
+    message_n "getting blkid data for boot_dev"
+    eval $(blkid | grep ${boot_dev} | sed "s|${boot_dev}: ||") ; result=$?
+    if [ $result -eq 0 ] ; then
+        boot_fstype=${TYPE}
+        boot_uuid=${UUID}
+        boot_partuuid=${PARTUUID}
+        echo -en " (fstype: [${boot_fstype=}] partuuid: [${boot_partuuid}])"
+        right_status $result
+    else
+        echo -en " ${BRon}(fail)${Boff}"
+        right_status $result
+        FLAGGED=$TRUE
+        return 1
+    fi
+    # set fstab opts and dump-pass strings for root and boot
+    root_opts="noatime"
+    root_dp="0 1"
+    boot_opts="noatime,noauto,nodev,nosuid,noexec"
+    boot_dp="1 2"
+    # write (append) fstab line for /boot and / (PARTUUIDs will have to be changed after image is written to media (e.g. sd card)
+    message_n "writing (appending) fstab line for /boot ..."
+    echo -e "PARTUUID=${boot_partuuid}\t${boot_mountpoint}\t\t${boot_fstype}\t\t${boot_opts}\t\t${boot_dp}" >> /etc/fstab && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE )
+    message_n "writing (appending) fstab line for / ..."
+    echo -e "PARTUUID=${root_partuuid}\t${root_mountpoint}\t\t${root_fstype}\t\t${root_opts}\t\t${root_dp}" >> /etc/fstab && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE )
+    # write (append) a placeholder fstab line for swap
+    message_n "writing (appending) fstab placeholder line for /var/cache/swap/swap1 ..."
+    echo -e "/var/cache/swap/swap1\tnone\t\tswap\t\tsw\t\t0 0" >> /etc/fstab && \
+    ( echo -en " ${BGon}(success)${Boff}" && right_status $result  && return 0 ) || \
+    ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && FLAGGED=$TRUE )
+    return 0
+}
+
+make-mountpoints() {
+    #make standard joetoo mountpoints in /mnt/
+    for x in card stick thumb image gentoo from to key temp ; do
+        message_n "mountpoint ${x}"
+        if [ ! -d /mnt/${x} ] ; then
+            echo -en " (making)"
+            mkdir -p /mnt/${x} ; right_status $?
+        else
+            echo -en " (exists)" ; right_status $TRUE
+        fi
+    done
+}
+
+add-default-runlevel-services() {
+    # add all services to default runlevel (should have merged with world)
+    SOFARSOGOOD=$TRUE
+    # add prerequisite networking links in /etc/init.d
+    message "Adding prerequisite network interface links in /etc/init.d ..."
+    list="eth0 wlan0"
+    for x in $list ; do
+        message_n "interface ${x}"
+        if [ ! -L /etc/init.d/net.${x} ] ; then
+            echo -en " (linking)"
+            ln -s /etc/init.d/net.lo /etc/init.d/net.${x} ; result=$?
+            ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+            ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+        else
+            echo -en " (already linked)" ; right_status $TRUE
+        fi
+    done
+    # add links for services in default runlevel
+    message "Adding services to the default runlevel ..."
+    list="apache2 chronyd cronie dbus distccd gpm mysql net.eth0 net.wlan0 ntpd php-fpm rsyncd sshd sysklogd"
+    for x in $list ; do
+        message_n "examining ${x}"
+        if [ ! -L /etc/runlevels/default/${x} ] ; then
+            echo -en " (linking)"
+            ln -s /etc/init.d/${x} /etc/runlevels/default/${x} ; result=$?
+            ( echo -en " ${BGon}(success)${Boff}" && right_status $result ) || \
+            ( echo -en " ${BRon}(fail)${Boff}" && right_status $result && SOFARSOGOOD=$FALSE )
+        else
+            echo -en " (already linked)" ; right_status $TRUE
+        fi
+    done
+    if [[ $SOFARSOGOOD ]] ; then
+        message "add-default-runlevel-services ${BGon}succeeded${Boff}"
+        return 0
+    else
+        E_message "add-default-runlevel-services ${BRon}completed with errors${Boff}"
+        FLAGGED=$TRUE
+        return 1
+    fi
+}
+
+setup-clock() {
+    # determine what is presently set up, query user to fix
+    currentclock=$(find /etc/runlevels/boot/ -iname "*clock" -exec basename {} \;)
+    case ${currentclock} in
+        [sh]"wclock" )
+            message "boot runlevel currentclock: ${currentclock}" ;
+            case ${currentclock:0:1} in
+                "h" ) otherclock="swclock" ;;
+                "s" ) otherclock="hwclock" ;;
+                * ) E_message "invalid currentclock" ; return 1 ;;
+            esac
+            response="" ;
+            msg="would you like to change to ${otherclock} ?\n"
+            msg+="  y = yes; change | [s|n] = no; keep"
+            new_prompt "${msg}"
+            case ${response:0:1} in
+                [yY] )
+                    message_n "removing current boot runlevel clock service ..." ;
+                    rm /etc/runlevels/boot/${currentclock} ; right_status $?
+                    message_n "adding new boot runlevel clock service [${otherclock}] ..."
+                    ln -s /etc/init.d/${otherclock} /etc/runlevels/boot/${otherclock} ; right_status $?
+                    ;;
+                [nNsS] ) ;;
+                * ) E_message "invalid response" ; return 1 ;;
+            esac
+            return 0 ;
+            ;;
+        * ) E_message "invalid clock for boot runlevel: [{currentclock}]" ; return 1 ;;
+    esac
+}
+
+install-boot-firmware() {
+    # install boot-firmware with
+    #    sys-boot/raspi-boot-firmware  -- for raspi boards, all of which are named bcm27xx-rpi-x-x...
+    #    sys-boot/rockchip-boot-firmware  -- for rockchip boards, all of which are named rk3xxx-nnnn
+    #    for generic boards use default (raspi)
+    # determine which we need ...
+    case ${BOARD:0:2} in
+        "bc" ) package="sys-boot/raspi-boot-firmware" ;;
+        "rk" ) package="sys-boot/rockchip-boot-firmware" ;;
+        "me" ) package="sys-boot/amlogic-boot-firmware" ;;
+        "fs" ) package="sys-boot/nxp-boot-firmware" ;;
+        *    ) Emessage "invalid board case in $0"; return 1 ;;
+    esac
+    message "about to run chroot_emerge ${emerge_opts} ${package}"
+    [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
+    eval "${chroot_emerge} ${emerge_opts} ${package}" ;  result=$?
+    [ $result -eq 0 ] && message "chroot_emerge ${emerge_opts} ${package} ${BGon}succeeded${Boff}" || \
+        E_message "chroot_emerge ${emerge_opts} ${package}  ${BRon}failed${Boff}"
+    return $result
+}
+
+display-next-steps-img() {
+    # source the list of things yet-to-do
+    # re-read at any time by issuing the same command manually
+    source /etc/crossbuild-tools/README_next_steps_after_img
+}
+
+#-----[ main script ]-------------------------------------------------------------------
+checkroot
+separator "${PN}" "(starting)"
+# option s (status) is the only one that can appear alone on the command line
+#if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+#    E_message "invalid argument [${arglist}]"
+#    usage
+#fi; fi
+# no - this script does not require a -b ${BOARD} argument, so -r and -2 are both valid single arg cases...
+
+# based on basic common approach -
+# initialize variables (local function)
+# validate_status_file  (script_header_joetoo_extended)
+# process_cmdline to override defaults (script_header_joetoo_extended)
+# specific to this finalize-chroot-img script --
+  # xx (instead of validate_target which must (normally) follow process_cmdline
+  #    (but is in cb-common-functions, which isn't available here in this new system)
+  #    (and is based on a crossbuild host context that doesn't apply)
+  #    (since we are now in the new system, via chroot), instead -->
+  # get-target (from portageq envvar CHOST)
+      # (i.e. what has up to now been called "TARGET" is now the new CHOST)
+      # (we aren't crossbuilding anymore --> we are building natively in the chroot)
+  # get-check-config (from /root/.cb-config -- verify vs target) (* note subsequent step 0)
+  # build a chroot_emerge command for later use (**)
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (local function based on copy from cb-common-functions)
+# run_sequence (script_header_joetoo_extended)
+  # step 0 (validate-prerequisites-img) will verify ${BOARD).img is in fact loop-mounted on /usr/${TARGET}
+#
+# To-do: build-chroot_emerge-command() could be moved into sequence anywhere prior to its first use
+# which is currently step 7 (sync-repo gentoo)
+
+# initialize variables and set default values
+initialize_variables-img || die "failed to initialize_variables-img"
+
+validate_status_file ${finishupstatusfile} || die "Failed to validate_status_file"
+
+d_echo "cmdline: $*" 5
+d_echo "processing cmdline args: $@" 5
+
+# over-ride configuration with commandline input
+separator ${PN} "(process_cmdline)"
+process_cmdline $@  || die "Failed to process_cmdline"
+
+if display_configuration ; then
+    message "display_configuration returned ${BGon}success${Boff}"
+else
+    E_message "display_configuration returned ${BRon}failure${Boff}"
+    FLAGGED=$TRUE
+fi
+
+run_sequence ${finishupstatusfile};  result=$?
+case $result in
+    0 ) message "run_sequence returned ${BGon}success${Boff}" ;;
+    * ) E_message "run_sequence returned ${BRon}failure${Boff}" ; FLAGGED=$TRUE ;;
+esac
+
+if [[ $FLAGGED ]] ; then
+    COMPLETE=$FALSE
+else
+    message_n "removing ${firstrunmarker} ..."
+    rm ${firstrunmarker} ; result=$?
+    right_status $result
+    case $result in
+        0 ) COMPLETE=$TRUE ;;
+        * ) COMPLETE=$FALSE ;;
+    esac
+fi
+
+if [[ $COMPLETE ]] ; then
+    message "${PN} firstlogin configuration completed successfully"
+else
+    E_message "${PN} firstlogin configuration completed with errors; check red flags in output above"
+fi
+echo
+separator "(complete)" "${PN}"

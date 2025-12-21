@@ -1,0 +1,161 @@
+#!/bin/bash
+#
+# finalize-chroot-env joe brendler 17 April 2025
+#
+# should be run automatically by /root/.bashrc if file ${firstrunmarker} exists
+#
+# proper context - running inside a qemu-chroot
+# (don't want to run this for an actual deployed image)
+# if all goes well, remove the ${firstrunmarker} file
+
+# /root/.bashrc should ckeck existence of firstrunmarker and not normally run this script more than once
+# finalize-chroot will remove firstrunmarker upon completion 
+firstrunmarker=/root/firstenvlogin
+
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_unicode
+
+COMPLETE=$TRUE  # (tentatively; any step below can change this)
+result=0
+
+separator "(starting)" "$(basename $0)"
+
+# determine what chroot crossbuild environment (target) I'm running inisde of (fatal if failure)
+message_n "determining TARGET ..."
+apparent_TARGET=$(portageq envvar CHOST) ; result=$? ; right_status $result
+[ $result -eq 0 ] && message "apparent_TARGET: $apparent_TARGET" || \
+    ( E_message "failed to determine apparent_TARGET" && exit 1 )
+# source /root/.cb-config and validate TARGET (fatal if failure)
+# also assign BOARD, etc. I am ... (non-fatal if failure)
+[ -e /root/.cb-config ] && source /root/.cb-config || \
+    ( E_message "/root/.cb-config not found" && COMPLETE=$FALSE && exit 1 )
+
+# use indirect variable assignment to load variables with values stored in config
+# (e.g. cb_BOARD has val for BOARD)
+configvarlist="BOARD TARGET TARGET_ARCH QEMU_ARCH"
+configvarlist+=" STAGE3_SELECTOR default_profile LLVM_TARGET"
+for x in ${configvarlist}; do
+    varname="cb_${x}" ; eval $x=${!varname}
+done
+
+message_n "validating BOARD, TARGET and qemu-chroot config ..."
+if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
+    echo -en " ${BGon}(match)${Boff}"
+    right_status $TRUE
+    message "  BOARD ............: $BOARD"
+    message "  TARGET ...........: $TARGET"
+    message "  TARGET_ARCH ......: $TARGET_ARCH"
+    message "  QEMU_ARCH ........: $QEMU_ARCH"
+    message "  STAGE3_SELECTOR ..: $STAGE3_SELECTOR"
+    message "  default_profile ..: $default_profile"
+    message "  LLVM_TARGET ......: $LLVM_TARGET"
+else
+    echo -en " ${BRon}(mismatch)${Boff}"
+    right_status 1
+    E_message "TARGET mismatch; exiting"
+    exit 1
+fi
+
+# chect/create the chroot's portage temporary directory with ln;
+message_n "creating portage temporary directory with ln ..."
+if [ ! -L /usr/${TARGET}/tmp ] ; then
+    ln -s /tmp /usr/${TARGET}/tmp
+    result=$?
+    [ $result -ne 0 ] && COMPLETE=$FALSE
+fi
+right_status $result
+
+# carefully validate or create a link to the chroot's /var for portage PKGDIR and DISTDIR directories
+message_n "checking for /usr/${TARGET}/var ..."
+check_target=/usr/${TARGET}/var
+check_status=$(file ${check_target} | sed "s|${check_target}: ||")
+case $(echo $check_status | awk '{print $1}') in
+    "cannot"    )
+        # it does not exist (create link)
+        echo -en " (ok: not found) linking ..."
+        ln -s /var /usr/${TARGET}/var
+        result=$?
+        [ $result -ne 0 ] && COMPLETE=$FALSE
+        ;;
+    "directory" )
+        # it exists and is a directory (undesireable - move and link)
+        echo -en " (directory) moving/linking ..."
+        # move it; then link it
+        cp -a ${check_target}/* /var/ && \
+        rm -r ${check_target} && \
+        ln -s /var ${check_target}
+        result=$?
+        [ $result -ne 0 ] && COMPLETE=$FALSE
+        ;;
+    "symbolic"  )
+        # it exists (validate link)
+        echo -en " (link found)"
+        if [[ "${check_status}" == "symbolic link to /var" ]] ; then
+            # valid
+            echo -en " (valid)"
+            result=$TRUE
+        else
+            echo -en " (invalid)"
+            result=1
+        fi
+
+    #    ln -s /var /usr/${TARGET}/var
+        result=$?
+        [ $result -ne 0 ] && COMPLETE=$FALSE
+        ;;
+    * )
+        E_message "invalid chroot layout: ${check_target} is [${check_status}]"
+        E_message "fix layout; conisder running crossdev -C -t ${TARGET}"
+        E_message "and/or rebuild with cb-mkenv from dev-sbc/crossbuild-tools::joetoo"
+        ;;
+esac
+right_status $result
+
+# /etc/locale.gen and /etc/env.d/02locale were updated by populate-target script
+message "running locale-gen ..."
+locale-gen ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
+# check/reload config
+message "checking/reloading config ..."
+gcc-config -l && \
+ldconfig -v && \
+ROOT=/ env-update && \
+source /etc/profile ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
+# set up gentoo signature checking with getuto
+message "setting up Gentoo signature checking with getuto ..."
+getuto ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
+# emerge world in chroot
+message_n "setting up chroot_emerge ..."
+chroot_emerge="ROOT=/ CBUILD=${TARGET} \
+        PORTAGE_TMPDIR=/tmp/ DISTDIR=/var/cache/distfiles \
+        PKGDIR=/var/cache/binpkgs PORT_LOGDIR=/var/log/portage \
+        HOSTCC=${TARGET}-gcc emerge"
+emerge_opts="-uavDNgk --keep-going"
+result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+d_message "chroot_emerge = ${chroot_emerge}" 2
+d_message "emerge_opts = ${emerge_opts}" 2
+message "running \${chroot_emerge} ${emerge_opts} @world (<CTRL>-C to cancel) ..."
+eval "${chroot_emerge} ${emerge_opts} @world"  ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
+message_n "removing ${firstrunmarker} ..."
+rm ${firstrunmarker} ; result=$?
+[ $result -ne 0 ] && COMPLETE=$FALSE
+right_status $result
+
+[[ $COMPLETE ]] && \
+message "chroot firstlogin configuration complete" || \
+E_message "chroot firstlogin configuration failed"
+echo
+separator "(complete)" "$(basename $0)"

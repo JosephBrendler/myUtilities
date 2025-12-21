@@ -61,22 +61,21 @@ export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 source /root/.cb-config   # assigns cb_BOARD, cb_TARGET, cb_TARGET_ARCH, cb_QEMU_ARCH, etc.
 #-----[ v-- edit/comment-out BELOW after system deployment --v ]-----------------------
 install_my_local_ca_certificates
-source /etc/bash/bashrc.d/emerge-chroot
 rerunmsg="first-run chroot configuration not requested by presense of marker"
 if [ -e /root/firstenvlogin ] ; then
-    /usr/sbin/finalize-chroot
+    /usr/sbin/finalize-chroot-env
 else
-    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
+    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot-env"
 fi
 if [ -e /root/firstimglogin ] ; then
-    /usr/sbin/finalize-chroot-for-image
+    /usr/sbin/finalize-chroot-img
 else
-    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
+    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-img"
 fi
-if [ -e /root/firstupdatelogin ] ; then
-    /usr/sbin/finalize-chroot-for-update
+if [ -e /root/firstupdlogin ] ; then
+    /usr/sbin/finalize-chroot-upd
 else
-    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
+    echo -e "${rerunmsg} /root/firstupdlogin;\nre-run if needed with /usr/sbin/finalize-chroot-upd"
 fi
 echo
 E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."

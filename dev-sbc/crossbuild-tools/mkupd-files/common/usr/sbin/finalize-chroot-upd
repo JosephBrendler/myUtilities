@@ -1,0 +1,295 @@
+#!/bin/bash
+#
+# finalize-chroot-upd   joe brendler 16 December 2025   (derived from finalize-chroot-img)
+#
+# should be run automatically by /root/.bashrc if file ${firstrunmarker} exists
+#
+# can be run separately by user at any time when in proper context -
+#   must be running inside a qemu-chroot
+# (don't want to run this for an actual deployed image)
+#
+# if all goes well, remove the ${firstrunmarker} file
+#   so .bashrc won't try to run it again
+
+# look for /root/firstlogin (which is removed upon completion of this script)
+firstrunmarker=/root/firstupdlogin
+
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_unicode
+message_n "sourcing script_header_joetoo_unicode "
+source /usr/sbin/script_header_joetoo_unicode || die "failed to source /usr/sbin/script_header_joetoo_unicode"
+bremoji "$face_beam"
+right_status $TRUE
+source /usr/sbin/finalize-chroot-common-functions  || die "failed to source /usr/sbin/finalize-chroot-common-functions"
+bremoji "$face_beam"
+right_status $TRUE
+
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN || die "failed to source BPN"
+bremoji "$check_mark_button_new"
+right_status $TRUE
+message_n "sourcing script_header_joetoo_extended ..."
+source /usr/sbin/script_header_joetoo_extended || die "failed to source /usr/sbin/script_header_joetoo_extended"
+bremoji "$check_mark_button_new"
+right_status $TRUE
+
+#-----[ variables ]---------------------------------------------------------------------
+
+VERBOSE=$TRUE
+#verbosity=2
+verbosity=3
+PN=$(basename $0)
+
+COMPLETE=$TRUE  # (tentatively; any step below can change this)
+FLAGGED=$FALSE
+result=0
+mytimezone="America/New_York"
+
+varlist="PN BUILD BOARD TARGET"
+varlist+=" starting_step stopping_step finishupstatusfile"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" bool.COMPLETE bool.FLAGGED"
+varlist+=" BREAK bool.VERBOSE verbosity"
+varlist+=" BREAK lv.chroot_emerge"
+
+### NOTE: I considered replaceing chroot_emerge-world and other steps with jus
+###   (which should be installed in a good image), but I opted to run steps
+###    separately to simplify resumability of this script)
+###  display-next-steps-upd could be updated to explain to the user that
+###  "jus" can be run after this script finishes, but before exiting chroot
+#
+command_sequence=(
+'check-reload-config'
+'sync-repo joetoo'
+'chroot_emerge-world'
+'eselect news read new'
+'show-elogs'
+'run-dispatch-conf'
+'${chroot_emerge} -av --depclean'
+'FEATURES="-getbinpkg" ${chroot_emerge} -av  @preserved-rebuild'
+'FEATURES="-getbinpkg" revdep-rebuild'
+'eclean-pkg'
+'eclean-dist -d'
+'show-next-steps'
+)
+
+# don't do these until AFTER fully deployed (the CHOSTs qemu is needed in this system, but not its dependencies)
+
+msg1_sequence=(
+'check and reload config'
+'sync joetoo repository'
+'chroot_emerge (update) world'
+'read gentoo news'
+'review emerge logs (show-elogs)'
+'run dispatch-conf'
+'chroot_emerge --depclean'
+'chroot_emerge @preserved-rebuild'
+'revdep_rebuild'
+'eclean-pkg'
+'eclean-dist -d'
+'show-next-steps'
+)
+
+#-----[ functions ]---------------------------------------------------------------------
+
+# usage .................... moved to script_header_joetoo_extended,
+#     which will source /etc/${BPN}/local.usage
+# validate_status_file() ... moved to script_header_joetoo_extended
+# linear_search() .......... moved to script_header_joetoo_extended
+# display_configuration()... moved to script_header_joetoo_extended
+# process_commandline()..... moved to script_header_joetoo_extended
+# process_argument()........ moved to script_header_joetoo_extended
+# process_compound_arg().... moved to script_header_joetoo_extended
+# new_prompt().............. moved to script_header_joetoo_extended
+# run_sequence()............ moved to script_header_joetoo_extended
+
+
+# protect-qemu-for-chroot() ....... moved to finalize-chroot-common-functions
+# run-dispatch-conf().............. moved to finalize-chroot-common-functions
+# chroot_emerge-world()............ moved to finalize-chroot-common-functions
+# sync-repo()...................... moved to finalize-chroot-common-functions
+# check-reload-config() ........... moved to finalize-chroot-common-functions
+# build-chroot_emerge-command() ... moved to finalize-chroot-common-functions
+# get-check-config() .............. moved to finalize-chroot-common-functions
+# get-target()..................... moved to finalize-chroot-common-functions
+
+initialize_variables-upd() {
+    [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
+    initialize_vars ${varlist}
+    # set default values
+    FLAGGED=$FALSE
+    d_message_n "re-sourcing BUILD ..." 2
+    source /etc/crossbuild-tools/BUILD ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "re-setting PN = $(basename $0)" 2
+    PN=$(basename $0) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "re-sourcing BPN ..." 2
+    source /etc/crossbuild-tools/BPN ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default starting_step = 0" 2
+    export starting_step=0 ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default stopping_step = $(( ${#command_sequence[@]} - 1 ))" 2
+    export stopping_step=$(( ${#command_sequence[@]} - 1 )) ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default finishupstatusfile = /root/bin/finishup_status" 2
+    export finishupstatusfile="/root/bin/finishup_status" ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default INTERACTIVE true" 2
+    export INTERACTIVE=$TRUE ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default VERBOSE true" 2
+    export VERBOSE=$TRUE ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    d_message_n "setting default verbosity = 3" 2
+    export verbosity=3 ; result=$?
+    if [ $result -eq 0 ] ; then d_right_status $TRUE 2; else FLAGGED=$TRUE; d_right_status 1 2; fi
+
+    if [[ $FLAGGED ]] ; then
+        E_message "failed clean exit; note red flags above"
+        return 1
+    else
+        message "initialization complete"
+        return 0
+    fi
+}
+
+
+validate-prerequisites-upd() {
+    separator ${PN} "${FUNCNAME[0]}"
+    # build a command with which to run the emerge program in this chroot environment
+    message_n "building chroot_emerge command"
+    build-chroot_emerge-command >/dev/null 2>&1 || die "failed to build-chroot_emerge-command"
+    echo -e -n " (${BGon}success${Boff}"
+    right_status $TRUE
+
+    # validate the eix database directory
+    message "calling function to validate eix database directory"
+    validate-eix-db-dir || die "failed to validate-eix-db-dir"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # need to sync gentoo repo in order to have a valid profile with which to get-target, get-check-config, etc
+    message "calling function to sync repo gentoo (ensure valid profile)"
+    sync-repo gentoo || die "failed to sync-repo gentoo"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # read /root/.cb-config and assign name-spaced environment variables
+    message "calling get-target function to read /root/.cb-config"
+    get-target || die "failed to get-target"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # check/reload config
+    message "calling function to check/reload configuration"
+    get-check-config || die "failed to get-check-config"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # check that qemu is installed and protected
+    protect-qemu-for-chroot || die "general failure of protect-qemu-for-chroot"
+
+    # Validate other prerequisite expectations -
+    validate-pre-existing-var-link || die "failed to validate-pre-existing-var-link"
+
+    return 0
+}
+
+display-next-steps-upd() {
+    # source the list of things yet-to-do
+    # re-read at any time by issuing the same command manually
+    source /etc/crossbuild-tools/README_next_steps_after_update
+}
+
+#-----[ main script ]-------------------------------------------------------------------
+checkroot
+separator "${PN}" "(starting)"
+# option s (status) is the only one that can appear alone on the command line
+#if [ $# -eq 1 ] ; then if [[ "$1" != "-"*"s"* ]] && [[ "$1" != "--status" ]] ; then
+#    E_message "invalid argument [${arglist}]"
+#    usage
+#fi; fi
+# no - this script does not require a -b ${BOARD} argument, so -r and -2 are both valid single arg cases...
+
+# based on basic common approach -
+# initialize variables (local function)
+# validate_status_file  (script_header_joetoo_extended)
+# process_cmdline to override defaults (script_header_joetoo_extended)
+# specific to this finalize-chroot-img script --
+  # xx (instead of validate_target which must (normally) follow process_cmdline
+  #    (but is in cb-common-functions, which isn't available here in this new system)
+  #    (and is based on a crossbuild host context that doesn't apply)
+  #    (since we are now in the new system, via chroot), instead -->
+# validate-prerequisites-upd --
+  # build chroot_emerge command
+  # validate eix db
+  # sync repo gentoo (to ensure working profile)
+  # get-target (from portageq envvar CHOST)
+      # (i.e. what has up to now been called "TARGET" is now the new CHOST)
+      # (we aren't crossbuilding anymore --> we are building natively in the chroot)
+  # get-check-config (from /root/.cb-config -- verify vs target) (* note subsequent step 0)
+  # build a chroot_emerge command for later use (**)
+  # verify "safety" symlink /usr/${TARGET}/usr/${TARGET}/var -->  /usr/${TARGET}/var
+  #   which confirms a valid chroot layout (${BOARD}.img) is in fact loop-mounted on /usr/${TARGET}
+# display_configuration so we can see what's what if insane (script_header_joetoo_extended)
+# sanity_check (local function based on copy from cb-common-functions)
+# run_sequence (script_header_joetoo_extended)
+#
+# initialize variables and set default values
+initialize_variables-upd || die "failed to initialize_variables-upd"
+
+validate_status_file ${finishupstatusfile} || die "Failed to validate_status_file"
+
+d_echo "cmdline: $*" 5
+d_echo "processing cmdline args: $@" 5
+
+# over-ride configuration with commandline input
+separator ${PN} "(process_cmdline)"
+process_cmdline $@  || die "Failed to process_cmdline"
+
+validate-prerequisites-upd || die "failed to validate-prerequisites-upd"
+
+if display_configuration ; then
+    message "display_configuration returned ${BGon}success${Boff}"
+else
+    E_message "display_configuration returned ${BRon}failure${Boff}"
+    FLAGGED=$TRUE
+fi
+
+run_sequence ${finishupstatusfile};  result=$?
+case $result in
+    0 ) message "run_sequence returned ${BGon}success${Boff}" ;;
+    * ) E_message "run_sequence returned ${BRon}failure${Boff}" ; FLAGGED=$TRUE ;;
+esac
+
+if [[ $FLAGGED ]] ; then
+    COMPLETE=$FALSE
+else
+    message_n "NOT Flagged; removing ${firstrunmarker} ..."
+    rm ${firstrunmarker} ; result=$?
+    right_status $result
+    case $result in
+        0 ) COMPLETE=$TRUE ;;
+        * ) COMPLETE=$FALSE ;;
+    esac
+fi
+
+if [[ $COMPLETE ]] ; then
+    message "${PN} firstlogin configuration completed successfully"
+else
+    E_message "${PN} firstlogin configuration completed with errors; check red flags in output above"
+fi
+echo
+separator "${PN}" "(complete)"

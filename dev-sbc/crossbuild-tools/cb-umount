@@ -54,10 +54,33 @@ umount-board() {
             *    ) die "aborting, as instructed" ;;
         esac
 
+        # now un-mount the special chroot-parts from the image mountpoint
+        message_n "umounting chroot parts from /usr/${TARGET%/}/ ..."
+	umount -l /usr/${TARGET}/dev{/shm,/pts,} 2>/dev/null ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1
+                E_message "umount -l /usr/${TARGET}/dev{/shm,/pts,} failed! Exit status: [${Mon}$result${Boff}]"
+                ;;  # non-fatal; continue anyway
+        esac
+
+        # check pwd - if inside the image's mountpoint, cd elsewhere
+        if [[ "$PWD" == "/usr/${TARGET}/"* ]] ; then
+            message_n "relocating from $PWD to safe location for umount "
+            cd /usr/ || die "relocation failed"
+            echo -e -n " (${BYon}new PWD: ${LBon}$PWD${Boff})"
+            right_status $TRUE
+        fi
+
         # now un-mount the image (recursively)
         message_n "recursively umounting /usr/${TARGET} ..."
-	umount -l /usr/${TARGET}/dev{/shm,/pts,} 2>/dev/null || E_message "failed to umount -l /usr/${TARGET}/dev{/shm,/pts,}"
-        umount -R /usr/${TARGET} || die "failed to umount -R /usr/${TARGET}"
+        umount -R /usr/${TARGET} ; result=$?
+        case $result in
+            0 ) right_status $TRUE ;;
+            * ) right_status 1
+                die "failed to umount -R /usr/${TARGET}"
+                ;;  # fatal; user will have to resume to finish cb-umount
+        esac
         right_status $TRUE
 
         # run fsck with optimization
@@ -67,7 +90,8 @@ umount-board() {
         result=$?
         case $result in
             0|1|2 ) right_status $TRUE ;;  # 0: clean; 1: fixed; 2: fixed->reboot (N/A for .img)
-            * ) die "${BRon}e2fsck failed!${Boff} exit code: [${Mon}${result}${Boff}]" ;;
+            * ) die "${BRon}e2fsck failed!${Boff} exit code: [${Mon}${result}${Boff}]"
+                ;;  # fatal; user will have to resume to finish cb-umount
         esac
     else
         message "nothing is mounted on /usr/${TARGET} ; continuing"

@@ -1,0 +1,87 @@
+#!/bin/bash
+#
+# cb-chroot-img   (c) joe.brendler  2025-2072
+#
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_unicode
+message_n "sourcing BUILD ..."
+source /etc/crossbuild-tools/BUILD ; right_status $?
+message_n "sourcing BPN ..."
+source /etc/crossbuild-tools/BPN ; right_status $?
+source /usr/sbin/script_header_joetoo_extended
+
+VERBOSE=$TRUE
+# set default verbosity only if it is not already set
+[ -z $verbosity ] && verbosity=3
+
+PN=$(basename $0)
+
+message_n "sourcing cb-common-functions ..."
+source /usr/sbin/cb-common-functions ; right_status $?
+
+TARGET=""
+
+usage() {
+    message "${BRon}usage: ${BGon}${PN} <BOARD>${Boff}"
+    smaller_script_common_usage_message
+    exit
+}
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator $(basename $0) $(hostname)
+[ $# -ne 1 ] && usage
+BOARD=$1
+
+validate_target ${BOARD}
+
+old_dir="$(pwd)"
+cd /usr/${TARGET}
+message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
+
+message_n "restarting qemu-binfmt ..."
+/etc/init.d/qemu-binfmt restart >/dev/null 2>/dev/null; right_status $?
+
+# Next two lines are optional.
+# (Activate if the qemu-wrapper is used. Check that the wrapper location corresponds with the call at the end of line 2!)
+#echo '-1' > /proc/sys/fs/binfmt_misc/arm #deregister wrong arm
+#echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\x00\xff\xfe\xff\xff\xff:/usr/local/bin/qemu-wrapper:' > /proc/sys/fs/binfmt_misc/register
+
+message_n "copying /etc/resolv.conf for chroot target ..."
+cp /etc/resolv.conf etc/resolv.conf || die "failed to copy /etc/resolv.conf for chroot target"
+right_status $TRUE
+
+# moved "validate dirlist" to cb-common-functions
+# set dirlist for cb-chroot-img
+dirlist="proc dev sys tmp dev/pts"
+dirlist+=" chroot_sources_mountpoint lib/modules"
+dirlist+=" var/db/repos/gentoo var/db/repos/joetoo var/db/repos/crossdev"
+validate-chroot-mountpoint-dirlist || die "failed validate-chroot-mountpoint-dirlist for ${PN}"
+
+# moved to mounts for chroot cb-common-functions
+# for cb-chroot-img, don't mount tmp (it will have its own)
+# don't mount sources, modules, repos (finalize-chroot-img program will do that where needed)
+mount_list="proc dev sys"
+mount-chroot-prep || die "failed mount-chroot-prep for ${PN}"
+
+# for cb-chroot-img, don't mount repos - populate them if empty
+
+# not chrooted yet, use rel addresses for repos (note cd /usr/${TARGET} above)
+[[ -z $(find var/db/repos/gentoo/ -mindepth 1) ]] && E_message "Note: var/db/repos/gentoo/ is empty; first login will attempt to sync it ..."
+[[ -z $(find var/db/repos/joetoo/ -mindepth 1) ]] && E_message "Note: var/db/repos/joetoo/ is empty; first login will attempt to sync it ..."
+[[ -z $(find usr/src/linux/ -mindepth 1) ]] && E_message "/usr/src/linux/ is empty; consider installing a kernel sources package ..."
+[[ -z $(find lib/modules/ -mindepth 1) ]] && E_message "/lib/modules/ s empty; consider installing a boot-firmware package ..."
+ 
+#chroot . /bin/bash --login
+# 20251218 - changed from procedure of Gentoo "crossbuild environment" to "Embedded" wiki
+arch-chroot .
+ 
+FLAGGED=$FALSE
+umount-chroot-prep
+
+[[ "$FLAGGED" == "$TRUE" ]] && ( E_message "failed clean exit; note red flags above" && exit 1 )
+
+echo
+cd $old_dir
+message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0

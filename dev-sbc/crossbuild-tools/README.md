@@ -89,14 +89,17 @@ if you only want the cross-build environment and binhost.
     cb-setup -- create BOARD image if needed
     cb-mount -- attach a loop device to the BOARD image, and mount it on the TARGET
     cb-populate-target -- populate the target image with configuration needed for cross-building
-    cb-chroot-target -- qemu-chroot into the target to enable native compiling
-      (auto-runs finalize-chroot script)
+    cb-chroot-env -- qemu-chroot into the target minimal environment, to enable native compiling
+      (auto-runs finalize-chroot-env script)
   cb-mkimg (workflow) -- starting from the cb-mkenv cross-built environment image file, make a deployable image
     cb-populate-image -- add content to image so it can be deployed to a real system
-    cb-chroot-target-image -- qemu-chroot into the target to enable additional native compiling
-      (auto-runs finalize-chroot-for-image script)
-  cb-mkdev (workflow) -- starting from the cb-mkimg deployable image, format
-      an external block storage device and flash it with the contents of the deployable image
+    cb-chroot-img -- qemu-chroot into the target maturing image file, to enable native compiling
+      (auto-runs finalize-chroot-img script)
+  cb-mkupd (workflow) -- starting from the cb-mkimg deployable image, update
+    cb-chroot-env -- qemu-chroot into the target mature to-be-updated image, to enable native compiling
+      (auto-runs finalize-chroot-upd script)
+  cb-mkdev (workflow) -- starting from the cb-mkimg/upd deployable image, format a physical block device
+      and flash it with the contents of the deployable image
   cb-common-functions -- common functions sourced to include in other scripts
   Note:  crossbuild-tools programs employ functions (including command line argument processing)
       provided by dev-util/script_header_joetoo
@@ -136,9 +139,10 @@ NOTES:
 
 (2) I originally tried to create directories for BOARDs,
   and links for TARGETs, pointed to selected BOARDs.
-  However, this results in internal file collisions
-  when using ${TARGET}-emerge -- files  NOT merged due to internal
-  collisions between non-identical files. (compiler outputs non-identical
+  However, with a mix of merged-usr and split-usr systems,
+  this results in internal file collisions when using
+  ${TARGET}-emerge -- files  NOT merged due to internal collisions
+  between non-identical files. (compiler outputs non-identical
   files to different directories in emerge target ${D} that
   point to merged directories in the target system...
   So - instead, I've adopted the loop-mounted BOARD.img 
