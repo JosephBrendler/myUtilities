@@ -55,14 +55,18 @@ umount-board() {
         esac
 
         # now un-mount the special chroot-parts from the image mountpoint
-        message_n "umounting chroot parts from /usr/${TARGET%/}/ ..."
-	umount -l /usr/${TARGET}/dev{/shm,/pts,} 2>/dev/null ; result=$?
-        case $result in
-            0 ) right_status $TRUE ;;
-            * ) right_status 1
-                E_message "umount -l /usr/${TARGET}/dev{/shm,/pts,} failed! Exit status: [${Mon}$result${Boff}]"
-                ;;  # non-fatal; continue anyway
-        esac
+        for part in "/dev/shm" "/dev/pts" "/dev"; do
+            message_n "umounting chroot part ${part} from /usr/${TARGET} ..."
+            if [ ! -z "$(findmnt -n -M /usr/${TARGET}${part})" ] ; then
+                umount -l "/usr/${TARGET}${part}" ; result=$?
+               case $result in
+                   0 ) right_status $TRUE ;;
+                   * ) right_status 1
+                       E_message "umount -l /usr/${TARGET}/${part} failed! Exit status: [${Mon}$result${Boff}]"
+                       ;;  # non-fatal; continue anyway
+               esac
+            fi
+        done
 
         # check pwd - if inside the image's mountpoint, cd elsewhere
         if [[ "$PWD" == "/usr/${TARGET}/"* ]] ; then
@@ -82,25 +86,34 @@ umount-board() {
                 ;;  # fatal; user will have to resume to finish cb-umount
         esac
         right_status $TRUE
-
-        # run fsck with optimization
-        message_n "optimizing directory indexes with e2fsck -fD ..."
-        # -f forces check, -D optimizes/reindexes, -y assumes yes to all
-        e2fsck -fD /dev/loop0p2 -y >/dev/null 2>&1
-        result=$?
-        case $result in
-            0|1|2 ) right_status $TRUE ;;  # 0: clean; 1: fixed; 2: fixed->reboot (N/A for .img)
-            * ) die "${BRon}e2fsck failed!${Boff} exit code: [${Mon}${result}${Boff}]"
-                ;;  # fatal; user will have to resume to finish cb-umount
-        esac
     else
         message "nothing is mounted on /usr/${TARGET} ; continuing"
     fi
 
-    # inspect for loop devices attached to BOARD image file and detach them
-    message "looking for loop device attached to /usr/${BOARD}.img ..."
+    # inspect for loop devices attached to BOARD image file; optimize and detach them
+    message "looking for loop device attached to /usr/${BOARD}.img"
     loop_dev=$(losetup -a | grep "/usr/${BOARD}.img" | cut -d':' -f1)
     if [ -b "${loop_dev}" ] ; then
+        echo -e -n " (${BYon}found ${LBon}${loop_dev}${Boff})"
+        right_status $TRUE
+
+        # now that we know a loop device is available, run fsck with optimization
+        if [ -b "${loop_dev}p2" ] ; then
+            message_n "optimizing directory indexes with e2fsck -fD ..."
+            # -f forces check, -D optimizes/reindexes, -y assumes yes to all
+            e2fsck -fD "${loop_dev}p2" -y >/dev/null 2>&1
+            result=$?
+            case $result in
+                0|1|2 ) right_status $TRUE ;;  # 0: clean; 1: fixed; 2: fixed->reboot (N/A for .img)
+                * ) right_status 1
+                    die "${BRon}e2fsck failed!${Boff} exit code: [${Mon}${result}${Boff}]"
+                    ;;  # fatal; user will have to resume to finish cb-umount
+            esac
+        else
+            message "image root_fs [${loop_dev}p2] not found; skipping optimization"
+        fi
+
+        # now detach the loop device
         message_n "detaching ${loop_dev} ..."
         losetup -d ${loop_dev} || die "failed to detach ${loop_dev}"
         right_status $TRUE
