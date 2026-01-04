@@ -140,6 +140,18 @@ initialize_variables-img() {
 
 validate-prerequisites-img() {
     separator ${PN} "${FUNCNAME[0]}"
+    # read portageq envvar CHOST and then read
+    # /root/.cb-config and assign name-spaced environment variables
+    # (must do this prior to build-chroot-emerge b/c latter depends on ${TARGET})
+    message "calling get-target function to read /root/.cb-config"
+    get-target || die "failed to get-target"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+    message "calling function to check/reload configuration"
+    get-check-config || die "failed to get-check-config"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
     # build a command with which to run the emerge program in this chroot environment
     message_n "building chroot_emerge command"
     build-chroot_emerge-command >/dev/null 2>&1 || die "failed to build-chroot_emerge-command"
@@ -155,18 +167,6 @@ validate-prerequisites-img() {
     # need to sync gentoo repo in order to have a valid profile with which to get-target, get-che>
     message "calling function to sync repo gentoo (ensure valid profile)"
     sync-repo gentoo || die "failed to sync-repo gentoo"
-    message_n "(${BGon}success${Boff}"
-    right_status $TRUE
-
-    # read /root/.cb-config and assign name-spaced environment variables
-    message "calling get-target function to read /root/.cb-config"
-    get-target || die "failed to get-target"
-    message_n "(${BGon}success${Boff}"
-    right_status $TRUE
-
-    # check/reload config
-    message "calling function to check/reload configuration"
-    get-check-config || die "failed to get-check-config"
     message_n "(${BGon}success${Boff}"
     right_status $TRUE
 
@@ -261,17 +261,23 @@ set-hostname() {
 }
 
 remove-kernelsources-mountpoint() {
-    message_n "removing kernel sources mountpoint to install symlink"
-    [ -d /usr/src/linux ] && rm -r /usr/src/linux ; result=$?
-    if [ $result -eq 0 ] ; then
-        echo -en " ${BGon}(success)${Boff}"
-        right_status $TRUE
+    message_n "looking for legacy kernel sources mountpoint"
+    if [ -d /usr/src/linux ] ; then
+        # mountpoint already exists - remove it
+        rm -r /usr/src/linux ; result=$?
+        if [ $result -eq 0 ] ; then
+            echo -en " ${BGon}(removed)${Boff}"
+            right_status $TRUE
+        else
+            echo -en " ${BRon}(fail)${Boff}"
+            right_status 1
+            FLAGGED=$TRUE 
+            return 1
+        fi  # successful removal
     else
-        echo -en " ${BRon}(fail)${Boff}"
-        right_status 1
-        FLAGGED=$TRUE
-        return 1
-    fi
+        echo -en " ${BGon}(not found)${Boff}"
+        right_status $TRUE
+    fi  # mountpoint exists
     return 0
 }
 
