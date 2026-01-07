@@ -882,7 +882,7 @@ configure-make-conf-for-chroot() {
     return 0
 }
 
-emerge-cross-rust-std() {
+DEPRECATED_emerge-cross-rust-std() {
     # build cross-${TARGET}/rust-std
     options="--verbose --getbinpkg --usepkg"
     [ $INTERACTIVE ] && options+=" --ask"
@@ -891,7 +891,7 @@ emerge-cross-rust-std() {
 }
 
 rebuild-rust-and-llvm() {
-    # rebuild rust and llvm with the new configuration, if it changed
+    # rebuild @world to update rust and llvm with the new configuration, if it changed
     if [ $RUST_LLVM_CHANGE_FLAG ] ; then
         # configuration changed - rebuild
         message "${BYon}rust/llvm configuration ${BMon}changed -- rebuilding${Boff}"
@@ -999,12 +999,26 @@ create-new-cross-compiler() {
 }
 
 prepare-cross-rust() {
-    # Some packages (such as gnome-base/librsvg) depend on a rust cross toolchain
-    # so build the rust cross toolchain
+    # Some packages depend on a rust cross toolchain, so --
+    # update configs to use rust-bin as cross-compiler and
+    #  set RUST_LLVM_CHANGE_FLAG=$TRUE in order to make rebuild-rust-and-llvm()
+    #  update rust-bin [which is a dependency of crossbuild-tools], if needed)
+    # (rebuild-rust-and-llvm() is the next step in cb-mkenv command sequence
+    #  and in cb-mkupd's validate-prerequisites()
 
-    # change this if we have to modify the system
+    # change this if we modify the configuration and need to rebuild rust-bin, llvm etc.
     export RUST_LLVM_CHANGE_FLAG=$FALSE
 
+    # three (not five) things required to prepare cross-rust
+    # (1) rust-src USE flag on rust and rust-bin in CHOST's package.use
+    # (2) RUST_CROSS_TARGETS=() array set-up in /etc/portage/env/dev-lang/rust
+    # (3) LLVM_TARGETS use-expand set-up in CHOST's make.conf
+    # DEPRECATED (4) symlink for cross-${TARGET}/rust-std set up cross-rust in CHOSTs crossdev repo(s)
+    # DEPRECATED (5) unmask cross-${TARGET}/rust-std in CHOSTs package.accept_keywords
+    # 4 & 5 are residue of legacy gentoo crossbuild-environment wiki procedure
+
+    # (1) rust-src USE flag on rust and rust-bin in CHOST's package.use
+    # verify USE flag "dev-lang/rust rust-src"
     host_package_use="/etc/portage/package.use/joetoo"
     # verify that USE flag "dev-lang/rust rust-src" is in CHOST's package.use
     message_n "looking for \"dev-lang/rust rust-src\" in ${host_package_use}"
@@ -1017,8 +1031,7 @@ prepare-cross-rust() {
         export RUST_LLVM_CHANGE_FLAG=$TRUE
     fi
     right_status $TRUE
-
-    # verify that USE flag "dev-lang/rust-bin rust-src" is in CHOST's package.use
+    # verify USE flag "dev-lang/rust-bin rust-src"
     # (this should be unnecessary b/c I changed crossbuild-tools ebuild to depend
     #  on dev-lang/rust rather than rust-bin, but lets keep it for compatibility)
     message_n "looking for \"dev-lang/rust-bin rust-src\" in ${host_package_use}"
@@ -1032,7 +1045,27 @@ prepare-cross-rust() {
     fi
     right_status $TRUE
 
-    # verify or correct LLVM_TARGETS in CHOST's make.conf
+    # (2) RUST_CROSS_TARGETS=() array set-up in /etc/portage/env/dev-lang/rust
+    # validate or create /etc/portage/env/dev-lang/rust per-package env setting
+    # (should be installed by this package's ebuild)
+    message_n "examining /etc/portage/env/dev-lang/rust"
+    if [ -e /etc/portage/env/dev-lang/rust ] ; then
+        echo -en " (${BGon}found${Boff})"
+    else
+        # not found - create
+        echo -en " (${BRon}not found${Boff})"
+        CONTENT="RUST_CROSS_TARGETS=(\n"
+        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
+        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
+        CONTENT+=" )"
+        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust || die "failed to create /etc/portage/env/dev-lang/rust"
+        echo -en "(${BGon}created${Boff})"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+
+    # (3) LLVM_TARGETS use-expand set-up in CHOST's make.conf
     # not sure this is really necessary --
     #   all targets may be unconditionally enabled in llvm-core/llvm(?)
     # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 --
@@ -1073,69 +1106,49 @@ prepare-cross-rust() {
     fi
     right_status $TRUE
 
-    # now set up cross-rust in CHOSTs crossdev repo
+# DEPRECATED (4) symlink for cross-${TARGET}/rust-std set up cross-rust in CHOSTs crossdev repo(s)
+#    VALID_LINK=$FALSE
+#    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
+#    old_dir="$(pwd)"
+#    cd /var/db/repos/crossdev/cross-${TARGET} && \
+#    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
+#    message_n "looking for link"
+#    if [ -L rust-std ] ; then
+#        echo -en " (found, "
+#        # link forund - right target?
+#        target_path=$(readlink -f rust-std)
+##        olv_verbosity=$verbosity ; verbosity=5
+##        d_message "target_path: [${target_path}]" 4
+##        verbosity=$old_verbosity
+#        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
+#            # link points to correct target
+#            echo -en "${BGon}valid${Boff})"
+#            VALID_LINK=$TRUE
+#        else
+#            # link does not point to correct target -- remove it
+#            echo -en "${BRon}invalid${Boff})"
+#            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
+#        fi
+#    else
+#        echo -en " (not found)"
+#        # no link found
+#    fi
+#    if [ ! $VALID_LINK ] ; then
+#        # valid link does not yet exist or invalid one was removed -- create it
+#        ln -s /var/db/repos/gentoo/sys-devel/rust-std || die "failed to create link for rust-std"
+#        echo -en "(${BGon}created${Boff})"
+#    fi
 
-    VALID_LINK=$FALSE
-    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
-    old_dir="$(pwd)"
-    cd /var/db/repos/crossdev/cross-${TARGET} && \
-    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
-    message_n "looking for link"
-    if [ -L rust-std ] ; then
-        echo -en " (found, "
-        # link forund - right target?
-        target_path=$(readlink -f rust-std)
-#        olv_verbosity=$verbosity ; verbosity=5
-#        d_message "target_path: [${target_path}]" 4
-#        verbosity=$old_verbosity
-        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
-            # link points to correct target
-            echo -en "${BGon}valid${Boff})"
-            VALID_LINK=$TRUE
-        else
-            # link does not point to correct target -- remove it
-            echo -en "${BRon}invalid${Boff})"
-            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
-        fi
-    else
-        echo -en " (not found)"
-        # no link found
-    fi
-    if [ ! $VALID_LINK ] ; then
-        # valid link does not yet exist or invalid one was removed -- create it
-        ln -s /var/db/repos/gentoo/sys-devel/rust-std || die "failed to create link for rust-std"
-        echo -en "(${BGon}created${Boff})"
-    fi
-    # if we got here (didn't die above) close action as OK
+# DEPRECATED (5) unmask cross-${TARGET}/rust-std in CHOSTs package.accept_keywords
+#    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
+#    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std || \
+#         die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
+#    right_status $TRUE
+
+    # if we got here (didn't die above) close action as OK and return exit status 0
     right_status $TRUE
     echo
     cd $old_dir
     message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
-
-    # now unmask rust-std in CHOSTs package.accept_keywords
-    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
-    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std || \
-         die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
-    right_status $TRUE
-
-    # now validate or create /etc/portage/env/dev-lang/rust per-package env setting
-    # (should be installed by this package's ebuild)
-    message_n "examining /etc/portage/env/dev-lang/rust"
-    if [ -e /etc/portage/env/dev-lang/rust ] ; then
-        echo -en " (${BGon}found${Boff})"
-    else
-        # not found - create
-        echo -en " (${BRon}not found${Boff})"
-        CONTENT="RUST_CROSS_TARGETS=(\n"
-        CONTENT+=" \"ARM:arm-unknown-linux-gnueabihf:armv6j-unknown-linux-gnueabihf\"\n"
-        CONTENT+=" \"ARM:armv7-unknown-linux-gnueabihf:armv7a-unknown-linux-gnueabihf\"\n"
-        CONTENT+=" \"AArch64:aarch64-unknown-linux-gnu:aarch64-unknown-linux-gnu\"\n"
-        CONTENT+=" )"
-        echo -e "${CONTENT}" > /etc/portage/env/dev-lang/rust || die "failed to create /etc/portage/env/dev-lang/rust"
-        echo -en "(${BGon}created${Boff})"
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
     return 0
 }
-

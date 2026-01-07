@@ -25,6 +25,13 @@
 # edit-package-accept-keywords()
 # create-new-cross-compiler()
 
+# 20260107 - switched from rust-std (legacy Gentoo Crossbuild-Environment wiki)
+#    to rust-bin as cross-compiler for rust, with RUST_CROSS_TARGETS array
+#    defined at /etc/portage/env/dev-lang/rust
+#    (updated prepare-cross-rust() and deprecated emerge-cross-rust-std in cb-common-functions)
+#    (*for cb-mkupd*) moved prepare-cross-rust to include as part of validate-prerequisites()
+#     which runs BEFORE run-sequence
+
 # ToDo: - consolidate other functions cb-mkimg to cb-common-functions
 
 source /usr/sbin/script_header_joetoo
@@ -78,9 +85,6 @@ command_sequence=(
 'run-dispatch-conf'
 'buildtarget-qemu'
 'emerge-host-world'
-'prepare-cross-rust'
-'rebuild-rust-and-llvm'
-'emerge-cross-rust-std'
 'configure-make-conf-for-chroot'
 'edit-make-conf'
 'cb-chroot-update'
@@ -211,41 +215,21 @@ stockpile-img() {
     return 0
 }
 
-# moved out to cb-chroot-update script
-DISABLED_chroot-update() {
-    separator "${PN}" "(${FUNCNAME[0]})"
-
-    # possible validate dirlist
-    # set old dir; cd mountpoint
-    old_dir="$(pwd)"
-    cd /usr/${TARGET}
-    message "now working in crossbuild target directory: [${Mon}$(pwd)${Boff}]"
-
-    mount_list="proc dev sys "
-    # equivalent to "mount-everything" function in cb-chroot-env (calls mount-chroot-prep)
-    # tmp optional, and /dev/pts only for X
-    mount-chroot-prep || die "failed mount-chroot-prep for ${PN}"
-
-    # actual chroot
-    chroot . /bin/bash --login
-
-    echo
-    cd old_dir
-    message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
-
-    # equivalent to "umount-everything" function in cb-chroot-env (calls mount-chroot-prep)
-    #umount /usr/${TARGET}/dev/pts
-    #umount /usr/${TARGET}/tmp
-    umount-chroot-prep || FLAGGED=$TRUE
-
-    [ $FLAGGED ] && return 1
-    return 0
-}
-
 validate_prerequisites() {
     separator "${PN}" "(${FUNCNAME[o]})"
 
-    # Verify that the STOCKPILE UPDATEIMAGE exists
+    # must do ____ things before we can start or resume run-sequence
+    # (1) Verify that the STOCKPILE UPDATEIMAGE exists
+    # (2) make sure there isn't already something mounted on this TARGET mountpoint
+    # (3) make sure there isn't a ${BOARD}.img file already active for this board
+    # (4) check if a /usr/BOARD.img file is already in use (and remove it if so)
+    # (5) validate the crossdev repository and cross-rust for TARGET
+    # (6) verify the TARGET crossdevelopment mountpoint still exists
+    # (7) copy the STOCKPILE UPDATEIMAGE file to /usr/
+    # (8) mount the new /usr/${BOARD}.img file on the crossdev $TARGET
+
+
+    # (1) Verify that the STOCKPILE UPDATEIMAGE exists
     # do this first so we can assign BOARD and run validate_target to assign TARGET
     message "verifying <UPDATEIMAGE> ..."
     if [ -f "${STOCKPILE%/}/${UPDATEIMAGE}" ] ; then
@@ -267,7 +251,7 @@ validate_prerequisites() {
     # now use BOARD to validate TARGET
     validate_target ${BOARD} || usage
 
-    # make sure there isn't already something mounted on this TARGET mountpoint
+    # (2) make sure there isn't already something mounted on this TARGET mountpoint
     MOUNTPOINT_BUSY=$FALSE
     LOOPDEV_BUSY=$FALSE
     message_n "checking for other active crossbuilding on TARGET mountpoint"
@@ -283,7 +267,7 @@ validate_prerequisites() {
         right_status $TRUE
     fi  # something else mounted for crossbuilding
 
-    # make sure there isn't a ${BOARD}.img file already active for this board
+    # (3) make sure there isn't a ${BOARD}.img file already active for this board
     loop_dev=$(losetup -a -O NAME,BACK-FILE | grep "/usr/${BOARD}.img" | cut -d' ' -f1 | head -n1)
     if [ ! -z "${loop_dev}" ] ; then
         right_status 1
@@ -300,11 +284,11 @@ validate_prerequisites() {
         cb-umount "${BOARD}" || die "failed cb-umount ${BOARD}"
     fi
 
-    # now check if a /usr/BOARD.img file is already in use (and remove it if so)
+    # (4) check if a /usr/BOARD.img file is already in use (and remove it if so)
     message "checking for pre-existing $BOARD.img"
     cb-cleanup "${BOARD}"
 
-    # now verify the crossdev repository for TARGET
+    # (5) validate the crossdev repository and cross-rust for TARGET
     message_n "looking for /var/db/repos/crossdev/"
     if [ ! -d "/var/db/repos/crossdev" ] ; then
         echo -e -n " (${BRon}not found${Boff})"
@@ -323,21 +307,23 @@ validate_prerequisites() {
             echo -e -n " (${BGon}found${Boff})"
             right_status $TRUE
             message "TARGET sub-repo exists and will be updated (Ok to continue)"
-            # now verify that the rust-std symlink is present in the crossdev repository for TARGET
-            message_n "looking for /var/db/repos/crossdev/cross-${TARGET}/rust-std"
-            if [ ! -L /var/db/repos/crossdev/cross-${TARGET}/rust-std ] ; then
-                echo -e -n " (${BRon}not found${Boff})"
-                right_status 1
-                E_message "running prepare-cross-rust()"
-                prepare-cross-rust || die "failed to prepare-cross-rust"
-            else
-                echo -e -n " (${BGon}found${Boff})"
-                right_status $TRUE
-            fi  # rust-std symlink existence
+            # as of crossbuild-tools-0.12.15 and prior used rust-std for cross-rust
+            # based on legacy Gentoo Crossbuild-Environment wiki procedure
+            # starting with 0.12.16 we use rust-bin instead and drop code previously found here to validate
+            # the crossdev repos cross-${TARGET}/rust-std symlinks. Now we just
+            # run prepare-cross-rust() and rebuild-rust-and-llvm() from cb-common-functions
+            # (i.e. these are pre-requisite in cb-mkupd whereas they are part of run-sequence in cb-mkenv)
+            message "(re)validating cross-rust ..."
+            # update configs to use rust-bin as cross-compiler and
+            #  set RUST_LLVM_CHANGE_FLAG=$TRUE in order to make rebuild-rust-and-llvm()
+            #  update rust-bin [which is a dependency of crossbuild-tools], if needed)
+            prepare-cross-rust || die "failed to prepare-cross-rust"
+            # rebuild @world to update rust and llvm with the new configuration, if it changed
+            rebuild-rust-and-llvm || die "failed to rebuild-rust-and-llvm"
         fi # sub-repo existence
     fi  # repo existence
 
-    # now verify the TARGET crossdevelopment mountpoint still exists
+    # (6) verify the TARGET crossdevelopment mountpoint still exists
     message_n "looking for /usr/${TARGET}"
     if [ ! -d "/usr/${TARGET}" ] ; then
         echo -e -n " (${BRon}not found${Boff})"
@@ -350,7 +336,7 @@ validate_prerequisites() {
         right_status $TRUE
     fi  # mountpoint existence
 
-    # now copy the STOCKPILE UPDATEIMAGE file to /usr/
+    # (7) copy the STOCKPILE UPDATEIMAGE file to /usr/
     msg="${BYon}copy ${UPDATEIMAGE} from STOCKPILE to /usr/ as ${BMon}${BOARD}.img${Boff}\n"
     msg+="(if you copied it manually, you can safely skip this)"
     new_prompt "${msg}"
@@ -370,7 +356,7 @@ validate_prerequisites() {
         * ) die "Please correct this before continuing" ;;
     esac
 
-    # now mount the new /usr/${BOARD}.img file on the crossdev $TARGET
+    # (8) mount the new /usr/${BOARD}.img file on the crossdev $TARGET
     cb-mount "${BOARD}" || die "failed to cb-mount ${BOARD}"
 
     return 0
