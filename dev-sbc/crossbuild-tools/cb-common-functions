@@ -527,12 +527,18 @@ install_files_from_source() {
 TARGET-emerge-joetoo-platform-meta() {
     # use crossdev tools to emerge joetoo-platform-meta (platform-specific configs)
     # from the build-host, for the crossbuild target system
+    # explicitly set options and features
+    # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
+    # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
+    # (ignore collision for this package in this instance, since package.env may not exist yet)
     options="--update --newuse --deep --verbose --keep-going --getbinpkg"
-    [[ $INTERACTIVE ]] && options+=" --ask"
+    features="${FEATURES} distcc sandbox parallel-fetch -pid-sandbox buildpkg binpkg-multi-instance"
+    features="${features} -collision-detect -protect-owned"
+    # explicitly set root and uses just for this package, which is foundational
     root="/usr/${TARGET}"
-    uses="sbc ${BOARD} headless -plasma -gnome -http3 -quic -curl_quic_openssl"
+    uses="sbc ${BOARD} headless -plasma -gnome -lxde -http3 -quic -curl_quic_openssl"
     package="joetoo-base/joetoo-platform-meta"
-    features="-collision-detect -protect-owned"
+    [[ $INTERACTIVE ]] && options+=" --ask"
     ROOT="${root}" USE="${uses}" FEATURES="${features}" ${TARGET}-emerge ${package} ${options}
     echo
     message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
@@ -543,9 +549,13 @@ TARGET-emerge-joetoo-platform-meta() {
 
 TARGET-emerge-system() {
     # use crossdev tools to run emerge @system from the build-host, for the crossbuild target system
+    # explicitly set options and features
+    # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
+    # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
     options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
     [[ $INTERACTIVE ]] && options+=" --ask"
-    ${TARGET}-emerge @system ${options}
+    FEATURES="${features}" ${TARGET}-emerge @system ${options}
     echo
     message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
@@ -555,9 +565,13 @@ TARGET-emerge-system() {
 
 TARGET-emerge-world() {
     # use crossdev tools to run emerge @world from the build-host, for the crossbuild target system
+    # explicitly set options and features
+    # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
+    # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
     options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
     [[ $INTERACTIVE ]] && options+=" --ask"
-    ${TARGET}-emerge @world ${options}
+    FEATURES="${features}" ${TARGET}-emerge @world ${options}
     echo
     message "Do not worry if some @world packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
@@ -879,6 +893,11 @@ configure-make-conf-for-crossbuilding() {
     oldfile="/usr/${TARGET}/etc/portage/make.conf"
     cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
     right_status $TRUE
+    # call validate-llvm-targets() to check the new make.conf
+    message "calling validate-llvm-targets"
+    local sbc_native_llvm_targets="${LLVM_TARGET} BFP WebAssembly SPIRV"
+    validate-llvm-targets "/usr/${TARGET}/etc/portage/make.conf" "${sbc_native_llvm_targets}" || \
+        die "failed to validate-llvm-targets in TARGET make.conf"
     return 0
 }
 
@@ -891,6 +910,11 @@ configure-make-conf-for-chroot() {
     message_n "configuring make.conf for chroot ..."
     cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
     right_status $TRUE
+    # call validate-llvm-targets() to check the new make.conf
+    message "calling validate-llvm-targets"
+    local sbc_native_llvm_targets="${LLVM_TARGET} BFP WebAssembly SPIRV"
+    validate-llvm-targets "/usr/${TARGET}/etc/portage/make.conf" "${sbc_native_llvm_targets}" || \
+        die "failed to validate-llvm-targets in TARGET make.conf"
     return 0
 }
 
@@ -1105,86 +1129,121 @@ prepare-cross-rust() {
     right_status $TRUE
 
     # (3) LLVM_TARGETS use-expand set-up in CHOST's make.conf
-    # not sure this is really necessary --
-    #   all targets may be unconditionally enabled in llvm-core/llvm(?)
-    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 --
-    # ( news regarding adjustment of profiles' package.use.force ) --
-        # Michał Górny <mgorny@gentoo.org> (2021-11-04)
-        # Enable all LLVM targets unconditionally.  Unfortunately, disabling
-        # targets tend to break reverse dependencies (e.g. Rust) and we are yet
-        # to find a clean way of resolving that.  Compared to the damage
-        # potential, the increase of build time is a minor problem.  Users who
-        # really insist of building a smaller system can un-force the flags
-        # at their own responsibility.
-    # see more in footnote at the bottom of this file
-    # anyway, do this for now
-    # if make.conf doesn't contain LLVM_TARGETS, then add them
-    host_make_conf="/etc/portage/make.conf"
-    message_n "examining LLVM_TARGETS in ${host_make_conf}; looking for ${LLVM_TARGET}"
-    if grep -qF "LLVM_TARGETS=" "${host_make_conf}" ; then
-        # make.conf contains an assigment for LLVM_TARGETS - is this board's target in it?
-        source "${host_make_conf}"  # activate the current assignemt so we can check it
-        if [[ "${LLVM_TARGETS}" == *"${LLVM_TARGET}"* ]] ; then
-            # our target is already included
-            echo -en " (${BGon}found${Boff})"
-        else
-            echo -en " (${BRon}not found${Boff})"
-            echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" || \
-                die "failed to append LLVM_TARGETS to CHOSTs make.conf"
-            echo -en "(${BGon}appended${Boff})"
-            export RUST_LLVM_CHANGE_FLAG=$TRUE
-        fi
-    else
-        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
-        echo -en " (${BRon}not found${Boff})"
-        echo -e "\nLLVM_TARGETS=\"AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore SPIRV\"" >> "${host_make_conf}" || \
-            die "failed to append LLVM_TARGETS to CHOSTs make.conf"
-        echo -en "(${BGon}appended${Boff})"
-        export RUST_LLVM_CHANGE_FLAG=$TRUE
-    fi
-    right_status $TRUE
+    # (for crossbuilder development workstations) include all of: AArch64 ARM AVR RISCV X86 - to match target CPUs
+    # (for SBCs make.conf) include only one of: AArch64 ARM AVR RISCV X86 - to match SBC CPUs
+    # (for both) include BFP and WebAssembly - mandatory for modern Rust and Linux kernel-level tracing/security tools
+    # (for both) include SPIRV - ensures that tools like mesa, opencl, or vulkan-loader can compile correctly if they require LLVM-based translation
+    # (for crossbuilders) include AMDGPU and NVPTX - support compiling for amd/ati-radeon and nvidia gpus
+    # *exclude* Hexagon Lanai LoongArch MSP430 Mips PowerPC Sparc SystemZ VE XCore - not needed
+    local crossbuild_workstation_llvm_targets="AArch64 ARM AVR RISCV X86 BFP WebAssembly SPIRV AMDGPU NVPTX"
+    # call validate-llvm-targets() to check the CHOST's make.conf
+    validate-llvm-targets "/etc/portage/make.conf" "${crossbuild_workstation_llvm_targets}" || \
+        die "failed to validate-llvm-targets in CHOST make.conf"
 
 # DEPRECATED (4) symlink for cross-${TARGET}/rust-std set up cross-rust in CHOSTs crossdev repo(s)
-#    VALID_LINK=$FALSE
-#    message "creating rust-std link in crossdev repo (to CHOSTs rust-std ebuilds) ..."
-#    old_dir="$(pwd)"
-#    cd /var/db/repos/crossdev/cross-${TARGET} && \
-#    message "now working in crossdev repo: [${Mon}$(pwd)${Boff}]"
-#    message_n "looking for link"
-#    if [ -L rust-std ] ; then
-#        echo -en " (found, "
-#        # link forund - right target?
-#        target_path=$(readlink -f rust-std)
-##        olv_verbosity=$verbosity ; verbosity=5
-##        d_message "target_path: [${target_path}]" 4
-##        verbosity=$old_verbosity
-#        if [[ "${target_path}" == "/var/db/repos/gentoo/sys-devel/rust-std" ]] ; then
-#            # link points to correct target
-#            echo -en "${BGon}valid${Boff})"
-#            VALID_LINK=$TRUE
-#        else
-#            # link does not point to correct target -- remove it
-#            echo -en "${BRon}invalid${Boff})"
-#            rm rust-std && echo -en "(removed)" || die "failed to remove invalid rust-std link"
-#        fi
-#    else
-#        echo -en " (not found)"
-#        # no link found
-#    fi
-#    if [ ! $VALID_LINK ] ; then
-#        # valid link does not yet exist or invalid one was removed -- create it
-#        ln -s /var/db/repos/gentoo/sys-devel/rust-std || die "failed to create link for rust-std"
-#        echo -en "(${BGon}created${Boff})"
-#    fi
-
 # DEPRECATED (5) unmask cross-${TARGET}/rust-std in CHOSTs package.accept_keywords
-#    message_n "unmasking rust-std in CHOSTs package.accept_keywords ..."
-#    echo "cross-${TARGET}/rust-std **" >> /etc/portage/package.accept_keywords/cross-target-rust-std || \
-#         die "failed to unmasking rust-std in CHOSTs package.accept_keywords"
-#    right_status $TRUE
 
     # if we got here (didn't die above) close action as OK and return exit status 0
     cd $old_dir
     message "now working in previous directory: [${Mon}$(pwd)${Boff}]"
     return 0
 }
+
+validate-llvm-targets() {
+    # 20260108 - extracted this code from prepare-cross-rust() so I can also call
+    #   it from configure-make-conf-for-crossbuilding() and from configure-make-conf-for-chroot()
+    # Validate the LLVM_TARGETS= assignment in this (target_file) make.conf
+    local target_file="$1"
+    local proper_targets="$2"
+    local target_name="${LLVM_TARGET:-unknown}" # Fallback for logging
+
+    # (for crossbuilder development workstations) include all of: AArch64 ARM AVR RISCV X86 - to match target CPUs
+    # (for SBCs make.conf) include only one of: AArch64 ARM AVR RISCV X86 - to match SBC CPUs
+    # (for both) include BFP and WebAssembly - mandatory for modern Rust and Linux kernel-level tracing/security tools
+    # (for both) include SPIRV - ensures that tools like mesa, opencl, or vulkan-loader can compile correctly if they require LLVM-based translation
+    # (for crossbuilders) include AMDGPU and NVPTX - support compiling for amd/ati-radeon and nvidia gpus
+    # *exclude* Hexagon Lanai LoongArch MSP430 Mips PowerPC Sparc SystemZ VE XCore - not needed
+    message_n "examining LLVM_TARGETS in ${target_file}; looking for ${target_name}"
+    if grep -qF "LLVM_TARGETS=" "${target_file}" ; then
+        # make.conf contains an assigment for LLVM_TARGETS - check if this board's target is in it?
+        # safely extract LLVM_TARGETS using a subshell
+        CURRENT_LLVM_TARGETS=$(source "${target_file}" 2>/dev/null && echo "${LLVM_TARGETS}")
+        # space-pad both sides to ensure perfect match and accomodate "end of list" case
+        if [[ " ${CURRENT_LLVM_TARGETS} " == *" ${target_name} "* ]] ; then
+            # make.conf contains an assigment for LLVM_TARGETS - and our target is already included
+            echo -en " (${BGon}found${Boff})"
+        else
+            # make.conf contains an assigment for LLVM_TARGETS - but our target is not (yet) included (edit to add)
+            echo -e -n " (${BRon}not found${Boff})"
+            # edit with sed using substitution command s, delimiter /, double-quotes for the filename variable,
+            #   double-quotes for the whole sed command (vs single quotes) so encapsulated variable will expand,
+            #   and escaped quotes for the variable inside the sed command, so it will expand safely
+            sed -i "s/^LLVM_TARGETS=.*/LLVM_TARGETS=\"${proper_targets}\"/" "${target_file}"
+            #       ^                 ^             ^^                 ^^ ^
+            #       |                 |             ||                 || |
+            #  start-sed subst   delimiter   esc-quote          esc-quote end-sed
+            # ^LLVM_TARGETS=.*  -- match all of any line beginning LLVM_TARGETS= followed by zero or more of any character (except newlines)
+            # replace with LLVM_TARGETS="${proper_targets}"
+            [ $? -eq 0 ] || die "failed to update LLVM_TARGETS in ${target_file}"
+            echo -e -n "(${BGon}updated${Boff})"
+            export RUST_LLVM_CHANGE_FLAG=$TRUE
+        fi
+    else
+        # make.conf does not contain an assignment for LLVM_TARGETS -- append one
+        echo -en " (${BRon}not found${Boff})"
+        echo -e "\nLLVM_TARGETS=\"${proper_targets}\"" >> "${target_file}" || \
+            die "failed to append LLVM_TARGETS to ${target_file}"
+        echo -en "(${BGon}appended${Boff})"
+        export RUST_LLVM_CHANGE_FLAG=$TRUE
+    fi
+    right_status $TRUE
+}
+# not sure validate-llvm-targets() is all really necessary --
+    #   all targets may be unconditionally enabled in llvm-core/llvm(?) depending on profile
+    # Gentoo forum administrator Hu noted on Fri Sep 16, 2022 --
+    # ( news regarding adjustment of profiles' package.use.force ) --
+        # Michal�Gorny <mgorny@gentoo.org> (2021-11-04):
+        # Enable all LLVM targets unconditionally.  Unfortunately, disabling targets tend to break
+        # reverse dependencies (e.g. Rust) and we are yet to find a clean way of resolving that.
+        # Compared to the damage potential, the increase of build time is a minor problem.  Users who
+        # really insist of building a smaller system can un-force the flags at their own responsibility.
+
+# confirmed as of 20260108, profile is still forcing USE for most targets globally
+# $ emerge -pv llvm-core/llvm
+# ...
+# [binary   R    ] llvm-core/llvm-21.1.8-1:21/21.1::gentoo  USE="binutils-plugin libffi verify-sig xml zstd -debug
+# (-debuginfod) -doc -exegesis -libedit -test -z3"
+# ABI_X86="(64) -32 (-x32)"
+# LLVM_TARGETS="(AArch64) (AMDGPU) (ARM) (AVR) (BPF) (Hexagon) (Lanai) (LoongArch) (MSP430) (Mips) (NVPTX) (PowerPC)
+# (RISCV) (SPIRV) (Sparc) (SystemZ) (VE) (WebAssembly) (X86) (XCore) -ARC -CSKY -DirectX -M68k -Xtensa" 0 KiB
+
+# Other footnotes regarding LLVM_TARGETS --
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/base/package.use.force
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_AArch64 llvm_targets_AMDGPU               <=== NOTE AArch64 AMDGPU
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_ARM llvm_targets_AVR llvm_targets_BPF     <=== NOTE ARM AVR BPF
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_Hexagon llvm_targets_Lanai
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_MSP430 llvm_targets_Mips
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_NVPTX llvm_targets_PowerPC                <=== NOTE NVPTX
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_RISCV llvm_targets_Sparc                  <=== NOTE RISCV
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_SystemZ llvm_targets_WebAssembly          <=== NOTE WebAssembly
+    #    >=llvm-core/clang-13.0.1_rc llvm_targets_X86 llvm_targets_XCore                    <=== NOTE X86
+    #    >=llvm-core/clang-14 llvm_targets_VE
+    #    >=llvm-core/clang-16 llvm_targets_LoongArch
+    #    >=llvm-core/clang-20 llvm_targets_SPIRV                                            <=== NOTE SPIRV
+    #
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/amd64/package.use.force
+    #    dev-lang/rust llvm_targets_X86
+    #    dev-ml/llvm llvm_targets_X86
+    #    llvm-core/clang llvm_targets_X86
+    #    llvm-core/llvm llvm_targets_X86
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/arm64/package.use.force
+    #    dev-lang/rust llvm_targets_AArch64
+    #    dev-ml/llvm llvm_targets_AArch64
+    #    llvm-core/clang llvm_targets_AArch64
+    #    llvm-core/llvm llvm_targets_AArch64
+    #
+    # as of 7/18/2025, this is the content of /var/db/repos/gentoo/profiles/arch/arm/package.use.force
+    #    dev-lang/rust llvm_targets_ARM
+    #    dev-ml/llvm llvm_targets_ARM
+    #    llvm-core/clang llvm_targets_ARM
+    #    llvm-core/llvm llvm_targets_ARM
