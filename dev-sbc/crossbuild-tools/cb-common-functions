@@ -576,14 +576,32 @@ TARGET-emerge-perl-fix() {
     fi
     # Otherwise, use this wrapper to compile these packages
     local wrapper="/usr/sbin/cb-perl-wrapper"
+    local target_conf_dir="/usr/${TARGET}/etc/portage"
+    local env_perl_wrapper_conf="${target_conf_dir}/env/perl-wrapper.conf"
+    local target_package_env_file="${target_conf_dir}/package.env/package.env"
+
+    # Setup temporary cross-build scaffolding (on target)
+    mkdir -p "${target_conf_dir}/env"
+    echo 'CC="/usr/sbin/cb-perl-wrapper"' > "${env_perl_wrapper_conf}"
+    echo 'CPP="/usr/sbin/cb-perl-wrapper"' >> "${env_perl_wrapper_conf}"
+    echo 'CXX="/usr/sbin/cb-perl-wrapper"' >> "${env_perl_wrapper_conf}"
+    echo "dev-perl/* perl-wrapper.conf" >> "${target_package_env_file}"
+
     # explicitly set options and features
     # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
     # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
     local options="--update --newuse --deep --verbose --keep-going --getbinpkg"
     local features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
     [[ $INTERACTIVE ]] && options+=" --ask"
-    CC="${wrapper}" CXX="${wrapper}" CPP="${wrapper}" FEATURES="${features}" \
-        ${TARGET}-emerge ${perl_fix_list} ${options}
+    FEATURES="${features}" ${TARGET}-emerge ${perl_fix_list} ${options}
+
+    # Remove the temporary cross-build scaffolding (would be incorrect for chroot or normal ops)
+    #   remove the wrapper conf file that set CC= etc.
+    rm -f "${env_perl_wrapper_conf}"
+    # Remove ONLY the specific line we added to package.env
+    sed -i '/dev-perl\/\* perl-wrapper.conf/d' "${target_package_env_file}"
+
+
     echo
     message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
