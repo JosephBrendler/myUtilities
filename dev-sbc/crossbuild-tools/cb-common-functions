@@ -531,13 +531,13 @@ TARGET-emerge-joetoo-platform-meta() {
     # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
     # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
     # (ignore collision for this package in this instance, since package.env may not exist yet)
-    options="--update --newuse --deep --verbose --keep-going --getbinpkg"
-    features="${FEATURES} distcc sandbox parallel-fetch -pid-sandbox buildpkg binpkg-multi-instance"
+    local options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    local features="${FEATURES} distcc sandbox parallel-fetch -pid-sandbox buildpkg binpkg-multi-instance"
     features="${features} -collision-detect -protect-owned"
     # explicitly set root and uses just for this package, which is foundational
-    root="/usr/${TARGET}"
-    uses="sbc ${BOARD} headless -plasma -gnome -lxde -http3 -quic -curl_quic_openssl"
-    package="joetoo-base/joetoo-platform-meta"
+    local root="/usr/${TARGET}"
+    local uses="sbc ${BOARD} headless -plasma -gnome -lxde -http3 -quic -curl_quic_openssl"
+    local package="joetoo-base/joetoo-platform-meta"
     [[ $INTERACTIVE ]] && options+=" --ask"
     ROOT="${root}" USE="${uses}" FEATURES="${features}" ${TARGET}-emerge ${package} ${options}
     echo
@@ -552,10 +552,36 @@ TARGET-emerge-system() {
     # explicitly set options and features
     # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
     # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
-    options="--update --newuse --deep --verbose --keep-going --getbinpkg"
-    features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
+    local options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    local features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
     [[ $INTERACTIVE ]] && options+=" --ask"
     FEATURES="${features}" ${TARGET}-emerge @system ${options}
+    echo
+    message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
+    message "Some must be compiled natively after chroot, in steps to follow"
+    echo
+    return 0
+}
+
+TARGET-emerge-perl-fix() {
+    # use crossdev tools to run emerge @perl-fix from the build-host, for the crossbuild target system
+    # build the list of dependent perl module packages (that would fail to cross-build without this wrapper)
+    local perl_fix_list=$(${TARGET}-emerge -p --columns --quiet @world 2>/dev/null | grep "dev-perl/" | awk '{print $2}')
+    # If no perl modules are found, exit gracefully
+    if [[ -z "${perl_fix_list}" ]]; then
+        message "No Perl modules found in @world. Skipping TARGET-emerge-perl-fix"
+        return 0
+    fi
+    # Otherwise, use this wrapper to compile these packages
+    local wrapper="/usr/sbin/cb-perl-wrapper"
+    # explicitly set options and features
+    # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
+    # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
+    local options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    local features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
+    [[ $INTERACTIVE ]] && options+=" --ask"
+    CC="${wrapper}" CXX="${wrapper}" CPP="${wrapper}" FEATURES="${features}" \
+        ${TARGET}-emerge ${perl_fix_list} ${options}
     echo
     message "Do not worry if some @system packages fail to build (e.g. gcc, above)"
     message "Some must be compiled natively after chroot, in steps to follow"
@@ -568,8 +594,8 @@ TARGET-emerge-world() {
     # explicitly set options and features
     # (use option -g/--getbinpkg vs feature b/c it triggers refresh of remote metadata where latter does not)
     # (use feature buildpkg vs option -b b/c it builds binaries for dependencies where latter does not)
-    options="--update --newuse --deep --verbose --keep-going --getbinpkg"
-    features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
+    local options="--update --newuse --deep --verbose --keep-going --getbinpkg"
+    local features="${FEATURES} distcc sandbox parallel-fetch -collision-detect -pid-sandbox buildpkg binpkg-multi-instance"
     [[ $INTERACTIVE ]] && options+=" --ask"
     FEATURES="${features}" ${TARGET}-emerge @world ${options}
     echo
