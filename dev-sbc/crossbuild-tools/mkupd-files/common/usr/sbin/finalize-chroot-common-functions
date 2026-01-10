@@ -2,6 +2,13 @@
 # finalize-chroot-common-functions        (c)  joe brendler 2025-9976
 # functions consolidated from finalize-chroot-env -img and -upd
 #
+# Notes on workflow dependencies of several of these functions
+    # cb-mkimg validate-prerequisites-img() workflow -
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+    # (3) sync-repo gentoo -- populate repo gentoo to assign profile using ${chroot_emerge}
+    # (4) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+    # (5) validate-eix-db-dir -- validate or create the eix db
 
 run-dispatch-conf() {
     separator ${PN} "${FUNCNAME[0]}"
@@ -88,6 +95,7 @@ build-chroot_emerge-command() {
 get-check-config() {
     # source /root/.cb-config and validate TARGET (fatal if failure)
     # also assign BOARD, etc. I am ... (non-fatal if failure)
+    # validation moved to validate_CHOST(); consider these tentative assignments
     if [ -e /root/.cb-config ] ; then
         source /root/.cb-config || die "failed to source /root/.cb-config"
     else
@@ -103,40 +111,52 @@ get-check-config() {
     # (run grep -iR target_arch /var/db/repos/gentoo/ to see this)
     configvarlist="BOARD TARGET TARGET_ARCH QEMU_ARCH"
     configvarlist+=" STAGE3_SELECTOR default_profile LLVM_TARGET"
+#    for x in ${configvarlist}; do varname="cb_${x}" ; eval $x=${!varname}; done
+# replace unsafe eval method
     for x in ${configvarlist}; do
-        varname="cb_${x}" ; eval $x=${!varname}
+        varname="cb_${x}"
+        # Use printf -v for safe, indirect assignment
+        # This assigns the value of ${!varname} to the variable named by $x
+        printf -v "$x" "%s" "${!varname}"
     done
 
-    message_n "validating BOARD, TARGET and qemu-chroot config ..."
-    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
+
+    message "tentatively assigned BOARD, TARGET, etc. ..."
+    right_status $TRUE
+    message "  BOARD ............: $BOARD"
+    message "  TARGET ...........: $TARGET"
+    message "  TARGET_ARCH ......: $TARGET_ARCH"
+    message "  QEMU_ARCH ........: $QEMU_ARCH"
+    message "  STAGE3_SELECTOR ..: $STAGE3_SELECTOR"
+    message "  default_profile ..: $default_profile"
+    message "  LLVM_TARGET ......: $LLVM_TARGET"
+
+    return 0
+}
+
+#get-target() {
+validate_CHOST() {
+    # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
+    # then validate that actual_CHOST matches the one assigned by /root/.cb-config
+    message_n "determining TARGET ..."
+    actual_CHOST=$(portageq envvar CHOST 2>/dev/null) ; result=$? ; right_status $result
+    if [ $result -eq 0 ] ; then
+        message "actual_CHOST: $actual_CHOST"
+    else
+        E_message "failed to determine actual_CHOST"
+        FLAGGED=$TRUE
+        return 1
+    fi
+
+    # validate the apparent target
+    message_n "validating actual_CHOST: [${actual_CHOST}]"
+    if [[ "${actual_CHOST}" == "${TARGET}" ]] ; then
         echo -en " ${BGon}(match)${Boff}"
         right_status $TRUE
-        message "  BOARD ............: $BOARD"
-        message "  TARGET ...........: $TARGET"
-        message "  TARGET_ARCH ......: $TARGET_ARCH"
-        message "  QEMU_ARCH ........: $QEMU_ARCH"
-        message "  STAGE3_SELECTOR ..: $STAGE3_SELECTOR"
-        message "  default_profile ..: $default_profile"
-        message "  LLVM_TARGET ......: $LLVM_TARGET"
-
-        return 0
     else
         echo -en " ${BRon}(mismatch)${Boff}"
         right_status 1
         E_message "TARGET mismatch; exiting"
-        FLAGGED=$TRUE
-        return 1
-    fi
-}
-
-get-target() {
-    # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
-    message_n "determining TARGET ..."
-    apparent_TARGET=$(portageq envvar CHOST 2>/dev/null) ; result=$? ; right_status $result
-    if [ $result -eq 0 ] ; then
-        message "apparent_TARGET: $apparent_TARGET"
-    else
-        E_message "failed to determine apparent_TARGET"
         FLAGGED=$TRUE
         return 1
     fi

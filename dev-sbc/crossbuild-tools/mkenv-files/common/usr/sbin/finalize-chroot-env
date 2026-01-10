@@ -64,6 +64,14 @@ varlist+=" BREAK lv.chroot_emerge"
 ###  display-next-steps-upd could be updated to explain to the user that
 ###  "jus" can be run after this script finishes, but before exiting chroot
 #
+# Notes on workflow required by dependencies of functions in finalize-chroot-common-functions
+    # cb-mkimg validate-prerequisites-img() workflow -
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+    # (3) sync-repo gentoo -- populate repo gentoo to assign profile using ${chroot_emerge}
+    # (4) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+    # (5) validate-eix-db-dir -- validate or create the eix db
+
 command_sequence=(
 'run-locale-gen'
 'check-reload-config'
@@ -159,25 +167,37 @@ validate-prerequisites-env() {
     # read portageq envvar CHOST and then read
     # /root/.cb-config and assign name-spaced environment variables
     # (must do this prior to build-chroot-emerge b/c latter depends on ${TARGET})
-    message "calling get-target function to run portageq envvar CHOST"
-    get-target || die "failed to get-target"
-    message_n "(${BGon}success${Boff}"
-    right_status $TRUE
+
+# Notes on workflow required by dependencies of functions in finalize-chroot-common-functions
+    # cb-mkenv finalize-chroot-env validate-prerequisites-env() workflow -
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+# **sync-repo gentoo not needed for env b/c repos start out as links to host repos
+    # (3) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+# **validate-eix-db-dir not needed for env b/c repos start out as links to host repos
+    # (4) check/create the chroot's portage temporary directory with ln;
+    # (5) carefully validate or create a link to the chroot's /var for portage PKGDIR and DISTDIR directories
+
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
     message "calling get-check-config function to read /root/.cb-config"
     get-check-config || die "failed to get-check-config"
     message_n "(${BGon}success${Boff}"
     right_status $TRUE
 
-    # build a command with which to run the emerge program in this chroot environment
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+    #   build a command with which to run the emerge program in this chroot environment
     message_n "building chroot_emerge command"
     build-chroot_emerge-command >/dev/null 2>&1 || die "failed to build-chroot_emerge-command"
     echo -e -n " (${BGon}success${Boff}"
     right_status $TRUE
 
-    # check that qemu is installed and protected  (un-needed after change to embedded wiki method)
-#    protect-qemu-for-chroot || die "general failure of protect-qemu-for-chroot"
+    # (3) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+    message "calling validate_CHOST function to run portageq envvar CHOST"
+    validate_CHOST || die "failed to validate_CHOST"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
 
-    # chect/create the chroot's portage temporary directory with ln;
+    # (4) check/create the chroot's portage temporary directory with ln;
     # todo - validate this (may be residual link to chroot's own /usr/${TARGET}/ structures)
     message_n "creating portage temporary directory with ln ..."
     if [ ! -L /usr/${TARGET}/tmp ] ; then
@@ -187,7 +207,7 @@ validate-prerequisites-env() {
     fi
     right_status $result
 
-    # carefully validate or create a link to the chroot's /var for portage PKGDIR and DISTDIR directories
+    # (5) carefully validate or create a link to the chroot's /var for portage PKGDIR and DISTDIR directories
     message_n "checking for /usr/${TARGET}/var ..."
     check_target=/usr/${TARGET}/var
     check_status=$(file ${check_target} | sed "s|${check_target}: ||")

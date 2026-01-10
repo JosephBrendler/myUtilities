@@ -105,6 +105,7 @@ msg1_sequence=(
 # get-check-config() .............. moved to finalize-chroot-common-functions
 # get-target()..................... moved to finalize-chroot-common-functions
 # validate-eix-db-dir() ........... moved to finalize-chroot-common-functions
+# get-target()..................... renamed validate_CHOST()
 
 initialize_variables-img() {
     [ $verbosity -lt 2 ] && message_n "initializing ..." || message "initializing ..."
@@ -140,39 +141,66 @@ initialize_variables-img() {
 
 validate-prerequisites-img() {
     separator ${PN} "${FUNCNAME[0]}"
-    # read portageq envvar CHOST and then read
-    # /root/.cb-config and assign name-spaced environment variables
-    # (must do this prior to build-chroot-emerge b/c latter depends on ${TARGET})
-    message "calling get-target function to run portageq envvar CHOST"
-    get-target || die "failed to get-target"
-    message_n "(${BGon}success${Boff}"
-    right_status $TRUE
+    # need to call validate_CHOST() to read portageq envvar CHOST
+    #    and then call get-check-config() to read /root/.cb-config
+    #    and assign name-spaced environment variables
+    #    (validating that the .cb-config cb_TARGET matches envvar CHOST)
+    # *** must do this prior to calling build-chroot-emerge()
+    #    b/c that depends on ${TARGET} ***
+    # *** but cannot do this until after the gentoo repo has been populated
+    #    by sync-repo() and a valid profile assigned ***
+    # *** but cannont run sync-repo() until ${chroot_emerge} is assigned by
+    #    build-chroot_emerge-command()
+    #
+# Notes on workflow required by dependencies of functions in finalize-chroot-common-functions
+    # cb-mkimg finalize-chroot-img validate-prerequisites-img() workflow -
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+    # (3) sync-repo gentoo -- populate repo gentoo to assign profile using ${chroot_emerge}
+    # (4) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+    # (5) validate-eix-db-dir -- validate or create the eix db
+# check/create the chroot's portage temporary directory with ln - (env) NA for img/upd
+# carefully validate or create a link to the chroot's /var for portage PKGDIR and DISTDIR directories - (env) NA for img/upd
+
+    # (1) get-check-config -- tentatively assign ${TARGET} and other globals using /root/.cb- config
+    #   call get-check-config to read .cb-config and tentatively assign ${TARGET}
     message "calling get-check-config function to read /root/.cb-config"
     get-check-config || die "failed to get-check-config"
     message_n "(${BGon}success${Boff}"
     right_status $TRUE
 
-    # build a command with which to run the emerge program in this chroot environment
+    # (2) build-chroot_emerge-command -- assign ${chroot_emerge} using ${TARGET}
+    #   build a command with which to run the emerge program in this chroot environment (depends on ${TARGET}
     message_n "building chroot_emerge command"
     build-chroot_emerge-command >/dev/null 2>&1 || die "failed to build-chroot_emerge-command"
     echo -e -n " (${BGon}success${Boff}"
     right_status $TRUE
 
-    # validate the eix database directory
-    message "calling function to validate eix database directory"
-    validate-eix-db-dir || die "failed to validate-eix-db-dir"
-    message_n "(${BGon}success${Boff}"
-    right_status $TRUE
-
-    # need to sync gentoo repo in order to have a valid profile with which to get-target, get-che>
+    # (3) sync-repo gentoo -- populate repo gentoo to assign profile using ${chroot_emerge}
+    #   need to sync gentoo repo in order to have a valid profile with which to validate_CHOST
+    #   ( depends on ${chroot_emerge} set by build-chroot_emerge-command() )
     message "calling function to sync repo gentoo (ensure valid profile)"
     sync-repo gentoo || die "failed to sync-repo gentoo"
     message_n "(${BGon}success${Boff}"
     right_status $TRUE
 
-    # check that qemu is installed and protected (un-needed after change to embedded wiki method)
-#    protect-qemu-for-chroot || die "general failure of protect-qemu-for-chroot"
+### maybe rename this validate-chost()
 
+    # (4) validate_CHOST -- validate running CHOST matches ${TARGET} using profile paths
+    # call validate_CHOST to validate the running CHOST matches ${TARGET}
+    #   depends on profile set up by sync-repo() gentoo
+    message "calling validate_CHOST function to run portageq envvar CHOST"
+    validate_CHOST || die "failed to validate_CHOST"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    # (5) validate-eix-db-dir -- validate or create the eix db
+    message "calling function to validate eix database directory"
+    validate-eix-db-dir || die "failed to validate-eix-db-dir"
+    message_n "(${BGon}success${Boff}"
+    right_status $TRUE
+
+    return 0
 }
 
 set-password() {
@@ -557,7 +585,7 @@ separator "${PN}" "(starting)"
   #    (but is in cb-common-functions, which isn't available here in this new system)
   #    (and is based on a crossbuild host context that doesn't apply)
   #    (since we are now in the new system, via chroot), instead -->
-  # get-target (from portageq envvar CHOST)
+  # validate_CHOST (from portageq envvar CHOST)
       # (i.e. what has up to now been called "TARGET" is now the new CHOST)
       # (we aren't crossbuilding anymore --> we are building natively in the chroot)
   # get-check-config (from /root/.cb-config -- verify vs target) (* note subsequent step 0)
