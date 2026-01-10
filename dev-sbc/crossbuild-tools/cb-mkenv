@@ -58,6 +58,7 @@ VERBOSE=$TRUE
 
 PN=$(basename $0)
 response=""
+stage3_tarball=""  # will be set by verify-stage3-hashes() and used by untar-stage3()
 
 varlist="PN BPN BUILD BREAK BOARD TARGET TARGET_ARCH QEMU_ARCH STAGE3_SELECTOR"
 varlist+=" default_profile LLVM_TARGET"
@@ -379,20 +380,43 @@ eselect-profile() {
 
 untar-stage3() {
     message_n "extracting stage3 from tar.xz archive ..."
-    tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /usr/${TARGET}/
+    tar xpvf "${stage3_tarball}" --xattrs-include='*.*' --numeric-owner -C /usr/${TARGET}/
     result=$? ; right_status $result ; return $result
 }
 
 verify-stage3-hashes() {
+    # locate the stage3 tarball
+    message_n "looking for stage3 tarball"
+    stage3_tarball=$(find /usr/${TARGET}/ -name "*${STAGE3_SELECTOR}*" | grep  -v .DIGESTS | head -n1)
+    if [ -z "${stage3_tarball}" ] ; then
+        echo -e -n " (${BRon}not found${Boff})"
+        right_status 1
+        die "failed to find stage3 tarball"
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        right_status $TRUE
+    fi
+    # locate the DIGESTS file for the stage3 tarball
+    message_n "looking for DIGESTS file for stage3 tarball"
+    stage3_tarball_digests=$(find /usr/${TARGET}/ -name "*${STAGE3_SELECTOR}*" | grep  .DIGESTS | head -n1)
+    if [ -z "${stage3_tarball_digests}" ] ; then
+        echo -e -n " (${BRon}not found${Boff})"
+        right_status 1
+        die "failed to find DIGESTS file for stage3 tarball"
+    else
+        echo -e -n " (${BGon}found${Boff})"
+        right_status $TRUE
+    fi
+
     selector='SHA512'
-    SHA512_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
+    SHA512_DIGEST=$(grep -A1 "${selector}" "${stage3_tarball_digests}" | \
                   grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
-    SHA512_HASH="$(openssl dgst -r -sha512 stage3-*.tar.xz | awk '{print $1}')"
+    SHA512_HASH="$(openssl dgst -r -sha512 "${stage3_tarball}" | awk '{print $1}')"
 
     selector='BLAKE2B'
-    BLAKE2B_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
+    BLAKE2B_DIGEST=$(grep -A1 ${selector} "${stage3_tarball_digests}" | \
                   grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
-    BLAKE2B_HASH="$(openssl dgst -r -blake2b512 stage3-*.tar.xz | awk '{print $1}')"
+    BLAKE2B_HASH="$(openssl dgst -r -blake2b512 "${stage3_tarball}" | awk '{print $1}')"
     d_message "SHA512_DIGEST..: ${SHA512_DIGEST}" 3
     d_message "SHA512_HASH....: ${SHA512_HASH}" 3
     d_message "BLAKE2B_DIGEST.: ${BLAKE2B_DIGEST}" 3
@@ -402,10 +426,10 @@ verify-stage3-hashes() {
         E_message "openssl sha512 hash has does not match digest"
         return 1
     elif [[ "${BLAKE2B_DIGEST}" != "${BLAKE2B_HASH}" ]] ; then
-        E_message "openssl blake2b512 hash has does not match digest"
+        E_message "openssl blake2b512 hash has does not match DIGESTS"
         return 1
     else
-        message_n "openssl sha512 and blake2b512 hashes both ${BGon}match${Boff} digest"
+        message_n "openssl sha512 and blake2b512 hashes both ${BGon}match${Boff} DIGESTS"
         right_status $TRUE
     fi
     return 0
@@ -445,7 +469,7 @@ wget-stage3() {
     # -o, --only-matching       show only nonempty parts of lines that match
     # href=\"                   looks for the literal text href="; anchors the search to an actual HTML link attribute
     # \K                        ignore everything before this marker (with -o also excludes it from output)
-    # [^\"]+                    match one or more characters that are NOT a double-quote ([^ ... ] is a negated character class)
+    # [^\"]*                    match zero or more characters that are NOT a double-quote ([^ ... ] is a negated character class)
     # ${STAGE3_SELECTOR}        match the ${STAGE3_SELECTOR} sourced by target's /root/.cb_config
     # [^\"]+                    again match any characters not a quote, incl timestamp and rest of filename after selector
     # \.tar\.xz                 match the literal filename extension .tar.xz
@@ -459,27 +483,27 @@ wget-stage3() {
         return 1
     else
         right_status $TRUE
-        message "${LBon}raw_stage3_link${Boff}: ${Mon}${raw_stage3_link}${Boff}"
+#        message "${LBon}raw_stage3_link${Boff}:\n   ${Mon}${raw_stage3_link}${Boff}"
     fi
 
     message_n "constructing final url for stage3 tarball ..."
     # Clean the path of any leading slash, just in case this is a root-relative path
-    local clean_path="${raw_stage3_link#/}" || { E_message "failed to assign clean_path=${raw_stage3_link#/}"; return 1; }
     # Strip trailing slash (prevents ...tar.xz/)
-    clean_path="${clean_path%/}" || { E_message "failed to assign clean_path=${clean_path%/}"; return 1; }
+    local clean_path="${raw_stage3_link#/}"
+    clean_path="${clean_path%/}"
 
     # Construct full URL (test in case it is relative)
     # If the link starts with http, use it as is, otherwise, prepend the mirror
     local final_url
     if [[ "${clean_path}" =~ ^http ]]; then
-        final_url="${clean_path}" || { E_message "failed to assign final_url=${clean_path}"; return 1; }
+        final_url="${clean_path}"
     else
-        # prepend mirror and remove any trailing spaces with "# "
-        final_url="https://distfiles.gentoo.org/${clean_path}" || { E_message "failed to assign final_url=${https://distfiles.gentoo.org/${clean_path}"; return 1; }
+        final_url="https://distfiles.gentoo.org/${clean_path}"
     fi
+    if [ $? -eq 0 ] ; then right_status $TRUE; else right_status 1; fi
 
-    message "Downloading: ${full_url}"
-    wget -c --show-progress "${full_url}" && wget -c "${full_url}.DIGESTS"
+    message "${BYon}Downloading${Boff}:\n${Bon}${final_url}${Boff}"
+    wget -c --show-progress "${final_url}" && wget -c "${final_url}.DIGESTS"
 
     return $?
 }
