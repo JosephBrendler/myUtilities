@@ -412,13 +412,75 @@ verify-stage3-hashes() {
 }
 
 wget-stage3() {
-    old_dir="$(pwd)"
-    message_n "moving from ${old_dir} to /usr/${TARGET} ..."
-    cd /usr/${TARGET} ; right_status $?
-    message "now getting stage3 in target sysroot directory: [${Mon}$(pwd)${Boff}] ..."
-#    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#arm) | awk '{print $2}')" && \
-    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#${TARGET_ARCH}) | awk '{print $2}')"
-    wget ${href} && wget ${href}.DIGESTS
+    local old_dir="$(pwd)"
+    local target_dir="/usr/${TARGET}"
+    local download_url="https://www.gentoo.org/downloads/#${TARGET_ARCH}"
+
+    message_n "Moving from ${old_dir} to ${target_dir} ..."
+    cd "${target_dir}" || { message "Failed to enter ${target_dir}"; return 1; }
+    right_status $?
+
+    # Fetch the download page with a timeout and retry logic
+    message_n "fetching Gentoo download page ..."
+    local html_content
+    # -f, --fail                  Fail fast with no output on HTTP errors
+    # -s, --silent                Silent mode
+    # -L, --location              makes curl redo the request to the new place if page has moved
+    # --connect-timeout <seconds> max time that curl's connection is allowed to take
+    # --retry <num>               retry this number of times before giving up
+    html_content=$(curl -f -s -L --connect-timeout 15 --retry 3 "${download_url}" 2>/dev/null)
+    if [[ $? -ne 0 || -z "${html_content}" ]]; then
+        right_status 1
+        E_message "${BRon}Error${Boff}: Failed to reach Gentoo downloads page or page is empty"
+        return 1
+    else
+        right_status $TRUE
+    fi
+
+    # Extract the href so we can use it as an assignment of the link to the stage3 tarball
+    message_n "extracting href to formulate link to stage3 tarball ..."
+    # (look specifically for the .tar.xz link matching ${STAGE3_SELECTOR}
+    local raw_stage3_link
+    # -P, --perl-regexp         PATTERNS are Perl regular expressions
+    # -o, --only-matching       show only nonempty parts of lines that match
+    # href=\"                   looks for the literal text href="; anchors the search to an actual HTML link attribute
+    # \K                        ignore everything before this marker (with -o also excludes it from output)
+    # [^\"]+                    match one or more characters that are NOT a double-quote ([^ ... ] is a negated character class)
+    # ${STAGE3_SELECTOR}        match the ${STAGE3_SELECTOR} sourced by target's /root/.cb_config
+    # [^\"]+                    again match any characters not a quote, incl timestamp and rest of filename after selector
+    # \.tar\.xz                 match the literal filename extension .tar.xz
+    # 2>/dev/null               be quiet
+    # | head -n 1               take only the first, if there happen to be multiple matches
+    raw_stage3_link=$(grep -oP "href=\"\K[^\"]+${STAGE3_SELECTOR}[^\"]+\.tar\.xz" 2>/dev/null <<< "${html_content}" | head -n 1)
+
+    if [[ -z "${raw_stage3_link}" ]]; then
+        right_status 1
+        E_message "${BRon}Error${Boff}: Could not find a stage3 link matching [${STAGE3_SELECTOR}] for [${TARGET_ARCH}]"
+        return 1
+    else
+        right_status $TRUE
+        message "${LBon}raw_stage3_link${Boff}: ${Mon}${raw_stage3_link}${Boff}"
+    fi
+
+    message_n "constructing final url for stage3 tarball ..."
+    # Clean the path of any leading slash, just in case this is a root-relative path
+    local clean_path="${raw_stage3_link#/}" || { E_message "failed to assign clean_path=${raw_stage3_link#/}"; return 1; }
+    # Strip trailing slash (prevents ...tar.xz/)
+    clean_path="${clean_path%/}" || { E_message "failed to assign clean_path=${clean_path%/}"; return 1; }
+
+    # Construct full URL (test in case it is relative)
+    # If the link starts with http, use it as is, otherwise, prepend the mirror
+    local final_url
+    if [[ "${clean_path}" =~ ^http ]]; then
+        final_url="${clean_path}" || { E_message "failed to assign final_url=${clean_path}"; return 1; }
+    else
+        # prepend mirror and remove any trailing spaces with "# "
+        final_url="https://distfiles.gentoo.org/${clean_path}" || { E_message "failed to assign final_url=${https://distfiles.gentoo.org/${clean_path}"; return 1; }
+    fi
+
+    message "Downloading: ${full_url}"
+    wget -c --show-progress "${full_url}" && wget -c "${full_url}.DIGESTS"
+
     return $?
 }
 
