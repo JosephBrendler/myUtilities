@@ -762,18 +762,41 @@ process_compound_arg()    # process a compount argument
     return 0
 }
 
-confirm_continue_or_exit() # present prompt/warning and confirm user wants to continue
-{
-    answer=""
-    msg="${BYon}Do you want to continue?"
-    prompt "${msg}"
-    case ${answer:0:1} in
-        [yY] ) message "Affirmative response from user; continuing" ;;
-        [nN] ) E_message "Negative response from user; quitting"; E_message "exiting process [$$]" && exit 1 ;;
-        * ) E_message "invalid response to confirm_continue_or_exit"; E_message "exiting process [$$]" && exit 1 ;;
-    esac
-    return 0
-}
+## parking this here until I figure out what I want to do with it
+progress() # show progress arrow (visualize $1 of $2 steps complete)
+{ # intended to be called in each iteration of some monitored process
+  # e.g. # for x in $(seq 0 250); do progress $x 250; sleep .1; done
+  [ $# -ne 2 ] && { E_message "${BRon}Error: step and total required${Boff}"; return 1; }
+  _p_step="$1"; _p_total="${2:-100}"  # default to 100 steps
+  _p_margin=10; _p_marker="-"         # this is the element used to draw the progress bar (a line of these)
+  # use these common variables for width/height if they exist, else call function
+  # (should exist already, if user called progress_init() first)
+  _p_tw=${COLUMNS:-$(termwidth)}; _p_th=${LINES:-$(termheight)}
+  # analytical math
+  _p_range=$(( _p_tw - ( _p_margin * 2 ) - 3 ))    # num physical cols between screen margins - safety buffer (3)
+  _p_percent=$(( (100 * _p_step) / _p_total ))     # process progress as a percent of total num steps
+  _p_fill=$(( (_p_range * _p_step) / _p_total ))   # num physical cols to fill with marker to represent progress
+  _p_start=$(( _p_margin + 1 ))                    # starting physical column number
+  _p_end=$(( _p_tw - _p_margin ))                  # ending physical column number
+  # determine which color to use for the text NN% marker in the center
+  if [ "$_p_percent" -ge 90 ]; then _p_color="${BGon}"    # green if over 90%
+  elif [ "$_p_percent" -lt 70 ]; then _p_color="${BRon}"  # red if less than 70%
+  else _p_color="${BYon}"; fi                             # yellow otherwise (0-70%)
+  # POSIX repeat (just build it here to save a function call to repeat()
+  _p_bar=$(printf "%${_p_fill}s" | tr ' ' "$_p_marker")
+  # save cursor position, move to Row
+  SCP; CUP "$_p_th" "$_p_start"
+  # draw the structure: |---( 50% )--->| # 4 buckets: (part-built-by-format-string), bucket#:content[type]
+  # (wall '|') 1:color[ansi] , 2:_p_bar[string], 3:color-reset[ansi], (arrow head '>'), 4:spaces[string], (wall'\')
+  printf "|%b%s%b>%s|" "$_p_color" "$_p_bar" "${Boff}" "$_p_spaces"
+  EL  # ANSI erase from cursor to end of line (clear any leftovers from a previous wider bar)
+  _p_mid=$(( _p_tw / 2 - 3 )); CUP "$_p_th" "$_p_mid"     # Jump to middle and overlay percentage; then resore cursor to saved position
+  printf "( %b%3d%%%b )" "$_p_color" "$_p_percent" "$Boff"; RCP
+
+  unset -v _p_step _p_total _p_margin _p_marker _p_tw _p_th _p_range \
+           _p_percent _p_fill _p_start _p_end _p_color _p_bar _p_mid
+  return 0 ; }
+
 
 #-----[ script ]------------------------
 #LINE=("")  ## array of lines the message will be converted to
