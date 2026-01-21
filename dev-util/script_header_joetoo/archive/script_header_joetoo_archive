@@ -1,0 +1,519 @@
+#!/bin/sh
+####!/bin/bash   ### switched so it's also valid in busybox (ash) shell
+#   script header with basic functions
+# Author: joe brendler 19 Jul 2014
+#         24 June 2025 - v1.0.0 moved to /usr/sbin/ and consolidated as script_header_joetoo
+#
+toc() # table of contents (this fn just calls summarize_header
+{ # call summarize_header
+summarize_header; printf "\n"
+message "That's all I have to say about that"
+}
+
+#-----[ metadata tagging key ]------------------------------------------------
+# @note lines below starting '# @xxx' are interpreted by summarize_header as metadata
+# @usage @usage describes the usage syntax, options, and arguments for a function
+# @args @args defines positional parameters ($1, $2, etc) and their roles
+# @vars @vars identifies global variables required or modified by the function
+# @deps @deps lists function, script, or package dependencies
+# @req @req specifies prerequisites or state requirements (e.g., must be root)
+# @rule @rule outlines logic constraints or mandatory behaviors
+# @note @note provides administrative or general notes for the user or maintainer
+# @warn @warn provides administrative warning for user or maintainer
+
+SAFE_message_n()   # (POSIX) display text message $@ w/o newline
+{ printf " ${BGon}*${Boff} "; printf "%s" "$*"; }
+# use "$*" to avoid word-split and keep message_n simple
+#{ printf " ${BGon}*${Boff} "; echo_n_long -4 $*; }  ## maybe malfunctioned
+# use "$*" to calculate message length, but use $* to word-split for smart wrapping
+# calling echo_n_long with $1 = -4 because it offsets _indent = $1 + 7 [display_vars format]
+#(old){ printf " ${BGon}*${Boff} " ; printf "$@" ; }
+
+arc_repeat()                # (POSIX) quickly output a string of char $1 (of len $2) (not for spaces)
+{ _marker="${1:--}"; _reps="${2:-40}"; [ "${#_marker}" -gt 1 ] && \
+  _marker=$(printf -- "%s" "${__marker%${_marker#?}}"); printf "%${_reps}s" | tr ' ' "$_marker" ; }
+
+OLD_repeat()            # (POSIX) slower output a string of char $1 (of len $2)(does spaces)
+{ _thing="${1:- }"; _limit="${2:-1}";
+  [ "$_limit" -le 0 ] 2>/dev/null && return 0   # if limit is 0 or not a number, exit early
+#  [ "${#_thing}" -gt 1 ] && _thing=$(left_most "$_thing"); _out="$_thing";
+  [ "${#_thing}" -gt 1 ] && _thing="${_thing%${_thing#?}}"; _out="$_thing"; # i.e. leftmost, w/o a sub-shell
+  while [ "${#_out}" -lt "$_limit" ]; do _out="${_out}${_out}"; done
+  printf "%.${_limit}s" "$_out" ; unset -v _thing _limit _out ; }
+# improves performance rel to earlier versions which appended one char only per loop
+# trims to exact length using the precision dot format for printf ( %.[precision]s )
+#   this specifies the maximum number of characters to be printed from the string
+
+arc_echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = message words
+{ #echo -e "args: $@"; message "args: $@"; d_message "args: $@" 1  ## debugging "residue"
+#  logFile=/var/tmp/_enl_trace.log  # debugging log
+# @note preliminary version; works but could not handle quoted message input (do not use)
+  if [ $# -lt 2 ] ; then E_message "minimum 2 args: current_col, indent; remaining args = msg words"; return 1; fi
+  if ! isnumber $1 ; then E_message "Error: arg \$1 must be numeric starting caracter position"; return 1; fi
+  _enl_current_col=$1                                            # assign _enl_current_col
+  if isnumber "$2"; then _enl_indent=$2; else _enl_indent=0; fi  # assign _enl_indent
+  shift 2  # remainder of $* are the words of the message to be smart-wrapped
+  [ $# -eq 0 ] && set -- "$@" "<empty>"  # after shift; set a default message argument to "<empty>" if none provided
+  _enl_tw=$(termwidth); isnumber "$_enl_tw" || _enl_tw=80  # ensure _enl_tw is a save number for math
+  # calculate the "right_status collision zone" so the last wrap keeps us clear of it
+  _enl_status_width=6   # e.g. "[ Ok ]" = 6 char
+  _enl_buffer=4         # padding for more visually appealing wrapping
+  _enl_collision_limit=$(( _enl_tw - _enl_status_width - _enl_buffer ))
+  [ "$_enl_collision_limit" -lt 0 ] && _enl_collision_limit=0  # clamp to avoid negative math errors
+  _enl_line_len="$_enl_current_col" # initialize with starting position
+  _enl_trace=""  # for debuggin - use this to determine who printed what
+  set -f  # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
+  # smartly consider whether to print each word or wrap it to the _enl_indent
+  _enl_FIRST_WORD=$TRUE  # don't wrap for first word
+#  d_log_message "_enl_tw: $_enl_tw" 5
+#  d_log_message "_enl_current_col: $_enl_current_col" 5
+#  d_log_message "_enl_indent: $_enl_indent" 5
+#  d_log_message "_enl_collision_limit: $_enl_collision_limit" 5
+#  d_log_message "_enl_line_len: $_enl_line_len" 5
+#  d_log_message "_enl_FIRST_WORD: $(TrueFalse $_enl_FIRST_WORD)" 5
+  while [ $# -gt 0 ]; do
+    # measure the length of remaining message
+    _enl_total_tail_len=$(_get_msg_len "$*")
+    _enl_x_peak=$1; _enl_x_peak_len=$(_get_msg_len "$_enl_x_peak") # preview; don't shift until necessary
+#    d_log_message "   [in while] _enl_total_tail_len: $_enl_total_tail_len" 5
+#    d_log_message "   [in while] _enl_x_peak: $_enl_x_peak" 5
+#    d_log_message "   [in while] _enl_x_peak_len: $_enl_x_peak_len" 5
+    # if not the first word check if the remaining message will cross the collision limit...
+    if [ $_enl_FIRST_WORD ]; then
+        # start of line case (do we wrap, finish, or step?)
+        if [ $(( _enl_line_len + _enl_x_peak_len )) -gt $_enl_collision_limit ]; then # wont fit; must wrap, but how?
+            if [ "$_enl_line_len" -ne "$_enl_indent" ] ; then   # this is the very first word (first line) - do  a soft wrap
+                # very first word is too big, switch to midline logic to wrap (stay "greedy")
+#                _enl_trace="${_enl_trace}<noprint-softwrap> W1\n"
+#                _enl_trace="${_enl_trace}   _enl_line_len: $_enl_line_len\n"
+#                _enl_trace="${_enl_trace}   _enl_collision_limit: $_enl_collision_limit\n"
+                printf "\n%b" "$(repeat ' ' $_enl_indent)"                  # W1: WRAP - soft-wrap
+                _enl_line_len=$_enl_indent                                  # Note: _enl_FIRST_WORD remains true on new line
+                continue   # skip the flow fi; fi; done; and while [] check; just restart while loop again with new state
+            else  # this is first word of other than first line; non-fit is emergency ==> force hard wrap
+                _enl_x="$1"; _enl_x_len=$(_get_msg_len "$_enl_x"); shift    # E2: WRAP - hard-wrap
+                printf "%b" "$_enl_x"                                       # print whether it fits or not
+#                _enl_trace="${_enl_trace}${_enl_x} E2\n"
+                _enl_line_len=$(( _enl_line_len + _enl_x_len )); _enl_FIRST_WORD=$FALSE
+            fi
+        elif [ $(( _enl_line_len + _enl_total_tail_len )) -le $_enl_collision_limit ]; then
+            printf "%b" "$*";                                               # F3: FINISH: it all fits, so print it all! (we're done)
+#            _enl_trace="${_enl_trace}$* F3\n"
+            break
+        else  # start of line, first word exceeds limit
+            _enl_x="$1"; _enl_x_len=$(_get_msg_len "$_enl_x"); shift        # S4: STEP: assign word, measure, then drop from remaining message
+            printf "%b" "$_enl_x"                                           #   print this word (start of line)
+#            _enl_trace="${_enl_trace}${_enl_x} S4\n"
+            _enl_line_len=$(( _enl_line_len + _enl_x_len ))
+            _enl_FIRST_WORD=$FALSE
+        fi  # start-of-line finish or step
+    else  # mid-line case (do we finish, step, or wrap?)
+        if [ $(( _enl_line_len + _enl_total_tail_len + 1 )) -le $_enl_collision_limit ]; then
+            printf " %b" "$*";                                              # F5: FINISH: it all fits, so print it all! (we're done)
+#            _enl_trace="${_enl_trace}$* F5\n"
+             break
+        elif [ $(( _enl_line_len + _enl_x_peak_len + 1 )) -le $_enl_tw ]; then # remainder DOESN"T fit left of collision zone
+            if  [ "$_enl_total_tail_len" -eq "$_enl_x_peak_len" ]; then     # this is the very last word
+                # && [ $(( _enl_line_len + _enl_x_peak_len + 1 )) -gt "$_enl_collision_limit" ]
+                #   is implied by the non selection of -le same things above for F5
+                #fits in margin but last word (and we know WONT fit left of collision zone from above) - must wrap
+                printf "\n$(repeat ' ' $_enl_indent)%s" "$_enl_x_peak"      # W6: WRAP/FINISH very last word, would fit in margin but not L of collision
+                shift                                                       # drop for remainder (overkill - break will jump us out anyway)
+#                _enl_trace="${_enl_trace}<last-word-soft-wrap> W6\n"
+                _enl_line_len=$(( _enl_indent + _enl_x_peak_len ))          # also overkill - very last word already printed; don't need this any more
+                break
+            else
+                # not last word - step (only last word needs to be bumped from collision zone
+                # so there is another line on which to put right_status
+                _enl_x="$_enl_x_peak"; _enl_x_len="$_enl_x_peak_len"; shift # S7: STEP: assign word, measure, then drop from remaining message
+                printf " %b" "$_enl_x"                                      #   print this word (it will fit)
+#                _enl_trace="${_enl_trace}${_enl_x} S7\n"
+                _enl_line_len=$(( _enl_line_len + _enl_x_len + 1 ))
+                # _enl_FIRST_WORD remains $FALSE
+            fi
+        else
+            printf "\n%b" "$(repeat ' ' $_enl_indent)"                      # W8: WRAP: word wont fit, so print newline and indent
+#            _enl_trace="${_enl_trace}<indent> W8\n"
+            _enl_line_len=$_enl_indent; _enl_FIRST_WORD=$TRUE
+        fi  # mid-line finish, step, or wrap
+    fi  # first word?
+  done
+#  d_log_message "${_enl_trace}" 4
+  set +f  # re-enable globbing
+  # clean up variables to maintain "local" scope in sourced environments
+  unset -v _enl_left _enl_right _enl_left_len _enl_right_len _enl_indent _enl_tw
+  unset -v _enl_line_len _enl_status_width _enl_buffer _enl_collision_limit
+  unset -v  _enl_total_tail_len _enl_x _enl_x_len _enl_longest _enl_FIRST_WORD 
+  unset -v _enl_x_peak _enl_x_peak_len ; }
+# @note keeping this as archive because it does work
+# Design logic and Notes, for echo_n_long:
+# (1) This function is a fragment-aware layout engine designed for posix ash compatibility
+# (2) Primary objective: deterministic word-wrapping to protect the right_status collision zone
+# (3) Secondary objective: visual alignment via hanging indentation
+# (4) The function must know twp facts, for absolute reliability --
+#     (a) where it is starting and (b) how far to indent
+# (5) Thus the API must mandate the following usage rules/expectations,
+#     for absolute reliability --
+#     (a) $1: must be supplied as a valid number and will be assigned as _enl_current_col.
+#         This informs the engine where the cursor is located before it starts printing.
+#         _enl_current_col is then used to initialize tracking needed to calculate
+#         (for every step) whether the considered output can fit on the current line or not,
+#         thus enabling the FINISH/STEP/WRAP methodology (the basic algorithm of the function)
+#     (b) $2: must be set (either to a valid number or to a null value), and it will be
+#         used to assign _enl_indent (indicating how far the engine should indent any
+#         second and/or subsequent line(s)-- and how to adjust its position-tracking when it
+#         word-wraps the output.  If set to a null value, the function will assign
+#         _enl_indent=0 (no hanging indent)
+# (6) Guard/assignment logic rejects null input $1 (_enl_current_col),
+#     to prevent non-deterministic wrapping behavior
+# (7) Guard/assignment logic allows a null input for $2 (_enl_indent),
+#     in which case, it will assign _enl_indent=0 (default)
+# (8) Onus is on the caller to assign and provide the correct value for $1
+#     (_enl_current_col), and consequences of this choice are thus purely
+#     attributable to the caller
+# Other notes:
+# use printf "%b" throughout, to handle ANSI color codes, etc
+# loop uses set -- $* to force word-splitting of strings for word-by-word evaluation
+# clean scope is maintained by unsetting all _enl_ prefixed variables at exit
+# generalized to support multiple callers objectively
+# 'set -- ...' (used in guard above) tells the command to stop looking for options;
+#   everything that follows is a positional argument (so e.g. "-o" or "--example"
+#   won't be seen as command options
+# echo_n_long is called to employ a word wrapping strategy to display its message --
+#   it begins wherever the cursor is when it is called, then -
+#   it respects the callers indentation request for the left edge of every wrapped line, and
+#   it respects the space required for right_status on the right margin of the last line of the message
+#     the first argument sent to echo_n_long ... the first argument sent to echo_n_long must be a number
+# intentionally uses "for _enl_x in $@; do" (unquoted $@) in order to word split/wrap efficiently
+
+arc_summarize_me()             # list functions in header ("source" to employ)
+{
+  echo
+  separator "script_header_joetoo-$BUILD | content summary" && \
+  message "This script header defines some ${BYon}common variables${Boff} for" && \
+  message "  use in various scripts, it provides pre-formatted ${BYon}easy-to-use${Boff}" && \
+  message "  ${BYon}ANSI Escape sequences${Boff} to facilitate the use of ${BMon}color${Boff} and" && \
+  message "  ${BYon}cursor${Boff} movement in my scripts, and it provides a number of" && \
+  message "  useful ${BGon}functions${Boff}, for some routine tasks, as described below\n" && \
+  grep "()" ${script_header_installed_dir%/}/script_header_joetoo | grep -v "grep" && echo && \
+  msg="${BGon}* ${Boff}  ${BYon}About to run:\n        ${BBon}message${Boff}" && \
+  msg="${msg}  ${BYon}\""'${BYon}VERBOSE is currently ' && \
+  msg="${msg}${BGon}\$(${BBon}status_color \\\"${BRon}\$VERBOSE${BBon}\\\"${BGon})${Boff}" && \
+  msg="${msg}${BGon}\$(${BBon}TrueFalse \\\"${BRon}\$VERBOSE${BBon}\\\"" && \
+  msg="${msg}${BGon})${BYon}\"${BGon}; ${BBon}echo${Boff}" && echo -e "${msg}" && \
+  echo && \
+  cmd="${BGon}message${BWon} \"  \${BYon}VERBOSE is currently \$(${BGon}status_color ${BRon}\$VERBOSE)${BWon}\$(${BGon}TrueFalse ${BRon}\$VERBOSE${BWon})\${Boff}\"${Boff}"
+  message "About to run ${cmd}"
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}" && echo && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 1${Boff}  " && \
+  vercomp 1 1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}2 ${BYon}to${BWon} 1${Boff}  " && \
+  vercomp 2 1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1 ${BYon}to${BWon} 2${Boff}  " && \
+  vercomp 1 2; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.2.0 ${BYon}to${BWon} 1.2.1${Boff}  " && \
+  vercomp 1.2.0 1.2.1; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.2.0-r1 ${BYon}to${BWon} 1.2.0${Boff}  " && \
+  vercomp 1.2.0-r1 1.2.0; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1..1 ${BYon}to${BWon} 1.2${Boff}  " && \
+  vercomp 1..1 1.2; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}1.0 ${BYon}to${BWon} 1.0-r10${Boff}  " && \
+  vercomp 1.0 1.0-r10; echo -e "$(show_result $?)" && \
+  message_n "${BYon}Compare version number ${BWon}3.4 ${BYon}to${BWon} 3.4-r2${Boff}  " && \
+  vercomp 3.4 3.4-r2; echo -e "$(show_result $?)" && echo && \
+  message "${BYon}Conditionally execute \$@ IAW verbosity (3) with ${BGon}d_do ${Boff}echo \"line 1.1\" \\; echo \"line 1.2\" 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  d_do echo "line 1.1" \; echo "line 1.2" 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && \
+  message "${BYon}Conditionally execute \$1 IAW verbosity (3) with ${BGon}debug_do ${Boff}'echo \"line 2.1\" ; echo \"line 2.2\"' 2" && \
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3 && \
+  debug_do 'echo "line 2.1" ; echo "line 2.2"' 2 && \
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv && echo "" && \
+  message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}( ) and ${BGon}TrueFalse${Boff}( ) --" && \
+  for x in y Y t T up n N f F down 0 1 z "" ; do message "  ${BWon}testing: [${BCon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}" ; done && \
+  message "  ${BWon}testing: [${BCon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}" && \
+  message "  ${BWon}testing: [${BCon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}" && \
+  E_message "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}" && \
+  echo && \
+  msg="${BYon}About to run: ${BBon}sh_countdown ${Boff}3${BGon} && ${BCon}echo ${BGon}&& ${Boff}" && \
+  msg="${msg}${BBon}message_n${Boff} \"" && \
+  msg="${msg}Finishing with status of summarization ---> \" ${BGon}; ${BBon}right_status ${BRon}\$?${BGon}; ${BBon}echo${Boff}" && \
+  message "${msg}" && \
+  sh_countdown 3 && echo && \
+  message_n "Finishing with status of summarization --->" ; right_status $?; echo
+
+  return 0
+}
+
+
+old_d_build_and_do() # Internal helper: Not for direct use.
+{ (  _i=0; _arg_count=$(( $# - 1 ));
+    while [ "$_i" -lt "$_arg_count" ]; do  # -lt excludes last element (level)
+      _arg="$1"; shift; set -- "$@" "$_arg"; _i=$((_i + 1))  # ${_args:+ } is a space if _args is set; nothing if unset
+    done ; shift  # discard last argument (level)
+    "$@" # execute the command parts with original quoting preserved
+  ) ; }
+# $1= command # $2...$n = command ($1) args ($2 - n-1) and level ($n)
+# (level is compare to global verbosity by calling function but ignored by -lt test below)
+# Use a subshell to avoid changing the original positional parameters ($@)
+# (*** this is trickier with a command and its args, because it is essential not to word-split the args ***)
+# use a "rotation" scheme, use set and shift to pull each arg from $1 and append it to the end
+# of the list of positional parameters (except, not the last; w/ -lt _arg_count)
+# also note: the command itself is the _arg=$1 assigned in the first iteration
+
+
+old_debug_do()          # (POSIX) IAW verbosity, execute one command
+{ # guard; check for min. 2 args (word + level) and for unset global verbosity
+  [ $# -lt 2 ] && { E_message "minimum 2 args required <command string> <level>"; return 1 }
+  [ -z "$verbosity" ] && { E_message "Error: global verbosity not set"; return 2; }
+  # assign the last argument to _dbd_level
+  #   _dbd_level will now equal the last argument (equivalent to for _dbd_level in "$@"; do :; done)
+  for _dbd_level; do :; done;
+  [ "$_dbd_level" -le "$verbosity" ] && _d_build_and_do "$@"
+  unset -v _dbd_level; }
+
+old_demonstrate_header() # demonstrate classes of capability in this header file
+{
+  # @usage demonstrate_header
+  # @args none
+  # @note each script header file in the script_header_joetoo family has a similarly named demonstrate_header function
+  # @note e.g. demonstrate_header_unicode() in script_header_joetoo_unicode
+  _dh_PN=$(basename "$0")
+  _dh_FLAGGED=$FALSE
+  # localize color variables to differentiate 'live' UI color from 'literal' payload text
+  _BRon="${BRon}" ; _BGon="${BGon}" ; _BYon="${BYon}" ; _BBon="${BBon}"
+  _BMon="${BMon}" ; _BCon="${BCon}" ; _BWon="${BWon}" ; _Boff="${Boff}"
+  _Ron="${Ron}" ; _Gon="${Gon}" ; _Yon="${Yon}" ; _Bon="${Bon}"
+  _Mon="${Mon}" ; _Con="${Con}" ; _Won="${Won}" 
+
+  separator "${_dh_PN}" "(demonstration)"
+
+  # use message_n -> echo_n_long to smart wrap a colorized description of header general capabilities
+#  _dh_msg="This script header defines some ${BYon}common variables${Boff} for"
+#  _dh_msg="${_dh_msg} use in various scripts, it provides pre-formatted ${BYon}easy-to-use${Boff}"
+#  _dh_msg="${_dh_msg} ${BYon}ANSI Escape sequences${Boff} to facilitate the use of ${BMon}color${Boff} and"
+#  _dh_msg="${_dh_msg} ${BYon}cursor${Boff} movement in my scripts, and it provides a number of"
+#  _dh_msg="${_dh_msg} useful ${BGon}functions${Boff}, for some routine tasks, as described below\n"
+#  message_n "${_dh_msg}"
+# use message_n -> echo_n_long to smart wrap a colorized description of header general capabilities
+
+  # use message_n -> echo_n_long to smart wrap a colorized description of header general capabilities
+  _dh_msg="This script header is a robust ${BYon}POSIX-compliant utility suite${Boff}. Its core capabilities include:"
+  message "${_dh_msg}"
+
+  # Variable Definitions
+  _dh_msg="${BCon}Variable Definitions:${Boff} Constants for error messages, pseudo-booleans "
+  _dh_msg="${_dh_msg}(${BYon}TRUE=0/FALSE=\"\"${Boff}), and terminal state defaults."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # Validation Functions
+  _dh_msg="${BCon}Validation Functions:${Boff} Logic to verify specific numeric types like integers, "
+  _dh_msg="${_dh_msg}hex values, and floats (${BYon}isint, ishexint, isfloat${Boff}), consolidated in ${BYon}isnumeric${Boff}."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # System and Shell Checks
+  _dh_msg="${BCon}System and Shell Checks:${Boff} Tools to verify root status (${BYon}checkroot${Boff}), "
+  _dh_msg="${_dh_msg}specific mount points (e.g., ${BYon}checkboot${Boff}), and shell interactivity."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # ANSI Escape Sequences
+  _dh_msg="${BCon}ANSI Escape Sequences:${Boff} A comprehensive set of variables for text styling "
+  _dh_msg="${_dh_msg}(colors, bold, underline, reverse) and cursor manipulation (${BYon}HCU/SCU, SCP/RCP, CUP${Boff})."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # Messaging Tier
+  _dh_msg="${BCon}Messaging Tier:${Boff} A categorized system including standard (${BYon}message${Boff}), "
+  _dh_msg="${_dh_msg}warning (${BYon}W_message${Boff}), and error (${BYon}E_message${Boff}) outputs with visual color-coded distinction."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # Box Drawing
+  _dh_msg="${BCon}Box Drawing:${Boff} Mappings for DEC Special Graphics characters (e.g., "
+  _dh_msg="${_dh_msg}${BYon}H_wall='q', V_wall='x', corners${Boff}) and state control (${BYon}ESCon, SO, SI${Boff})."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  # Debugging and Logging
+  _dh_msg="${BCon}Debugging and Logging:${Boff} Conditional execution/messaging based on verbosity "
+  _dh_msg="${_dh_msg}levels and timestamped file logging functions (e.g., ${BYon}d_log_message${Boff})."
+  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+
+  [ $? -eq 0 ] || _dh_FLAGGED=$TRUE
+
+  # demonstrate message, status_color, TrueFalse, and use of VERBOSE and color codes
+  cmd="${_Gon}message${_Won} \"  ${Mon}\${BYon}${_Boff}VERBOSE is currently \$(${_Gon}status_color"
+  cmd="${cmd} ${_Ron}\$VERBOSE)${_Won}\$(${_Gon}TrueFalse"
+  cmd="${cmd} ${_Ron}\$VERBOSE${_Won})${Mon}\${Boff}\"${_Boff}"
+  message "$BYon}About to run:${Boff}\n    ${cmd}"
+  OLDVERBOSE=$VERBOSE ; oldv=$verbosity ; VERBOSE=$TRUE ; verbosity=3
+  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}"
+  [ $? -eq 0 ] || _dh_FLAGGED=$TRUE
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv
+
+  # demonstrate vercomp with a variety of comparisons
+  for _dh_vtest in "1 1" "2 1" "1 2" "1.2.0 1.2.1" "1.2.0-r1 1.2.0"; do
+    _dh_v1=${_dh_vtest% *}
+    _dh_v2=${_dh_vtest#* }
+    message_n "${_BYon}Compare version ${_BWon}${_dh_v1} ${_BYon}to ${_BWon}${_dh_v2}${_Boff}  "
+    vercomp "$_dh_v1" "$_dh_v2"
+    _dh_vercomp_result=$?
+    printf "%b\n" "$(show_result $_dh_vercomp_result)"
+    show_result $_dh_vercomp_result >/dev/null 2>&1
+    _dh_show_ressult_status_code=$?
+    [ $_dh_show_ressult_status_code= -eq 0 ] || _dh_FLAGGED=$TRUE
+  done
+
+  # demonstrate numeric validation utilities
+  message "${BYon}Demonstrating Numeric Validation Utilities --${Boff}"
+
+  _dh_tests="isint|123|0 isint|abc|1 isfloat|3.14|0 isfloat|123|1 ishexint|0xAF|0 ishexint|123|1 isnumeric|42.5|0 isnumeric|0xCC|0 isnumeric|xyz|1"
+  _dh_sep=" "; _dh_sep_len=${#_dh_sep}
+  _dh_min=2
+
+  # First Pass: Calculate max lengths and fixed column widths (_col)
+  _dh_max_test_len=0; _dh_max_val_len=0
+  for _dh_t in ${_dh_tests}; do
+    _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1); [ ${#_dh_test} -gt $_dh_max_test_len ] && _dh_max_test_len=${#_dh_test}
+    _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2); [ ${#_dh_val} -gt $_dh_max_val_len ] && _dh_max_val_len=${#_dh_val}
+  done
+
+  # Set fixed widths for the three padded columns
+  _dh_col_test=$((_dh_max_test_len + _dh_min))
+  _dh_col_val=$((_dh_max_val_len + 10)) # Account for " with '...'"
+  _dh_col_TF=10                        # Fixed width for "[True ]" / "[False]"
+
+  # Second Pass: Print Aligned Table
+  for _dh_t in ${_dh_tests}; do
+    _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1)
+    _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2)
+    _dh_exp=$(echo "${_dh_t}" | cut -d'|' -f3)
+
+    ${_dh_test} "${_dh_val}" >/dev/null 2>&1
+    _dh_result=$?
+
+    [ "$_dh_result" -eq 0 ] && _dh_RESULT=$TRUE || _dh_RESULT=$FALSE
+    _dh_RESULT="[$(TrueFalse $_dh_RESULT)]"
+    _dh_colored_status="$(status_color $_dh_RESULT)${_dh_RESULT}${Boff}"
+
+    [ "${_dh_result}" -ne "${_dh_exp}" ] && { _dh_FLAGGED=$TRUE; _dh_pass_fail="${BRon}FAIL${Boff}"; } || _dh_pass_fail="${BGon}PASS${Boff}"
+
+    # 1. Row Start
+    message_n "Testing "
+
+    # 2. Pad Function Name (Column 1)
+    printf "%b%s%b%s" "$BCon" "$_dh_test" "$Boff" "$_dh_sep"
+    pad "$_dh_test" "$_dh_sep_len" "$_dh_min" "$BCon" "." "$_dh_col_test"
+
+    # 3. Pad Value Segment (Column 2)
+    _dh_v_label="with '${_dh_val}'"
+    printf " with '%b%s%b'%s" "$BYon" "$_dh_val" "$Boff" "$_dh_sep"
+    pad "$_dh_v_label" "$_dh_sep_len" "$_dh_min" "$BCon" "." "$_dh_col_val"
+
+    # 4. Pad Status Segment (Column 3)
+    printf " %b%s" "${_dh_colored_status}" "$_dh_sep"
+    pad "$_dh_RESULT" "$_dh_sep_len" "$_dh_min" "$BCon" "." "$_dh_col_TF"
+
+    # 5. Result and Pass/Fail
+    printf " (ret:%s) -> %b\n" "$_dh_result" "$_dh_pass_fail"
+  done
+
+  unset -v _dh_tests _dh_sep _dh_sep_len _dh_min _dh_max_test_len _dh_max_val_len \
+           _dh_col_test _dh_col_val _dh_col_TF _dh_t _dh_test _dh_val _dh_exp \
+           _dh_result _dh_RESULT _dh_RESULT _dh_colored_status _dh_pass_fail _dh_v_label
+  printf "\n"
+
+  # demonstrate d_do with a complex 2-part command
+  cmd="${_BGon}d_do ${_BYon}\"echo \\\" line 1.1\\\"; echo \\\" line 1.2\\\"\" ${_BMon}2${Boff}"
+  message "$BYon}About to run:${Boff}\n ${cmd}"
+  OLDVERBOSE=$VERBOSE && oldv=$verbosity && VERBOSE=$TRUE && verbosity=3
+  message "Demonstrating debug_do with its verosity level: 2 and actual verbosity: [$verbosity] ..."
+  d_do 'echo "      line 1.1"; echo "      line 1.2"' 2
+  [ $? -eq 0 ] || _dh_FLAGGED=$TRUE ; printf "\n"
+  VERBOSE=$OLDVERBOSE && verbosity=$oldv
+
+  # demonstrate T/F Y/N tests
+  cmd="${_BGon}for ${_BCon}x ${_BGon}in ${_BYon}y Y t T up n N f F down 0 1 z \"\" ${_BGon}; do${Boff}\n"
+  cmd="${cmd}    ${_BWon}message_n ${_BYon}\"  \${BWon}testing: [\${BCon}\${x}\${BWon}] is \$(${_BGon}status_color ${_BCon}\$x${_BWon})\$(${_BGon}TrueFalse ${_BCon}\$x${_BWon})\${Boff}\"${Boff}\n"
+  cmd="${cmd}    ${_BGon}if [ ${_BYon}\"\$(${_BGon}TrueFalse ${_BCon}\$x${_BYon})\" ${_BWon}== ${_BYon}\"True\" ${_BGon}] ; then ${_BWon}right_status ${_BCon}\$TRUE${Boff}\n"
+  cmd="${cmd}    ${_BGon}else ${_BWon}right_status ${_BMon}1${_BGon}; fi${Boff}"
+  message "$BYon}About to run:${Boff}\n${cmd}"
+  printf "\n"
+  message "${BYon}Summary of some T/F tests with ${BGon}status_color${Boff}( ) and ${BGon}TrueFalse${Boff}( ) --"
+  for x in y Y t T up n N f F down 0 1 z "" ; do
+    message_n "  ${BWon}testing: [${BCon}${x}${BWon}] is $(status_color $x)$(TrueFalse $x)${Boff}"
+    if [ "$(TrueFalse $x)" == "True" ] ; then right_status $TRUE
+    else right_status 1; fi
+    [ $? -eq 0 ] || _dh_FLAGGED=$TRUE
+  done
+  message "  ${BWon}testing: [${BCon}\$TRUE${BWon}] is $(status_color $TRUE)$(TrueFalse $TRUE)${Boff}"
+  message "  ${BWon}testing: [${BCon}\$FALSE${BWon}] is $(status_color $FALSE)$(TrueFalse $FALSE)${Boff}"
+  E_message_n ""; echo_n_long 3 "" "Note: bash and most other shells evaluate a variable with null ('') value as ${BRon}FALSE${Boff} and any non-null value as ${BGon}TRUE${Boff}"
+  printf "\n"
+  # demonstrate progress_inline progress bar
+  cmd="${_BGon}for ${_BCon}x ${_BGon}in ${_BWon}\$(${_BGon}seq ${_BMon}0 25${_BWon})${_Boff}${_BGon}; do ${_BWon}progress_inline ${_BCon}\$x ${_BMon}25${_Boff}${_BGon}; sleep ${_BMon}0.2${_Boff}${_BGon}; done${Boff}"
+  message "$BYon}About to run:${Boff}\n ${cmd}"
+  for x in $(seq 0 25); do progress_inline $x 25; sleep 0.2; done
+  [ $? -eq 0 ] || _dh_FLAGGED=$TRUE
+  printf "\n"
+
+  # demonstrate countdown
+  cmd="${_BGon}sh_countdown ${_BMon}3${_Boff}"
+  message "$BYon}About to run:${Boff}\n ${cmd}"
+  sh_countdown 3
+  [ $? -eq 0 ] || _dh_FLAGGED=$TRUE
+
+  printf "\n"
+  # demonstrate message_n and right_status
+  cmd="${_BGon}message_n ${_BYon}\"${_BCon}\${BCon}${_BYon}Finishing with status of summarization --->\${Boff}\"${Boff}"
+  message "$BYon}About to run:${Boff}\n ${cmd}"
+  message_n "${Con}Finishing with status of summarization --->${Boff}" ; [ $_dh_FLAGGED ] ; right_status $?
+  printf "\n"
+
+  return 0
+}
+
+_d_build_and_log() # Internal helper: Not for direct use.
+{ # internal "heavy lifter" for the old (pre d_do) d_log_message family
+  # It handled the isolation of the verbosity level (the last argument) from the message string
+  # $1 = printf format string; $2 = timestamp; $3...$n = message words and level
+  # (level is compare to global verbosity by calling function but ignored by -lt test below)
+  # note: _fmt for logging should be "%s - %s"  w/ or w/o \n depending on calling function
+  _fmt="$1"; _ts="$2"; shift 2
+  # Use a subshell to avoid changing the original positional parameters ($@)
+  ( _msg=""; _i=0; _word_count=$(( $# - 1 ))
+    while [ "$_i" -lt "$_word_count" ]; do  # -lt excludes last element (level)
+      _msg="${_msg}${_msg:+ }$1"; shift; _i=$((_i + 1)) # ${_msg:+ } is a space if _msg is set; nothing if unset
+    done
+    # remember to pass two strings to match expected format in _fmt
+    printf "$_fmt" "$_ts" "$_msg" >> "$logFile"
+  )
+  unset -v _fmt _ts; }
+
+
+_d_build_and_print() # Internal helper: Not for direct use.
+{ # internal "heavy lifter" for the old (pre d_do) d_message family
+  # It handled the isolation of the verbosity level (the last argument) from the message string
+  # $1 = printf format string; $2...$n = message words and level
+  # (level is compare to global verbosity by calling function but ignored by -lt test below)
+  _fmt="$1"; shift
+  # Use a subshell to avoid changing the original positional parameters ($@)
+  ( _msg=""; _i=0; _word_count=$(( $# - 1 ))
+    while [ "$_i" -lt "$_word_count" ]; do  # -lt excludes last element (level)
+      _msg="${_msg}${_msg:+ }$1"; shift; _i=$((_i + 1)) # ${_msg:+ } is a space if _msg is set; nothing if unset
+    done
+    printf "$_fmt" "$_msg"
+  )
+}
+# Legacy note; retained as a learning point.
+# $* vs. $@ (Quoted) in the final printf: Inside double quotes, "$*" joins all positional
+# parameters into a single string separated by the first character of $IFS (which is
+# typically a space). This converts the injected timestamp and the message into one string
+
+isnumber() # (POSIX) deprecated - use isint(); tests if $1 is an integer
+{ [ $# -eq 0 ] && return 1  # guard clause: check if an argument was provided
+  _val=$1
+  _test_val="${_val#-}"  # Remove leading dash (negative # ok; test the rest)
+  case "$_test_val" in
+    "" | *[!0-9]* ) unset -v _val _test_val; return 1 ;;
+    *        ) unset -v _val _test_val; return 0 ;;
+  esac ; }
