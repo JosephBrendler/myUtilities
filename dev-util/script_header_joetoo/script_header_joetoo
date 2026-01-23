@@ -345,42 +345,58 @@ termwidth() # (POSIX plus) calculate and output the width of the terminal
   [ -z "$_cols" ] && _cols=$(tput cols 2>/dev/null)
   # if _cols is still unassigned, fall back to stty carefully
   if [ -z "$_cols" ]; then
-    # if /dev/tty has been created force its use to avoid "inapprpriate io control" errors
-    # (in non-interactive control structures like
-    #  "while read -r var; do ... right_status $?...; done <<<$( ... )" )
-    if [ -c /dev/tty ]; then
-      _cols=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f2)
-    else
-      # if /dev/tty does not exist (yet). as may be the case in initramfs'
-      # early init process, then proceed without forcing its use
-      _cols=$(stty size 2>/dev/null | cut -d' ' -f2)
-    fi  # /dev/tty check
+    # if /dev/tty exists and is available, force its use, to avoid "inapprpriate io control" errors in
+    #   non-interactive control structures like:
+    #   "while read -r var; do ... right_status $?...; done <<<$( ... )" )
+    # double-wrap the input redirection and assignment so that the outer sub-shell can still redirect the
+    #   inner-shell's error exit status if the input redirection fails OR if the assignment fails
+    _cols=$( (stty size < /dev/tty) 2>/dev/null | cut -d' ' -f2)
   fi  # _cols check
-  printf '%s' "${_cols:-80}"   # fall back to default (standard) 80 cols if none of above worked
-  unset -v _cols ; }
+  # fall back to default (standard) 80 cols if none of above worked
+  isint "$_cols" || _cols=80  # a bit more robust than printf '%s' "${_cols:-80}"
+  printf '%s' "$_cols"
+  unset -v _cols
+}
+# Maintainer note: further explanation of the need for the double-wrapper
+# guarding against a number of reasons redirection might fail rather than the command --
+#   1 - /dev/tty might not exist [ ENOENT (2) "No such file or directory" ]
+#   2 - it might not be available [ ENXIO (6) "No such device or address" ]
+# note that the shell processes redirection before it executes the command, so
+#   stderr is redirected for the **command's exit status (open /dev/null for write 2>)
+#   but if input redirection for the command (open /dev/stty for read <) is from /dev/tty that does not exist,
+#   or is not available, that error is not sent to redirected stderr (it is not the result of executing the command) --
+#   instead, it is provided on non-redirected stderr, as the *shell's exit status
+# both ENOENT and ENXIO above I have experienced in
+#   dev-util/mkinitramfs's init script running in busybox
+#   other possibilities this double wrap will protect against include --
+#   EACCES (13) "Permission denied"
+#   EBUSY  (16) "Device or resource busy"
+#   ENOTTY (25) "Inappropriate ioctl for device"  # I have experienced (see above)
+#   EPERM  (1)  "Operation not permitted"
+#   EINTR  (4)  "Interrupted system call"
 
 termheight() # (POSIX plus) calculate and output the height of the terminal
 { # @usage termheight
   # @ret Integer representing number of terminal lines
-  # @rule Priority: 1. $COLUMNS env; 2. tput cols; 3. stty size; 4. Default (80)
+  # @rule Priority: 1. $LINES env; 2. tput rows; 3. stty size; 4. Default (25)
   # prefer environment variable; if null try tput; or fall back to tput
-_rows="$LINES"
+  _rows="$LINES"
   [ -z "$_rows" ] && _rows=$(tput lines 2>/dev/null)
   # if _rows is still unassigned, fall back to stty carefully
   if [ -z "$_rows" ]; then
-    # if /dev/tty has been created force its use to avoid "inapprpriate io control" errors
-    # (in non-interactive control structures like
-    #  "while read -r var; do ... right_status $?...; done <<<$( ... )" )
-    if [ -c /dev/tty ]; then
-      _rows=$(stty size < /dev/tty 2>/dev/null | cut -d' ' -f1)
-    else
-      # if /dev/tty does not exist (yet). as may be the case in initramfs'
-      # early init process, then proceed without forcing its use
-      _rows=$(stty size 2>/dev/null | cut -d' ' -f1)
-    fi  # /dev/tty check
+    # if /dev/tty exists and is available, force its use, to avoid "inapprpriate io control" errors in
+    #   non-interactive control structures like:
+    #   "while read -r var; do ... right_status $?...; done <<<$( ... )" )
+    # double-wrap the input redirection and assignment so that the outer sub-shell can still redirect the
+    #   inner-shell's error exit status if the input redirection fails OR if the assignment fails
+    _rows=$( (stty size < /dev/tty) 2>/dev/null | cut -d' ' -f1)
   fi  # _rows check
-  printf '%s' "${_rows:-25}"   # fall back to default (standard) 25 lines if none of above worked
-  unset -v _rows ; }
+  # fall back to default (standard) 25 rows if none of above worked
+  isint "$_rows" || _rows=25  # a bit more robust than printf '%s' "${_rows:-25}"
+  printf '%s' "$_rows"
+  unset -v _rows
+}
+# Maintainer note: see notes under termwidth above for further explanation of the need for the double-wrapper
 
 vt_init() # (POSIX) Initialize G0/G1 character sets for DEC SI/SO graphics
 { # @usage vt_init
