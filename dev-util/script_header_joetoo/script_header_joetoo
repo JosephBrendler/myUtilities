@@ -642,14 +642,14 @@ isnumber() # (POSIX) deprecated - use isint() or isnumeric(); isnumber tests if 
   isnumeric "$1"
 }
 
-isroot() # (POSIX) Silent check for root UID
+isroot() # (POSIX) silent check for root UID
 { # @usage isroot || echo "not root"
   # @ret 0 if root; 1 if not
   # @note silent boolean check; does not emit messages or exit the shell
   [ "$(id -u)" -eq "${ROOT_UID:-0}" ]
 }
 
-checkroot() # Run as root, of course (${var:-0} means default to 0)
+checkroot() # (POSIX) run as root, of course (${var:-0} means default to 0)
 { if [ "$(id -u)" -ne "${ROOT_UID:-0}" ]; then E_message "${E_NOTROOT}"; echo; E_message "exiting process [$$]"; exit 1; fi; }
 # @usage checkroot
 # @req root privileges
@@ -657,7 +657,7 @@ checkroot() # Run as root, of course (${var:-0} means default to 0)
 # @ret 0 if root
 # @deps E_message
 
-checknotroot() # Run as not root, of course (${var:-0} means default to 0)
+checknotroot() # (POSIX) run as not root, of course (${var:-0} means default to 0)
 { if [ "$(id -u)" -eq "${ROOT_UID:-0}" ]; then E_message "${E_ROOT}"; echo; E_message "exiting process [$$]"; exit 1; fi; }
 # @usage checknotroot
 # @req non-root user account
@@ -665,7 +665,32 @@ checknotroot() # Run as not root, of course (${var:-0} means default to 0)
 # @ret 0 if not root
 # @deps E_message
 
-checkboot() # check to see if /boot is a mountpoint and is properly mounted
+checkboot() # (POSIX) check fstab for boot/efi mountpoints and verify mounted status
+{ _ck_fstab="/etc/fstab"; _ck_targets="/boot /efi /boot/efi"
+  _ck_i=0; _ck_status=0
+  for _ck_tgt in $_ck_targets; do
+    # check if target is a defined (non-commented) mount point in fstab
+    if grep -v '^${W0}#' "$_ck_fstab" | grep -q "${W1}${_ck_tgt}${W1}"; then
+      # defined, so next verify it is currently mounted
+      if ! findmnt -nlo TARGET,SOURCE "$_ck_tgt" >/dev/null 2>&1; then
+        _ck_status=$(( _ck_status|(1<<_ck_i) ))   # set the ith most significant bit of status
+      fi
+    fi
+    _ck_i=$((_ck_i + 1))
+  done
+  unset -v _ck_fstab _ck_targets _ck_tgt _ck_i
+  return "$_ck_status"
+}
+# @usage checkboot
+# @ret 0: all fstab-defined boot targets are mounted
+# @ret bit 1 set: /boot should mounted but is not
+# @ret bit 2 set: /efi should be mounted but is not
+# @ret bit 3 set: /boot/efi should be mounted but is not
+# @ex return 3 (binary 11) means both /boot /efi should be mounted, but neither is
+# @deps grep findmnt
+# @rule aggreagaate check for /boot, /efi, and /boot/efi
+
+old_checkboot() # check to see if /boot is a mountpoint and is properly mounted
 { _fstab_check=$(grep -E "${W1}/boot(${W1}|$)" /etc/fstab | grep -v "^${W0}#") # find /boot entries; strip comments
   if [ -z "$_fstab_check" ]; then set -- 2; # not supposed to be a mountpoint
   elif grep -qE "${W1}/boot(${W1}|$)" /proc/mounts 2>/dev/null || \
@@ -2941,32 +2966,50 @@ _dh_demo_environment() # (POSIX) demonstrate environment checks (isroot, checkno
 
   #-----[ part 4: checkboot - boot mount check ]-----------------------------------------------------------------------
   # construct the command preview string - ( checknotroot ); ... handle_result
-  # part 1 - ( checknotroot ); ...
+  # part 1 - ( checkboot ); ...
   _dh_cmd="${_op_color}(${_Boff} ${_func_color}checkboot${_Boff} ${_op_color});${_Boff} ... "
   # part 2 - handle_result
   _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
-  printf "\n"; message "${BYon}About to run:${Boff} ${_cmt_color}# verifies /boot is mounted${_Boff}\n ${_dh_cmd}"
+  _dh_cmt="${_cmt_color}# verifies mounted status of boot/efi targets via bitmask exit status${_Boff}\n"
+  printf "\n"; message "${BYon}About to run:${Boff} ${_dh_cmt} ${_dh_cmd}"
   message_n "  Testing checkboot gatekeeper: "
-  # Determine reality for the test basis
-  _dh_BOOT_REALITY=$FALSE
-  # logic execution - establish expectation basis for test
-  mountpoint -q /boot && _dh_BOOT_REALITY=$TRUE
-  # logic execution - execute test logic
+  # logic execution - run checkboot; if it says fail, double-check
+  _dh_OK_msg="All defined boot targets are mounted"
+  _dh_FAIL_msg="One or more targets that should be is not mounted (Code: $_dh_result)"
+
   ( checkboot ) >/dev/null 2>&1 ; _dh_result=$?
-  if [ $_dh_BOOT_REALITY ]; then
-      # If mounted, checkboot should return 0
-      [ "$_dh_result" -eq 0 ]
-      handle_result $? "/boot is mounted" "/boot is mounted but checkboot failed"
-  else
-      # If NOT mounted, checkboot should exit 1
-      [ "$_dh_result" -eq 1 ]
-      handle_result $? "/boot not mounted and exited 1" "/boot not mounted but did not exit 1"
-  fi
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  handle_result "$_dh_result" "${_dh_OK_msg}" "${_dh_FAIL_msg}"
+  if [ ! "$_dh_result" -eq 0 ]; then
+    # explain the failure code(s) using bitwise math
+    _dh_i=0
+    _dh_targets="/boot /efi /boot/efi"   # bitmask represents these in LSB->MSB order
+    for _dh_tgt in $_dh_targets; do
+      _dh_MOUNTPOINT=$FALSE
+      # check if bit _dh_i is set in the result mask
+      # (shift i bits right and check the LSB by bitwise AND w 1)
+      if [ "$(( (_dh_result >> _dh_i) & 1 ))" -eq 1 ]; then
+        # double-check checkboot's result using sys-util/util-linux's mountpoint
+        # (checks whether a directory or file is a mountpoint. -q = silently)
+        message_n "checkboot: ${BYon}${_dh_tgt}${Boff} should be but is ${BRon}not${Boff} mounted"
+        mountpoint -q "${_dh_tgt}" && _dh_MOUNTPOINT=$TRUE
+        if [ $_dh_MOUNTPOINT ] ; then
+            printf '%s' "(${BRon}it is${Boff})"
+            _dh_FAILED=$TRUE
+            right_status 1
+        else
+            printf '%s' "(${BGn}it is not${Boff})"
+            right_status $TRUE
+        fi  # actually is mounted
+      fi  # bit i is checkboot failure report
+      _dh_i=$((_dh_i + 1))
+    done  # for _dh_tgt
+  fi  # check boot reports error?
+  # Note: we are NOT double-checking if checkboot says all ok
 
   [ "$_dh_FAILED" ] && _dh_ret=1
-  unset -v _dh_cmd _dh_FAILED
-  return $_dh_ret
+  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_OK_msg _dh_FAIL_msg
+  unset -v _dh_result _dh_i _dh_targets _dh_tgt _dh_MOUNTPOINT
+  unset -v _dh_BOOT_REALITY  return $_dh_ret
 }
 
 _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
