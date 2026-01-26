@@ -31,7 +31,7 @@ message "That's all I have to say about that"
 
 
 #=====[ Section 1: Global Variables  ]=============================================
-# @vars SCRIPT_ENV: script paths and environment state (logFile, VERBOSE, TRUE/FALSE)
+# @vars SCRIPT_ENV: script paths and environment state (logFile, verbosity, TRUE/FALSE)
 # @vars MSG_STRINGS: standardized error messages (E_NOTROOT, E_BAD_ARGS) and UI tokens (no_msg)
 # @vars REGEX_POSIX: portable BRE patterns (W0/W1 whitespace, P0/P1 printable, C0/C1 control)
 # @vars ANSI_SGR: "Pre-cooked" SGR styling (RED, GRN, BOLD) and CSI control initiator
@@ -84,10 +84,35 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
 # no_msg is a space overwritten by a backspace, used log_handle_result() to send null message with a non-null string
 no_msg=" \b"
 
-# check set null vs unset and assign default VERBOSE and verbosity,
+# check set null vs unset and assign default verbosity,
 #  but only if not yet assigned by calling program
-VERBOSE="${VERBOSE:-$FALSE}" # Set default ($FALSE) if VERBOSE is UNSET or NULL (already "$FALSE")
 verbosity="${verbosity:-2}"  # Set default (2) if verbosity is UNSET or NULL
+# synchronized deprecation strategy for "$VERBOSE" (redundant to any verbosity -gt 0)
+# 20260126 - transitioned to computed $VERBOSE retained only for compatibility
+# if legacy VERBOSE is *unset, initialize it from verbosity
+if [ -z "${VERBOSE+set}" ];
+then  # VERBOSE is unset - initialize IAW verbosity
+  if [ "$verbosity" -eq 0 ]; then VERBOSE=$FALSE; else VERBOSE=$TRUE; fi
+else  # VERBOSE is set - override if inconsistent IAW verbosity
+  case "$VERBOSE" in
+    $TRUE  )
+      if [ "$verbosity" -eq 0 ]; then
+        E_message "Inconsistent value for VERBOSE (resetting IAW verbosity)"
+        VERBOSE=$FALSE
+      fi
+      ;;
+    $FALSE )
+      if [ "$verbosity" -gt 0 ]; then
+        E_message "Inconsistent value for VERBOSE (resetting IAW verbosity)"
+        VERBOSE=$TRUE
+      fi
+      ;;
+    *      )
+      E_message "invalid value for VERBOSE (resetting IAW verbosity)";
+      if [ "$verbosity" -eq 0 ]; then VERBOSE=$FALSE; else VERBOSE=$TRUE; fi
+      ;;
+  esac
+fi
 
 #-----[ regex character class patterns ]-----------------------------
 W0="[[:space:]]*"     # POSIX regex match for zero+ whitespaces
@@ -1254,7 +1279,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv.
   # @rule type prefixes: bool (set $FALSE), yn (set 'no'), lv (set '')
   # @rule handles untyped variables by initializing them to NULL ('')
   # @note uses eval for dynamic variable assignment; handles case-insensitive type prefixes
-  # @note skips 'verbosity' and 'VERBOSE' to prevent accidental reset of script state
+  # @note skips 'verbosity' to prevent accidental reset of script state
   [ $# -lt 1 ] && {  unset -v _iv_item _iv_parmlist _iv_var_name _iv_type _iv_var; return 1; }
   _iv_parmlist=""
   for _iv_item in "$@"; do case "$_iv_item" in
@@ -2503,40 +2528,41 @@ _dh_show_capabilities()   # demonstrate classes of capability in this header fil
   return 0
 }
 
-_dh_demo_verbose() # (POSIX) demonstrate the use of status_color, TrueFalse, to display system verbosity
-{ # @usage _dh_demo_verbose
+_dh_demo_verbosity() # (POSIX) demonstrate the use of status_color, TrueFalse, to display system verbosity
+{ # @usage _dh_demo_verbosity
   # @args none
   # @rules called by demonstrate_header
 
   separator "demonstrate_header-${BUILD}" "(verbosity)"
+  if [ "$verbosity" -gt 0 ]; then _dv_VERBOSE=$TRUE; else _dv_VERBOSE=$FALSE; fi
 
   # preview the command syntax
   # Construct the "About to run" preview using the theme engine. it should like like this, but theme-colored:
-  #   message "${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}
+  #   message "${BYon}_dv_VERBOSE is currently $(status_color $_dv_VERBOSE)$(TrueFalse $_dv_VERBOSE)${Boff}
   # this involves complex nested expansions, so do it in three pieces we can maintain --
-  #   part 1 - message "${BYon}VERBOSE is currently "
-  _dh_cmd="${_func_color}message${_Boff} ${_quote_color}\"${_var_color}\${BYon}${_quote_color}VERBOSE is currently "
-  #   part 2 - $(status_color $VERBOSE)
-  _dh_cmd="${_dh_cmd}\$(${_Boff}${_func_color}status_color${_Boff} ${_var_color}\$VERBOSE${_Boff}${_quote_color})${_Boff}"
-  #   part 3 $(TrueFalse $VERBOSE)${Boff}
+  #   part 1 - message "${BYon}_dv_VERBOSE is currently "
+  _dh_cmd="${_func_color}message${_Boff} ${_quote_color}\"${_var_color}\${BYon}${_quote_color}_dv_VERBOSE is currently "
+  #   part 2 - $(status_color $_dv_VERBOSE)
+  _dh_cmd="${_dh_cmd}\$(${_Boff}${_func_color}status_color${_Boff} ${_var_color}\$_dv_VERBOSE${_Boff}${_quote_color})${_Boff}"
+  #   part 3 $(TrueFalse $_dv_VERBOSE)${Boff}
   _dh_cmd="${_dh_cmd}${_quote_color}\$(${_Boff}${_func_color}TrueFalse${_Boff}"   # note \$ is for subshell
-  _dh_cmd="${_dh_cmd} ${_var_color}\$VERBOSE${_Boff}${_quote_color})${_Boff}"     # note ${_Boff}${_quote_color}in case not bold
-  _dh_cmd="${_dh_cmd}${_var_color}\${Boff}${_quote_color}\"${_Boff}"              # note \$VERBOSE, \${Boff} displayed as a variables
+  _dh_cmd="${_dh_cmd} ${_var_color}\$_dv_VERBOSE${_Boff}${_quote_color})${_Boff}"     # note ${_Boff}${_quote_color}in case not bold
+  _dh_cmd="${_dh_cmd}${_var_color}\${Boff}${_quote_color}\"${_Boff}"              # note \$_dv_VERBOSE, \${Boff} displayed as a variables
   #   also add administrative comment
   _dh_cmd="${_dh_cmd}  ${_cmt_color}# using two-pass column alignment and pad() utility${_Boff}"
   printf "\n"; message "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
 
   # execution logic - store current state to avoid side effects in the main script
-  _dh_oldV=$VERBOSE; _dh_oldv=$verbosity
+  _dh_oldv=$verbosity
   # Set state for demonstration
-  VERBOSE=$TRUE; verbosity=3
-  message "  ${BYon}VERBOSE is currently $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}"
+  _dv_VERBOSE=$TRUE; verbosity=3
+  message "  ${BYon}_dv_VERBOSE is currently $(status_color $_dv_VERBOSE)$(TrueFalse $_dv_VERBOSE)${Boff}"
   _dh_result=$?
   # Restore state
-  VERBOSE=$_dh_oldV; verbosity=$_dh_oldv
+  verbosity=$_dh_oldv
   printf "\n"
 
-  unset -v _dh_cmd _dh_oldV _dh_oldv
+  unset -v _dh_cmd _dh_oldV _dh_oldv _dv_VERBOSE
   return $_dh_result
 }
 
@@ -2695,15 +2721,16 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
 { # @usage _dh_demo_debug_utils
   # @args none
   # @rules demonstrating conditional messaging and status utilities
- _dh_FAILED=$FALSE
+  _dh_FAILED=$FALSE
   _dh_ret=0
+  if [ "$verbosity" -gt 0 ]; then _dh_VERBOSE=$TRUE; else _dh_VERBOSE=$FALSE; fi
 
   separator "demonstrate_header-${BUILD}" "(debugging utilities)"
 
   # temporarily set system verbosity for demonstration
-  _dh_oldV=$VERBOSE; _dh_oldv=$verbosity
-  VERBOSE=$TRUE; verbosity=3
-  message "${BYon}VERBOSE is $(status_color $VERBOSE)$(TrueFalse $VERBOSE)${Boff}"
+  _dh_oldv=$verbosity
+  _dh_VERBOSE=$TRUE; verbosity=3
+  message "${BYon}_dh_VERBOSE is $(status_color $_dh_VERBOSE)$(TrueFalse $_dh_VERBOSE)${Boff}"
   message "${BYon}system verbosity is ${Boff}[${_data_color}${verbosity}${_Boff}]"
 
   # demonstrate d_echo - debugging message (output if verbosity >= level)
@@ -2724,15 +2751,15 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
   # case A: looking for a file that does not exist
   _dh_file_bogus="/usr/sbin/script_header_joetoo_bogus"
   # construct line 1 of the commands to be displayed
-  _dh_cmd="${_var_color}header${_Boff}=${_quote_color}\"${_dh_file_bogus}\"${_Boff}\n"
+  _dh_cmd="${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_bogus}\"${_Boff}\n"
   # construct line 2 of the commands to be displayed
   _dh_cmd="${_dh_cmd} ${_func_color}d_message_n${_Boff} "
-  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${header}\"${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${_dh_header}\"${_Boff} "
   _dh_cmd="${_dh_cmd}${_data_color}1${_Boff}\n"
   # construct line 3 of the commands to be displayed - starting with the [ test
   _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}!${_Boff} ${_opt_color}-z${_Boff} "
   # Add the find subshell
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${header} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header} "
   _dh_cmd="${_dh_cmd}${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\" "
   # Close bracket and add d_right_status
   _dh_cmd="${_dh_cmd}${_ctl_color}]${_Boff}${_op_color};${_Boff} "
@@ -2741,23 +2768,23 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
 
   printf "\n"; message "${BYon}About to run:${Boff}  ${_cmt_color}# if verbosity >= 1 (it is)${Boff}\n ${_dh_cmd}"
   # logic execution - and failure check
-  header="${_dh_file_bogus}"; d_message_n "looking for ${header}" 1
+  _dh_header="${_dh_file_bogus}"; d_message_n "looking for ${_dh_header}" 1
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-  [ ! -z "$(find ${header} 2>/dev/null)" ]; d_right_status $? 1
+  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ]; d_right_status $? 1
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
 
   # case B: Looking for a file that does exist
   _dh_file_real="/usr/sbin/script_header_joetoo"
   # construct line 1 of the commands to be displayed
-  _dh_cmd="${_var_color}header${_Boff}=${_quote_color}\"${_dh_file_real}\"${_Boff}\n"
+  _dh_cmd="${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_real}\"${_Boff}\n"
   # construct line 2 of the commands to be displayed
   _dh_cmd="${_dh_cmd} ${_func_color}d_message_n${_Boff} "
-  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${header}\"${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${_dh_header}\"${_Boff} "
   _dh_cmd="${_dh_cmd}${_data_color}1${_Boff}\n"
   # construct line 3 of the commands to be displayed - starting with the [ test
   _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}!${_Boff} ${_opt_color}-z${_Boff} "
   # Add the find subshell
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${header} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header} "
   _dh_cmd="${_dh_cmd}${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\" "
   # Close bracket and add d_right_status
   _dh_cmd="${_dh_cmd}${_ctl_color}]${_Boff}${_op_color};${_Boff} "
@@ -2766,9 +2793,9 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
 
   printf "\n"; message "${BYon}About to run:${Boff}  ${_cmt_color}# if verbosity >= 1  (it is)${Boff}\n ${_dh_cmd}"
   # logic execution - and failure check
-  header="${_dh_file_real}"; d_message_n "looking for ${header}" 1
+  _dh_header="${_dh_file_real}"; d_message_n "looking for ${_dh_header}" 1
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-  [ ! -z "$(find ${header} 2>/dev/null)" ];   d_right_status $? 1
+  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ];   d_right_status $? 1
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
 
   # demonstrate d_do - case A: simple command (execution if verbosity >= level)
@@ -2789,10 +2816,10 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
 
   [ "$_dh_FAILED" = "$TRUE" ] && _dh_ret=1
   # restore previous system verbosity
-  VERBOSE=$_dh_oldV; verbosity=$_dh_oldv
+  verbosity=$_dh_oldv
   printf "\n"
 
-  unset -v _dh_cmd _dh_FAILED _dh_oldV _dh_oldv _dh_file_bogus _dh_file_real header
+  unset -v _dh_cmd _dh_FAILED _dh_oldV _dh_oldv _dh_file_bogus _dh_file_real _dh_header _dh_VERBOSE
   return $_dh_ret
 }
 
@@ -3214,7 +3241,7 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
   # var|(1<<i) means: var = (binary shift a 1 i bits to the left) then bitwise OR that number with var
   # i.e. SET the ith most significant bit
   _dh_show_capabilities        || _dh_final_status=$(( _dh_final_status|(1<<0) ))
-  _dh_demo_verbose             || _dh_final_status=$(( _dh_final_status|(1<<1) ))
+  _dh_demo_verbosity           || _dh_final_status=$(( _dh_final_status|(1<<1) ))
   _dh_demo_versions            || _dh_final_status=$(( _dh_final_status|(1<<2) ))
   _dh_demo_numeric             || _dh_final_status=$(( _dh_final_status|(1<<3) ))
   _dh_demo_debug_utils         || _dh_final_status=$(( _dh_final_status|(1<<4) ))
@@ -3243,7 +3270,7 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
 
   # list functions in order from LSB (bit 0) to MSB
   _dh_tests="_dh_show_capabilities"               # bit 0
-  _dh_tests="${_dh_tests} _dh_demo_verbose"       # bit 1
+  _dh_tests="${_dh_tests} _dh_demo_verbosity"     # bit 1
   _dh_tests="${_dh_tests} _dh_demo_versions"      # bit 2
   _dh_tests="${_dh_tests} _dh_demo_numeric"       # bit 3
   _dh_tests="${_dh_tests} _dh_demo_debug_utils"   # bit 4
