@@ -1,4 +1,6 @@
-#!/bin/ash
+#!/bin/sh
+#
+#  20260126 - changed from #!/bin/ash after revising all contained functions to be fully POSIX compliant
 
 ### -----[ duplicated functions ]--------------------------------------------------------------
 ### These scripts exist in both "validated_" and "testing_" headers but have been modified in each
@@ -7,396 +9,466 @@
 ### The later-sourced will override, and this avoid having the "testing" script mess with
 ###    non-testing luks devices on a testing host system
 assign_volume() {
+    ret=0
     # given string volume name (root_ usr_volume), scan lvs and make volume pathname assignment
-    volume_name=$1
-    prefix="${volume_name/_volume}"
-    my_volume="$(eval echo \$${volume_name})"
-    if [[ ${#my_volume} -eq 0 ]] ; then
-        d_message "about to evaluate ${prefix}_volume=/dev/mapper/$(lvs | grep ${prefix} | awk '{print $2"-"$1}')" 3
-        d_message_n "${prefix} volume_name not assigned, scanning ..." 1
-        my_volume="/dev/mapper/$(lvs | grep ${prefix} | awk '{print $2"-"$1}')"
+    _av_volume_name=$1
+#    _av_prefix="${_av_volume_name/_volume}"     # e.g. assign root, from root_volume (bash substitution)
+    _av_prefix="${_av_volume_name%_volume}"     # e.g. assign root, from root_volume (POSIX strip from end)
+    eval "_av_volume=\"\$${_av_volume_name}\""
+    if [ -z "${_av_volume}" ] ; then
+        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
+        d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
+        _av_volume="/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
 # substitute for testing only -
-#        d_message "about to evaluate ${prefix}_volume=/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${prefix} | awk '{print $2"-"$1}')" 3
-#        d_message_n "${prefix} volume_name not assigned, scanning ..." 1
-#        my_volume="/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${prefix} | awk '{print $2"-"$1}')"
-        eval "${prefix}_volume=${my_volume}"
-        result=$?
-        [[ $verbosity -ge 1 ]] && right_status $result
-        d_message "result: my_volume: ${my_volume}" 3
+#        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
+#        d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
+#        _av_volume="/dev/mapper/$(lvs | grep -v 'gmki91' | grep $_av_prefix | awk '{print $2"-"$1}')"
+        eval "${_av_prefix}_volume=$_av_volume"
+        ret=$?
+        d_handle_result $ret 1
+        d_message "_av_volume: [$_av_volume]" 3
     else
-        message "No action. ${prefix} volume already assigned [ ${my_volume} ]"
+        message "No action. ${_av_prefix} volume already assigned [$_av_volume]"
     fi
+    unset -v _av_prefix _av_volume_name _av_volume
+    return $ret
 }
 
 unlock_devices() {
+    ret=0
     # for version 4.x and beyond, this is a complete re-write of the unlocking procedure.
     # The unlock method has already been determined, and the script will now "scan" for LUKS
     # devices and automatically use the selected method (key vs prompt) to unlock all of them
-    local method=$1;
-    local device="";
-    local line="";
+    _ud_method=$1;
+    _ud_device="";
 
-    [[ "$method" = "prompt" ]] && read -s -p "Enter your LUKS passphrase: " pass && echo;
+    # securely read the passphrase with POSIX ask_pass function if needed
+    if [ "$_ud_method" = "prompt" ]; then _ud_pass=$(ask_pass "Enter LUKS passphrase: "); fi
 
 ### substitute for testing only
-###    for device in $(blkid | grep -i luks | grep -v 'UUID="ef4195f0-6c4a-4116-86dd-fc469ddb6e21"' |cut -d':' -f1 )
-    for device in $(blkid | grep -i luks | cut -d':' -f1)
+###    for _ud_device in $(blkid | grep -i luks | grep -v 'UUID="ef4195f0-6c4a-4116-86dd-fc469ddb6e21"' |cut -d':' -f1 )
+    for _ud_device in $(blkid | grep -i luks | cut -d':' -f1)
     do
-        # use cryptsetup luksOpen to open each device /dev/sdxn with corresponding name edxn
-        # 27 Oct 23 - generalize to scsi or nvme devices (sdXX or nvmeXnXpX)
-        bn=$(basename ${device})
-        case ${bn:0:2} in
-          "sd" ) # scsi device
-            edev=$(echo ${bn} | sed 's/^s/e/')
-            ;;
-          "nv" ) # nvme device
-            edev=$(echo ${bn} | sed 's/^nvme/ev/' | sed 's/[np]//g')
-            ;;
-          "mm" ) # mmc device
-            edev=$(echo ${bn} | sed 's/^mmcblk/em/' | sed 's/p//g')
-            ;;
-          *    ) # tbd
-            echo "Error: bad luks device name [$device]"
-            ;;
-        esac
-        line="${device} ${edev}"
-        case "$method" in
+        # use get_luks_edev_name in script_header_joetoo to id each _ud_device /dev/sdxn with corresponding name edxn
+        get_luks_edev_name "$_ud_device"
+        case "$_ud_method" in
             "prompt")
-                mycmd="echo $pass | cryptsetup luksOpen $line"
-                d_message 'about to execute [eval "${mycmd}"]' 3
-                eval "${mycmd}"
-                if [[ $? -eq 0 ]]
-                then
-                    message "Unlocked $line with passphrase provided"
-                else
-                    E_message "${BRon}mycmd failed. Dropping to a shell. ${Boff}"
-                    sh_countdown $(( $init_wait * 5 ))
-                    [[ ${init_lock_down} ]] && rescue_shell
+                # this is no longer a f-ing "indented" heredoc '-' tells it to ignore leading TABs (not spaces)
+                # so the next two lines MUS begin with tabs
+                message "About to run cryptsetup luksOpen ${_ud_device} ${edev} with passphrase provided ..."
+#		cryptsetup luksOpen "${_ud_device}" "${edev}" <<-EOF
+cryptsetup luksOpen "${_ud_device}" "${edev}" <<EOF
+$_ud_pass
+EOF
+                _ud_result=$?
+                handle_result "$_ud_result" "Unlocked ${_ud_device} ${edev} with passphrase provided" "mycmd failed. Dropping to a shell ..."
+                if [ ! "$_ud_result" -eq 0 ]; then
+                    ret=1
+                    d_do sh_countdown $(( $init_wait * 5 )) 4
+                    [ ! "${init_lock_down}" ] && rescue_shell
                 fi;
                 ;;
             "key")
                 # passdevice already mounted,
                 # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
                 # unmount the passdevice when we are done with it
-                message "About to execute command [ cryptsetup -d ${init_passdevice_mount_point}${init_keyfile} -S 1 luksOpen $line ]"
-                cryptsetup -d $(echo "${init_passdevice_mount_point%/}${init_keyfile}") -S 1 luksOpen $line
-                if [[ $? -eq 0 ]]
-                then  # cryptsetup luksOpen with key worked
-                    message "Unlocked $line with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
+                _ud_keyfile="${init_passdevice_mount_point%/}/${init_keyfile}"
+                message "About to execute command [ cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${_ud_device} ${edev} ]"
+                cryptsetup -d $(echo "${_ud_keyfile}") -S 1 luksOpen "${_ud_device}" "${edev}"
+                _ud_result=$?
+                handle_result "$_ud_result"
+                if [ "$_ud_result" -eq 0 ]; then
+                    message "Unlocked ${_ud_device} ${edev} with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
                 else  # cryptsetup luksOpen with key failed
-                    E_message $BRon"Error: Could not unlock ${BYon}$line ${BRon}with key found at ${BMon}$(echo ${init_passdevice_mount_point}${init_keyfile})"$Boff
-                    E_message $BRon"Dropping to a shell"$Boff
-                    sh_countdown $(( $init_wait * 5 ))
-                    [[ ${init_lock_down} ]] && rescue_shell
+                    ret=1
+                    _ud_msg="${BRon}Error: Could not unlock ${BYon}${_ud_device} ${edev}"
+                    _ud_msg="${_ud_msg} ${BRon}with key found at ${BMon}${_ud_keyfile}${Boff}"
+                    E_message "${_ud_msg}"
+                    if [ ! "${init_lock_down}" ]; then
+                        E_message "${BRon}Dropping to a shell${Boff}"
+                        sh_countdown $(( $init_wait * 5 ))
+                        rescue_shell
+                    fi
                 fi
-                # since we are done with it, we will now un-mount the keying device
                 ;;
         esac
     done
+    unset -v _ud_method _ud_device _ud_pass _ud_keyfile
+    return $ret
 }
 ### ----[ end duplicated functions ]--------------------------------------------------------------------------------------------------------------
 
 display_logical_volumes() {
+    ret=0
     # show what we've found...
-    separator "The following volume groups are available" "initramfs-$BUILD"
-    vgs
-    separator "The following volumes are available" "initramfs-$BUILD"
-    lvs
-    [[ $verbosity -gt 4 ]] && sh_countdown $init_wait
+    separator "${PN}-${BUILD}" "(available volume groups)"
+    vgs || ret=1
+    separator "${PN}-${BUILD}" "(available logical volumes)"
+    lvs || ret=1
+    d_do sh_countdown $init_wait 4
+    return $ret
 }
 
 mount_new_root_and_prepare_to_switch_root() {
-    separator "Attempting to mount new root ..." "initramfs-$BUILD"
+    ret=0
+    separator "${PN}-${BUILD}" "(Attempting to mount new root ...)"
     # previous version re-scanned here, but that now occurs after unlock
-    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${root_fs} on $root_volume${Boff}" 1 && fsck.${root_fs} -p $root_volume
-    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${usr_fs} on $usr_volume${Boff}" 1 && fsck.${usr_fs} -p $usr_volume
-    [[ $verbosity -gt 4 ]] && sh_countdown $init_wait
+    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${root_fs} on $root_volume${Boff}" 1
+    "fsck.${root_fs}" -p "$root_volume"
+    d_message "$(color ${RED} ${BBACK} ${BOLD})running fsck.${usr_fs} on $usr_volume${Boff}" 1
+    "fsck.${usr_fs}" -p "$usr_volume"
+    # give more time to read display if debugging
+    d_do sh_countdown $init_wait 4
     # mount root - drop to shell if not locked down
     d_message_n "Mounting new root volume ..." 1
-    mount -r -t ${root_fs} ${root_volume} /newroot ; result=$?
-    right_status $result
-    if  [[ ! $result ]]; then
-        E_message "failed to mount root volume"
-        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount root volume"
+    mount -r -t "${root_fs}" "${root_volume}" /newroot 2>/dev/null ; _mnr_result=$?
+    d_handle_result "$_mnr_result" '' "failed to mount root volume" 1
+    if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
+        ret=1
+        rescue_shell "Failed to mount root volume"
     fi
     d_message_n "Mounting new usr volume ..." 1
-    mount -t ${usr_fs} -o defaults,noatime $usr_volume /newroot/usr ; result=$?
-    right_status $result
-    if  [[ ! $result ]]; then
-        E_message "failed to mount usr volume"
-        [[ "$init_lock_down" = "no" ]] && rescue_shell "Failed to mount usr volume"
+    mount -t "${usr_fs}" -o defaults,noatime "$usr_volume" /newroot/usr ; _mnr_result=$?
+    d_handle_result "$_mnr_result" '' "failed to mount usr volume" 1
+    if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
+        ret=1
+        rescue_shell "Failed to mount usr volume"
     fi
 
-    separator "Mounts" "initramfs-$BUILD"
-    mount
+    separator "${PN}-${BUILD}" "(Mounts)"
+    mount | sed 's|^|    |'
 
-    # clean up in preparation to actually switch root
-    message "Cleaning up initramfs mounts prior to actual switch_root"
-    d_message_n "umount /proc ..." 1
-    umount /proc ; right_status $?
-    d_message_n "umount /dev/pts ..." 1
-    umount /dev/pts ; right_status $?
-    d_message_n "umount /dev ..." 1
-    umount /dev ; right_status $?
-    d_message_n "umount /sys ..." 1
-    umount /sys ; right_status $?
+    # clean up in preparation to actually switch root - with retry if needed
+    for _mnr_fs in /dev/pts /dev /sys /proc; do
+        d_message_n "umount ${_mnr_fs} ..." 1
+        # Try standard unmount
+        umount "${_mnr_fs}"
+        _mnr_result=$?
+        # if standard umount fails, try a "lazy" unmount (-l)
+        # This is often necessary if a process has a lingering handle
+        if [ $_mnr_result -ne 0 ]; then
+            d_message " (retrying lazy umount...)" 2
+            umount -l "${_mnr_fs}"
+            _mnr_result=$?
+        fi
+        d_handle_result "$_mnr_result" '' "Critical error: Could not unmount ${_mnr_fs}"
 
-    [[ $verbosity -gt 4 ]] && ssh_countdown $init_wait
+        # fatal exit -- if it's still mounted, switch_root WILL fail.
+        if [ $_mnr_result -ne 0 ]; then
+            if [ "$init_lock_down" = "no" ]; then
+                rescue_shell "Manual intervention required: ${_mnr_fs} is busy."
+            else
+                die "Panic: Critical filesystem ${_mnr_fs} busy during lockdown."
+            fi
+        fi
+    done
+
+    # give more time to read display if debugging
+    d_do sh_countdown $init_wait 4
+    unset -v _mnr_result _mnr_fs
+    return $ret
 }
 
 
 validate_volume_and_assign_fs() {
+    ret=0
     # given the string name of the volume, validate its existence and assign fs type
-    volume_name=$1
-    my_volume="$(eval echo \$${volume_name})"
-    message_n "validating volume ${volume_name} [${my_volume}]..."
+    # sets select_keying_device() _skd_EXISTS ("global" here) and
+    # assigns global variable named by $_vva_fs_name (e.g. root_fs, by indirect reference
+    _vva_volume_name=$1
+    # guard - reject invalid variable names, which either
+    #   (1) include chars other than members of [:alnum:] or _, OR
+    #   (2) begins with a numeral are invalid variable names in a POSIX shell
+    case "$_vva_volume_name" in
+        *[![:alnum:]_]* | [0-9]*)
+            E_message "volume_name [$_vva_volume_name] is not a valid POSIX variable name"
+            unset -v _vva_volume_name ; return 1 ;;
+    esac
+    # POSIX indirect variable assignment
+    eval "_vva_volume=\"\$${_vva_volume_name}\""
+    message_n "validating volume ${_vva_volume_name} [${_vva_volume}]"
 
     # caution - an unassigned volume_name (null $my_volume) will evaluate true for [ -b ${my_volume} ]
-    if [[ ${#my_volume} -ne 0 && -b ${my_volume} ]]
-    then
-        EXISTS=$TRUE
-        for answer in $(blkid ${my_volume})
-        do
-          field="$(echo ${answer} | cut -d'=' -f1)"
-          if [[ "${field}" == "TYPE" ]]
-          then
-              # make a variable assignment of fstype from answer which looks like this:  TYPE="ext4"
-              eval ${answer}
-              # now use this to create an assignment of the appropriate fs type
-              eval "$(echo ${volume_name} | sed 's|volume|fs|')=${TYPE}"
-              d_message "assigned $(echo ${volume_name} | sed 's|volume|fs|')=${TYPE}" 4
-          else
-              d_message "skipping output part ${answer}" 5
-          fi
-        done
+    if [ ! -z "${_vva_volume}" ] && [ -b ${_vva_volume} ]; then
+        _skd_EXISTS=$TRUE
+        # use eval to assign the fs type; identify the variable name from the volume name
+        # e.g. if _vva_volume_name = root_volume then _vva_fs_name = root_fs
+        _vva_fs_name=$( printf '%s' "$_vva_volume_name" | sed 's|volume|fs|')
+        # look up the volume with blkid (-o export ouputs in assignment format, grep the TYPE= line
+        _vva_blkid_output="$(blkid -o export \"${_vva_volume}\" | grep 'TYPE')"
+        eval "${_vva_blkid_output}"
+        [ -z "$TYPE" ] && { E_message "no TYPE for volume [$_vva_volume]"; return 1; }
+        # now use this to create an assignment of the appropriate fs type
+        eval "${_vva_fs_name}=${TYPE}"
+        printf '%s' " (assigned ${_vva_fs_name}=${TYPE})"
+        right_status $TRUE
     else
-        EXISTS=$FALSE
+        _skd_EXISTS=$FALSE
+        printf '%s' " (${BRon}not a blockdev${Boff})"
+        right_status 1
     fi
-    [[ $EXISTS ]]; right_status $?
     # keep this check/message outside the if-then-else above, so it can return clean status on the same line
-    if [[ $EXISTS ]]
-    then
-        d_message "    ${BGon}Valid device${Boff} [${my_volume}] type [${TYPE}] ${BGon}Exists${Boff}" 3
+    if [ $_skd_EXISTS ];    then
+        d_message "    ${BGon}Valid device${Boff} [${_vva_volume}] type [${TYPE}] ${BGon}Exists${Boff}" 3
     else
-        E_message "    ${BRon}invalid device [${my_volume}]${Boff}"
-        volcase="$(echo ${volume_name} | sed 's|_volume||')"
-        if [[ "${volcase}" == "root" || "${volcase}" == "usr" ]]; then
-            d_message "     -- will scan for ${volcase} volume later, in unlocked volumes" 3
-        fi
+        E_message "    ${BRon}invalid device [${_vva_volume}]${Boff}"
+        _vva_volcase="$(printf '%s' ${_vva_volume_name} | sed 's|_volume||')"
+        case "${_vva_volcase}" in
+            "root"|"usr" ) d_message "     -- will scan for ${_vva_volcase} volume later, in unlocked volumes" 3 ;;
+            * ) d_message "    -- invalid case [$_vva_volcase]" ;;
+        esac
     fi
+    unset -v _vva_volume_name _vva_fs_name _vva_volume _vva_answer
+    unset -v  _vva_field _vva_volcase _vva_blkid_output TYPE
+    return $ret
 }
 
 process_cmdline() {
+  ret=0
   echo "processing cmdline ..."
-  line_out=""
-  for entry in ${CMDLINE}
-  do
-    case $(echo ${entry} | cut -d'=' -f1) in
+  _pc_line_out=""
+  set -- ${CMDLINE}
+  while [ $# -gt 0 ]; do
+    _pc_entry=$1
+    # strip the longest match for =* from the end; i.e. evrything from the first = onward
+    #  (e.g. keep only 'root' in root=UUID=8234baac-f344-42ac-b08a-5e256d89fd07)
+    _pc_var="${_pc_entry%%=*}"  # equiv $(echo ${_pc_entry} | cut -d'=' -f1) but more efficient
+    # strip the shortest match for *= from front; i.e. from first = and to the left
+    #  (e.g. keep 'UUID=8234baac-...' in root=UUID=8234baac-f344-42ac-b08a-5e256d89fd07)
+    _pc_val="${_pc_entry#*=}"  # equiv $(echo ${_pc_entry} | cut -d'=' -f2-) but more efficient
+    case "$_pc_var" in
       "verbosity" )
-        export ${entry} && message "cmdline override: [${entry}]]" || echo "export failed"
+        export "${_pc_entry}" || die "failed to export verbosity"
+        message "cmdline override: [${_pc_entry}]]"
       ;;
       "root" )
-        value="$(echo ${entry} | cut -d'=' -f2)"
-        export root_volume="${value}" && message "cmdline override: [root_volume=${value}]" || echo "export failed"
-        line_out="${line_out} ${entry}"
+        export root_volume="${_pc_val}" || die "failed to export root_volume"
+        message "cmdline override: [root_volume=${_pc_val}]"
+        _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
       "usr" )
-        value="$(echo ${entry} | cut -d'=' -f2)"
-        export usr_volume="${value}" && message "cmdline override: [usr_volume=${value}]" || echo "export failed"
+        export usr_volume="${_pc_val}" || die "failed to export usr_volume"
+        message "cmdline override: [usr_volume=${_pc_val}]"
       ;;
       * )
-        d_message "cmdline entry [${entry}] ignored by initramfs" 2
-        line_out="${line_out} ${entry}"
+        d_message "cmdline entry [${_pc_entry}] ignored by initramfs" 2
+        _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
     esac
+    shift  # get next entry from CMDLINE
   done
   # reset the CMDLINE without the initramfs-peculiar entries
-  export CMDLINE="${line_out}"
+  export CMDLINE="${_pc_line_out}"
+  unset -v _pc_line_out _pc_entry _pc_var _pc_val
+  return $ret
 }
 
 keydev_identifier_type() {
-    # return on stdout (by echo) the likely type of candidate key device presented as str arg $1
+    # return on stdout the likely type of candidate key device presented as str arg $1
     # i.e. devicename (1st char = '/'), uuid (matches pattern), label otherwise
     # check uuid for ext or vfat uuid pattern only (see also /usr/local/sbin/test_uuid)
-    local candidate="$1";
-    local type="unknown";
-    local result
-# problem: I discovered the =~ operator is not available in busybox
+    [ $# -eq 0 ] && die "error: zero args. keydev_identifier_type required arg _kit_candidate"
+    ret=0
+    _kit_candidate="$1";
+    _kit_type="unknown";
+# because the =~ operator is not POSIX, we create equivalent patterns to
 #    local ext_pattern='^\{?[A-F0-9a-f]{8}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{4}-[A-F0-9a-f]{12}\}?$'
 #    local vfat_pattern='^\{?[A-F0-9a-f]{4}-[A-F0-9a-f]{4}\}?$'
 #    local ntfs_pattern='^\{?[A-F0-9a-f]{16}\}?$'
 #    local lvm2_pattern='^\{?[A-Z0-9a-z]{6}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{4}-[A-Z0-9a-z]{6}\}?$'
 #    local partition_pattern='^\{?[A-Z0-9a-z]{8}-[A-Z0-9a-z]{2}\}?$'
-    local h="[0-9a-f]"
-    local H="[A-F0-9a-f]"
-    local z="[A-Z0-9a-z]"
-    local ext_pattern="$(repeat $h 8)-$(repeat $h 4)-$(repeat $h 4)-$(repeat $h 4)-$(repeat $h 12)"
-    local vfat_pattern="$(repeat $H 4)-$(repeat $H 4)"
-    local ntfs_pattern="$(repeat $H 4)"
-    local lvm2_pattern="$(repeat $z 6)-$(repeat $z 4)-$(repeat $z 4)-$(repeat $z 4)-$(repeat $z 4)-$(repeat $z 4)-$(repeat $z 6)"
-    local partition_pattern="$(repeat $h 8)-$(repeat $h 2)"
+    _kit_h="[0-9a-f]"
+    _kit_H="[A-F0-9a-f]"
+    _kit_z="[A-Z0-9a-z]"
+    # build ext pattern h 8 4 4 4 12
+    _kit_ext_pattern="$(full_repeat $_kit_h 8)-$(full_repeat $_kit_h 4)-$(full_repeat $_kit_h 4)"
+    _kit_ext_pattern="${_kit_ext_pattern}-$(full_repeat $_kit_h 4)-$(full_repeat $_kit_h 12)"
+    # build vfat pattern H 4 4
+    _kit_vfat_pattern="$(full_repeat $_kit_H 4)-$(full_repeat $_kit_H 4)"
+    # build ntfs pattern H 16
+    _kit_ntfs_pattern="$(full_repeat $_kit_H 16)"
+    # build lvm2 pattern z 6 4 4 4 4 6
+    _kit_lvm2_pattern="$(full_repeat $_kit_z 6)-$(full_repeat $_kit_z 4)-$(full_repeat $_kit_z 4)"
+    _kit_lvm2_pattern="${_kit_lvm2_pattern}-$(full_repeat $_kit_z 4)-$(full_repeat $_kit_z 4)-$(full_repeat $_kit_z 6)"
+    # build partition pattern z 8 2
+    _kit_partition_pattern="$(full_repeat $_kit_z 8)-$(full_repeat $_kit_z 2)"
 
-    if [[ "${candidate:0:1}" == "/" ]]
-    then type="name";
-    elif expr "$candidate" : "$ext_pattern" >/dev/null || expr "$candidate" : "$vfat_pattern" >/dev/null
-    then type="uuid";
-    else type="label";
-    fi
-    echo "${type}";
+    # maintainer note: do not quote the /* ) - keep unquoted so it is treated as a glob (quoted is treated as string literal
+    case "$_kit_candidate" in
+        /* ) _kit_type="name" ;;
+        $_kit_ext_pattern|$_kit_vfat_pattern ) _kit_type="uuid" ;;
+#        $_kit_ntfs_pattern ) _kit_type="ntfs" ;;   # not sure I need this or know how to handle
+#        $_kit_lvm2_pattern ) _kit_type="lvm2" ;;   # not sure I need this or know how to handle
+        $_kit_partition_pattern ) _kit_type="partition" ;;
+        * ) _kit_type="label" ;;                    # if it matches no pattern, assume it is a label
+    esac
+    printf '%s' "${_kit_type}"
+    unset -v _kit_candidate _kit_type _kit_h _kit_H _kit_z
+    unset -v  _kit_ext_pattern _kit_vfat_pattern _kit_ntfs_pattern _kit_lvm2_pattern _kit_partition_pattern
+    return $ret
 }
 
 validate_passdevice() {
-    # assign an answer to the global configuration variable init_passdevice
-    #   and return true or false according to validity type/name device specification
-    init_passdevice_volume=""
-    my_candidate="$1"
-    dev_id_t="$2"
-    local int OK=1;   # def'n: 0 is logical true; any other int = false
-    d_message "  ${Yon}fn validate_passdevice checking ${Mon}my_candidate = [ $my_candidate ]; ${Lon}dev_id_type = [ $dev_id_type ]${Boff}" 2
-    if [[ $verbosity -gt 3 ]] ; then
-        separator "lsblock" "${my_candidate}"
-        lsblk
-	separator "blkid" "${my_candidate}"
-        blkid
-    fi
-    case "${dev_id_t}" in
+    # assign an answer to the global configuration variable init_passdevice_volume,
+    # set _skd_VALID (belongs to select_keying_device() so it is "global" here),
+    #   and return true (0) or false (1) according to validity type/name device specification
+    ret=0
+    init_passdevice_volume=""  # reinitialize, just in case
+    _vpd_candidate="$1"   # _skd_candidate_key_device from select_keying_device()
+    _vpd_dev_id_t="$2"         # _skd_dev_id_type from select_keying_device()
+    d_message "  ${Yon}fn validate_passdevice checking ${Mon}_vpd_candidate = [ $_vpd_candidate ]; ${Lon}_vpd_dev_id_t = [ $_vpd_dev_id_t ]${Boff}" 2
+    d_do 'separator "lsblock" "${_vpd_candidate}"; lsblk' 3
+    d_do 'separator "blkid" "${_vpd_candidate}"; blkid' 3
+    case "${_vpd_dev_id_t}" in
         "name")    # e.g. "/dev/sda1"
             d_message "    In case [name]; assigning" 3
-            init_passdevice_volume="${my_candidate}"
+            init_passdevice_volume="${_vpd_candidate}"
             ;;
 	"uuid")    # e.g. "49C1-7352"
             d_message "    In case [uuid]; using findfs" 3
-            init_passdevice_volume="$(findfs UUID=${my_candidate})"
-            if [[ $verbosity -gt 3 ]] ; then
-                separator "${my_candidate}" "findfs UUID = "
-                findfs UUID=${my_candidate}
-            fi
+            init_passdevice_volume=$(findfs UUID="${_vpd_candidate}")
+            d_do 'separator "${_vpd_candidate}" "findfs UUID = "; findfs UUID="${_vpd_candidate}"' 3
             ;;
 	"label")    # e.g. "KEY"
             d_message "    In case [label]; using findfs" 3
-            init_passdevice_volume="$(findfs LABEL=${my_candidate})"
-            if [[ $verbosity -gt 3 ]] ; then
-                separator "${my_candidate}" "findfs LABEL = "
-                findfs LABEL=${my_candidate}
-            fi
+            init_passdevice_volume=$(findfs LABEL="${_vpd_candidate}")
+            d_do 'separator "${_vpd_candidate}" "findfs LABEL = "; findfs LABEL="${_vpd_candidate}"' 3
             ;;
 	*)
             # invalid or error
             init_passdevice_volume=""
+            ret=1
+            unset -v _vpd_candidate _vpd_dev_id_t
+            return $ret
             ;;
     esac
-    # if we got results, display them
-    if [[ ! -z $init_passdevice_volume ]]; then
+    # if we got results (and it's actually a block device), display them
+    if [ -b "$init_passdevice_volume" ]; then
         ## return true
-        VALID=$TRUE
+        _skd_VALID=$TRUE
         d_message "  fn validate_passdevice result: init_passdevice_volume = ${BMon}[ $init_passdevice_volume ]${Boff}" 2
-        d_message "  ${Gon}fn validate_passdevice is about to return OK = [ $OK ]${Boff}" 3
+        d_message "  ${Gon}fn validate_passdevice is about to return ret = [ $ret ]${Boff}" 3
+        ret=0
     else
         ## return false
-        VALID=$FALSE
-        d_message "  ${Ron}fn validate_passdevice result: found no device for [ $my_candidate ] with findfs${Boff}" 3
-        [[ $verbosity -gt 3 ]] && sh_countdown ${init_wait}
+        _skd_VALID=$FALSE
+        d_message "  ${Ron}fn validate_passdevice result: found no device for [ $_vpd_candidate ] with findfs${Boff}" 3
+        d_do 'sh_countdown ${init_wait}' 3   # leave it long enough to be read
+        ret=1
     fi
+    unset -v _vpd_candidate _vpd_dev_id_t
+    return $ret
 }
 
 select_keying_device() {
-    input=$@
     # go through the list of devices presented as argv -- select the first one that
     #   has a valid type, actually exists, mounts successfully, and contains a key,
     #   else fail upon exhaustion of the list
-    local VALID=$FALSE;
-    local EXISTS=$FALSE;
-    local HAS_KEY=$FALSE;
-    local dev_id_type="";
-    local candidate_key_device="";
-    local count=$#;
+    # If select_keying_device successfully validates a keying device and keyfile,
+    #   it effectively transitions the system from a "searching" state
+    #   to an "authorized" state for LUKS decryption
+    # assign global unlock_method
+    #   call validate_passdevice to set the global config variable init_passdevice_volume
+    #
+    ret=0
+    # set the input string (list of candidate keying devices) so we can loop thru them safely
+    set -- "$@"
+    _skd_VALID=$FALSE;
+    _skd_EXISTS=$FALSE;
+    _skd_HAS_KEY=$FALSE;
+    _skd_dev_id_type="";
+    _skd_candidate_key_device="";
+    _skd_count=$#;
 
     # careful: this loop runs for every candidate in the list - it can take a long time with several second delays in each pass
-    count=1
-    for candidate_key_device in $input
-    do
-        VALID=$FALSE; EXISTS=$FALSE
+    _skd_count=1
+    while [ $# -gt 0 ]; do
+        _skd_candidate_key_device="$1"
+        _skd_VALID=$FALSE; _skd_EXISTS=$FALSE
 #        # determine the validity of the type and name of the candidate passdevice
-        d_message "${BWon}[${count}] Checking validity of specified device [${Boff} ${candidate_key_device} ${BWon}]${Boff}" 2
-        dev_id_type=$(keydev_identifier_type ${candidate_key_device})
-        d_message "  dev_id_type = [ $dev_id_type ]" 2
-        validate_passdevice ${candidate_key_device} ${dev_id_type}; answer=$?;
-#        # note that if VALID returns true, the validate_passdevice procedure will have set the global config variable init_passdevice_volume
-        d_message "  candidate_key_device = [ $candidate_key_device ]" 4
+        d_message "${BWon}[${_skd_count}] Checking validity of specified device [${Boff} ${_skd_candidate_key_device} ${BWon}]${Boff}" 2
+        _skd_dev_id_type=$(keydev_identifier_type "${_skd_candidate_key_device}") || die "failed to assign _skd_dev_id_type"
+        d_message "  _skd_dev_id_type = [ $_skd_dev_id_type ]" 2
+# %%%% **** it does not look like this assignment of answer is used
+        validate_passdevice "${_skd_candidate_key_device} ${_skd_dev_id_type}"; _skd_answer=$?;
+#       # note that if _skd_VALID was set $TRUE by validate_passdevice, then
+        #   validate_passdevice will also have set the global config variable init_passdevice_volume
+        d_message "  _skd_candidate_key_device = [ $_skd_candidate_key_device ]" 4
         d_message "  fn validate_passdevice set init_passdevice_volume = ${BMon}[ $init_passdevice_volume ]${Boff}" 4
-        d_message "  VALID = [ $(status_color ${VALID})$(TrueFalse ${VALID})${Boff} ]" 4
-        if [[ ${VALID} ]];
-        then
-            d_message "  Found candidate key device ${LBon}${candidate_key_device}${Boff} of type ${LBon}${dev_id_type}${Boff} to be ${BGon}valid${Boff}" 2
-            if [[ "${dev_id_type}" == "uuid" ]] || [[ "${dev_id_type}" == "label" ]]
-            then
+        d_message "  _skd_VALID = [ $(status_color ${_skd_VALID})$(TrueFalse ${_skd_VALID})${Boff} ]" 4
+        if [ ${_skd_VALID} ]; then
+            d_message "  Found candidate key device ${LBon}${_skd_candidate_key_device}${Boff} of type ${LBon}${_skd_dev_id_type}${Boff} to be ${BGon}valid${Boff}" 2
+            if [ "${_skd_dev_id_type}" = "uuid" ] || [ "${_skd_dev_id_type}" = "label" ]; then
                 message "  ${BYon}fn select_keying_device result: validate_passdevice/findfs returned device name: ${LBon}${init_passdevice_volume}${Boff}";
             fi
-            # validate_volume_and_assign_fs() will set EXISTS=$TRUE and assign init_passdevice_fs if this device acutally exists and is a block device
+            # validate_volume_and_assign_fs() will set _skd_EXISTS=$TRUE and assign init_passdevice_fs if this device acutally exists and is a block device
             validate_volume_and_assign_fs "init_passdevice_volume"
             d_message "  fn validate_volume_and_assign_fs set init_passdevice_fs = ${BMon}[ $init_passdevice_fs ]${Boff}" 3
 
-            if [[ ${EXISTS} ]]
-            then
+            if [ ${_skd_EXISTS} ]; then
                 # try to mount it. Note: we need the full keyfile path for the keyfile existence test
                 # handle uncertain trailing / character...
                 message "  ${BYon}Trying${Boff} mount -t ${BGon}${init_passdevice_fs} ${BMon}${init_passdevice_volume} ${LBon}${init_passdevice_mount_point%/}/${Boff}";
                 mount -t "${init_passdevice_fs}" "${init_passdevice_volume}" "${init_passdevice_mount_point%/}/" 2>/dev/null
-                mount_result=$?
-                if [[ ${mount_result} ]] ; then
+                _skd_mount_result=$?
+                if [ "${_skd_mount_result}" -eq 0 ] ; then
                     message "    ${BGon}Successfully mounted removable keying device: ${BMon}${init_passdevice_volume} on ${LBon}${init_passdevice_mount_point%/}/${Boff}"
                 else
                     E_message "    ${BRon}Failed to mount removable keying device: ${BMon}${init_passdevice_volume}${Boff} on ${LBon}${init_passdevice_mount_point%/}/${Boff}"
                 fi
                 # here's the actual key existence check - this must match the name of the file specified
                 d_message_n "  Looking for keyfile" 2
-                if [[ -e $(echo "${init_passdevice_mount_point%/}/${init_keyfile}") ]]
+                _skd_keyfile_name="${init_passdevice_mount_point%/}/${init_keyfile}"
+                if [ -e "$_skd_keyfile_name" ]
                 then
-                    HAS_KEY=$TRUE;
+                    _skd_HAS_KEY=$TRUE;
                 else
-                    HAS_KEY=$FALSE;
+                    _skd_HAS_KEY=$FALSE;
                 fi
-                [[ ${HAS_KEY} ]]; d_right_status $? 2
+                [ ${_skd_HAS_KEY} ]; d_handle_result "$?" "found" "not found" 2
             fi
         fi
-        d_message "  Results for $candidate_key_device --" 4
-        d_message "    VALID =  [ $(status_color ${VALID})$(TrueFalse ${VALID})${Boff} ]" 3
-        [[ $VALID ]]  && d_message "    EXISTS = [ $(status_color ${EXISTS})$(TrueFalse ${EXISTS})${Boff} ]" 3
-        [[ $EXISTS ]] && d_message "    HAS_KEY = [ $(status_color ${HAS_KEY})$(TrueFalse ${HAS_KEY})${Boff} ]" 3
-        if [[ $HAS_KEY ]]; then
+        d_message "  Results for $_skd_candidate_key_device --" 4
+        d_message "    _skd_VALID =  [ $(status_color ${_skd_VALID})$(TrueFalse ${_skd_VALID})${Boff} ]" 3
+        [ $_skd_VALID ]  && d_message "    _skd_EXISTS = [ $(status_color ${_skd_EXISTS})$(TrueFalse ${_skd_EXISTS})${Boff} ]" 3
+        [ $_skd_EXISTS ] && d_message "    _skd_HAS_KEY = [ $(status_color ${_skd_HAS_KEY})$(TrueFalse ${_skd_HAS_KEY})${Boff} ]" 3
+        if [ $_skd_HAS_KEY ]; then
             d_message "    init_passdevice_volume = ${BMon}[ $init_passdevice_volume ]${Boff}" 3
             d_message "    init_passdevice_fs = ${BMon}[ $init_passdevice_fs ]${Boff}" 3
             d_message "    init_passdevice_mount_point = [ ${init_passdevice_mount_point%/}/ ]" 3
             # escape the loop if we found one that met all the criteria
             break
         fi
-        let count++
+        _skd_count=$((_skd_count+1))
+        shift  # go to next candidate device in list
     done
     # to leave the loop above, we either --
-    #    (a) found a valid extant device, mounted it and confirmed it contains a key (HAS_KEY is now "true"), or
+    #    (a) found a valid extant device, mounted it and confirmed it contains a key (_skd_HAS_KEY is now "true"), or
     #    (b) exhausted the init_passdevice_list of devices authorized to be used and found none of them
-    #        on this system (in which case HAS_KEY is still "false")
-    if [[ ${HAS_KEY} ]]
-    then
+    #        on this system (in which case _skd_HAS_KEY is still "false")
+    if [ $_skd_HAS_KEY ]; then
         unlock_method="key"
-        message "$(echo ${init_passdevice_mount_point%/}/${init_keyfile}) exists - using automatic keying method...";
+        message "Keystore: [$_skd_keyfile_name] exists - using automatic keying method..."
     else
         unlock_method="prompt"
-        E_message $BRon"Keystore $(echo ${init_passdevice_mount_point%/}/${init_keyfile}) does not exist - reverting to prompt method..."$Boff;
+        E_message "${BRon}Keystore: [$_skd_keyfile_name] does not exist - reverting to prompt method...${Boff}"
     fi
+    unset -v _skd_VALID _skd_EXISTS _skd_HAS_KEY _skd_dev_id_type _skd_candidate_key_device _skd_count
+    unset -v _skd_answer _skd_mount_result _skd_keyfile_name
+    return $ret
 }
 
 select_keying_device_and_unlock_method() {
+    ret=0
     d_message_n "Checking if keyfile was specified ..." 2
-    [[ ! -z "$init_keyfile" ]] && KF=$TRUE || KF=$FALSE
-    [[ $KF ]] ; right_status $?
+    if [ ! -z "$init_keyfile" ]; then _sku_KF=$TRUE; else _sku_KF=$FALSE; fi
+    [ $_sku_KF ] ; handle_result "$?" "yes" "no"
 
     d_message_n "Checking if passdevice list was specified ..." 2
-    [[ ! -z "${init_passdevice_list}" ]] && PDL=$TRUE || PDL=$FALSE
-    [[ $PDL ]] ; right_status $?
+    if [ ! -z "${init_passdevice_list}" ]; then _sku_PDL=$TRUE; else _sku_PDL=$FALSE; fi
+    [ $_sku_PDL ] ; handle_result "$?" "yes" "no"
 
-    if [[ $KF && $PDL ]]
-    then
+    if { [ $_sku_KF ] && [ $_sku_PDL ] ; }  ; then
         # pause to give mdev a chance to recognize devices
         message "Waiting ${init_mdev_wait} more seconds, per init.conf, to give mdev a chance to recognize hardware..."
         sh_countdown $init_mdev_wait
@@ -404,10 +476,12 @@ select_keying_device_and_unlock_method() {
         select_keying_device ${init_passdevice_list}
         # note that if this succeded, it will have set unlock_method="key"
         # and it will have assigned the global config variable "init_passdevice"
-        else
-            unlock_method="prompt"
-        fi
-        d_message "${BWon}Result: ${LBon}init_passdevice_volume = ${Mon}[ $init_passdevice_volume ]${Boff}" 2
-        d_message "${BWon}Result: ${LBon}unlock_method = ${Mon}[ $unlock_method ]${Boff}" 2
+    else
+        unlock_method="prompt"
+    fi
+    d_message "${BWon}Result: ${LBon}init_passdevice_volume = ${Mon}[ $init_passdevice_volume ]${Boff}" 2
+    d_message "${BWon}Result: ${LBon}unlock_method = ${Mon}[ $unlock_method ]${Boff}" 2
+    unset -v _sku_KF _sku_PDL
+    return $ret
 }
 

@@ -531,7 +531,7 @@ box_shift() # (POSIX) DEC box drawing using SO/SI toggling
   unset -v _bs_text _bs_len _bs_h_line
 }
 
-test_colors()      # (POSIX) print the joetoo RGB name of each eponymous color
+test_colors() # (POSIX) print the joetoo RGB name of each eponymous color
 { _rgb_color_names="BLACK RED GREEN YELLOW BLUE MAG CYAN WHITE"
   _h=$(termheight); _w=$(termwidth); _current_row=$(( (_h / 2) - 4 )); _c_idx=0
   # ensure start row is within screen bounds
@@ -859,11 +859,33 @@ get_longest() # echo length of longest string in input $@
 #{ _ans=0; for _x in $@; do [ ${#_x} -gt $_ans ] && _ans=${#_x}; done ; printf '%s' "$_ans"; unset -v _ans _x; }
 
 repeat() # (POSIX) quickly output a string of char $1 (of len $2) (not for spaces)
-{ _marker="${1:--}"; _reps="${2:-40}"; [ "${#_marker}" -gt 1 ] && \
-  _marker=$(printf -- '%s' "${_marker%${_marker#?}}"); printf "%${_reps}s" | tr ' ' "$_marker" ; }
+{ ret=0; _r_marker="${1:--}"; _r_reps="${2:-40}";
+  ! isint "$_r_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1 }
+  [ "${#_r_marker}" -gt 1 ] && _r_marker=$(printf -- '%s' "${_r_marker%${_r_marker#?}}")
+  printf -- "%${_r_reps}s" | tr ' ' "$_r_marker"
+  unset -v _r_marker _r_reps; return $ret ; }
 # @usage repeat "marker" "count"
 # @args $1 char to repeat; $2 number of times
 # @ret (emits) string of repeated characters
+# @note helpful for creating variable-length separators or visual borders
+# maintainer note: '--' indicates 'end of options' to prevent cmd from interpreting '-' in str as opt
+
+full_repeat() # POSIX repeat full input string pattern $1 $2 times
+{ ret=0; _fr_marker=${1:--}; _fr_reps=${2:-40}
+  ! isint "$_fr_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1 }
+  for _fr_x in $(seq 1 "$_fr_reps"); do printf -- '%s' "$_fr_marker"; done ; ret=$?
+  unset -v _fr_reps _fr_marker _fr_x
+  return $ret
+}
+# @usage full_repeat "string" "<integer>"
+# @args $1: the string or character pattern to be repeated (default: "-")
+# @args $2: the number of times to repeat the pattern (default: 40)
+# @vars ret: initialized to 0; used to capture exit status of the printf loop
+# @ret (emitted) a single string containing the repeated pattern to stdout
+# @deps seq: uses the standard sequence generator for the loop range
+# @note this is the "string-capable" version of the single-character repeat() function
+# @note helpful for creating variable-length separators or visual borders
+# maintainer note: '--' indicates 'end of options' to prevent cmd from interpreting '-' in str as opt
 
 pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) marker(char $5); filling col(int $6)
 { # initial guard - all six arguments must exist (some can be null to be defaulted)
@@ -1075,6 +1097,24 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
 #   it respects the callers indentation request for the left edge of every wrapped line, and
 #   it respects the space required for right_status on the right margin of the last line
 #     of the message
+
+ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
+{ # @usage ask_pass "prompt_string"
+  # @args $1: prompt string (e.g., "Password: ")
+  # @ret (emit to stdout) string: the entered password
+  # @ret 0: success; 1: fail
+  # @rule uses stderr for the prompt to keep stdout clean for capturing the password
+  # @rule uses 'stty -echo' to disable terminal character display
+    ret=0
+    printf "%s" "$1" >&2  # use stderr so the prompt goes to the screen
+    stty -echo
+    read -r _pass || ret=1
+    stty echo
+    printf "\n" >&2 || ret=1
+    printf '%s' "$_pass"
+    unset -v _pass
+    return $ret
+}
 
 alpha_words() # (POSIX) alphabetize the words in a quoted input string
 { [ $# -eq 0 ] && return 0  # guard clause; just return 0 success if no args
