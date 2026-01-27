@@ -1,63 +1,107 @@
 #!/bin/bash
 
 create_links()
-{
-  old_pwd="$PWD"
+{ # @usage create_links
+  # @vars
+  # @note create symlinks in initramfs structure for busybox, lvm2, and others as needed
+  local _cl_x="" _cl_old_pwd="$PWD"
+  local i _cl_link _cl_bin _cl_target _cl_target_dir _cl_msg _cl_fileline
+  local _cl_element _cl_type _cl_depth _cl_tgtname _cl_temp
+
   # create busybox symlinks
   d_message "Creating busybox links ..." 1
-  cd $(dirname $(find ${SOURCES_DIR} -name 'busybox'))
-  for i in $busybox_link_list
-  do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}busybox${Boff} ..." 2;
-  ln -s busybox "$i" ; d_right_status $? 2; done
+  # find w -print -quit to output 1st find to stdout and stop after first match (for performance)
+  d_message_n "looking for busybox" 1
+  _cl_target=$(find ${SOURCES_DIR} -name 'busybox' -print -quit)
+  d_handle_result $? "found" "not found" 1 || die "busybox not found"
+  _cl_target_dir=$(dirname "$_cl_target")
+  d_message_n "moving to $_cl_target_dir" 1
+  cd "$_cl_target_dir"
+  handle_result $? "ok" "failed" 1 || die "failed to cd $_cl_target_dir"
+  # 20260126 - swtchec from string word list to bash array
+   for _cl_link in "${busybox_link_list[@]}"; do
+     d_message_n "Linking:   ${LBon}$_cl_link${Boff} --> ${BGon}busybox${Boff} ..." 2
+     # symlink (-s) and force (-f) so any restart wont error out on things already done
+     ln -sf busybox "$_cl_link" ; d_right_status $? 2
+  done
 
   # create lvm2 symlinks
   d_message "Creating lvm2 links ..." 1
-  cd $(dirname $(find ${SOURCES_DIR} -name 'lvm' | grep -v '/etc'))
-  for i in $lvm_link_list
-  do d_message_n "Linking:   ${LBon}$i${Boff} --> ${BGon}lvm${Boff} ..." 2;
-  ln -s lvm "$i" ; d_right_status $? 2; done
+  # filter out /etc/lvm to find the actual binary (take only the first)
+  d_message_n "looking for lvm" 1
+  _cl_target=$(find ${SOURCES_DIR} -name 'lvm' | grep -v '/etc'| head -n 1)
+  d_handle_result $? "found" "not found" 1 || die "lvm not found"
+  _cl_target_dir=$(dirname "$_cl_target")
+  d_message_n "moving to $_cl_target_dir" 1
+  cd "$_cl_target_dir"
+  handle_result $? "ok" "failed" 1 || die "failed to cd $_cl_target_dir"
+  for _cl_link in "${lvm_link_list[@]}"; do
+    d_message_n "Linking:   ${LBon}$_cl_link${Boff} --> ${BGon}lvm${Boff} ..." 2;
+    ln -sf lvm "$_cl_link" ; d_right_status $? 2
+  done
 
   # create links to other executables in associated dirs, using array set
+  # and standard for loop to maintain index alignment
   d_message "Creating [${#other_link_name[@]}] additional links..." 1
-  for ((i=0; i<${#other_link_name[@]}; i++))
-  do
-    d_message_n "Linking:   ${BBon}[${other_link_dir[i]}] ${LBon}${other_link_name[i]}${Boff} --> ${BGon}${other_link_target[i]}${Boff} ..." 2;
-    cd ${SOURCES_DIR}${other_link_dir[i]};
-    ln -s "${other_link_target[i]}"  "${other_link_name[i]}" ;
+  for ((i=0; i<${#other_link_name[@]}; i++)); do
+    d_message_n "moving to ${SOURCES_DIR%/}/${other_link_dir[i]#/}" 1
+    cd "${SOURCES_DIR%/}/${other_link_dir[i]#/}"
+    handle_result $? "ok" "failed" 1 || die "failed to cd ${SOURCES_DIR%/}/${other_link_dir[i]#/}"
+    _cl_msg+"Linking:   ${BBon}[${other_link_dir[i]}] ${LBon}${other_link_name[i]}${Boff}"
+    _cl_msg+=" --> ${BGon}${other_link_target[i]}${Boff} ..."
+    d_message_n "$_cl_msg" 2
+    ln -sf "${other_link_target[i]}"  "${other_link_name[i]}" ;
     d_right_status $? 2;
   done
-  cd $old_pwd
+  d_message_n "moving to $_cl_old_pwd"
+  cd "$_cl_old_pwd"
+  handle_result $? "ok" "failed" 1 || die "failed to cd $_cl_old_pwd"
 
-  # create links for init in each bin directory that is actually a directory
-  for x in $bins
-  do
-    fileline=$(file $x)
-    element=$(echo $fileline | awk '{print $1}' | sed 's|:$||')
-    type=$(echo $fileline | awk '{print $2}')
-    # figure out where the element is relative to the taarget and formulate the link target name
-    #   since init is located at / of ${SOURCES_DIR/, depth is the number of "/" chars in element
-    depth=$(grep -o '/' <<< "$element" | grep -c .)
-    tgtname=""
-    for ((i=0; i<$depth; i++)); do tgtname="${tgtname}../"; done
-    tgtname="${tgtname}init"
-    case $type in
+  # create links for init in each bin directory (that is actually a directory)
+  set -- $bins
+  for _cl_bin; do
+    # use file. e.g. file /usr/sbin might return "/usr/sbin: symbolic link to bin"
+    _cl_fileline=$(file "$_cl_bin")
+#    _cl_element=$(echo $_cl_fileline | awk '{print $1}' | sed 's|:$||')
+#    _cl_type=$(echo $_cl_fileline | awk '{print $2}')
+    # extract _cl_element (like /usr/bin) and _cl_type (like "symbolic"); _ is junk var for the rest of the line
+    read -r _cl_element _cl_type _ <<< "$_cl_fileline"
+    _cl_element="${_cl_element%:}" # remove the trailing colon
+    # figure out where the _cl_element is relative to the taarget and formulate the link target name
+    #   since init is located at / of ${SOURCES_DIR/, _cl_depth is the number of "/" chars in _cl_element
+    # grep -o '/' only returns the part matching / and | grep -c . counts them
+    # this determines how many '..' to put in front of / for the relative path to /init
+#    _cl_depth=$(grep -o '/' <<< "$_cl_element" | grep -c .)
+    # this also counts the slashes, but w/o leaving the shell w grep;
+    # bash: in ${var//pattern/string}, // is global substitution (repl patt w str); ^ means "not"
+    # so it replaces everything that is not / with nothing; the second cmd counts the / chars left
+    _cl_temp="${_cl_element//[^\/]/}"; _cl_depth="${#_cl_temp}"
+#    for ((i=0; i<$_cl_depth; i++)); do _cl_tgtname="${_cl_tgtname}../"; done
+    # use full_repeat() to create the relative path
+    _cl_tgtname=$(full_repeat '../' "$_cl_depth")
+    _cl_tgtname="${_cl_tgtname}init"
+    # we only need to create a link in the location that is actually a directory
+    # other bin dirs that are symlinked to the dir pick it up automatically
+    case "$_cl_type" in
       "directory" )
-        message_n "creating link to /init in directory $element ..."
-        cd ${SOURCES_DIR%/}${element}
-        ln -s  ${tgtname} init
+        _cl_msg="in directory ${BBon}$_cl_element${Boff}, creating link"
+        _cl_msg+=" ${BCon}$_cl_tgtname${Boff} --> ${BGon}/init${Boff} ..."
+        cd "${SOURCES_DIR%/}/${_cl_element#/}"
+        ln -s  "${_cl_tgtname}" init
         right_status $?
         ;;
       * )
-        d_message "init link not needed for ${element}, which is itself a ${type} link" 4
+        d_message "init link not needed for ${_cl_element}, which is itself a ${_cl_type} link" 4
         ;;
     esac
   done
-  cd $old_pwd
+  cd "$_cl_old_pwd"
 }
 
 
 copy_one_part()
-{
+{ # @usate copy_one_part "SOURCE" "DEST"
+  # @note use of cp -a (archive mode) is critical - preserves symlinks, permissions, and timestamps
   d_message_n "Copying [ $1 ] to [ $2 ]..." 2
   if [[ $verbosity -ge 3 ]]
   then cp -av $1 $2 ; d_right_status $? 2
@@ -66,39 +110,40 @@ copy_one_part()
 }
 
 copy_other_parts()
-{
+{ # @usage copy_other_parts
+  # @args none
+  # @note copies init, init.conf, admin files, headers, and other content
   d_message "Copying init ..." 1
-  copy_one_part ${MAKE_DIR%/}/init ${SOURCES_DIR%/}/
+  copy_one_part "${MAKE_DIR%/}/init" "${SOURCES_DIR%/}/"
 
   # copy config file
   d_message "Copying init.conf ..." 1
-  copy_one_part ${config_file} ${SOURCES_DIR%/}/
+  copy_one_part "${config_file}" "${SOURCES_DIR%/}/"
 
   # copy admin files
   d_message "Copying necessary admin files..." 1
-  for i in $admin_files
-  do copy_one_part ${MAKE_DIR%/}/$i ${SOURCES_DIR%/}/; done
+#  for i in $admin_files
+  for ((i=0; i<${#admin_files[@]}; i++))
+  do copy_one_part "${MAKE_DIR%/}/${admin_files[i]#/}" "${SOURCES_DIR%/}/"; done
 
   # copy function_header content
   d_message "Copying function headers content ..." 1
   for ((i=0; i<${#function_headers_src[@]}; i++))
-  do copy_one_part ${function_headers_src[i]} ${function_headers_dest[i]}; done
+  do copy_one_part "${function_headers_src[i]}" "${function_headers_dest[i]}"; done
 
   # copy other required content
   d_message "Copying other required content ..." 1
   for ((i=0; i<${#other_content_src[@]}; i++))
-  do copy_one_part ${other_content_src[i]} ${other_content_dest[i]}; done
-
+  do copy_one_part "${other_content_src[i]}" "${other_content_dest[i]}"; done
 }
 
 copy_dependencies()
 {
   # use the --copy-to-tree feature of lddtree to copy all dependent files to ${SOURCES_DIR%/}/
   # use the --copy-non-elfs feature of lddtree tp copy non-ELF files (e.g. fsadm, lvmdump scripts)
-  #    instead of warn+ignore
-  for x in $( list_executables )
-  do
-    lddtree -v ${x} --copy-to-tree ${SOURCES_DIR%/}/ --copy-non-elfs
+  local _cd_msg _cd_x _cd_selector _cd_searched_file _cd_missing_file _cd_target_name _cd_dir_name
+  for _cd_x in "${executables[@]}"; do
+    lddtree -v "${_cd_x}" --copy-to-tree "${SOURCES_DIR%/}/" --copy-non-elfs
   done
 
   # address rare issue with error "libgcc_s.so.1 must be installed for pthread_cancel to work"
@@ -112,78 +157,108 @@ copy_dependencies()
   #   - then copy it to ${SOURCES_DIR}. Note: in this initramfs, /lib64 is a symlink to /lib )
   if [[ ! -e /lib64/libgcc_s.so.1 ]]
   then
-    selector=$(gcc -v 2>&1 | grep Target | cut -d' ' -f2)
-    searched_file="$( find /usr/ -iname libgcc_s.so.1 2>/dev/null | grep -v 32 | grep ${selector})"
-    cp -v "${searched_file}" /lib64/libgcc_s.so.1
+    _cd_selector=$(gcc -v 2>&1 | grep Target | cut -d' ' -f2)
+    # ensure we don't accidentally grab a 32-bit compatibility library for your 64-bit initramfs
+    _cd_searched_file="$( find /usr/ -iname libgcc_s.so.1 2>/dev/null | grep -v 32 | grep ${_cd_selector})"
+    cp -v "${_cd_searched_file}" /lib64/libgcc_s.so.1
   fi
-  missing_file=/lib64/libgcc_s.so.1
-  target_name=$(basename ${missing_file})
-  dir_name=$(dirname ${missing_file})
+  _cd_missing_file=/lib64/libgcc_s.so.1
+  _cd_target_name=$(basename ${_cd_missing_file})
+  _cd_dir_name=$(dirname ${_cd_missing_file})
 
-  d_message "  about to copy missing file [ ${missing_file} ] to ${SOURCES_DIR}${dir_name}/$target_name " 2
-  [[ ! -e ${SOURCES_DIR}${dir_name}/${target_name} ]] && \
-     copy_one_part "${dir_name}/${target_name}" "${SOURCES_DIR%/}${dir_name}/"
-  chmod 755 ${SOURCES_DIR%/}${dir_name}/${target_name}
+  _cd_msg="  about to copy missing file [ ${_cd_missing_file} ]"
+  _cd_msg+=" to ${SOURCES_DIR%/}/${_cd_dir_name#/}/$_cd_target_name "
+  d_message "$_cd_msg" 2
+  if [[ ! -e ${SOURCES_DIR%/}/${_cd_dir_name#/}/${_cd_target_name} ]]; then
+    copy_one_part "${_cd_dir_name}/${_cd_target_name}" "${SOURCES_DIR%/}/${_cd_dir_name#/}/"
+    message_n "setting permission with chmod 755"
+    chmod 755 ${SOURCES_DIR%/}/${_cd_dir_name#/}/${_cd_target_name}
+    handle_result $?  || die failed to set permissions
+  else
+    message "missing file: ${_cd_missing_file} already exists in ${SOURCES_DIR}"
+  fi
 }
 
-copy_executables() {
-# copy all executables listed in executables list
-d_message "Copying executables ..." 1
-for ((i=0; i< ${#executables[@]}; i++))
-do
-    x="${executables[$i]}"
-    copy_one_part ${x} ${SOURCES_DIR%/}${x}
-done
+
+copy_executables()
+{ # @usage copy_executables
+  # @note copies all resolved executables to their corresponding paths in SOURCES_DIR
+  local _ce_x
+  d_message "Copying executables ..." 1
+  for _ce_x in "${executables[@]}"; do
+    # use the path-safe concatenation pattern
+    copy_one_part "${_ce_x}" "${SOURCES_DIR%/}/${_ce_x#/}"
+  done
 }
 
 build_other_devices()
-{
-  # used to also build block device nodes, now just the console character dev
-  old_dir=$(pwd)
-  cd ${SOURCES_DIR}/dev/
-  d_message "Changed from ${old_dir} to SOURCES_DIR: $(pwd)" 2
-
+{ # @usage build_other_devices
+  # @note mdev handles block devices; this creates the essential static console node
+  local _bod_old_pwd="$PWD"
+  d_message_n "Moving to SOURCES_DIR/dev: ${SOURCES_DIR%/}/dev/" 2
+  cd "${SOURCES_DIR%/}/dev/" 2?dev/null
+  handle_result $?  || die "Could not cd to SOURCES_DIR/dev"
   # build console character device
-  message_n "making console device node in ${SOURCES_DIR}/dev/ ..."
-  mknod -m 600 console c 5 1; right_status $?
-
-  cd ${old_dir}
-  d_message "Changed from SOURCES_DIR: ${SOURCES_DIR} tp old_dir: $(pwd)" 2
+  message_n "making console device node in ${SOURCES_DIR%/}/dev/"
+  # -f (force) isn't a flag for mknod, so we check existence first to prevent error on re-run
+  if [[ ! -c console ]]; then
+    # if it exists but isn't a char device, remove it first
+    [[ -e console ]] && rm -f console
+    # now create the proper char device
+    mknod -m 600 console c 5 1
+    handle_result $? "created" "failed!" || E_message "failed to mknod -m 600 console c 5 1"
+  else
+    echo -e -n " (${BGon}exists${Boff})"
+    right_status $TRUE
+  fi
+  cd "${_bod_old_pwd}"
+  d_message "Returned to: ${_bod_old_pwd}" 2
 }
 
-build_structure() {
-# with input from text file init_structure, replicate the structure of the host system
-#   in ${SOURCES_DIR}, for use by the initramfs
-# create the ${SOURCES_DIR} root of initramfs directory tree
-if [[ ! -d ${SOURCES_DIR} ]]; then
-  message_n "creating ${SOURCES_DIR} ..."
-  mkdir -p ${SOURCES_DIR}
-  right_status $?
-else
-  E_message "Error: ${SOURCES_DIR} exists but should have been rotated out by mkinitramfs"
-fi
-list=$@
-for x in $list
-do
-  fileline=$(file $x)
-  element=$(echo $fileline | awk '{print $1}' | sed 's|:$||')
-  type=$(echo $fileline | awk '{print $2}')
-  case $type in
-    "directory"|"cannot" )
-      message_n "creating directory $element ..."
-      mkdir -p ${SOURCES_DIR%/}${element}
-      right_status $?
-      ;;
-    "symbolic" )
-      target=$(echo ${fileline##*\ })
-      dir_name=$(dirname $element)
-      message_n "creating link $element --> $target in ${SOURCES_DIR%/}${dir_name}..."
-      ln -s ${target} ${SOURCES_DIR%/}${element}
-      right_status $?
-      ;;
-    * )
-      echo "error - bad case"
-      ;;
-  esac
-done
+
+build_structure()
+{ # @usage build_structure "${structure[@]}"
+  # @note replicates host directory structure and symlinks into SOURCES_DIR
+  local _bs_x _bs_fileline _bs_element _bs_type _bs_target _bs_dir_name
+
+  if [[ ! -d "${SOURCES_DIR}" ]]; then
+    message_n "creating ${SOURCES_DIR} ..."
+    mkdir -p "${SOURCES_DIR}"
+    right_status $?
+  else
+    E_message "Error: ${SOURCES_DIR} exists; should have been rotated out"
+  fi
+  # iterate directly over the arguments passed to the function ("${structure[@]}")
+  for _bs_x; do
+    # Skip empty entries or comments
+    [[ -z "$_bs_x" || "$_bs_x" == '#'* ]] && continue
+    _bs_fileline=$(file "$_bs_x")
+    # Use read to split the 'file' output. e.g. "/usr/bin: symbolic link to..."
+    # _ is junk variable for the rest of the line
+    read -r _bs_element _bs_type _ <<< "$_bs_fileline"
+    _bs_element="${_bs_element%:}" # strip trailing colon
+    # handle according to type
+    # (building the tree - only interested in directories or symlinks to directories)
+    case "$_bs_type" in
+      "directory"|"cannot")
+        message_n "creating directory ${_bs_element}"
+        mkdir -p "${SOURCES_DIR%/}/${_bs_element#/}"
+        handle_result $? "created" "failed!" || E_message "failed to mkdir -p ${SOURCES_DIR%/}/${_bs_element#/}"
+        ;;
+      "symbolic")
+        # Extract the last word (the target) from the file line
+        _bs_target="${_bs_fileline##* }"
+        _bs_dir_name=$(dirname "$_bs_element")
+
+        message_n "creating link ${_bs_element} --> ${_bs_target} in ${SOURCES_DIR%/}/${_bs_dir_name#/}"
+        # -f to overwrite if it already exists (idempotency)
+        ln -sf "${_bs_target}" "${SOURCES_DIR%/}/${_bs_element#/}"
+        handle_result $? "linked" "failed!" || \
+            E_message "failed to ln -sf ${_bs_target} ${SOURCES_DIR%/}/${_bs_element#/}"
+        ;;
+      *)
+        E_message "error - unexpected type [$_bs_type] for [$_bs_x]"
+        ;;
+    esac
+  done
 }

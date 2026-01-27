@@ -9,7 +9,6 @@ source ${SCRIPT_HEADER_DIR}/script_header_joetoo
 # script header will over-ride BUILD, but globals must be sourced 1st to get _DIRs
 BUILD="${KERNEL_VERSION}-${DATE_STAMP}"
 
-VERBOSE=$TRUE
 verbosity=2
 
 # identify config files

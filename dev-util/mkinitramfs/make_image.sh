@@ -15,7 +15,6 @@ source GLOBALS
 source ${SCRIPT_HEADER_DIR}/script_header_joetoo
 source ${SOURCES_DIR}/BUILD
 
-VERBOSE=$TRUE
 verbosity=1
 
 d_message "make_image.sh Debug - dump config" 2
@@ -24,7 +23,9 @@ d_message "MAKE_DIR: [ ${MAKE_DIR} ]" 2
 d_message "SOURCES_DIR: [ ${SOURCES_DIR} ]" 2
 
 make_initramfs()
-{
+{ # @usage make_initramfs
+  # @note packs SOURCES_DIR into a compressed CPIO archive in /boot
+
   # if target file already exists, archive it to *.old
   [ -f /boot/initramfs-${BUILD} ] && cp -v /boot/initramfs-${BUILD} /boot/initramfs-${BUILD}.old
 
@@ -36,6 +37,15 @@ separator "Make initramfs Image"  "makeinitramfs-$BUILD"
 
 # must be run by root with boot mounted already
 # go to sources dir, and run function above to create initramfs image file
-checkroot && checkboot && \
-old_pwd=$PWD && cd "${SOURCES_DIR}" && make_initramfs && cd "${old_pwd}"
+checkroot; checkboot;
+old_pwd="$PWD"
+if [ -d "${SOURCES_DIR}" ]; then
+    message_n "moving to SOURCES_DIR: [${SOURCES_DIR}]"
+    cd "${SOURCES_DIR}"
+    handle_result $? || die "failed to cd ${SOURCES_DIR}"
+    make_initramfs
+else
+    die "SOURCES_DIR [${SOURCES_DIR}] does not exist"
+fi
+cd "${old_pwd}"
 d_message "all done" 1

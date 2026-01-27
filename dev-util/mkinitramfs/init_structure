@@ -1,128 +1,155 @@
 #!/bin/bash
 
 # bins need to be listed separately, for link-making
-bins="/bin /sbin /usr/sbin /usr/bin"
+bins=( /bin /sbin /usr/sbin /usr/bin )
 
-libs="/lib /lib64 /usr/lib /usr/lib64"
+libs=( /lib /lib64 /usr/lib /usr/lib64 )
 
 # start with the root of the tree and
 # include the bins and libs last becuase some of them may be links in
-structure="/ \
-/usr \
-/usr/share \
-/proc \
-/proc/sys \
-/proc/sys/kernel \
-/mnt \
-/mnt/card \
-/mnt/thumb \
-/etc \
-/etc/lvm \
-/etc/modules \
-/newroot \
-/newroot/usr \
-/newroot/dev \
-/sys \
-/sys/class \
-/dev \
-/dev/vc \
-/dev/mapper \
-/dev/fb \
-/dev/misc \
-/var \
-/var/lock \
-/root \
-/run \
-/run/lock \
-$bins $libs \
-"
-#/proc/partitions \     # -- this is an empty file
+# Caution: list directories or symlinks to directories only
+# 20260126 - converted from string word list to array
+structure=(
+  /
+  /usr
+  /usr/share
+  /proc
+  /proc/sys
+  /proc/sys/kernel
+  /mnt
+  /mnt/card
+  /mnt/thumb
+  /etc
+  /etc/lvm
+  /etc/modules
+  /newroot
+  /newroot/usr
+  /newroot/dev
+  /sys
+  /sys/class
+  /dev
+  /dev/vc
+  /dev/mapper
+  /dev/fb
+  /dev/misc
+  /var
+  /var/lock
+  /root
+  /run
+  /run/lock
+  ${bins[@]} ${libs[@]}
+)
+#  /proc/partitions     # -- this is an empty file
 
-# define lists of files that need to be copied
+# singluar config file (not array)
 config_file="${CONF_DIR}/init.conf"
-admin_files="README LICENSE"
+# define lists of files that need to be copied
+# 20260126 - converted from string word list to array
+admin_files=( README LICENSE )
+
+# identify headers to be copied (_src) and for each, the destination in intramfs (_dest)
 # ash functions are required in the initramfs (bash functions load_ list_ dump_executables are not)
-function_headers_src=("${MAKE_DIR}/validated_functions_header"  "${MAKE_DIR}/testing_functions_header" "${MAKE_DIR}/common_ash_functions_header" )
-function_headers_dest=("${SOURCES_DIR}/"                       "${SOURCES_DIR}/"                       "${SOURCES_DIR}/" )
-other_content_src=("/usr/sbin/script_header_joetoo" "${MAKE_DIR}/etc/lvm/lvm.conf"        "${MAKE_DIR}/etc/modules")
-other_content_dest=("${SOURCES_DIR}/"               "${SOURCES_DIR}/etc/lvm/"             "${SOURCES_DIR}/etc/")
+function_headers_src=(
+  "${MAKE_DIR}/validated_functions_header"
+  "${MAKE_DIR}/testing_functions_header"
+  "${MAKE_DIR}/common_ash_functions_header" )
+function_headers_dest=(
+  "${SOURCES_DIR}/"
+  "${SOURCES_DIR}/"
+  "${SOURCES_DIR}/" )
+# identify other content to be copied (_src) and for each, the destination in intramfs (_dest)
+other_content_src=(
+  "/usr/sbin/script_header_joetoo"
+  "${MAKE_DIR}/etc/lvm/lvm.conf"
+  "${MAKE_DIR}/etc/modules" )
+other_content_dest=(
+  "${SOURCES_DIR}/"
+  "${SOURCES_DIR}/etc/lvm/"
+  "${SOURCES_DIR}/etc/" )
 
-# these executables are used in the init script and therefor must be in the filestructure
+# identify executables used in the init script and therefor must be in the filestructure
 # 28 Dec 2024 - old method abandoned for merged-usr-like layout
+# 26 Jan 2026 - added tput for better terminal dimesion support
+# (one executable per line, no blanks, please - avoid word splitting)(fixed by array)
+# 20260126 - converted from string word list to array
 #
-# one executable per line, no blanks, please
-#
-init_executables="blkid \
-busybox \
-cryptsetup \
-e2fsck \
-find \
-findfs \
-fsadm \
-fsck \
-fsck.ext2 \
-fsck.ext3 \
-fsck.ext4 \
-fsck.fat \
-fsck.vfat \
-gfind \
-kmod \
-lsblk \
-lvm \
-lvmdump \
-modprobe \
-shred \
-udevadm \
-"
-
-
+init_executables=(
+  blkid
+  busybox
+  cryptsetup
+  e2fsck
+  find
+  findfs
+  fsadm
+  fsck
+  fsck.ext2
+  fsck.ext3
+  fsck.ext4
+  fsck.fat
+  fsck.vfat
+  gfind
+  kmod
+  lsblk
+  lvm
+  lvmdump
+  modprobe
+  shred
+  tput
+  udevadm
+)
 
 #   references to busybox.  just link everything in busybox, except commands we do NOT want busybox to run --
 #   blkid, e2fsck, find, findfs, fsck, (fsck.ext2, fsck.ext3, fsck.ext4), modprobe and of course our own init
-busybox_link_list="\
-    [ [[ acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev \
-    brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt \
-    chvt cksum clear cmp comm conspy cp cpio crond cryptpw cttyhack cut date dd deallocvt delgroup \
-    deluser depmod devmem df dhcprelay diff dirname dmesg dnsdomainname dos2unix du dumpkmap \
-    dumpleases echo ed egrep eject env envdir envuidgid ether-wake expand expr false fatattr fbset \
-    fdflush fdformat fdisk fgconsole fgrep flock free freeramdisk fstrim fsync ftpd \
-    fuser getopt getty ginit grep groups gunzip gzip halt hd hdparm head hexdump hostname httpd \
-    hwclock id ifconfig ifdown ifenslave ifplugd ifup insmod install ionice iostat ip ipaddr \
-    ipcrm ipcs iplink iproute iprule iptunnel kbd_mode kill killall killall5 last less linux32 \
-    linux64 linuxrc ln loadfont loadkmap login losetup lpq lpr ls lsattr lsmod lsof lspci lsusb \
-    lzcat lzma lzop lzopcat makedevs man md5sum mdev mesg microcom mkdir mkdosfs mke2fs mkfifo \
-    mkfs.ext2 mkfs.vfat mknod mkpasswd mkswap mktemp modinfo more mount mountpoint mpstat mt \
-    mv nameif nanddump nandwrite nbd-client nc netstat nice nmeter nohup nslookup ntpd openvt passwd \
-    patch pgrep pidof ping pipe_progress pivot_root pkill pmap popmaildir poweroff powertop printenv \
-    printf ps pscan pstree pwd pwdx raidautorun rdate readahead readlink realpath reboot renice reset \
-    resize rev rm rmdir rmmod route rtcwake runlevel rx script scriptreplay sed sendmail seq setarch \
-    setconsole setfont setkeycodes setlogcons setserial setsid setuidgid sh sha1sum sha256sum sha3sum \
-    sha512sum showkey shuf sleep softlimit sort split start-stop-daemon stat strings stty su sum \
-    swapoff swapon switch_root sync sysctl tac tail tar tee telnet telnetd test tftp tftpd time \
-    timeout top touch tr traceroute true tty ttysize tunctl ubiattach ubidetach ubimkvol ubirmvol \
-    ubirsvol ubiupdatevol udhcpc udhcpd umount uname unexpand uniq unix2dos unlink unlzma unlzop unxz \
-    unzip uptime users usleep vconfig vi vlock volname wall watch watchdog wc wget which who whoami \
-    whois xargs xz xzcat yes zcat zcip"
+# 20260126 - converted from string word list to array
+busybox_link_list=(
+    '[' '[[' acpid addgroup adduser adjtimex arp arping ash awk base64 basename bb bbsh blockdev
+    brctl bunzip2 bzcat bzip2 cal cat catv chat chattr chgrp chmod chown chpasswd chpst chroot chrt
+    chvt cksum clear cmp comm conspy cp cpio crond cryptpw cttyhack cut date dd deallocvt delgroup
+    deluser depmod devmem df dhcprelay diff dirname dmesg dnsdomainname dos2unix du dumpkmap
+    dumpleases echo ed egrep eject env envdir envuidgid ether-wake expand expr false fatattr fbset
+    fdflush fdformat fdisk fgconsole fgrep flock free freeramdisk fstrim fsync ftpd
+    fuser getopt getty ginit grep groups gunzip gzip halt hd hdparm head hexdump hostname httpd
+    hwclock id ifconfig ifdown ifenslave ifplugd ifup insmod install ionice iostat ip ipaddr
+    ipcrm ipcs iplink iproute iprule iptunnel kbd_mode kill killall killall5 last less linux32
+    linux64 linuxrc ln loadfont loadkmap login losetup lpq lpr ls lsattr lsmod lsof lspci lsusb
+    lzcat lzma lzop lzopcat makedevs man md5sum mdev mesg microcom mkdir mkdosfs mke2fs mkfifo
+    mkfs.ext2 mkfs.vfat mknod mkpasswd mkswap mktemp modinfo more mount mountpoint mpstat mt
+    mv nameif nanddump nandwrite nbd-client nc netstat nice nmeter nohup nslookup ntpd openvt passwd
+    patch pgrep pidof ping pipe_progress pivot_root pkill pmap popmaildir poweroff powertop printenv
+    printf ps pscan pstree pwd pwdx raidautorun rdate readahead readlink realpath reboot renice reset
+    resize rev rm rmdir rmmod route rtcwake runlevel rx script scriptreplay sed sendmail seq setarch
+    setconsole setfont setkeycodes setlogcons setserial setsid setuidgid sh sha1sum sha256sum sha3sum
+    sha512sum showkey shuf sleep softlimit sort split start-stop-daemon stat strings stty su sum
+    swapoff swapon switch_root sync sysctl tac tail tar tee telnet telnetd test tftp tftpd time
+    timeout top touch tr traceroute true tty ttysize tunctl ubiattach ubidetach ubimkvol ubirmvol
+    ubirsvol ubiupdatevol udhcpc udhcpd umount uname unexpand uniq unix2dos unlink unlzma unlzop unxz
+    unzip uptime users usleep vconfig vi vlock volname wall watch watchdog wc wget which who whoami
+    whois xargs xz xzcat yes zcat zcip
+)
 
 # define lists of links that need to be created in /sbin
 #   references to lvm
-lvm_link_list="\
-    lvchange lvconvert lvcreate lvdisplay lvextend lvmchange lvmconfig \
-    lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize \
-    lvs lvscan pvchange pvck pvcreate pvdisplay pvmove pvremove \
-    pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate \
-    vgdisplay vgexport vgextend vgimport vgimportclone vgmerge vgmknodes \
-    vgreduce vgremove vgrename vgs vgscan vgsplit"
+# 20260126 - converted from string word list to array
+lvm_link_list=(
+    lvchange lvconvert lvcreate lvdisplay lvextend lvmchange lvmconfig
+    lvmdiskscan lvmsadc lvmsar lvreduce lvremove lvrename lvresize
+    lvs lvscan pvchange pvck pvcreate pvdisplay pvmove pvremove
+    pvs vgcfgbackup vgcfgrestore vgchange vgck vgconvert vgcreate
+    vgdisplay vgexport vgextend vgimport vgimportclone vgmerge vgmknodes
+    vgreduce vgremove vgrename vgs vgscan vgsplit
+)
 
 # use this set of arrays to define other links that need to be created
 # in the associated dirs (each "column" is dir, target, link-name)
 
-#   initialize the arrays with values associated with /
+# initialize the arrays with values associated with /
 other_link_dir=(     "/"      )
 other_link_target=(  "init"   )
 other_link_name=(    "linuxrc")
 
-#   add to the arrays values associated with /dev/
+# add to the arrays values associated with /dev/
 other_link_dir+=(    "/dev/vc/"   )
 other_link_target+=( "../console" )
 other_link_name+=(   "0"          )
+
+# additional?
