@@ -7,7 +7,7 @@
 # Note: 14 September 2025 - trying to convert this program to run as a "run_sequence" with "process_cmdline"
 #   which will require it to have its own reference to "/etc/${BPN}" - where functions in script_header_joetoo_extended
 #   will look to get local.usage, local.cmdline_arguments, local.cmdline_compound_arguments
-#   This program will define BPN=$(basename ${config_dir})/${PN} where PN=$(basename $0) [crossbuild-tools/cb-layout-device]
+#   This program will define BPN=$(basename "${config_dir}")/${PN} where PN=$(basename $0) [crossbuild-tools/cb-layout-device]
 #   rather than load the BPN file created by the parent package which uses BPN= its own PN
 
 source /usr/sbin/script_header_joetoo
@@ -19,12 +19,13 @@ PN=$(basename $0)
 
 config_dir="/etc/crossbuild-tools"
 message_n "sourcing BUILD ..."
-source ${config_dir%/}/BUILD ; right_status $?
+source "${config_dir%/}/BUILD" ; right_status $?
 #message_n "sourcing BPN ..."
 #source ${config_dir%/}/BPN ; right_status $?
 message_n "assigning BPN = $(basename ${config_dir})/${PN}.local"
-BPN=$(basename ${config_dir})/${PN}.local || die "failed to assign BPN" ; right_status $TRUE
-source /usr/sbin/script_header_joetoo_extended
+BPN="$(basename ${config_dir})/${PN}.local" || die "failed to assign BPN" ; right_status $TRUE
+message_n "sourcing script_header_joetoo_extended ..."
+source /usr/sbin/script_header_joetoo_extended ; right_status $?
 
 VERBOSE=$TRUE
 # set default verbosity only if it is not already set
@@ -104,15 +105,15 @@ initialize_variables() {
     initialize_vars ${hidden_varlist}
 
     d_message_n "re-assigning config_dir = /etc/crossbuild-tools" 2
-    config_dir="/etc/crossbuild-tools" ; d_right_status $? 2
+    config_dir=/etc/crossbuild-tools ; d_right_status $? 2
 
     d_message_n "sourcing BUILD ..." 2
-    source ${config_dir%/}/BUILD ; d_right_status $? 2
+    source "${config_dir%/}/BUILD" ; d_right_status $? 2
 
 #    message_n "sourcing BPN ..."
 #    source ${config_dir%/}/BPN ; right_status $?
     d_message_n "re-assigning BPN = $(basename ${config_dir})/${PN}.local" 2
-    BPN=$(basename ${config_dir})/${PN}.local || die "failed to assign BPN" ; d_right_status $TRUE 2
+    BPN="$(basename ${config_dir})/${PN}.local" || die "failed to assign BPN" ; d_right_status $TRUE 2
     d_message_n "sourcing /usr/sbin/script_header_joetoo_extended" 2
     source /usr/sbin/script_header_joetoo_extended ; d_right_status $? 2
 
@@ -145,8 +146,8 @@ initialize_variables() {
     d_message_n "assigning configfile = cb-layout-device.conf" 2
     configfile="cb-layout-device.conf"  ; d_right_status $? 2
     d_message_n "sourcing config file cb-layout-device.conf ..." 2
-    if [ -e ${config_dir%/}/${configfile} ] ; then
-        source ${config_dir%/}/${configfile} ; result=$?
+    if [ -e "${config_dir%/}/${configfile#/}" ] ; then
+        source "${config_dir%/}/${configfile#/}" ; result=$?
         if [ $result -eq 0 ] ; then
             d_right_status $TRUE 2
         else
@@ -237,15 +238,15 @@ assign_BOARD_and_OUTPUTDEVICE_derived_variables() {
 
     # calculate disk size in MiB; LC_NUMERIC is set to en_US.UTF-8 at the top
     d_message_n "calculating disksize_bytes" 2
-    disksize_bytes=$(fdisk -l ${OUTPUTDEVICE} | head -n1 | awk '{print $5}') || \
+    disksize_bytes=$(fdisk -l "${OUTPUTDEVICE}" | head -n1 | awk '{print $5}') || \
         die "failed to calculate disksize_bytes"
     d_do echo -e -n " ($disksize_bytes)" 2 ; d_right_status $? 2
     d_message_n "calculating disksize_MiB" 2
-    disksize_MiB=$(( $disksize_bytes / $((1024 * 1024)) )) || \
+    disksize_MiB=$(( "$disksize_bytes" / $((1024 * 1024)) )) || \
         die "failed to calculate disksize_MiB"
     d_do echo -e -n " ($disksize_MiB)" 2 ; d_right_status $? 2
     d_message_n "calculating disksize_GiB" 2
-    disksize_GiB=$(( $disksize_bytes / $((1024 * ${MiB})) )) || \
+    disksize_GiB=$(( "$disksize_bytes" / $((1024 * ${MiB})) )) || \
         die "failed to calculate disksize_GiB"
     d_do echo -e -n " ($disksize_GiB)" 2 ; d_right_status $? 2
     d_message_n "calculating ez_disksize_bytes" 2
@@ -399,7 +400,7 @@ ingest_blkid_template() {
         d_message "${LBon}reading LINE:${Boff} $LINE" 5
         var=$(echo $(echo $LINE | cut -d':' -f1)) ; d_message "var: $var" 5
         val=$(echo $(echo $LINE | cut -d':' -f2)) ; d_message "val: $val" 5
-        p_num=$(right_most ${var}) ; d_message "p_num: $p_num" 5
+        p_num=$(right_most "${var}") ; d_message "p_num: $p_num" 5
         LABEL=""; TYPE="" # (re)initialize
         eval "${val}"  # assign LABEL, TYPE, etc
         eval "blkid_p${p_num}_LABEL=${LABEL}" ; d_message "assigned blkid_p${p_num}_LABEL=${LABEL}" 5
@@ -407,7 +408,7 @@ ingest_blkid_template() {
         template_varlist+=" blkid_p${p_num}_LABEL blkid_p${p_num}_TYPE"
     done <<< "$( grep ':' ${config_dir%/}/${blkid_template_dir%/}/${blkid_template} | grep -v '^#')"
     right_status $?
-    [ $p_count -ne $partition_count ] && die "blkid partition count does not match sfdisk partition count"
+    [ "$p_count" -ne "$partition_count" ] && die "blkid partition count does not match sfdisk partition count"
     return 0
 }
 
@@ -425,15 +426,15 @@ ingest_lsblk_template() {
     lv_count=0
     while read LINE ; do
         eval "$(echo $LINE | awk '{ print "NAME="$1 " SIZE="$2 " TYPE="$3 " MOUNTPOINTS="$4 }')"
-        case $TYPE in
+        case "$TYPE" in
             "crypt" )
-                lsblk_crypt_NAME=$NAME ; lsblk_crypt_SIZE=$SIZE
+                lsblk_crypt_NAME="$NAME" ; lsblk_crypt_SIZE="$SIZE"
                 d_message "lsblk_crypt_NAME: $lsblk_crypt_NAME" 5
                 d_message "lsblk_crypt_SIZE: $lsblk_crypt_SIZE" 5
                 template_varlist+=" lsblk_crypt_NAME lsblk_crypt_SIZE"
                 ;;
             "disk"  )
-                lsblk_disk_NAME=$NAME ; lsblk_disk_SIZE=$SIZE
+                lsblk_disk_NAME="$NAME" ; lsblk_disk_SIZE="$SIZE"
                 d_message "lsblk_disk_NAME: $lsblk_disk_NAME" 5
                 d_message "lsblk_disk_SIZE: $lsblk_disk_SIZE" 5
                 template_varlist+=" lsblk_disk_NAME lsblk_disk_SIZE"
@@ -462,9 +463,9 @@ ingest_lsblk_template() {
         esac
     done <<< "$( grep -v '^NAME' ${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template})"
     right_status $?
-    lsblk_lv_count=${lv_count}
+    lsblk_lv_count="${lv_count}"
     template_varlist+=" lsblk_lv_count"
-    [ $p_count -ne $partition_count ] && die "lsblk partition count does not match sfdisk partition count"
+    [ "$p_count" -ne "$partition_count" ] && die "lsblk partition count does not match sfdisk partition count"
     return 0
 }
 
@@ -477,7 +478,7 @@ set-crypt_keydev() {
     msg+="    by name (e.g. /dev/sda1)\n"
     msg+="    by UUID (e.g. AB94-DF90\n"
     msg+="or by label (e.g. KEY or CARD)\n"
-    message ${msg}
+    message "${msg}"
     E_message "${BMon}if you skip this step, external device keying will not be enabled${Boff}"
     echo
     response="n"
@@ -499,13 +500,11 @@ set-crypt_passphrase() {
     message "  (${BMon}This will be used in formatting luks-encrypted partition(s)${Boff})"
     echo
     candidate1=X ; candidate2=Z
-    while [[ "${candidate1}" != "${candidate2}" ]] ; do
-        echo -en " ${BGon}*${Boff} Enter crypt_passphrase: "
-        read -s candidate1 ; echo
-        echo -en " ${BGon}*${Boff} Re-enter to confirm crypt_passphrase: "
-        read -s candidate2 ; echo
+    while [[ ! "${candidate1}" == "${candidate2}" ]] ; do
+        candidate1=$(ask_pass " ${BGon}*${Boff} Enter crypt_passphrase: ")
+        candidate2=$(ask_pass " ${BGon}*${Boff} Re-enter to confirm crypt_passphrase: ")
         [[ "${candidate1}" != "${candidate2}" ]] && E_message "${BRon}candidate passphrases do not match${Boff}"
-    done || die "failed while trying to get crypt_passphrase"
+    done
     message_n "setting that crypt_passphrase ..."
     export crypt_passphrase="${candidate1}" || die "failed to set crypt_passphrase"
     echo -en " ${BGon}(success)${Boff}" ; right_status $TRUE
@@ -514,8 +513,8 @@ set-crypt_passphrase() {
 
 set-DEV_HOSTNAME() {
     #  set DEV_HOSTNAME - used in mount-the-rest.hostname script and if LUKS also in vg_hostname-
-    [ -z ${DEV_HOSTNAME} ] && DEV_HOSTNAME="demobox"
-    [ -f /usr/${TARGET}/etc/hostname ] && read -r candidate2 < /usr/${TARGET}/etc/hostname
+    [ -z "${DEV_HOSTNAME}" ] && DEV_HOSTNAME="demobox"
+    [ -f "/usr/${TARGET}/etc/hostname" ] && read -r candidate2 < "/usr/${TARGET}/etc/hostname"
 
     if [ ! $INTERACTIVE ] ; then
         # if not interactive, then go with template or default
@@ -525,7 +524,7 @@ set-DEV_HOSTNAME() {
         message "${BYon}Please select a hostname for this system${Boff}"
         message "  (${BMon}This will be used in naming volume groups used in cryptsetup layout${Boff})"
         message "  ${BYon}currently, DEV_HOSTNAME = [ $DEV_HOSTNAME ]"
-        if [ ! -z ${candidate2} ] ; then
+        if [ ! -z "${candidate2}" ] ; then
             E_message "${BMon}However, a (cross)build image is mounted at /usr/${TARGET}${Boff}"
             message "   ${BMon}and it's /etc/hostname contains \"${LBon}${candidate2}${BMon}\"${Boff}"
             message "   ${BYon}Type (s)kip if you want to use that hostname instead${Boff}"
@@ -563,12 +562,12 @@ set-DEV_HOSTNAME() {
 }
 
 luks_lvm_config() {
-    separator ${PN} "(${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
     d_message "in ${FUNCNAME[0]}" 4
 
     # (1) this function only runs for LUKS, so sanity check that
     message_n "sanity-checking luks format request"
-    if [ ${partition_count} -le 1 ] ; then
+    if [ "${partition_count}" -le 1 ] ; then
         echo -e -n " (${BRon}only ${partition_count} partition(s) defined${Boff})" ; right_status 1
         die "invalid partition configuration for joetoo use of luks container"
     else
@@ -580,7 +579,7 @@ luks_lvm_config() {
 
     # check/get luks passphrase
     message_n "checking if crypt_passphrase is assigned"
-    if [ -z $crypt_passphrase ] ; then
+    if [ -z "$crypt_passphrase" ] ; then
         echo -e " (crypt_passphrase ${BRon}unset${Boff})"
         set-crypt_passphrase
 ###        d_message "crypt_passphrase: $crypt_passphrase" 1
@@ -590,11 +589,11 @@ luks_lvm_config() {
 
     # (4) if crypt_keydev is set, use it to get keyfile
     message_n "checking for keying device crypt_keydev"
-    if [ -z $crypt_keydev ] ; then
+    if [ -z "$crypt_keydev" ] ; then
         # otherwise, scan for default crypt_keydev and if found, use that to set keyfile
         echo -e -n " (${BRon}unset${Boff}, scanning)"
         eval $(lsblk -P -o NAME,LABEL,MOUNTPOINTS | grep 'LABEL="KEY"')
-        if [ -z $NAME ] ; then
+        if [ -z "$NAME" ] ; then
             echo " (not found)"
             set-crypt_keydev
             d_message "crypt_keydev is now set [${crypt_keydev}]" 3
@@ -603,14 +602,14 @@ luks_lvm_config() {
             echo -n " (scanned: ${crypt_keydev})" ; right_status $TRUE
         fi
     else
-        echo -n " (alreaady assigned: ${crypt_keydev})"  ; right_status $TRUE
+        echo -n " (already assigned: ${crypt_keydev})"  ; right_status $TRUE
     fi
     # mount crypt_keydev, verify keyfile exists, assign keyfile variable
-    get_luks_keyfile || die "failed to get_luks_keyfile"
+    get_luks_keyfile "${crypt_keydev}" || die "failed to get_luks_keyfile"
 
     # (5) validate keyfile, which should be assigned now
     message_n "validating keyfile"
-    if [ -f ${keyfile} ] ; then
+    if [ -f "${keyfile}" ] ; then
         echo -e -n " (${keyfile})" ; right_status $TRUE
     else
         echo -e -n " (${BRon}${keyfile} does not exist${Boff})" ; right_status 1
@@ -718,20 +717,20 @@ calculate_lv_sizes() {
         # for home, tmp, srv - allocate proportionally (this_lv:this_crypt :: template_lv:template_crypt)
         for lv_name in home tmp srv; do
             # look up the size of this LV in lsblk template; then convert to GiB
-            template_lv_lookup=$(grep 'lvm' ${config_dir%/}/${lsblk_template_dir}/${lsblk_template} | grep ${lv_name} | awk '{print $2}') || \
+            template_lv_lookup=$(grep 'lvm' "${config_dir%/}/${lsblk_template_dir}/${lsblk_template}" | grep ${lv_name} | awk '{print $2}') || \
                 die "failed to get template_lv_lookup"
             d_message "${lv_name} template_lv_lookup: ${template_lv_lookup}" 4
-            convert_size_to_GiB ${template_lv_lookup} || die "failed convert_size_to_GiB template_lv_lookup"
-            template_lv_size=${gibval}
+            convert_size_to_GiB "${template_lv_lookup}" || die "failed convert_size_to_GiB template_lv_lookup"
+            template_lv_size="${gibval}"
             d_message "${lv_name} template_lv_size: ${template_lv_size}" 4
             # calculate the proportional size for this LV
            # allocate the same fraction of space as was allocated in the part of the template not allocated to fixed-size volumes
             # (scale up/down depending on relative size of template and this disk)
             result=0
-            map ${template_lv_size} 0 ${template_remainder} 0 ${this_remainder} 1 || \
+            map "${template_lv_size}" 0 "${template_remainder}" 0 "${this_remainder}" 1 || \
                 die "failed to calculate converted_size"
             converted_size="${result}G"  # add the "G" for sake of lvcreate -L
-            lv_size[${lv_name}]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
+            lv_size["${lv_name}"]="${converted_size}" || die "failed to set lv_size[${lv_name}]"
             d_message "new lv_size[${lv_name}]: ${lv_size[${lv_name}]}" 4
         done
         # space will be allocated for "extra" LV *after* other LVs have actually been created/formatted
@@ -747,21 +746,21 @@ convert_size_to_GiB() {
     scale=${2:-1}  # set scale to 1 if not supplied on command line as $2
     gibval=0  #initialize
     # read input_size and convert to GiB if needed
-    units=$(right_most ${input_size})
+    units=$(right_most "${input_size}")
 #    units=$(echo ${input_size} | rev | cut -c1)
-    val=${input_size%${units}}
+    val="${input_size%${units}}"
 #    d_message "input_size: $input_size" 5
 #    d_message "scale: $scale" 5
 #    d_message "units: $units" 5
 #    d_message "val: $val" 5
     case ${units} in
         [tT]  ) gibval=$(echo "scale=$scale; (($val * 1024))" | bc -l) && return 0 ;;
-        [gG]  ) gibval=$val && return 0 ;;
+        [gG]  ) gibval="$val" && return 0 ;;
         [mM]  ) gibval=$(echo "scale=$scale; (( $val / 1024.0 ))" | bc -l) && return 0 ;;
         [kK]  ) gibval=$(echo "scale=$scale; (( $val / ${MiB} ))" | bc -l) && return 0 ;;
         [0-9] )
             # no units provided
-            val=${input_size}
+            val="${input_size}"
             gibval=$(echo "scale=$scale; (( $val / ${GiB} ))" | bc -l) && return 0 ;;
         *     ) E_message "invalid units in convert_size_to_GiB"
     esac
@@ -817,13 +816,13 @@ layout_partitions() {
         message "About to run sfdisk script to replicate template layout on OUTPUTDEVICE [$OUTPUTDEVICE]"
         confirm_continue_or_exit
     fi
-    sfdisk ${OUTPUTDEVICE} < ${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template} || \
+    sfdisk "${OUTPUTDEVICE}" < "${config_dir%/}/${sfdisk_template_dir%/}/${sfdisk_template}" || \
         die "sfdisk script failed"
     return 0
 }
 
 format_partitions() {
-    separator ${PN} "(${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
     d_message "in ${FUNCNAME[0]}" 4
 
     # use blkid template data (already ingested) to format partitions
@@ -885,7 +884,7 @@ format_partitions() {
 }
 
 layout_cryptsetup_lvm() {
-    separator ${PN} "(${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
     d_message "in ${FUNCNAME[0]}" 4
 
     # luks_partition_device and edev were set in luks_lvm_config (and shown in display_configuration)
@@ -956,17 +955,17 @@ layout_cryptsetup_lvm() {
     done
 
     for LVM_name in ${LVM_list}; do
-        LVM_size=${lv_size[${LVM_name}]}
+        LVM_size="${lv_size[${LVM_name}]}"
         d_message "LVM_name: $LVM_name ; LVM_size: $LVM_size" 5
         d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
         message_n "creating LV ${LVM_name} with size ${LVM_size} on VG vg_${DEV_HOSTNAME}"
-        lvcreate -L ${LVM_size} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
+        lvcreate -L "${LVM_size}" -n "${LVM_name}" vg_"${DEV_HOSTNAME}" >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
         right_status $TRUE
 
         message_n "formatting LV vg_${DEV_HOSTNAME}-${LVM_name}"
         if [[ "${LVM_name}" == "swap" ]] ; then
-            mkswap -L "swap_fs" /dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name} 2>/dev/null >/dev/null || \
+            mkswap -L "swap_fs" "/dev/mapper/vg_${DEV_HOSTNAME}-${LVM_name}" 2>/dev/null >/dev/null || \
                 die "failed to mkswap"
             right_status $TRUE
         else
@@ -982,7 +981,7 @@ layout_cryptsetup_lvm() {
     # (HOWEVER, vgs reports G as multiples of 1000 and g as multiples of 1024, whereas lvcreate
     #  treats both as representing multiples of 1024, so we CANNOT use the vgs --units G number as
     # input to lvcreate for this final volume - there won't be space left; we have to use "--units g")
-    unused=$(vgs --noheadings --units g  -o vg_free vg_${DEV_HOSTNAME})
+    unused=$(vgs --noheadings --units g  -o vg_free "vg_${DEV_HOSTNAME}")
     d_message "unused: $unused" 5
     convert_size_to_GiB ${unused} 1  # scale to 1 digit after decimal to ensure space (round down)
     lv_size[extra]="${gibval}G"   # append G so lvcreate will treat as GiB (mult. of 1024)
@@ -991,7 +990,7 @@ layout_cryptsetup_lvm() {
     d_message "lv_size[${LVM_name}]: ${lv_size[${LVM_name}]}" 5
     # lvcreate
     message_n "creating LV ${LVM_name} with size ${lv_size[${LVM_name}]} on VG vg_${DEV_HOSTNAME}"
-        lvcreate -L ${lv_size[${LVM_name}]} -n ${LVM_name} vg_${DEV_HOSTNAME} >/dev/null || \
+        lvcreate -L "${lv_size[${LVM_name}]}" -n "${LVM_name}" "vg_${DEV_HOSTNAME}" >/dev/null || \
             die "failed to lvcreate vg_${DEV_HOSTNAME}-${LVM_name}"
         right_status $TRUE
     # format
@@ -1024,18 +1023,18 @@ mount_and_populate() {
     d_message "(${PN}) ROOT_DEVICE: $ROOT_DEVICE   ROOT_UUID: $ROOT_UUID" 5
 
     message_n "mounting new root dev [ /dev/mapper/vg_${DEV_HOSTNAME}-root ] ..."
-    mount ${ROOT_DEVICE} ${root_dev_mountpoint} 2>/dev/null || die "failed to mount ${ROOT_DEVICE} ${root_dev_mountpoint} "
+    mount "${ROOT_DEVICE}" "${root_dev_mountpoint}" 2>/dev/null || die "failed to mount ${ROOT_DEVICE} ${root_dev_mountpoint} "
     right_status $TRUE
 
     # populate the chroot-prep script
     message_n "populating ${chroot_prep_script} ..."
-    cp -a ${config_dir%/}/mkdev-files/chroot-prep ${root_dev_mountpoint%/}/${chroot_prep_script} || \
+    cp -a "${config_dir%/}/mkdev-files/chroot-prep" "${root_dev_mountpoint%/}/${chroot_prep_script}" || \
         die "failed to copy chroot-prep script to ${root_dev_mountpoint%/}/"
     right_status $TRUE
 
     # populate the chroot-commands file
     message_n "populating ${chroot_command_textsfile} ..."
-    cp -a ${config_dir%/}/mkdev-files/chroot-commands ${root_dev_mountpoint%/}/${chroot_command_textsfile} || \
+    cp -a "${config_dir%/}/mkdev-files/chroot-commands" "${root_dev_mountpoint%/}/${chroot_command_textsfile}" || \
         die "failed to copy chroot-commands text file to ${root_dev_mountpoint%/}/"
     right_status $TRUE
 
@@ -1055,14 +1054,14 @@ write_mount_the_rest_script() {
     # populate the mount-the-rest.<hostname> script, to mount other LVs and/or partitions
     # initialize script file by writing header line with ">"
     message_n "creating ${mount_the_rest_script} ..."
-    echo "#!/bin/bash" > ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    echo "#!/bin/bash" > "${root_dev_mountpoint%/}/${mount_the_rest_script}" ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
     esac
     # append mountpoint line
     message_n "appending mountpoint=${root_dev_mountpoint} to ${mount_the_rest_script}"
-    echo "mountpoint=${root_dev_mountpoint}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    echo "mountpoint=${root_dev_mountpoint}" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}" ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1071,7 +1070,7 @@ write_mount_the_rest_script() {
     # if LUKS, append a root_vg line to identify the VG parent of all LVs
     if [ $LUKS ] ; then
         message_n "appending root_vg line to identify the VG parent of all LVs"
-        echo "root_vg=vg_${DEV_HOSTNAME}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+        echo "root_vg=vg_${DEV_HOSTNAME}" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}" ; result=$?
         case $result in
             0 ) right_status $TRUE ;;
             * ) right_status 1; ERROR=$TRUE ;;
@@ -1086,7 +1085,7 @@ write_mount_the_rest_script() {
     while read -r LINE ; do
         LABEL=""; TYPE=""; UUID=""
         assignments=$(echo $LINE | cut -d':' -f2-)
-        eval $assignments
+        eval "$assignments"
         # if LUKS, ignore a TYPE="crypto_LUKS" line; otherwise trap it as an error
         if [[ "$TYPE" == "crypto_LUKS" ]] ; then
             if [ $LUKS ] ; then
@@ -1110,12 +1109,12 @@ write_mount_the_rest_script() {
             eval "partition_uuids[${selector}]=$UUID"
             d_message "  partition_uuids[${selector}]: ${partition_uuids[${selector}]}" 5
         fi
-    done <<<$(blkid | grep ${OUTPUTDEVICE})
+    done <<<$(blkid | grep "${OUTPUTDEVICE}")
     d_message "recap pnames: ${pnames}" 5
 #    d_message "recap partition_uuids[@]: ${partition_uuids[@]}" 5
     d_do echo -e "${BMon} * ${Boff}recap partition_uuids[@]: ${partition_uuids[@]}" 5
     message_n "appending partition_list assignment line"
-    echo "partition_list=\"${pnames}\"" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "partition_list=\"${pnames}\"" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1125,7 +1124,7 @@ write_mount_the_rest_script() {
     for selector in ${pnames} ; do
         uuid_assignment="${selector}_uuid=${partition_uuids[${selector}]}"
         message_n "appending uuid assignment: [${uuid_assignment}]"
-        echo "${uuid_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        echo "${uuid_assignment}" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
         case $result in
             0 ) right_status $TRUE ;;
             * ) right_status 1; ERROR=$TRUE ;;
@@ -1136,7 +1135,7 @@ write_mount_the_rest_script() {
     # now append mountpoint assignments for all partitions
     # (use blkid to get partitions again, lsblk template to get mountpoins)
     for selector in ${pnames} ; do
-        mp=$(awk '$3 =="part" {print $4}' ${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template} | grep ${selector})
+        mp=$(awk '$3 =="part" {print $4}' "${config_dir%/}/${lsblk_template_dir%/}/${lsblk_template}" | grep "${selector}")
         if [ -z "${mp}" ] ; then
             # no mountpoint for this partition found in lsblk template
             E_message "no mountpoint for LABEL=$LABEL found in lsblk template"
@@ -1151,7 +1150,7 @@ write_mount_the_rest_script() {
         fi
         mp_assignment="${selector}_mountpoint=${mp}"
         message_n "appending mountpoint assignment: [${mp_assignment}]"
-        echo "${mp_assignment}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        echo "${mp_assignment}" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
         case $result in
             0 ) non_stty_right_status $TRUE ;;
             * ) non_stty_right_status 1; ERROR=$TRUE ;;
@@ -1159,7 +1158,7 @@ write_mount_the_rest_script() {
     done
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$?
+    echo "" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}" ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1167,7 +1166,7 @@ write_mount_the_rest_script() {
 
     # now append (concatenate) a standard script to mount partitions
     message_n "concatenating standard script to mount partitions"
-    cat ${config_dir%/}/mkdev-files/mount-PARTs_template >> ${root_dev_mountpoint%/}/${mount_the_rest_script} ; result=$? 
+    cat "${config_dir%/}/mkdev-files/mount-PARTs_template" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}" ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1175,7 +1174,7 @@ write_mount_the_rest_script() {
 
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1184,7 +1183,7 @@ write_mount_the_rest_script() {
     # if LUKS, append (concatenate) a standard script to mount LVs
     if [ $LUKS ] ; then
         message_n "concatenating standard script to mount LVs"
-        cat ${config_dir%/}/mkdev-files/mount-LVs_template.luks >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        cat "${config_dir%/}/mkdev-files/mount-LVs_template.luks" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
         case $result in
             0 ) right_status $TRUE ;;
             * ) right_status 1; ERROR=$TRUE ;;
@@ -1192,7 +1191,7 @@ write_mount_the_rest_script() {
     fi
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1200,7 +1199,7 @@ write_mount_the_rest_script() {
 
     # append a line that will generate a blank line in output, for format clarity
     message_n "appending a line to generate a blank line, for format clarity"
-    echo "echo" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "echo" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1208,8 +1207,8 @@ write_mount_the_rest_script() {
 
     # append lines that will display what was mounted
     message_n "appending lines to display what was mounted (indented)"
-    echo "echo 'here is what was mounted --'" >> ${root_dev_mountpoint%/}/${mount_the_rest_script} && \
-    echo "mount | grep ${root_dev_mountpoint} | sed 's|^|    |'" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "echo 'here is what was mounted --'" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}" && \
+    echo "mount | grep ${root_dev_mountpoint} | sed 's|^|    |'" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1219,7 +1218,7 @@ write_mount_the_rest_script() {
     # (prefix each line with # to comment it out)
     # append a blank line, for format clarity
     message_n "appending a blank line, for format clarity"
-    echo "" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    echo "" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
     case $result in
         0 ) right_status $TRUE ;;
         * ) right_status 1; ERROR=$TRUE ;;
@@ -1229,7 +1228,7 @@ write_mount_the_rest_script() {
         # get blkid data to append to file
         message_n "capturing blkid data for ${selector} ..."
         blkid_data="$(blkid | grep ${partition_uuids[${selector}]} | sed 's|^|#|')" && \
-        echo "# ${blkid_data}" >> ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+        echo "# ${blkid_data}" >> "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
         case $result in
             0 ) right_status $TRUE ;;
             * ) right_status 1; ERROR=$TRUE ;;
@@ -1237,7 +1236,7 @@ write_mount_the_rest_script() {
     done
     # make the script executable
     message_n "making ${root_dev_mountpoint%/}/${mount_the_rest_script} executable"
-    chmod +x ${root_dev_mountpoint%/}/${mount_the_rest_script}  ; result=$?
+    chmod +x "${root_dev_mountpoint%/}/${mount_the_rest_script}"  ; result=$?
         case $result in
             0 ) right_status $TRUE ;;
             * ) right_status 1; ERROR=$TRUE ;;
@@ -1303,24 +1302,24 @@ arglist="$@"
 # run_sequence (script_header_joetoo_extended)
 # (here, display config and local_sanity_check are included in command_sequence due to pre-requisite complexity)
 initialize_variables || die "failed initialize_variables"
-validate_status_file ${layoutstatusfile} || die "Failed to validate_status_file"
+validate_status_file "${layoutstatusfile}" || die "Failed to validate_status_file"
 
 d_echo "cmdline: $*" 5
 d_echo "processing cmdline args: $@" 5
 # over-ride configuration with commandline input
-separator ${PN} "(process_cmdline)"
+separator "${PN}" "(process_cmdline)"
 process_cmdline ${@} || usage
 
 # validate BOARD, assign TARGET, ARCH. etc.
-validate_target ${BOARD} || die "failed validate_target ${BOARD}"
+validate_target "${BOARD}" || die "failed validate_target ${BOARD}"
 # validate OUTPUTDEVICE
-validate_device ${OUTPUTDEVICE} || die "failed to validate device [ ${OUTPUTDEVICE} ]"
+validate_device "${OUTPUTDEVICE}" || die "failed to validate device [ ${OUTPUTDEVICE} ]"
 # now assign variables that depend on BOARD and/or OUTPUTDEVICE
 assign_BOARD_and_OUTPUTDEVICE_derived_variables || die "failed assign_BOARD_and_OUTPUTDEVICE_derived_variables"
 
 # Note: choice of config file selects templates (e.g. mmc.plain or nvme.luks)
 
-run_sequence ${layoutstatusfile} || die "Failed to run_sequence"
+run_sequence "${layoutstatusfile}" || die "Failed to run_sequence"
 
 # possible to-do - create draft_fstab_generator_script
 # run mount-the-rest, then use lsblk data to get uuid, mountpoint, fstype (use lookup to determine options and pass/dump)
