@@ -29,6 +29,16 @@ message "That's all I have to say about that"
 # @ex @ex provides a usage example (standardized for single-line compatibility)
 # @cont @cont identifies a continuation of the previous metadata tag
 
+#=====[ Section 0: Global Instructions ]===========================================
+# @note
+# @note use set -u to provide "nounset" protection for the parent script/shell and all subsequent functions
+# ensure these variables have a bound state
+# (else bash will complain after set -u is active when sourcing this header in your login shell)
+: "${PROMPT_DIRTRIM:=}"
+: "${PROMPT_COMMAND:=}"
+: "${BASH_COMPLETION:=}"
+: "${BASH_COMPLETION_VERSINFO:=}"
+set -u
 
 #=====[ Section 1: Global Variables  ]=============================================
 # @vars SCRIPT_ENV: script paths and environment state (logFile, verbosity, TRUE/FALSE)
@@ -603,7 +613,7 @@ test_terminal() # (POSIX} full-suite validation of cursor manipulation and termi
     _start_row=$(( (_H / 2) - 10 ))             # start far enough above middle to leave room for colors
     CUP "$_start_row" "$_start_col"; SCP
     printf '%s' "_msg_len: $_msg_len"; RCP; CUD; SCP
-    printf "%s\n" "$_msg"
+    printf '%s\n' "$_msg"
     # run test_colors()
     test_colors
     # test save/restore cursor (SCP/RCP)
@@ -614,7 +624,7 @@ test_terminal() # (POSIX} full-suite validation of cursor manipulation and termi
     CUP 1 5 ; printf "[Moving]"
     # restore cursor to saved position and finish
     RCP; printf " ...Restored!"
-    # test repeat() by drawing a screen-wide line of "=" chars
+    # test repeat by drawing a screen-wide line of "=" chars
     CUP $((_start_row + 4)) 1
     repeat "=" "$_W"
     # move cursor to bottom for prompt
@@ -623,7 +633,7 @@ test_terminal() # (POSIX} full-suite validation of cursor manipulation and termi
     unset -v _W _H _msg _msg_len _start_col _start_row _junk
 }
 # @usage test_terminal
-# @note tests: CLR (clear), CUP (positioning), SCP/RCP (save/restore), and repeat()
+# @note tests: CLR (clear), CUP (positioning), SCP/RCP (save/restore), and repeat
 # @deps CLR, termwidth, termheight, CUP, SCP, RCP, repeat, test_colors
 
 #=====[ Section 3: Core Validation Functions ]===============================================================
@@ -706,7 +716,8 @@ isnumeric() # (POSIX) tests if $1 is any valid numeric type (Dec, Hex, or Float)
 isnumber() # (POSIX) deprecated - use isint() or isnumeric(); isnumber tests if $1 is an integer
 { # @usage isnumber "input"
   # @note maintained for legacy compatibility; redirects to universal isnumeric()
-  isnumeric "$1"
+  W_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
+  isnumeric "$@"
 }
 
 isroot() # (POSIX) silent check for root UID
@@ -831,12 +842,12 @@ validate_logfile()  # validate existence and ownership of logFile
 
 #=====[ Section 4: String & Layout Utilities ]===============================================================
 
-_strip_ansi() # (POSIX) Strip ANSI escape sequences from stdin
+strip_ansi() # (POSIX) Strip ANSI escape sequences from stdin
 {
   # Works with standard sed to remove color/UI codes for clean logging
   sed "s/${CSI}[0-9;]*[mK]//g"
 }
-# @usage _strip_ansi "string" OR echo "string" | _strip_ansi
+# @usage strip_ansi "string" OR echo "string" | strip_ansi
 # @args $*: the string containing ANSI sequences
 # @ret String with all \033[...m sequences removed
 # @note essential for calculating true "visible" string length
@@ -859,35 +870,35 @@ _translate_escapes() # (POSIX) translate layout control chars to spaces, preserv
 # @rule targets BS, HT, LF, VT, FF, CR (octal 010-015)
 # @rule preserves ESC (octal 033) to maintain ANSI styling functionality
 
-_get_msg_len() # helper not to be called directly (get actual printable length of message)
+get_msg_len() # helper not to be called directly (get actual printable length of message)
 { # strip ANSI escape sequences, and use ${#var} to count what remains
   [ $# -lt 1 ] && return 1   # guard clause; reject if no message
   # normalize: translate layout breaking control chars single space
   # then strip ANSI to get the visible length
-  _stripped=$(printf '%b' "$*" | _translate_escapes | _strip_ansi)
+  _stripped=$(printf '%b' "$*" | _translate_escapes | strip_ansi)
   _len="${#_stripped}"; echo "${_len:-0}" # if empty, return 0
   unset -v _stripped _len; }
-# @usage _get_msg_len "string"
+# @usage get_msg_len "string"
 # @ret (int) count of visible characters
-# @deps _translate_escapes _strip_ansi
+# @deps _translate_escapes strip_ansi
 # @rule uses translation strategy to ensure layout chars don't inflate count
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
 
 get_longest() # echo length of longest string in input $@
-{ _ans=0; for _x in "$@"; do _N=$(_get_msg_len "$_x"); [ $_N -gt $_ans ] && _ans=$_N; done ;
+{ _ans=0; for _x in "$@"; do _N=$(get_msg_len "$_x"); [ $_N -gt $_ans ] && _ans=$_N; done ;
   printf '%s' "$_ans"; unset -v _ans _x _N; }
-# @note switched from ${#_x} to _get_msg_len "$_x" to strip ansi;
-# @note unlike _get_msg_len, which is a lookahead for word-wrapping decisions,
+# @note switched from ${#_x} to get_msg_len "$_x" to strip ansi;
+# @note unlike get_msg_len, which is a lookahead for word-wrapping decisions,
 # @cont get_longest calculates the length of the longest element (like varnames for display_vaars)
 # @cont but to ensure utility outside just single word entries in the column width need being counted
 # @cont it was switched from $@ (unquoted) to "$@"
 #{ _ans=0; for _x in $@; do [ ${#_x} -gt $_ans ] && _ans=${#_x}; done ; printf '%s' "$_ans"; unset -v _ans _x; }
 
-repeat() # (POSIX) quickly output a string of char $1 (of len $2) (not for spaces)
+repeat() # (POSIX) quickly output a string of char $1 (of len $2)
 { ret=0; _r_marker="${1:--}"; _r_reps="${2:-40}";
   ! isint "$_r_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1; }
   [ "${#_r_marker}" -gt 1 ] && _r_marker=$(printf -- '%s' "${_r_marker%${_r_marker#?}}")
-  printf -- "%${_r_reps}s" | tr ' ' "$_r_marker"
+  printf -- "%${_r_reps}s" | tr -- ' ' "$_r_marker"
   unset -v _r_marker _r_reps; return $ret ; }
 # @usage repeat "marker" "count"
 # @args $1 char to repeat; $2 number of times
@@ -895,11 +906,13 @@ repeat() # (POSIX) quickly output a string of char $1 (of len $2) (not for space
 # @note helpful for creating variable-length separators or visual borders
 # maintainer note: '--' indicates 'end of options' to prevent cmd from interpreting '-' in str as opt
 
-full_repeat() # POSIX repeat full input string pattern $1 $2 times
+full_repeat() # (POSIX) repeat full input string pattern $1 $2 times
 { ret=0; _fr_marker=${1:--}; _fr_reps=${2:-40}
   ! isint "$_fr_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1; }
-  for _fr_x in $(seq 1 "$_fr_reps"); do printf -- '%s' "$_fr_marker"; done ; ret=$?
-  unset -v _fr_reps _fr_marker _fr_x
+  _fr_i=0; while [ "$_fr_i" -lt "$_fr_reps" ]; do
+    printf -- '%b' "$_fr_marker"; _fr_i=$((_fr_i + 1))
+  done ; ret=$?
+  unset -v _fr_reps _fr_marker _fr_i
   return $ret
 }
 # @usage full_repeat "string" "<integer>"
@@ -908,9 +921,10 @@ full_repeat() # POSIX repeat full input string pattern $1 $2 times
 # @vars ret: initialized to 0; used to capture exit status of the printf loop
 # @ret (emitted) a single string containing the repeated pattern to stdout
 # @deps seq: uses the standard sequence generator for the loop range
-# @note this is the "string-capable" version of the single-character repeat() function
+# @note this is the "string-capable" version of the single-character repeat function
 # @note helpful for creating variable-length separators or visual borders
 # maintainer note: '--' indicates 'end of options' to prevent cmd from interpreting '-' in str as opt
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) marker(char $5); filling col(int $6)
 { # initial guard - all six arguments must exist (some can be null to be defaulted)
@@ -922,7 +936,7 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
     # $1: reject null current element
     [ -z "$_pad_cur" ] && { E_message "arg1 (str cur) cannot be null"; return 1; }
     # $2: remove ansi from marker (will be colored by $color if that is provided)
-    _pad_sep=$(printf '%s' "$_pad_sep" | _translate_escapes | _strip_ansi)
+    _pad_sep=$(printf '%s' "$_pad_sep" | _translate_escapes | strip_ansi)
     # $3: min is defaulted above :- (exists?) in "${3:-2}" ensures that null (or even unset) is reassigned
     # $4: initial guard ensures existence, and null is OK for printf,
     #     so, ensure color is a proper ANSI SGR sequence and not printable text (e.g.: ${CSI}${RED};${BOLD}m = ${BRon})
@@ -937,15 +951,15 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
       fi
     # $5: marker is defaulted above :- (exists?) in "${5:-.}" ensures that null (or even unset) is reassigned
     # $5: remove ansi from  separator (will be colored by $color if that is provided) and truncate
-      _pad_marker=$(printf '%s' "$_pad_marker" | _translate_escapes | _strip_ansi)
+      _pad_marker=$(printf '%s' "$_pad_marker" | _translate_escapes | strip_ansi)
       # truncate marker to a single character
       # ? matches a single char, so ${_pad_marker#? returns all after the first (result)
       # ${_pad_marker%  strips shortest match for (result) from the tail - leaving only the first
       _pad_marker="${_pad_marker%${_pad_marker#?}}"
     # $6: reject null column width
     ! isint "$_pad_col" && { E_message "arg6 (int col) cannot be null"; return 2; }
-  # use _get_msg_len for ANSI stripping just to get the length of current element
-  _pad_cur_len=$(_get_msg_len "$_pad_cur")
+  # use get_msg_len for ANSI stripping just to get the length of current element
+  _pad_cur_len=$(get_msg_len "$_pad_cur")
   _pad_sep_len="${#_pad_sep}"   # already ANSI stripped abpve
   # calculate the pad length
   # (L->R): min + col - (cur_len + sep_len)
@@ -976,7 +990,7 @@ echo "got this far"; return 1
 # @note ... char marker = the character w which to construct pad (default '.')
 # @note ....... int col = the columns total fixed width
 # @note marker string will be stripped of ANSI and truncated to 1 char
-# @deps _translate_escapes, _strip_ansi
+# @deps _translate_escapes, strip_ansi
 # @warn failure to properly quote all args may result in unexpected behavior
 
 echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = message words
@@ -989,7 +1003,7 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
   if isint "$2"; then _enl_indent=$2; else _enl_indent=0; fi  # assign _enl_indent
   shift 2  # remainder of $* are the words of the message to be smart-wrapped
   # translate internal escapes ([:control:] chars like \n, \t, \r, etc.) to spaces
-  # (do not _strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to _get_msg_len)
+  # (do not strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to get_msg_len)
   _enl_msg=$(printf '%b' "$*" | _translate_escapes)   # operate on entire set of args as a single string "$*"
   # perform controlled split on the remaining parameters ($@)
   set -f     # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
@@ -1016,8 +1030,8 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
 #  d_log_message "_enl_FIRST_WORD: $(TrueFalse $_enl_FIRST_WORD)" 5
   while [ $# -gt 0 ]; do
     # measure the length of remaining message
-    _enl_total_tail_len=$(_get_msg_len "$*")
-    _enl_x_peak=$1; _enl_x_peak_len=$(_get_msg_len "$_enl_x_peak") # preview; don't shift until necessary
+    _enl_total_tail_len=$(get_msg_len "$*")
+    _enl_x_peak=$1; _enl_x_peak_len=$(get_msg_len "$_enl_x_peak") # preview; don't shift until necessary
 #    d_log_message "   [in while] _enl_total_tail_len: $_enl_total_tail_len" 5
 #    d_log_message "   [in while] _enl_x_peak: $_enl_x_peak" 5
 #    d_log_message "   [in while] _enl_x_peak_len: $_enl_x_peak_len" 5
@@ -1034,7 +1048,7 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
                 _enl_line_len=$_enl_indent                                  # Note: _enl_FIRST_WORD remains true on new line
                 continue   # skip the flow fi; fi; done; and while [] check; just restart while loop again with new state
             else  # this is first word of other than first line; non-fit is emergency ==> force hard wrap
-                _enl_x="$1"; _enl_x_len=$(_get_msg_len "$_enl_x"); shift    # E2: WRAP - hard-wrap
+                _enl_x="$1"; _enl_x_len=$(get_msg_len "$_enl_x"); shift    # E2: WRAP - hard-wrap
                 printf '%b' "$_enl_x"                                       # print whether it fits or not
 #                _enl_trace="${_enl_trace}${_enl_x} E2\n"
                 _enl_line_len=$(( _enl_line_len + _enl_x_len )); _enl_FIRST_WORD=$FALSE
@@ -1044,7 +1058,7 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
 #            _enl_trace="${_enl_trace}$* F3\n"
             break
         else  # start of line, first word exceeds limit
-            _enl_x="$1"; _enl_x_len=$(_get_msg_len "$_enl_x"); shift        # S4: STEP: assign word, measure, then drop from remaining message
+            _enl_x="$1"; _enl_x_len=$(get_msg_len "$_enl_x"); shift        # S4: STEP: assign word, measure, then drop from remaining message
             printf '%b' "$_enl_x"                                           #   print this word (start of line)
 #            _enl_trace="${_enl_trace}${_enl_x} S4\n"
             _enl_line_len=$(( _enl_line_len + _enl_x_len ))
@@ -1059,7 +1073,7 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
             if  [ "$_enl_total_tail_len" -eq "$_enl_x_peak_len" ]; then     # this is the very last word
                 # && [ $(( _enl_line_len + _enl_x_peak_len + 1 )) -gt "$_enl_collision_limit" ]
                 #   is implied by the non selection of -le same things above for F5
-                #fits in margin but last word (and we know WONT fit left of collision zone from above) - must wrap
+                # fits in margin but last word (and we know WONT fit left of collision zone from above) - must wrap
                 printf "\n$(repeat ' ' $_enl_indent)%s" "$_enl_x_peak"      # W6: WRAP/FINISH very last word, would fit in margin but not L of collision
                 shift                                                       # drop for remainder (overkill - break will jump us out anyway)
 #                _enl_trace="${_enl_trace}<last-word-soft-wrap> W6\n"
@@ -1088,7 +1102,7 @@ echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = messag
   unset -v _enl_trace _enl_tw _enl_x _enl_x_len _enl_x_peak _enl_x_peak_len
 }
 # @usage echo_n_long "$start" "$indent" "$message"
-# @deps _translate_escapes, _strip_ansi
+# @deps _translate_escapes, strip_ansi
 # @req The function must know two facts, for absolute reliability -- where it is starting and (b) how far to indent
 # @rule $1 (start) must be supplied as a decimal integer. This informs the engine where the cursor is located before it starts printing. (putting it there is the call>
 # @rule $2 (indent) must be set (either to a decimal integer or null value). This informs the engine where to put the indent on subsequent lines
@@ -1131,7 +1145,7 @@ ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
   # @rule uses stderr for the prompt to keep stdout clean for capturing the password
   # @rule uses 'stty -echo' to disable terminal character display
     ret=0
-    printf "%s" "$1" >&2  # use stderr so the prompt goes to the screen
+    printf '%s' "$1" >&2  # use stderr so the prompt goes to the screen
     stty -echo
     read -r _pass || ret=1
     stty echo
@@ -1143,8 +1157,8 @@ ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
 
 alpha_words() # (POSIX) alphabetize the words in a quoted input string
 { [ $# -eq 0 ] && return 0  # guard clause; just return 0 success if no args
-  for _x in "$@"; do printf "%s\n" "$_x"; done | LC_ALL=en_US.UTF-8 sort -db 2>/dev/null || \
-    for _x in "$@"; do printf "%s\n" "$_x"; done | sort -db # Fallback if UTF-8 locale is missing
+  for _x in "$@"; do printf '%s\n' "$_x"; done | LC_ALL=en_US.UTF-8 sort -db 2>/dev/null || \
+    for _x in "$@"; do printf '%s\n' "$_x"; done | sort -db # Fallback if UTF-8 locale is missing
   unset -v _x ; }
 # @usage alpha_words "word list"
 # @args $* string of words to be sorted
@@ -1217,9 +1231,9 @@ status_color() # (POSIX) emit escape seq for color per arg $1
   # @args $1 logic value to colorize
   # @ret emits $BGon (green), $BRon (red), or $BWon (white)
   # @rule maps 0 to green and 1 to red for standard exit code visualization
-  case $1 in [yY]*|[tT]*|[uU]*|[hH]|"$TRUE"|"0"  ) printf '%b' ${BGon};;
-           [nN]*|[fF]*|[dD]*|[lL]|"$FALSE"|"1" ) printf '%b' ${BRon};;
-           *) printf '%b' ${BWon};; esac ; }
+  case $1 in [yY]*|[tT]*|[uU]*|[hH]|"$TRUE"|"0"  ) printf '%b' "${BGon}" ;;
+           [nN]*|[fF]*|[dD]*|[lL]|"$FALSE"|"1" ) printf '%b' "${BRon}" ;;
+           *) printf '%b' "${BWon}" ;; esac ; }
 # Note: "0" is included as part of the "true" line because of the definition TRUE=0 atop this header
 #       "1" is NOT included in the "false" (though that would map to exit code use)
 #       this is a deliberate choice b/c binary numbering 1/0 is the opposite
@@ -1250,23 +1264,23 @@ vercomp() # (almost POSIX)(portible w/ coreutils) compare versions return [0:equ
 
 show_result() # (POSIX) show the result of vercomp comparison, in english
 { case $1 in
-    0) printf "%b\n" "${BGon}=${Boff}"; return 0;;
-    1) printf "%b\n" "${BCon}>${Boff}"; return 0;;
-    2) printf "%b\n" "${BRon}<${Boff}"; return 0;;
-    *) printf "%b\n" "${BYon}*** Error ***${Boff}"; return 1;;
+    0) printf '%b\n' "${BGon}=${Boff}"; return 0;;
+    1) printf '%b\n' "${BCon}>${Boff}"; return 0;;
+    2) printf '%b\n' "${BRon}<${Boff}"; return 0;;
+    *) printf '%b\n' "${BYon}*** Error ***${Boff}"; return 1;;
   esac ; }
 # @usage show_result "code"
 # @args $1 integer code from vercomp (0, 1, or 2)
 # @ret colorized mathematical operator string (=, >, <)
 
 my_date() # (POSIX) echo date string (DDD MM dd hh:mm:ss TZ yyyy)
-{ _date_string=$(date "+%a %b %d %H:%M:%S %Z %Y"); printf "%s\n" "$_date_string" ; unset -v _date_string; }
+{ _date_string=$(date "+%a %b %d %H:%M:%S %Z %Y"); printf '%s\n' "$_date_string" ; unset -v _date_string; }
 # @usage my_date
 # @ret string formatted as "Wed Jan 21 12:47:00 EST 2026"
 # @note standard POSIX date formatting
 
 my_short_date() # (POSIX) echo shorter date string (yyyymmdd-timehack)
-{ _date_string=$(date "+%Y%m%d-%H:%M:%S"); printf "%s\n" "$_date_string" ; unset -v _date_string; }
+{ _date_string=$(date "+%Y%m%d-%H:%M:%S"); printf '%s\n' "$_date_string" ; unset -v _date_string; }
 # @usage my_short_date
 # @ret string formatted as "20260121-12:47:00"
 # @note optimized for log file naming or compact timestamps
@@ -1339,7 +1353,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv.
 }
 
 
-display_vars()      # show vals for vars in $@; incl bool/lv/; $1=longest
+display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
 {
   if ! isint $1 ; then
     E_message "Error: arg \$1 must be numeric longest expected input var name"
@@ -1353,7 +1367,7 @@ display_vars()      # show vals for vars in $@; incl bool/lv/; $1=longest
   for _dv_var_name in $@;  do
     _dv_type="${_dv_var_name%.*}"   # strip off chars right of and .
     _dv_var="${_dv_var_name#*.}"    # strip off chars left of and .
-    _dv_pad_len=$(_get_msg_len "$_dv_var")  # strip ansi and then count length
+    _dv_pad_len=$(get_msg_len "$_dv_var")  # strip ansi and then count length
     _dv_pad=" $(repeat '.' $(( _dv_maxlen - _dv_pad_len )) )"
     case "$_dv_var_name" in
       *.* )  # display by type
@@ -1378,7 +1392,7 @@ display_vars()      # show vals for vars in $@; incl bool/lv/; $1=longest
 #            d_log_message "_dv_indent: $_dv_indent" 5
             message_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
             echo_n_long "${_dv_start_col}" "${_dv_indent}" "${_dv_key}"
-            printf "%b\n" " ${BBon}]${Boff}"
+            printf '%b\n' " ${BBon}]${Boff}"
             ;;
           *      )
             # invalid variable _dv_type
@@ -1404,14 +1418,14 @@ display_vars()      # show vals for vars in $@; incl bool/lv/; $1=longest
 # @args $1 integer: length of the longest variable name for column alignment
 # @args $2+ list of variable names (optionally typed: bool.VAR, yn.VAR, lv.VAR)
 # @ret colorized table of variable states emitted to stdout
-# @deps isint _get_msg_len repeat TrueFalse status_color message message_n echo_n_long
-# @deps _translate_escapes, _strip_ansi
+# @deps isint get_msg_len repeat TrueFalse status_color message message_n echo_n_long
+# @deps _translate_escapes, strip_ansi
 # @rule type bool: renders [ True/False ] based on global logic
 # @rule type yn: renders [ yes/no ] as raw strings
 # @rule type lv: renders [ value ] with word-wrap (echo_n_long) for long strings
 # @note uses eval for dynamic symbol resolution; ensures layout-aware padding via repeat
 
-show_config()       # show config with get_longest and display_vars
+show_config() # (POSIX) show config with get_longest and display_vars
 { d_message "in show_config" 5 ; separator "${PN}-${BUILD}" "(configuration)"
   _longest=$(get_longest ${varlist}) ; display_vars ${_longest} ${varlist} ;
   unset -v _longest; }
@@ -1424,7 +1438,7 @@ show_config()       # show config with get_longest and display_vars
 #=====[ Section 6: Logging, Messaging, & UI ]==================================================================
 
 #-----[ Baseline Messaging ]-----------------------------------------------------------------------------------
-separator()         # draw a horizontal line with preface $1 and title $2
+separator() # (POSIX) draw a horizontal line with preface $1 and title $2
 { # to facilitate separation of portions of the output of various scripts
   # @usage separator "preface" "title"
   # @args $1 preface string (defaults to hostname); $2 title string (defaults to script name)
@@ -1435,19 +1449,23 @@ separator()         # draw a horizontal line with preface $1 and title $2
   _s_reps=$(( _s_tw - ( ${#_s_preface} + ${#_s_title} + 8 ) ))
   [ "$_s_reps" -lt 0 ] && _s_reps=0  # clamp to 0 if negative
   printf '%b' "${BYon}---[${BRon} ${_s_preface} ${BCon}${_s_title} ${BYon}]"
-  repeat '-' "$_s_reps"; printf "%b\n" "${Boff}"
+  repeat '-' "$_s_reps"; printf '%b\n' "${Boff}"
   unset -v _s_preface _s_title _s_tw _s_reps; }
 
-non_stty_separator()       # (deprecated; use separator)
-{ E_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
+non_stty_separator() # (deprecated; use separator)
+{ W_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
   separator "$@"; }
 # @usage non_stty_separator "preface" "title"
 # @note legacy wrapper; redirects to separator() after emitting a warning
 
-prompt()            # (POSIX) set external variable $answer based on reponse to prompt $1
-{ _ps="$1"; answer=""; printf '%b' "\n\n"; CUU; SCP;
-while ! expr "$answer" : '[yYnN]' >/dev/null; do
-RCP; printf '%b' "$(repeat ' ' $(termwidth))";  ## blank the line
+prompt() # deprecated (use yn_prompt)
+{ W_message "${BYon}Warning:${Boff} prompt is deprecated (use yn_prompt(), which has been upgraded)"
+  yn_prompt "$@"; }
+
+yn_prompt() # (POSIX) set external variable $answer based on reponse to prompt $1
+{ _ps="$*"; answer=""; printf '%b' "\n\n"; CUU; SCP;
+while ! expr "${answer:- }" : '[yYnN]' >/dev/null; do
+RCP; repeat ' ' $(termwidth);  ## blank the line
 RCP; message_n "$_ps [Y/n]: " && read -r answer < /dev/tty; done; unset -v _ps ; }
 # @usage prompt "question text"
 # @args $1 string: the question to ask the user
@@ -1456,18 +1474,26 @@ RCP; message_n "$_ps [Y/n]: " && read -r answer < /dev/tty; done; unset -v _ps ;
 # @deps CUU SCP RCP termwidth repeat message_n
 # @rule loops until a valid y/n response is received from /dev/tty
 # @note uses terminal escape codes to blank the line during redraw
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
-new_prompt()        # (POSIX) set external variable $answer based on reponse to prompt $1
-{ _ps="$1"; response=""; printf '%b' "\n\n"; CUU; SCP;
-while ! expr "$response" : '[yYnNsS]' >/dev/null; do
-RCP; printf '%b' "$(repeat ' ' $(termwidth))";  ## blank the line
+new_prompt() # deprecated (use yns_prompt)
+{ W_message "${BYon}Warning:${Boff} new_prompt is deprecated (use yns_prompt(), which has been upgraded)"
+  yns_prompt "$@"; }
+
+yns_prompt() # (POSIX) set external variable $answer based on reponse to prompt $1
+{ _ps="$*"; response=""; printf '%b' "\n\n"; CUU; SCP;
+while ! expr "${response:- }" : '[yYnNsS]' >/dev/null; do
+RCP; repeat ' ' $(termwidth);  ## blank the line
 RCP; message_n "$_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; unset -v _ps ; }
-# @usage new_prompt "question text"
+# @usage yns_prompt "question text"
 # @args $1 string: the question to ask the user
 # @vars response (global): modified by this function
 # @ret exit 0 on valid [y/n/s] input
 # @deps CUU SCP RCP termwidth repeat message_n
 # @rule loops until a valid Yes/No/Skip response is received from /dev/tty
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 confirm_continue_or_exit() # prompt() for confirm to continue (answer must be set globally)
 { answer="" ; _cce_msg="${BYon}Do you want to continue?" ; prompt "${_cce_msg}"
@@ -1567,14 +1593,15 @@ sh_countdown()      # count-down seconds (arg $1)
 # @note breaks immediately at 0 to avoid an unnecessary final sleep cycle
 
 message() # (POSIX) display text message $@
-{ printf " ${BGon}*${Boff} " ; printf "$*"; printf "\n" ; }
+{ printf " ${BGon}*${Boff} " ; printf '%b\n' "$*" ; }
 # @usage message "msg string"
 # @args $* the message to display (quoted string recommended)
 # @ret formatted message with green asterisk prefix to stdout
 # @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 message_n()   # (POSIX) display text message $@ w/o newline
-{ _mn_msg="$*"; _mn_msg_len=$(_get_msg_len "$_mn_msg")
+{ _mn_msg="$*"; _mn_msg_len=$(get_msg_len "$_mn_msg")
   _mn_status_width=6   # e.g. "[ Ok ]" = 6 char
   _mn_buffer=4         # padding for more visually appealing wrapping
   # | * message
@@ -1584,28 +1611,33 @@ message_n()   # (POSIX) display text message $@ w/o newline
   [ "$_mn_collision_threshold" -lt 0 ] && _mn_collision_threshold=0   # clamp to 0 if negative
   printf " ${BGon}*${Boff} ";  # print the "prefix *"
   if [ $_mn_msg_len -gt $_mn_collision_threshold ]; then
-    echo_n_long "${_mn_col}" "${_mn_indent}" "$_mn_msg"  # use $_mn_msg unquoted for smart word-wrap; room for right_status; -5 to align w indent
+    # use echo_n_long with "$_mn_msg" quoted for smart word-wrap; room for right_status; and align w indent
+    echo_n_long "${_mn_col}" "${_mn_indent}" "$_mn_msg"
   else
-    printf '%s' "$*"        # use "$*" quoted to pass a single string
+    printf '%b' "$*"        # use "$*" quoted to pass a single string
   fi; unset -v _mn_msg _mn_msg_len _mn_status_width _mn_buffer _mn_tw _mn_collision_threshold _mn_col _mn_indent; }
 # @usage message_n "msg string"
 # @args $* the message to display
-# @deps _get_msg_len termwidth echo_n_long
-# @rule uses a collision threshold to trigger echo_n_long for word-wrapping
-# @note protects the right_status collision zone for subsequent right_status calls
+# @deps get_msg_len termwidth echo_n_long
+# @rule echo_n_long uses a collision threshold for last-word-wrapping, which
+# @cont protects the right_status collision zone for subsequent right_status calls
 # @note message family indent is 3; echo_n_long requires valid numbers for col and indent
 
 W_message()   # (POSIX) display text warning message $@
-{ printf " ${BYon}*${Boff} " ; printf "$@\n" ; }
+{ printf " ${BYon}*${Boff} " ; printf '%b\n' "$*" ; }
 # @usage W_message "warning string"
 # @args $@ message components
 # @ret formatted warning with yellow asterisk prefix to stdout
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 E_message()   # (POSIX) display text error message $@
-{ { printf " ${BRon}*${Boff} "; printf "%b\n" "$*"; } >&2; }
+{ { printf " ${BRon}*${Boff} "; printf '%b\n' "$*"; } >&2; }
 # @usage E_message "error string"
 # @args $* the error message
 # @ret formatted error with red asterisk prefix to stderr (FD 2)
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 E_message_n()       # (POSIX) display text error message $@ (no CR)
 { { printf " ${BRon}*${Boff} " ; printf '%b' "$*" ; } >&2; }
@@ -1613,9 +1645,11 @@ E_message_n()       # (POSIX) display text error message $@ (no CR)
 # @args $* the error message
 # @ret formatted error with red asterisk prefix to stderr without trailing newline
 # @note protects the right_status collision zone for subsequent right_status calls
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 handle_result() # output ok_/_err_msg and right_stats to stdout
-{ _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+{ ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
   if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
   if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
   if [ "$_exit_status" -eq 0 ] ; then
@@ -1624,11 +1658,10 @@ handle_result() # output ok_/_err_msg and right_stats to stdout
   else
       printf '%b' "${_err_msg}"  # replicates echo -e -n
       right_status 1
-      unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in
-      return 1
+      ret=1
   fi
   unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in
-  return 0; }
+  return $ret; }
 # @usage handle_result "$?" "ok_msg" "err_msg"
 # @args $1 exit status; $2 success message; $3 error message
 # @deps right_status status_color
@@ -1636,6 +1669,7 @@ handle_result() # output ok_/_err_msg and right_stats to stdout
 # @ret exit 0 on success; exit 1 on failure
 # @note usage - message_n ...; <command>] ; handle_result "$?" "_ok_msg" "_err_msg"
 # @note notes - substitute no_msg=" \b" for either, to "suppress"
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 
 right_status()      # output 8 char [ ok/fail ] status at the right margin
@@ -1677,14 +1711,14 @@ right_status()      # output 8 char [ ok/fail ] status at the right margin
 
 non_stty_right_status()    # (deprecated; use right_status)
 {
-  E_message "${BYon}Warning:${Boff} non_stty_right_status is deprecated (use right_status(), which has been upgraded)"
+  W_message "${BYon}Warning:${Boff} non_stty_right_status is deprecated (use right_status(), which has been upgraded)"
   right_status "$@"
 }
 
 #-----[ Logging ]--------------------------------------------------------------------------------------
 
 timestamp()         # (POSIX) echo a simple timestamp (yyyymmdd-hh:mm:ss)
-{ printf "%s\n" "$(date +'%Y%m%d-%H:%M:%S')"; }
+{ printf '%s\n' "$(date +'%Y%m%d-%H:%M:%S')"; }
 # @usage timestamp
 # @ret string: formatted date/time (e.g., 20260121-13:45:00)
 # @note used for unique filenames, log entries, and non-blocking timehacks
@@ -1713,102 +1747,118 @@ log_separator()     # (POSIX) output separator() to stdout and similar to logFil
 
 log_message()       # (POSIX) message() to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; message "$_ts - $*";
-  # Filter the message through _strip_ansi before logging
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  # Filter the message through strip_ansi before logging
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b\n" "$_ts" "$_clean_msg" >> "$logFile"
    unset -v _ts _clean_msg; }
 # @usage log_message "msg string"
 # @args $* the message to log (treated as a single string)
 # @vars logFile
-# @deps timestamp message _translate_escapes _strip_ansi
-# @rule uses "$*" to bind all arguments and filters them through the translation strategy
+# @deps timestamp message _translate_escapes strip_ansi
 # @note dual-output: terminal receives timestamped color message; log receives plain text
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_message_n()       # (POSIX) message() to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; message_n "$_ts - $*";
-  # Filter the message through _strip_ansi before logging
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  # Filter the message through strip_ansi before logging
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b" "$_ts" "$_clean_msg" >> "$logFile"
    unset -v _ts _clean_msg; }
 # @usage log_message_n "msg string"
 # @args $* the message to log
 # @vars logFile
-# @deps timestamp message_n _translate_escapes _strip_ansi
+# @deps timestamp message_n _translate_escapes strip_ansi
 # @rule suppresses newline in both stdout and $logFile
 # @note protects the right_status collision zone for subsequent right_status calls
 # @note useful for logging status start-points before a process completes
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_echo()          # (POSIX) echo to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; printf "%s - %s\n" "$_ts" "$*" # screen gets color codes
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_echo "msg string"
 # @args $* the message string
 # @vars logFile
-# @deps timestamp _translate_escapes _strip_ansi
+# @deps timestamp _translate_escapes strip_ansi
 # @rule simple echo wrapper with automated timestamping and log archival
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_echo_e()        # (POSIX) echo -e to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; printf "%s - %b\n" "$_ts" "$*"
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_echo_e "msg string"
 # @args $* the message containing escape sequences
-# @deps timestamp _translate_escapes _strip_ansi
+# @deps timestamp _translate_escapes strip_ansi
 # @rule interprets backslash escapes (%b) for both terminal and log file
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_echo_n()        # (POSIX) echo -n "$1" to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; printf "%s - %s" "$_ts" "$*"
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_echo_n "msg string"
 # @args $* the message string
-# @deps timestamp _translate_escapes _strip_ansi
+# @deps timestamp _translate_escapes strip_ansi
 # @rule outputs string without newline; sanitizes for log file storage
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+# @note use '%s' (no expand backslash) (like echo, not echo -e)
+# @note use '%s' for timestamp
 
 log_echo_e_n()      # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user
 { _ts="$(timestamp)"; printf "%s - %b" "$_ts" "$*"
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_echo_e_n "msg string"
 # @args $* string with escape sequences
-# @deps timestamp _translate_escapes _strip_ansi
+# @deps timestamp _translate_escapes strip_ansi
 # @rule interprets escapes via %b and suppresses trailing newline in both outputs
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_E_message()     # (POSIX) E_message() to stdout and $logFile owned by $user (like echo -e)
 { _ts="$(timestamp)"; E_message "$_ts - $*"
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_E_message "error string"
 # @args $* the error message components
 # @vars logFile
-# @deps timestamp E_message _translate_escapes _strip_ansi
+# @deps timestamp E_message _translate_escapes strip_ansi
 # @rule directs colorized output to stderr and sanitized plain-text to $logFile
 # @note dual-stream logic: terminal sees RED alert; log records timestamped event
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 log_E_message_n()   # (POSIX) E_message_n() to stdout and $logFile owned by $user (like echo -e)
 { _ts="$(timestamp)"; E_message_n "$_ts - $*"
-  _clean_msg=$(printf '%s' "$*" | _translate_escapes | _strip_ansi)
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %b" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg; }
 # @usage log_E_message_n "error string"
 # @args $* the error message components
-# @deps timestamp E_message_n _translate_escapes _strip_ansi
+# @deps timestamp E_message_n _translate_escapes strip_ansi
 # @rule directs output to stderr and $logFile without trailing newline
 # @note protects the right_status collision zone for subsequent right_status calls
 # @note useful for logging error prefixes before a long-running diagnostic starts
-# @rule uses "$*" to treat all arguments as a single message string and _strip_ansi to filter it
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+# @note use '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note use '%s' for timestamp
 
 loggit()            # (POSIX) send a job completion status message to the cron logger
 { [ $# -gt 2 ] && { E_message "invalid loggit arguments" ; return 1; }
@@ -1868,10 +1918,10 @@ log_right_status()  # output rigit_status to stdout and logFile
   # get width for screen positioning
   _lrs_tw=$(termwidth); isint "$_lrs_tw" || _lrs_tw=80  # fallback to standard 80 cols
   printf "\r"
-  if CUF $(( "$_lrs_tw" - 7 )) ; then printf "%b\n" "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
+  if CUF $(( "$_lrs_tw" - 7 )) ; then printf '%b\n' "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
   # clean logging
   if [ -n "$logFile" ]; then
-    printf "%s\n" "$_lrs_plain" >> "$logFile" || \
+    printf '%s\n' "$_lrs_plain" >> "$logFile" || \
       { unset -v _lrs_msg _lrs_status _lrs_plain _lrs_tw; return 1 ; }
   fi
   unset -v _lrs_msg _lrs_status _lrs_plain _lrs_tw; return 0 ; }
@@ -1894,13 +1944,13 @@ log_show_config()   # show & log config w get_longest and display_vars
   _longest=$(get_longest ${varlist}) ; display_vars "${_longest}" ${varlist}
   # strip ANSI codes and append to logFile
 #  display_vars "${_longest}" ${varlist} | sed 's/\x1b\[[0-9;]*m//g' >> "$logFile"
-  display_vars "${_longest}" ${varlist} | _translate_escapes | _strip_ansi
+  display_vars "${_longest}" ${varlist} | _translate_escapes | strip_ansi
   unset -v _longest; }
 # @usage log_show_config
 # @vars varlist, logFile, PN, BUILD
-# @deps d_log_message log_separator get_longest display_vars _translate_escapes _strip_ansi
+# @deps d_log_message log_separator get_longest display_vars _translate_escapes strip_ansi
 # @rule displays colorized config to stdout and sanitized text to $logFile
-# @note uses the translation strategy (_strip_ansi) for log file cleanliness
+# @note uses the translation strategy (strip_ansi) for log file cleanliness
 
 #-----[ Debugging ]--------------------------------------------------------------------------------
 
@@ -1909,7 +1959,7 @@ debug_do()          # (POSIX) IAW verbosity, execute one command
 { # @usage debug_do <command string> <level>
   # @note legacy wrapper; redirects to d_do()
   # @warn deprecated (use d_do, which has been upgraded)
-  E_message "Warning: deprecated (use d_do, which has been upgraded)"
+  W_message "${BYon}Warning:${Boff} debug_do is deprecated (use d_do(), which has been upgraded)"
   d_do "$@"; }
 
 d_do() # (POSIX) IAW verbosity, execute complex (multi-command) jobs
@@ -2065,13 +2115,13 @@ milli_sleep() # (almost POSIX)(busybox safe) "sleep" for sub-second delays
 fe() # find ebuild files matching filter "*$1*"
 { [ $# -lt 1 ] && { E_message "please specify ebuild patter for search filter"; return 1 ; }
   _fe_repo_dir="/var/db/repos/"; _fe_filter="*$1*.ebuild"
-  printf "%s\n" "${BYon}looking for ebuild(s) matching filter${Boff}: \"${Mon}${_fe_filter}${Boff}\""
+  printf '%s\n' "${BYon}looking for ebuild(s) matching filter${Boff}: \"${Mon}${_fe_filter}${Boff}\""
   _fe_output=$(find "${_fe_repo_dir}" -iname "${_fe_filter}" -type f -print 2>/dev/null)
   if [ -z "${_fe_output}" ] ; then
     E_message "no files matching ${_fe_filter} found in ${_fe_repo_dir}"
     unset -v _fe_repo_dir _fe_filter _fe_output ; return 1
   else
-    printf "%s\n" "${BWon}${_fe_output}${Boff}"
+    printf '%s\n' "${BWon}${_fe_output}${Boff}"
   fi
   unset -v _fe_repo_dir _fe_filter _fe_output
   return 0
@@ -2145,6 +2195,148 @@ swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is
 # @rule calls pur() first to ensure basic network reachability
 # @note color-coded retry counter (green -> yellow -> red) based on retry thresholds
 
+# wipe_device <device_path>
+# POSIX-compliant implementation for script_header_joetoo
+
+wipe_device() # (POSIX) use dd to fill target device $1 with random data
+{ # @usage wipe_device <device_path>
+  # @rule <device_path> must evaluate as a valid block device
+  # @warn this will destroy all data on the target device
+  # @ret 0: success, 1: general failure, 100(+): shell error
+  # @deps sys-apps/util-linux (blockdev)
+  ret=0; _wd_target_dev="$1"
+  [ -b "$_wd_target_dev" ] || die "wipe_device: [$_wd_target_dev] is not a block device"
+  checkroot  # must be root
+  # if INTERACTIVE does not exist or is not set in the callers context, then re-assign w/ default
+  #   := operator is "assign" vs :- which is "substitute" for current command only
+  : "${INTERACTIVE:=$TRUE}"
+
+  # efine a cleanup function to be triggered on EXIT or interruption
+  _wd_cleanup() {
+    [ -n "$_wd_pid" ] && kill "$_wd_pid" 2>/dev/null
+    rm -f "$_wd_tempfile"
+  }
+
+  # note that dd will exit with error 1 (disk full) if it does not know how much to write,
+  #   so calculate how much using blockdev commands (sys-apps/util-linux) --
+  # raw size in bytes
+  _wd_total_bytes=$(blockdev --getsize64 "$_wd_target_dev")
+  # physical sector size (usually 4096 or 512)
+  _wd_sector_size=$(blockdev --getpbsz "$_wd_target_dev")
+  # calculate the largest multiple of _wd_sector_size that is -le 4MB
+  #   and perfectly divides _wd_total_bytes
+  _wd_preferred_bs=$((4 * 1024 * 1024))
+  # determine initial block size (align to _wd_sector_size)(integer division rounds)
+  if [ "$_wd_total_bytes" -lt "$_wd_preferred_bs" ]; then
+    _wd_bs=$(( (_wd_total_bytes / _wd_sector_size) * _wd_sector_size ))
+  else
+    _wd_bs=$(( (_wd_preferred_bs / _wd_sector_size) * _wd_sector_size ))
+  fi
+  # safety - ensure _wd_bs is at least 1 sector
+  [ "$_wd_bs" -gt 0 ] || _wd_bs=$_wd_sector_size
+  # loop - work downward to find the largest _wd_bs (bytes) that perfectly divides _wd_total_bytes
+  while [ "$_wd_bs" -gt "$_wd_sector_size" ]; do
+    if [ $((_wd_total_bytes % _wd_bs)) -eq 0 ]; then break; fi
+    _wd_bs=$((_wd_bs - _wd_sector_size))
+  done
+
+  # final _wd_bs SHOULD now a perfect divisor of _wd_total_bytes and multiple of _wd_sector_size
+  #   however in rare circumstances (virtual disk, etc.), the disk might not be perfectly
+  #   build with integer number of sectors... so detect that
+  if [ $((_wd_total_bytes % _wd_bs)) -eq 0 ]; then
+    _wd_count=$((_wd_total_bytes / _wd_bs))
+    _wd_EXPECT_DISK_FULL=$FALSE
+  else
+    W_message "Warning: Partition size not a multiple of sector size. Expecting 'No space left'"
+    # round up the number of sector-sized blocks to write
+    _wd_count=$(( (_wd_total_bytes + _wd_bs - 1) / _wd_bs ))
+    _wd_EXPECT_DISK_FULL=$TRUE
+  fi
+
+  # conditionally show the configuration derived above
+  _wd_varlist="_wd_target_dev _wd_total_bytes _wd_sector_size _wd_preferred_bs"
+  _wd_varlist="${_wd_varlist} _wd_bs _wd_count bool._wd_EXPECT_DISK_FULL lv._wd_my_cmd"
+  separator "wipe_device" "(configuration)"
+  _wd_longest=$(get_longest ${_wd_varlist})
+  d_do display_vars ${_wd_longest} ${_wd_varlist} 3
+
+  # create a tempfile
+  _wd_tempfile=$(mktemp) || die "failed to create temp file"
+
+  # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
+  _wd_my_cmd="dd if=/dev/urandom of=$_wd_target_dev"
+###  _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count status=progress oflag=direct"  <-- status and oflag not POSIX
+  _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count 2>\"$_wd_tempfile\""
+
+  # build _wd_msg, in readable lines, to explain and prompt
+  _wd_msg="${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}\n"
+  _wd_msg="${_wd_msg}${BCon}(you can safely skip this step if you have done it before)${Boff}\n"
+  _wd_msg="${_wd_msg}${BWon}(y: yes; s: skip; n: exit program)${Boff}"
+  if [ "$INTERACTIVE" = "$TRUE" ]; then
+    yns_prompt "$_wd_msg"
+    _wd_res="$response"
+  else
+    _wd_res="y"
+  fi
+
+  # handle response to prompt, with pattern matching for portability
+  case "$_wd_res" in
+    [yY]* )
+      maybe_format_warning || die "failed format_warning"
+      # set a trap for SIGINT (Ctrl+C), SIGTERM, and EXIT
+      # POSIX standards recommend omitting the SIG prefix for maximum portability
+      # INT and TERM are external events; EXIT is a shell condition (a "pseudo-signal")
+      trap _wd_cleanup INT TERM EXIT
+      # OK - run it
+      eval "$_wd_my_cmd &"; _wd_pid=$!
+      # not monitor and display progress
+      _wd_bytes_complete=0
+      # use kill -0 as a safety check so the loop doesn't hang if dd dies
+      while kill -0 "$_wd_pid" 2>/dev/null; do
+        # trigger dd to write its status to its stderr (which we redirected to the tempfile)
+        kill -USR1 "$_wd_pid" 2>/dev/null  # this redirects kill stderr, not dd stderr
+        sleep 1  # pause to allow it to make some progress
+        # extract the byte count
+        _wd_bytes_complete=$(grep -aE '^[0-9]+ bytes' "$_wd_tempfile" | tail -n1 | cut -d' ' -f1)
+        # update progress for integer results only
+        if isint "$_wd_bytes_complete"; then
+          progress_inline "$_wd_bytes_complete" "$_wd_total_bytes"
+        fi
+        sleep 2
+      done
+      # wait for dd to finish and capture its exit status code
+      wait "$_wd_pid"
+      ret=$?
+      case $ret in
+        # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
+        #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
+        #   and exit code 130 means the user hit CTRL-C to quit
+        0   ) : ;; # Success
+        1   )
+          # ignore "disk full" error if expecting it
+          # note: _wd_EXPECT_DISK_FULL is a psequdo-boolean like globally defined TRUE=0; FALSE=""
+          if [ ! "$_wd_EXPECT_DISK_FULL" ]; then
+            die "general failure; dd exit code [$ret]"
+          fi ;;
+        126 ) die "dd not executable; dd exit code [$ret]" ;;
+        127 ) die "dd not found; dd exit code [$ret]" ;;
+        130 ) die "process interrupted by user; dd exit code [$ret]" ;;
+        137 ) die "killed (OOM or kill -9); dd exit code [$ret]" ;;
+        *   ) die "unrecognized failure; dd exit code [$ret]" ;;
+      esac
+      ;;
+    [nN]* ) die "aborting, as instructed" ;;
+    [sS]* ) message "skipping wipe of $_wd_target_dev, as instructed" ;;
+    *     ) die "invalid response to prompt for dd command"
+  esac
+
+  # reset the trap
+  trap - INT TERM EXIT
+  unset -v _wd_target_dev _wd_total_bytes _wd_sector_size _wd_preferred_bs
+  unset -v _wd_bs _wd_count _wd_EXPECT_DISK_FULL _wd_my_cmd _wd_msg _wd_res
+  unset -v _wd_tempfile _wd_pid _wd_bytes_complete _wd_longest _wd_varlist
+  return $ret
+}
 
 get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
 { # Note: crypt_keydev_mountpoint must be globally defined by the calling script
@@ -2590,7 +2782,7 @@ _dh_demo_versions()
     message_n "${BYon}Compare version ${BWon}${_dh_v1} ${BYon}to ${BWon}${_dh_v2}${Boff}  "
     vercomp "$_dh_v1" "$_dh_v2"
     _dh_vercomp_result=$?
-    printf "%b\n" "$(show_result $_dh_vercomp_result)"
+    printf '%b\n' "$(show_result $_dh_vercomp_result)"
     show_result $_dh_vercomp_result >/dev/null 2>&1
     _dh_show_result_exit=$?
     # if any single comparison fails (returns non-zero), mark the module as failed
@@ -2704,7 +2896,7 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
 
     # column 4: raw return and final judgement
     printf '%s' " (ret:${_dh_bool_color}${_dh_result}${Boff}|${BWon}${_dh_exp}${Boff}:exp) -> "
-    printf "%s\n" "${_dh_pass_fail}"
+    printf '%s\n' "${_dh_pass_fail}"
   done
   printf "\n"
 
@@ -3323,11 +3515,11 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
 # @note 
 # @note "$*" (Quoted) -> THE STRING BUILDER. Flattens all arguments into ONE string
 # @cont Example: [ "arg one" "arg two" ] becomes [ "arg one arg two" ]
-# @cont Use for: log_message, echo, and _strip_ansi (treats message as a single blob)
+# @cont Use for: log_message, echo, and strip_ansi (treats message as a single blob)
 # @note 
 # @note $@ or $* (Unquoted) -> THE WORD SPLITTER. Dangerous/Rarely used
 # @cont Triggers "Internal Field Separation" (IFS). Spaces break into new arguments
 # @cont Example: [ "arg one" ] becomes [ "arg" "one" ]
 # @cont Use for: for-loops where you explicitly want to iterate over words
 # @rule Wrapper Rule: Always use "$@" to pass data to workers to prevent mangling
-# @rule Logging Rule: Use "$*" when piping to sed/_strip_ansi for stream processing
+# @rule Logging Rule: Use "$*" when piping to sed/strip_ansi for stream processing
