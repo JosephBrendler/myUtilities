@@ -2200,7 +2200,7 @@ swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is
 # @rule calls pur() first to ensure basic network reachability
 # @note color-coded retry counter (green -> yellow -> red) based on retry thresholds
 
-# wipe_device <device_path>
+# wipe_device <OUTPUTDEVICE>
 # POSIX-compliant implementation for script_header_joetoo
 
 maybe_format_warning() # (POSIX) issue a warning if INTERACTIVE is $TRUE
@@ -2240,13 +2240,19 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
 # @note uses get_msg_len to strip non-printing chars
 
 wipe_device() # (POSIX) use dd to fill target device $1 with random data
-{ # @usage wipe_device <device_path>
-  # @rule <device_path> must evaluate as a valid block device
+{ # @usage wipe_device <OUTPUTDEVICE>
+  # @vars OUTPUTDEVICE (global)
+  # @rule OUTPUTDEVICE must evaluate as a valid block device
   # @warn this will destroy all data on the target device
   # @ret 0: success, 1: general failure, 100(+): shell error
   # @deps sys-apps/util-linux (blockdev)
-  ret=0; _wd_target_dev="$1"
-  [ -b "$_wd_target_dev" ] || die "wipe_device: [$_wd_target_dev] is not a block device"
+  [ $# -eq 0 ] && { E_message "\$1 is null but must not be. Specify OUTPUTDEVICE"; return 1 ; }
+  if [ ! -z "${OUTPUTDEVICE:-}" ] && [ ! "$OUTPUTDEVICE" = "$1" ]; then
+    E_message "global OUTPUTDEVICE already set [$OUTPUTDEVICE], but differs from \$1 [$1]"
+    return 1
+  fi
+  OUTPUTDEVICE="$1"; ret=0
+  [ -b "$OUTPUTDEVICE" ] || die "wipe_device: [$OUTPUTDEVICE] is not a block device"
   checkroot  # must be root
   # if INTERACTIVE does not exist or is not set in the callers context, then re-assign w/ default
   #   := operator is "assign" vs :- which is "substitute" for current command only
@@ -2261,9 +2267,9 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
   # note that dd will exit with error 1 (disk full) if it does not know how much to write,
   #   so calculate how much using blockdev commands (sys-apps/util-linux) --
   # raw size in bytes
-  _wd_total_bytes=$(blockdev --getsize64 "$_wd_target_dev")
+  _wd_total_bytes=$(blockdev --getsize64 "$OUTPUTDEVICE")
   # physical sector size (usually 4096 or 512)
-  _wd_sector_size=$(blockdev --getpbsz "$_wd_target_dev")
+  _wd_sector_size=$(blockdev --getpbsz "$OUTPUTDEVICE")
   # calculate the largest multiple of _wd_sector_size that is -le 4MB
   #   and perfectly divides _wd_total_bytes
   _wd_preferred_bs=$((4 * 1024 * 1024))
@@ -2295,7 +2301,7 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
   fi
 
   # conditionally show the configuration derived above
-  _wd_varlist="_wd_target_dev _wd_total_bytes _wd_sector_size _wd_preferred_bs"
+  _wd_varlist="OUTPUTDEVICE _wd_total_bytes _wd_sector_size _wd_preferred_bs"
   _wd_varlist="${_wd_varlist} _wd_bs _wd_count bool._wd_EXPECT_DISK_FULL lv._wd_my_cmd"
   separator "wipe_device" "(configuration)"
   _wd_longest=$(get_longest ${_wd_varlist})
@@ -2305,7 +2311,7 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
   _wd_tempfile=$(mktemp) || die "failed to create temp file"
 
   # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
-  _wd_my_cmd="dd if=/dev/urandom of=$_wd_target_dev"
+  _wd_my_cmd="dd if=/dev/urandom of=$OUTPUTDEVICE"
 ###  _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count status=progress oflag=direct"  <-- status and oflag not POSIX
   _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count 2>\"$_wd_tempfile\""
 
@@ -2367,13 +2373,13 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
       esac
       ;;
     [nN]* ) die "aborting, as instructed" ;;
-    [sS]* ) message "skipping wipe of $_wd_target_dev, as instructed" ;;
+    [sS]* ) message "skipping wipe of $OUTPUTDEVICE, as instructed" ;;
     *     ) die "invalid response to prompt for dd command"
   esac
 
   # reset the trap
   trap - INT TERM EXIT
-  unset -v _wd_target_dev _wd_total_bytes _wd_sector_size _wd_preferred_bs
+  unset -v _wd_total_bytes _wd_sector_size _wd_preferred_bs
   unset -v _wd_bs _wd_count _wd_EXPECT_DISK_FULL _wd_my_cmd _wd_msg _wd_res
   unset -v _wd_tempfile _wd_pid _wd_bytes_complete _wd_longest _wd_varlist
   return $ret
