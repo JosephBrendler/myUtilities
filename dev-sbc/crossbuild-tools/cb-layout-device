@@ -889,73 +889,10 @@ layout_cryptsetup_lvm() {
 
     # luks_partition_device and edev were set in luks_lvm_config
     #   (and shown in display_configuration)
-    # use dd to write random data to the luks "part" name
-    #   oflag=direct writes direct to disk (dont need sync after)
-    # note that dd will exit with error 1 (disk full) if it does not know how much to write,
-    #   so calculate that using blockdev commands (sys-apps/util-linux) --
-    #     raw size in bytes
-    total_bytes=$(blockdev --getsize64 "${luks_partition_device}")
-    #     physical sector size (usually 4096 or 512)
-    sector_size=$(blockdev --getpbsz "${luks_partition_device}")
-    #     calculate the largest multiple of sector_size that is -le 4MB
-    #       and perfectly divides total_bytes
-    preferred_bs_bytes=$((4 * 1024 * 1024))
-    #       start close to the preferred size but use a multiple of sector_size
-    #         (integer division rounds)
-    bs_bytes=$(( (preferred_bs_bytes / sector_size) * sector_size ))
-    #       work downward until bs_bytes is an even multiple
-    while [ $bs_bytes -gt $sector_size ]; do
-        if [ $((total_bytes % bs_bytes)) -eq 0 ]; then break; fi
-        bs_bytes=$((bs_bytes - sector_size))
-    done
-    # final bs_bytes SHOULD now a perfect divisor of total_bytes and multiple of sector_size
-    #   however in rare circumstances (virtual disk, etc.), the disk might not be perfectly
-    #   build with integer number of sectors... so detect that
-    if [ $((total_bytes % bs_bytes)) -eq 0 ]; then
-        count=$((total_bytes / bs_bytes))
-        EXPECT_DISK_FULL=$FALSE
-    else
-        W_message "Warning: Partition size is not a multiple of sector size. Expecting 'No space left'"
-        # round up the number of sector-sized blocks to write
-        count=$(( (total_bytes + bs_bytes - 1) / bs_bytes ))
-        EXPECT_DISK_FULL=$TRUE
-    fi
-    # build the dd command
-    myCmd="dd if=/dev/urandom of=${luks_partition_device}"
-    myCmd+=" bs=${bs_bytes} count=${count} status=progress oflag=direct"
-    msg="about to run [${myCmd}]\n"
-    msg+="(you can safely skip this step if you have done it before)\n"
-    msg+="(y: yes; s: skip; n: exit program)"
-    response=""
-    if [ $INTERACTIVE ] ; then
-        new_prompt "${msg}"
-    else
-        response="y"
-    fi
-    case ${response:0:1} in
-        [yY] )
-            maybe_format_warning || die "failed format_warning somehow"
-            # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
-            #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
-            #   and exit code 130 means the user hit CTRL-C to quit
-
-            ${myCmd}
-            rc=$?
-            case $rc in
-                0   ) : ;;  #success
-                1   )
-                    if [ ! $EXPECT_DISK_FULL ]; then die "general failure; dd exit code [$rc]"; fi ;;
-                126 ) die "dd not executable; dd exit code [$rc]" ;;
-                127 ) die "dd not found; dd exit code [$rc]" ;;
-                130 ) die "process interrupted by user; dd exit code [$rc]" ;;
-                137 ) die "killed (OOM or kill -9); dd exit code [$rc]" ;;
-                *   ) die "unrecognized failure; dd exit code [$rc]" ;;
-            esac
-            ;;
-        [nN] ) die "aborting, as instructed" ;;
-        [sS] ) message "skipping, as instructed" ;;
-        *    ) die "invalid response to new_prompt for dd command"
-    esac
+    # use script_headerjoetoo's wipe_device (dd to write random data tp the luks partition)
+    message_n "wiping luks partition device [${luks_partition_device}] with random data ..."
+    wipe_device "${luks_partition_device}" || die "failed to wipe_device ${luks_partition_device}"
+    handle_result $? "" "" || die "wipe_device failed for ${luks_partition_device}"
 
     # run cryptsetup luksFormat (provide passphrase it will ask for)
     d_message "using passphrase to run cryptsetup -q luksFormat ${luks_partition_device}" 3
@@ -1317,13 +1254,6 @@ maybe_layout_cryptsetup_lvm() {
         layout_cryptsetup_lvm || return 1
     else
         message "luks lvm layout not requested; skipping"
-    fi
-    return 0
-}
-
-maybe_format_warning() {
-    if [ $INTERACTIVE ] ; then
-        format_warning || return 1
     fi
     return 0
 }
