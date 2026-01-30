@@ -2222,15 +2222,17 @@ swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is
 # @note color-coded retry counter (green -> yellow -> red) based on retry thresholds
 
 maybe_format_warning() # (POSIX) issue a warning if INTERACTIVE is $TRUE
-{ if [ $INTERACTIVE ] ; then format_warning || return 1; fi; return 0 ; }
+{ if [ $INTERACTIVE ] ; then format_warning "$@" || return 1; fi; return 0 ; }
 
 format_warning() # (POSIX) issue a warning that the operation will destroy target device
-{ [ -z "$OUTPUTDEVICE" ] && { E_message "OUTPUTDEVICE is null set but must not be"; return 1; }
+{ ret=0
+  [ -z "$1" ] && { E_message "\$1 is null but must not be; Specify target_device"; return 1; }
+  _fw_target_device="$1"
   : "${PN:=$(hostname)}"
   separator "$PN" "(format warning)"
   answer=""
-  _fw_msg1="${BMon}*   ${BRon}Warning:${BYon} this process will destroy all data on device [ ${BRon}${OUTPUTDEVICE}${BYon} ]${Boff}   ${BMon}*${Boff}"
-  _fw_msg2="${BMon}*   ${BYon}Warning:${BRon} this process will destroy all data on device [ ${BYon}${OUTPUTDEVICE}${BRon} ]${Boff}   ${BMon}*${Boff}"
+  _fw_msg1="${BMon}*   ${BRon}Warning:${BYon} this process will destroy all data on device [ ${BRon}${_fw_target_device}${BYon} ]${Boff}   ${BMon}*${Boff}"
+  _fw_msg2="${BMon}*   ${BYon}Warning:${BRon} this process will destroy all data on device [ ${BYon}${_fw_target_device}${BRon} ]${Boff}   ${BMon}*${Boff}"
   # estimate message() function left side padding
   # adjust for non-printing chars and message() padding
   _fw_msg_width=$(get_msg_len "$_fw_msg1")
@@ -2243,29 +2245,25 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
   printf '  %s' "${BMon}"; repeat '*' "${_fw_msg_width}"; printf '%s\n' "${Boff}"
   prompt "$_fw_msg3"
   case ${answer} in
-    [yY]* ) message "Affirmative response from user; continuing" ;;
-    [nN]* ) E_message "Negative response from user; quitting"; return 1 ;;
-    * ) E_message "invalid response to format_warning"; return 1 ;;
+    [yY]* ) message "Affirmative response from user; continuing"; ret=0 ;;
+    [nN]* ) E_message "Negative response from user; quitting"; ret=0 ;;
+    * ) E_message "invalid response to format_warning"; ret=1 ;;
   esac
   unset -v _fw_msg1 _fw_msg2 _fw_msg_width _fw_msg3
-  return 0 ; }
+  return $ret ; }
 # @usage format_warning
-# @vars PN OUTPUTDEVICE answer (globals)
+# @vars PN _fw_target_device answer (globals)
 # @ret 0: user confirmed; 1: user denied or invalid input
 # @deps separator get_msg_len repeat prompt message E_message
-# @req requires OUTPUTDEVICE to be set globally or in caller scope
+# @req requires _fw_target_device to be set globally or in caller scope
 # @warn this function will return 1 to trigger a die or exit in the caller
 # @note uses get_msg_len to strip non-printing chars
 
 wipe_device() # (LINUX) use dd to fill target device $1 with random data
 { ret=0
-  [ $# -eq 0 ] && { E_message "\$1 is null but must not be. Specify OUTPUTDEVICE"; return 1 ; }
-  if [ ! -z "${OUTPUTDEVICE:-}" ] && [ ! "$OUTPUTDEVICE" = "$1" ]; then
-    E_message "global OUTPUTDEVICE already set [$OUTPUTDEVICE], but differs from \$1 [$1]"
-    return 1
-  fi
-  OUTPUTDEVICE="$1"
-  [ -b "$OUTPUTDEVICE" ] || die "wipe_device: [$OUTPUTDEVICE] is not a block device"
+  [ -z "$1" ] && { E_message "\$1 is null but must not be. Specify target_device"; return 1 ; }
+  _wd_target_device="$1"
+  [ -b "$_wd_target_device" ] || die "wipe_device: [$_wd_target_device] is not a block device"
   checkroot  # must be root
   # if INTERACTIVE does not exist or is not set in the callers context, then re-assign w/ default
   #   := operator is "assign" vs :- which is "substitute" for current command only
@@ -2274,9 +2272,9 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
   # note that dd will exit with error 1 (disk full) if it does not know how much to write,
   #   so calculate how much using blockdev commands (sys-apps/util-linux) --
   # raw size in bytes
-  _wd_total_bytes=$(blockdev --getsize64 "$OUTPUTDEVICE")
+  _wd_total_bytes=$(blockdev --getsize64 "$_wd_target_device")
   # physical sector size (usually 4096 or 512)
-  _wd_sector_size=$(blockdev --getpbsz "$OUTPUTDEVICE")
+  _wd_sector_size=$(blockdev --getpbsz "$_wd_target_device")
   # calculate the largest multiple of _wd_sector_size that is -le 4MB
   #   and perfectly divides _wd_total_bytes
   _wd_preferred_bs=$((4 * 1024 * 1024))
@@ -2308,13 +2306,13 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
   fi
 
   # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
-  _wd_my_cmd="dd if=/dev/urandom of=$OUTPUTDEVICE bs=$_wd_bs count=$_wd_count"
+  _wd_my_cmd="dd if=/dev/urandom of=$_wd_target_device bs=$_wd_bs count=$_wd_count"
   # add iflag=fullblock to tell dd to wait until it has accumulated the full requested block size from /dev/urandom
   # before proceeding, preventing partial reads and ensuring a continuous transfer (i.e. guard against short supply of entropy)
   _wd_my_cmd="${_wd_my_cmd} iflag=fullblock"
 
   # conditionally show the configuration derived above
-  _wd_varlist="OUTPUTDEVICE _wd_total_bytes _wd_sector_size _wd_preferred_bs"
+  _wd_varlist="_wd_target_device _wd_total_bytes _wd_sector_size _wd_preferred_bs"
   _wd_varlist="${_wd_varlist} _wd_bs _wd_count bool._wd_EXPECT_DISK_FULL lv._wd_my_cmd"
   separator "wipe_device" "(configuration)"
   _wd_longest=$(get_longest ${_wd_varlist})
@@ -2356,7 +2354,7 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
         die "${BYon}Timed out waiting for /proc/$_wd_pid/status and /proc/$_wd_pid/io${Boff}"
       fi
       # announce start and warn about possible delays if device is slow, etc.
-      W_message "${BYon}Started wipe of $OUTPUTDEVICE (pid=$_wd_pid). This may take a while...${Boff}"
+      W_message "${BYon}Started wipe of $_wd_target_device (pid=$_wd_pid). This may take a while...${Boff}"
       W_message "If the device is slow or has issues, progress updates may be delayed."
       W_message "${BYon}Note${Boff}: if you see \"(D state)\" right of progress bar,"
       W_message "dd has entered the kernel's D state (Uninterruptible Sleep), and this"
@@ -2465,7 +2463,7 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
       esac
       ;;
     [nN]* ) die "aborting, as instructed" ;;
-    [sS]* ) message "skipping wipe of $OUTPUTDEVICE, as instructed" ;;
+    [sS]* ) message "skipping wipe of $_wd_target_device, as instructed" ;;
     *     ) die "invalid response to prompt for dd command"
   esac
 
@@ -2477,9 +2475,9 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
   unset -v _wd_rate _wd_stats _wd_DSTATE _wd_INT _wd_offset 
   return $ret
 }
-# @usage wipe_device <OUTPUTDEVICE>
-# @vars OUTPUTDEVICE (global)
-# @rule OUTPUTDEVICE must evaluate as a valid block device
+# @usage wipe_device <_wd_target_device>
+# @vars _wd_target_device (global)
+# @rule _wd_target_device must evaluate as a valid block device
 # @warn this will destroy all data on the target device
 # @ret 0: success, 1: general failure, 100(+): shell error
 # @deps sys-apps/util-linux (blockdev)
