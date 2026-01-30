@@ -1,4 +1,6 @@
 #!/bin/sh
+# shellcheck disable=SC2154
+# shellcheck disable=SC1091
 . ./script_header_joetoo
 
 wipe_device() # (LINUX) use dd to fill target device $1 with random data
@@ -66,15 +68,11 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
 
   # build _wd_msg, in readable lines, to explain and prompt
   printf '\n'
-  # shellcheck disable=SC2154
   message "${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}"
-  # shellcheck disable=SC2154
   message "${BCon}(you can safely skip this step if you have done it before)${Boff}"
-  # shellcheck disable=SC2154
   _wd_msg="${BWon}Continue? (y: yes; s: skip; n: exit program)${Boff} "
   if [ "$INTERACTIVE" = "$TRUE" ]; then
     yns_prompt "$_wd_msg"
-    # shellcheck disable=SC2154
     _wd_res="$response"
   else
     _wd_res="y"
@@ -111,6 +109,7 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
       W_message "usually indicates a hardware issue (e.g. old/flakey/slow USB stick)."
       W_message "Investigate/abort (CTRL-C and/or re-seat the device) if you see no write"
       W_message "progress and this condition persists"
+      echo
 
       # now monitor and display progress
       _wd_bytes_complete=0
@@ -130,7 +129,7 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
             _wd_longest=$(get_longest $_wd_varlist)
             echo
             display_vars $_wd_longest $_wd_varlist
-        ' 3
+        ' 5
 
           # guard the calculation -
           #   bc will fail on division by zero (MiB defined in script_header_joetoo), or 
@@ -151,13 +150,14 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
         if isint "$_wd_bytes_complete"; then _wd_INT=$TRUE; else _wd_INT=$FALSE; fi
         # debugging output visible only if verbosity -ge 5
         d_do '
-          _wd_varlist="_wd_pid _wd_bytes_complete bool._wd_INT _wd_elapsed _wd_elapsed_time _wd_rate _wd_stats _wd_DSTATE"
+          _wd_varlist="_wd_pid _wd_bytes_complete bool._wd_INT _wd_elapsed _wd_elapsed_time _wd_rate"
+          _wd_varlist="${_wd_varlist} _wd_stats bool._wd_DSTATE"
           _wd_longest=$(get_longest $_wd_varlist)
           echo
           display_vars $_wd_longest $_wd_varlist
-        ' 3
+        ' 5
         if [ $_wd_INT ] ; then
-          progress_inline "$_wd_bytes_complete" "$_wd_total_bytes" ; EL   # Erase to end of Line (clean up e.g. typing )
+          # print the status update right of the progress bar *first b/c 100% progress adds a newline*
           # dynamically calculated offset for this screen and this block device; append status info sufficiently offset
           # x=" Working: [#################################.]  100% ("
           # but the ### part is max 1/4 termwidth, so it is variable
@@ -171,8 +171,14 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
           if [ $_wd_DSTATE ] ; then printf ' %s' "${BRon}(D state)${Boff}"; fi
           EL   # erase to end of line, to keep it clean if rate is reduced for example
           RCP  # restoe cursor to where progress_inline left it
-        fi
-        sleep 2
+          # print the status update right of the progress bar *first b/c 100% progress adds a newline*
+          # if 100% but in D state, do not add newline
+          if ! { [ "$_wd_bytes_complete" = "$_wd_total_bytes" ] && [ $_wd_DSTATE ] ; }; then
+            # save cursor position, write progress bar, Erase to end of Line (clean up e.g. typing); resore cursor position
+            SCP; progress_inline "$_wd_bytes_complete" "$_wd_total_bytes" ; EL; RCP
+          fi  # print progress bar?
+        fi  # _wd_bytes_complete is integer
+        sleep .5   # was 2 seconds; shorter sleep for more responsive UI
       done
       SCU   # ok to show the cursor again
 

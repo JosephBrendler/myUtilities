@@ -2257,7 +2257,235 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
 # @warn this function will return 1 to trigger a die or exit in the caller
 # @note uses get_msg_len to strip non-printing chars
 
-### placeholder for wipe_device()
+wipe_device() # (LINUX) use dd to fill target device $1 with random data
+{ ret=0
+  [ $# -eq 0 ] && { E_message "\$1 is null but must not be. Specify OUTPUTDEVICE"; return 1 ; }
+  if [ ! -z "${OUTPUTDEVICE:-}" ] && [ ! "$OUTPUTDEVICE" = "$1" ]; then
+    E_message "global OUTPUTDEVICE already set [$OUTPUTDEVICE], but differs from \$1 [$1]"
+    return 1
+  fi
+  OUTPUTDEVICE="$1"
+  [ -b "$OUTPUTDEVICE" ] || die "wipe_device: [$OUTPUTDEVICE] is not a block device"
+  checkroot  # must be root
+  # if INTERACTIVE does not exist or is not set in the callers context, then re-assign w/ default
+  #   := operator is "assign" vs :- which is "substitute" for current command only
+  : "${INTERACTIVE:=$TRUE}"
+
+  # note that dd will exit with error 1 (disk full) if it does not know how much to write,
+  #   so calculate how much using blockdev commands (sys-apps/util-linux) --
+  # raw size in bytes
+  _wd_total_bytes=$(blockdev --getsize64 "$OUTPUTDEVICE")
+  # physical sector size (usually 4096 or 512)
+  _wd_sector_size=$(blockdev --getpbsz "$OUTPUTDEVICE")
+  # calculate the largest multiple of _wd_sector_size that is -le 4MB
+  #   and perfectly divides _wd_total_bytes
+  _wd_preferred_bs=$((4 * 1024 * 1024))
+  # determine initial block size (align to _wd_sector_size)(integer division rounds)
+  if [ "$_wd_total_bytes" -lt "$_wd_preferred_bs" ]; then
+    _wd_bs=$(( (_wd_total_bytes / _wd_sector_size) * _wd_sector_size ))
+  else
+    _wd_bs=$(( (_wd_preferred_bs / _wd_sector_size) * _wd_sector_size ))
+  fi
+  # safety - ensure _wd_bs is at least 1 sector
+  [ "$_wd_bs" -gt 0 ] || _wd_bs=$_wd_sector_size
+  # loop - work downward to find the largest _wd_bs (bytes) that perfectly divides _wd_total_bytes
+  while [ "$_wd_bs" -gt "$_wd_sector_size" ]; do
+    if [ $((_wd_total_bytes % _wd_bs)) -eq 0 ]; then break; fi
+    _wd_bs=$((_wd_bs - _wd_sector_size))
+  done
+
+  # final _wd_bs SHOULD now a perfect divisor of _wd_total_bytes and multiple of _wd_sector_size
+  #   however in rare circumstances (virtual disk, etc.), the disk might not be perfectly
+  #   build with integer number of sectors... so detect that
+  if [ $((_wd_total_bytes % _wd_bs)) -eq 0 ]; then
+    _wd_count=$((_wd_total_bytes / _wd_bs))
+    _wd_EXPECT_DISK_FULL=$FALSE
+  else
+    W_message "Warning: Partition size not a multiple of sector size. Expecting 'No space left'"
+    # round up the number of sector-sized blocks to write
+    _wd_count=$(( (_wd_total_bytes + _wd_bs - 1) / _wd_bs ))
+    _wd_EXPECT_DISK_FULL=$TRUE
+  fi
+
+  # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
+  _wd_my_cmd="dd if=/dev/urandom of=$OUTPUTDEVICE bs=$_wd_bs count=$_wd_count"
+  # add iflag=fullblock to tell dd to wait until it has accumulated the full requested block size from /dev/urandom
+  # before proceeding, preventing partial reads and ensuring a continuous transfer (i.e. guard against short supply of entropy)
+  _wd_my_cmd="${_wd_my_cmd} iflag=fullblock"
+
+  # conditionally show the configuration derived above
+  _wd_varlist="OUTPUTDEVICE _wd_total_bytes _wd_sector_size _wd_preferred_bs"
+  _wd_varlist="${_wd_varlist} _wd_bs _wd_count bool._wd_EXPECT_DISK_FULL lv._wd_my_cmd"
+  separator "wipe_device" "(configuration)"
+  _wd_longest=$(get_longest ${_wd_varlist})
+  d_do display_vars ${_wd_longest} ${_wd_varlist} 3
+
+  # build _wd_msg, in readable lines, to explain and prompt
+  printf '\n'
+  message "${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}"
+  message "${BCon}(you can safely skip this step if you have done it before)${Boff}"
+  _wd_msg="${BWon}Continue? (y: yes; s: skip; n: exit program)${Boff} "
+  if [ "$INTERACTIVE" = "$TRUE" ]; then
+    yns_prompt "$_wd_msg"
+    _wd_res="$response"
+  else
+    _wd_res="y"
+  fi
+
+  # handle response to prompt, with pattern matching for portability
+  case "$_wd_res" in
+    [yY]* )
+      # OK - run it (in background, capturing its PID)
+      # capture start time
+      _wd_start_time=$(date +%s)
+      # disable monitor mode (job control) for background process
+      # (to silence the asynchronous "[1]+ Done" messages that break the UI)
+      # (yes, it feels backwards set -X enables X, set +X disables X)
+      set +m
+      # launch inside curly braces  to silence start-up message
+#      eval "$_wd_my_cmd &"; _wd_pid=$!
+      { eval "$_wd_my_cmd &" ; } >/dev/null 2>&1 ; _wd_pid=$!
+      # give dd some breathing room before monitoring it (instead of sleep .2, poll for /proc/$pid)
+      _wd_timeout=3000  # milliseconds - using milli_sleep function defined in script_header_joetoo
+      until { [ -f "/proc/$_wd_pid/status" ] && [ -f "/proc/$_wd_pid/io" ] ; } || [ $_wd_timeout -eq 0 ] ; do
+        milli_sleep 100
+        _wd_timeout=$(( _wd_timeout - 100 ))
+      done
+      # if timeout expired, die
+      if [ $_wd_timeout -eq 0 ]; then
+        die "${BYon}Timed out waiting for /proc/$_wd_pid/status and /proc/$_wd_pid/io${Boff}"
+      fi
+      # announce start and warn about possible delays if device is slow, etc.
+      W_message "${BYon}Started wipe of $OUTPUTDEVICE (pid=$_wd_pid). This may take a while...${Boff}"
+      W_message "If the device is slow or has issues, progress updates may be delayed."
+      W_message "${BYon}Note${Boff}: if you see \"(D state)\" right of progress bar,"
+      W_message "dd has entered the kernel's D state (Uninterruptible Sleep), and this"
+      W_message "usually indicates a hardware issue (e.g. old/flakey/slow USB stick)."
+      W_message "Investigate/abort (CTRL-C and/or re-seat the device) if you see no write"
+      W_message "progress and this condition persists"
+      echo
+
+      # now monitor and display progress
+      _wd_bytes_complete=0
+      HCU   # hide the cursor to prevent flicker during progress bar updates
+      # use kill -0 as a safety check so the loop doesn't hang if dd dies
+      while kill -0 "$_wd_pid" 2>/dev/null; do
+        if [ -f "/proc/$_wd_pid/status" ]; then
+          # check for Hardware Hang (D state) (likely old/small/flakey USB stick block device)
+          _wd_state=$(grep "State:" "/proc/$_wd_pid/status" | awk '{print $2}')
+          # avoid reading cancelled_write_bytes: (which would also match grep "^write_bytes:")
+          _wd_bytes_complete=$(grep "^${W0}write_bytes:" /proc/$_wd_pid/io | awk '{print $2}')
+          _wd_curr_time=$(date +%s)
+          _wd_elapsed=$(echo "$_wd_curr_time - $_wd_start_time" | bc)
+
+          d_do '
+            _wd_varlist="_wd_state _wd_bytes_complete _wd_start_time _wd_curr_time _wd_elapsed MiB"
+            _wd_longest=$(get_longest $_wd_varlist)
+            echo
+            display_vars $_wd_longest $_wd_varlist
+        ' 5
+
+          # guard the calculation -
+          #   bc will fail on division by zero (MiB defined in script_header_joetoo), or 
+          #   if no bytes written yet (_wd_bytes_complete = "" rather than 0)
+          if [ -n "$_wd_bytes_complete" ] && [ "$_wd_elapsed" -gt 0 ]; then
+            _wd_elapsed_time=$(date -ud "@$_wd_elapsed" +%T)
+            _wd_rate=$(echo "scale=2; $_wd_bytes_complete / $_wd_elapsed / $MiB" | bc)
+            _wd_stats="$_wd_elapsed_time @ ${_wd_rate} MB/s"
+          else
+            # While elapsed is 0, we can't calculate a rate; show pending status
+            _wd_stats="00:00:00 @ ... MB/s"
+          fi
+
+          if [ "$_wd_state" = "D" ]; then _wd_DSTATE=$TRUE; else _wd_DSTATE=$FALSE; fi   # D state check
+        fi   # /proc/$pid/status exists
+
+        # update progress for integer results only
+        if isint "$_wd_bytes_complete"; then _wd_INT=$TRUE; else _wd_INT=$FALSE; fi
+        # debugging output visible only if verbosity -ge 5
+        d_do '
+          _wd_varlist="_wd_pid _wd_bytes_complete bool._wd_INT _wd_elapsed _wd_elapsed_time _wd_rate"
+          _wd_varlist="${_wd_varlist} _wd_stats bool._wd_DSTATE"
+          _wd_longest=$(get_longest $_wd_varlist)
+          echo
+          display_vars $_wd_longest $_wd_varlist
+        ' 5
+        if [ $_wd_INT ] ; then
+          # print the status update right of the progress bar *first b/c 100% progress adds a newline*
+          # dynamically calculated offset for this screen and this block device; append status info sufficiently offset
+          # x=" Working: [#################################.]  100% ("
+          # but the ### part is max 1/4 termwidth, so it is variable
+          # x=" Working: []  100% (/)"; echo ${#x} ==> 22 is the non-variable part
+          #   also include room for (done/total) fraction ( max = 2 * total) plus 2 extra pad
+          _wd_offset=$(( 22 + ( $(termwidth) / 4 ) + ( 2 * ${#_wd_total_bytes} ) + 2 ))
+          SCP  # save cursor position where progress_inline completed this step
+          printf '\r'; CUF $_wd_offset   # use dynamic offset from left edge of screen
+          printf '%s' "${BBon}[${Boff} ${_wd_stats} ${BBon}]${Boff}"  # print [stats]
+          # print D state warning if in D state
+          if [ $_wd_DSTATE ] ; then printf ' %s' "${BRon}(D state)${Boff}"; fi
+          EL   # erase to end of line, to keep it clean if rate is reduced for example
+          RCP  # restoe cursor to where progress_inline left it
+          # print the status update right of the progress bar *first b/c 100% progress adds a newline*
+          # if 100% but in D state, do not add newline
+          if ! { [ "$_wd_bytes_complete" = "$_wd_total_bytes" ] && [ $_wd_DSTATE ] ; }; then
+            # save cursor position, write progress bar, Erase to end of Line (clean up e.g. typing); resore cursor position
+            SCP; progress_inline "$_wd_bytes_complete" "$_wd_total_bytes" ; EL; RCP
+          fi  # print progress bar?
+        fi  # _wd_bytes_complete is integer
+        sleep .5   # was 2 seconds; shorter sleep for more responsive UI
+      done
+      SCU   # ok to show the cursor again
+
+      # wait for dd to finish and capture its exit status code
+      wait "$_wd_pid"
+      ret=$?
+      set -m  # re-enable monitor mode (job control) after background process is done
+      case $ret in
+        # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
+        #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
+        #   and exit code 130 means the user hit CTRL-C to quit
+        0   )
+          # success. Now that it has finished successfully, update the progress bar (which will add a newline)
+          progress_inline "$_wd_total_bytes" "$_wd_total_bytes" 
+          ;;
+        1   )
+          # "disk full" error. ignore if expecting it
+          # note: _wd_EXPECT_DISK_FULL is a psequdo-boolean like globally defined TRUE=0; FALSE=""
+          if [ "$_wd_EXPECT_DISK_FULL" ]; then
+            progress_inline "$_wd_total_bytes" "$_wd_total_bytes"   # Success
+          else
+            die "general failure; dd exit code [$ret]"
+          fi ;;
+        126 ) die "dd not executable; dd exit code [$ret]" ;;
+        127 ) die "dd not found; dd exit code [$ret]" ;;
+        130 ) die "process interrupted by user; dd exit code [$ret]" ;;
+        137 ) die "killed (OOM or kill -9); dd exit code [$ret]" ;;
+        138 ) die "bus error (SIGBUS); dd exit code [$ret]" ;;
+        *   ) die "unrecognized failure; dd exit code [$ret]" ;;
+      esac
+      ;;
+    [nN]* ) die "aborting, as instructed" ;;
+    [sS]* ) message "skipping wipe of $OUTPUTDEVICE, as instructed" ;;
+    *     ) die "invalid response to prompt for dd command"
+  esac
+
+# Unset localized variables
+  unset -v _wd_total_bytes _wd_sector_size _wd_preferred_bs _wd_bs _wd_count
+  unset -v _wd_EXPECT_DISK_FULL _wd_my_cmd _wd_varlist _wd_longest
+  unset -v _wd_msg _wd_res _wd_start_time _wd_pid _wd_timeout
+  unset -v _wd_bytes_complete _wd_state _wd_curr_time _wd_elapsed _wd_elapsed_time
+  unset -v _wd_rate _wd_stats _wd_DSTATE _wd_INT _wd_offset 
+  return $ret
+}
+# @usage wipe_device <OUTPUTDEVICE>
+# @vars OUTPUTDEVICE (global)
+# @rule OUTPUTDEVICE must evaluate as a valid block device
+# @warn this will destroy all data on the target device
+# @ret 0: success, 1: general failure, 100(+): shell error
+# @deps sys-apps/util-linux (blockdev)
+# @deps linux kernel (/dev/urandom)
+# @deps linux kernel (/proc/$pid/status and /proc/$pid/io)
+# @deps sys-apps/coreutils (dd, date, sleep, grep, awk, bc)
 
 get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
 { # Note: crypt_keydev_mountpoint must be globally defined by the calling script
