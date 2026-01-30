@@ -126,6 +126,25 @@ else  # VERBOSE is set - override if inconsistent IAW verbosity
   esac
 fi
 
+#-----[ standard multiples of byte sizes ]---------------------------
+KiB=1024
+MiB=$(( KiB * 1024 ))
+GiB=$(( MiB * 1024 ))
+TiB=$(( GiB * 1024 ))
+PiB=$(( TiB * 1024 ))
+
+KB=1000
+MB=$(( KB * 1000 ))
+GB=$(( MB * 1000 ))
+TB=$(( GB * 1000 ))
+PB=$(( TB * 1000 ))
+#-----[ standard time intervals ]-----------------------------------
+SEC=1
+MIN=$(( 60 * SEC ))
+HOUR=$(( 60 * MIN ))
+DAY=$(( 24 * HOUR ))
+WEEK=$(( 7 * DAY ))
+
 #-----[ regex character class patterns ]-----------------------------
 W0="[[:space:]]*"     # POSIX regex match for zero+ whitespaces
 W1="[[:space:]]${W0}" # POSIX regex match for one+ whitespaces ([[:space:]]+ is not portable)
@@ -2240,8 +2259,7 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
 
 #!/bin/sh
 
-#wipe_device() # (POSIX w GNU extensions) use dd to fill target device $1 with random data
-wipe_device() # (POSIX-plus) use dd to fill target device $1 with random data
+wipe_device() # (LINUX) use dd to fill target device $1 with random data
 { ret=0
   [ $# -eq 0 ] && { E_message "\$1 is null but must not be. Specify OUTPUTDEVICE"; return 1 ; }
   if [ ! -z "${OUTPUTDEVICE:-}" ] && [ ! "$OUTPUTDEVICE" = "$1" ]; then
@@ -2323,10 +2341,15 @@ wipe_device() # (POSIX-plus) use dd to fill target device $1 with random data
   case "$_wd_res" in
     [yY]* )
       # OK - run it (in background, capturing its PID)
-      set +m  # enable job control for background process (also needed for kill -USR1 to work)
-      eval "$_wd_my_cmd &"; _wd_pid=$!
-      sleep 2  # give dd some breathing room before pelting it with kill -USR1 requests
-      # not monitor and display progress
+      # disable monitor mode to enable job control for background process (also needed for kill -USR1 to work)
+      # (yes, it feels backwards set -X enables X, set +X disables X)
+      set +m
+      # launch inside curly braces  to silence start-up message
+#      eval "$_wd_my_cmd &"; _wd_pid=$!
+      { eval "$_wd_my_cmd &" } >/dev/null 2>&1 ; _wd_pid=$!
+      sleep .2  # give dd some breathing room before pelting it with kill -USR1 requests
+
+      # now monitor and display progress
       _wd_bytes_complete=0
       HCU   # hide the cursor to prevent flicker during progress bar updates
       # use kill -0 as a safety check so the loop doesn't hang if dd dies
@@ -2394,7 +2417,7 @@ wipe_device() # (POSIX-plus) use dd to fill target device $1 with random data
       # wait for dd to finish and capture its exit status code
       wait "$_wd_pid"
       ret=$?
-      set -m  # disable job control after background process is done
+      set -m  # re-enable monitor mode and disable job control after background process is done
       case $ret in
         # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
         #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
