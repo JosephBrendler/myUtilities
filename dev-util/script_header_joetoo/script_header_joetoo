@@ -2202,9 +2202,6 @@ swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is
 # @rule calls pur() first to ensure basic network reachability
 # @note color-coded retry counter (green -> yellow -> red) based on retry thresholds
 
-# wipe_device <OUTPUTDEVICE>
-# POSIX-compliant implementation for script_header_joetoo
-
 maybe_format_warning() # (POSIX) issue a warning if INTERACTIVE is $TRUE
 { if [ $INTERACTIVE ] ; then format_warning || return 1; fi; return 0 ; }
 
@@ -2241,30 +2238,22 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
 # @warn this function will return 1 to trigger a die or exit in the caller
 # @note uses get_msg_len to strip non-printing chars
 
-wipe_device() # (POSIX) use dd to fill target device $1 with random data
-{ # @usage wipe_device <OUTPUTDEVICE>
-  # @vars OUTPUTDEVICE (global)
-  # @rule OUTPUTDEVICE must evaluate as a valid block device
-  # @warn this will destroy all data on the target device
-  # @ret 0: success, 1: general failure, 100(+): shell error
-  # @deps sys-apps/util-linux (blockdev)
+#!/bin/sh
+
+#wipe_device() # (POSIX w GNU extensions) use dd to fill target device $1 with random data
+wipe_device() # (POSIX-plus) use dd to fill target device $1 with random data
+{ ret=0
   [ $# -eq 0 ] && { E_message "\$1 is null but must not be. Specify OUTPUTDEVICE"; return 1 ; }
   if [ ! -z "${OUTPUTDEVICE:-}" ] && [ ! "$OUTPUTDEVICE" = "$1" ]; then
     E_message "global OUTPUTDEVICE already set [$OUTPUTDEVICE], but differs from \$1 [$1]"
     return 1
   fi
-  OUTPUTDEVICE="$1"; ret=0
+  OUTPUTDEVICE="$1"
   [ -b "$OUTPUTDEVICE" ] || die "wipe_device: [$OUTPUTDEVICE] is not a block device"
   checkroot  # must be root
   # if INTERACTIVE does not exist or is not set in the callers context, then re-assign w/ default
   #   := operator is "assign" vs :- which is "substitute" for current command only
   : "${INTERACTIVE:=$TRUE}"
-
-#  # efine a cleanup function to be triggered on EXIT or interruption
-#  _wd_cleanup() {
-#    [ -n "$_wd_pid" ] && kill "$_wd_pid" 2>/dev/null
-#    rm -f "$_wd_tempfile"
-#  }             ### <--- this thing more trouble than worth right now
 
   # note that dd will exit with error 1 (disk full) if it does not know how much to write,
   #   so calculate how much using blockdev commands (sys-apps/util-linux) --
@@ -2302,6 +2291,16 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
     _wd_EXPECT_DISK_FULL=$TRUE
   fi
 
+  # create tempfile for dd stderr redirection; use template for filename with no spaces
+  _wd_tempfile=$(mktemp -t tmp.wipe_device.XXXXXXXXXX) || die "failed to create temp file"
+
+  # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
+  _wd_my_cmd="dd if=/dev/urandom of=$OUTPUTDEVICE bs=$_wd_bs count=$_wd_count"
+  # add iflag=fullblock to tell dd to wait until it has accumulated the full requested block size from /dev/urandom
+  # before proceeding, preventing partial reads and ensuring a continuous transfer (i.e. guard against short supply of entropy)
+#  _wd_my_cmd="${_wd_my_cmd} iflag=fullblock 2>\"$_wd_tempfile\""
+  _wd_my_cmd="${_wd_my_cmd} 2>\"$_wd_tempfile\""
+
   # conditionally show the configuration derived above
   _wd_varlist="OUTPUTDEVICE _wd_total_bytes _wd_sector_size _wd_preferred_bs"
   _wd_varlist="${_wd_varlist} _wd_bs _wd_count bool._wd_EXPECT_DISK_FULL lv._wd_my_cmd"
@@ -2309,17 +2308,9 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
   _wd_longest=$(get_longest ${_wd_varlist})
   d_do display_vars ${_wd_longest} ${_wd_varlist} 3
 
-  # create a tempfile
-  _wd_tempfile=$(mktemp) || die "failed to create temp file"
-
-  # build the dd command in readable lines - retirect stderr to the tempfile so kill -USR1 can read it
-  _wd_my_cmd="dd if=/dev/urandom of=$OUTPUTDEVICE"
-###  _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count status=progress oflag=direct"  <-- status and oflag not POSIX
-  _wd_my_cmd="${_wd_my_cmd} bs=$_wd_bs count=$_wd_count 2>\"$_wd_tempfile\""
-
   # build _wd_msg, in readable lines, to explain and prompt
-  _wd_msg="${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]\n${Boff}"
-  _wd_msg="${_wd_msg}${BCon}(you can safely skip this step if you have done it before)\n${Boff}"
+  _wd_msg="${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}\n"
+  _wd_msg="${_wd_msg}${BCon}(you can safely skip this step if you have done it before)${Boff}\n"
   _wd_msg="${_wd_msg}${BWon}Continue? (y: yes; s: skip; n: exit program)${Boff}"
   if [ "$INTERACTIVE" = "$TRUE" ]; then
     yns_prompt "$_wd_msg"
@@ -2331,66 +2322,128 @@ wipe_device() # (POSIX) use dd to fill target device $1 with random data
   # handle response to prompt, with pattern matching for portability
   case "$_wd_res" in
     [yY]* )
-      maybe_format_warning || die "failed format_warning"
-      # set a trap for SIGINT (Ctrl+C), SIGTERM, and EXIT
-      # POSIX standards recommend omitting the SIG prefix for maximum portability
-      # INT and TERM are external events; EXIT is a shell condition (a "pseudo-signal")
-#      trap _wd_cleanup INT TERM EXIT     ### not working
-      # OK - run it
+      # OK - run it (in background, capturing its PID)
+      set +m  # enable job control for background process (also needed for kill -USR1 to work)
       eval "$_wd_my_cmd &"; _wd_pid=$!
-      sleep 1  # give dd some breathing room before pelting it with kill -USR1 requests
+      sleep 2  # give dd some breathing room before pelting it with kill -USR1 requests
       # not monitor and display progress
       _wd_bytes_complete=0
+      HCU   # hide the cursor to prevent flicker during progress bar updates
       # use kill -0 as a safety check so the loop doesn't hang if dd dies
       while kill -0 "$_wd_pid" 2>/dev/null; do
         # trigger dd to write its status to its stderr (which we redirected to the tempfile)
         kill -USR1 "$_wd_pid" 2>/dev/null  # this redirects kill stderr, not dd stderr
-        sleep 1  # pause to allow it to make some progress
-        # extract the byte count
-        _wd_bytes_complete=$(grep -aE '^[0-9]+ bytes' "$_wd_tempfile" | tail -n1 | cut -d' ' -f1)
+        sleep 1  # pause to allow dd to write to tempfile
+        # last line of dd 'kill -USR1 <pid>' output looks like this:
+        # 42721730560 bytes (43 GB, 40 GiB) copied, 1024 s, 41.7 MB/s
+        # [bytes] copied, [elapsed time], [transfer rate]
+        # $2 of awk with ',' delimiter (-F,) is the time block, $3 is the rate block
+        # capture the raw status line
+        _wd_status_line=$(grep -aE '^[0-9]+ bytes' "$_wd_tempfile" | tail -n1)
+        # extract the byte count (first word of the whole line)
+        _wd_bytes_complete=$(echo "$_wd_status_line" | cut -d' ' -f1)
+        # extract elapsed time and transfer rate using Comma-delimited AWK
+        _wd_stats_raw=$(echo "$_wd_status_line" | sed 's/.*copied, //')    # strip left of copied + comma
+        _wd_stats=$(echo "$_wd_stats_raw" | awk '{print $1, $2, $3, $4}')  # words 1, 2 are elapsed time, 3, 4 are rate
         # update progress for integer results only
-        if isint "$_wd_bytes_complete"; then
-          progress_inline "$_wd_bytes_complete" "$_wd_total_bytes"
+        # use ls and awk to inspect tempfile, generate a shell assignment string, and evaluate it
+        # stay POSIX and strengthen reliability of ls by using LC_TIME=C for max portability
+        #   -n to get numeric user/group, AND -og to *suppress user and group
+        # note: output of ls -l -og $_wd_tempfile looks like this:
+        # -rw------- 1 10771 Jan 29 10:16 /tmp/tmp.vq1naJMUai
+        # so for awk, word $3 is size, word $NF is filename, and all between is "time info"
+        _wd_tempfile_stats=$(LC_TIME=C ls -logn "$_wd_tempfile" | awk '{
+          # Size is $3 because -og removed owner/group
+          size=$3;
+          # Time is everything from $4 to the one before the last.  # $i supplies the current word
+          #   to the first %s, and if $i is not the last word, (...) supplies a space to the second %s (else "")
+          for(i=4; i<NF; i++) printf "%s%s", $i, (i==NF-1 ? "" : " ")
+          print " " size }')
+        _wd_mtime=${_wd_tempfile_stats% *}
+        _wd_fsize=${_wd_tempfile_stats##* }
+        # ls -l is not portable for timestamps - use stat instead
+        #_wd_mtime=$(stat -c "%y" "$_wd_tempfile" | sed 's|\..*||')
+        #_wd_fsize=$(stat -c "%s" "$_wd_tempfile")
+        if isint "$_wd_bytes_complete"; then _wd_INT=$TRUE; else _wd_INT=$FALSE; fi
+        # debugging output visible only if verbosity -ge 5
+        d_do '
+          _wd_varlist="_wd_pid lv._wd_tempfile _wd_tempfile_stats _wd_fsize _wd_mtime"
+          _wd_varlist+=" lv._wd_status_line _wd_bytes_complete _wd_stats_raw _wd_stats bool._wd_INT"
+          _wd_longest=$(get_longest $_wd_varlist)
+          echo
+          display_vars $_wd_longest $_wd_varlist
+        ' 5
+        if [ $_wd_INT ] ; then
+          progress_inline "$_wd_bytes_complete" "$_wd_total_bytes" ; EL   # Erase to end of Line (clean up e.g. typing )
+          # dynamically calculated offset for this screen and this block device; append status info sufficiently offset
+          # x=" Working: [#################################.]  100% ("
+          # but the ### part is max 1/4 termwidth, so it is variable
+          # x=" Working: []  100% (/)"; echo ${#x} ==> 22 is the non-variable part
+          #   also include room for (done/total) fraction ( max = 2 * total) plus 2 extra pad
+          _wd_offset=$(( 22 + ( $(termwidth) / 4 ) + ( 2 * ${#_wd_total_bytes} ) + 2 ))
+          SCP  # save cursor position where progress_inline completed this step
+          printf '\r'; CUF 90   # use abosolute offset from left edge of screen
+          printf '%s' "${BBon}[${Boff}${_wd_stats}${BBon}]${Boff}"  # print [stats]
+          EL   # erase to end of line, to keep it clean if rate is reduced for example
+          RCP  # restoe cursor to where progress_inline left it
         fi
         sleep 2
       done
+      SCU   # ok to show the cursor again
+
       # wait for dd to finish and capture its exit status code
       wait "$_wd_pid"
       ret=$?
+      set -m  # disable job control after background process is done
       case $ret in
         # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
         #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
         #   and exit code 130 means the user hit CTRL-C to quit
-        0   ) : ;; # Success
+        0   )
+          # now that it has finished successfully, update the progress bar (which will add a newline)
+          progress_inline "$_wd_total_bytes" "$_wd_total_bytes"
+          ;; # Success
         1   )
           # ignore "disk full" error if expecting it
           # note: _wd_EXPECT_DISK_FULL is a psequdo-boolean like globally defined TRUE=0; FALSE=""
-          if [ ! "$_wd_EXPECT_DISK_FULL" ]; then
+          if [ "$_wd_EXPECT_DISK_FULL" ]; then
+            progress_inline "$_wd_total_bytes" "$_wd_total_bytes"   # Success
+          else
+            rm -f "$_wd_tempfile"
             die "general failure; dd exit code [$ret]"
           fi ;;
-        126 ) die "dd not executable; dd exit code [$ret]" ;;
-        127 ) die "dd not found; dd exit code [$ret]" ;;
-        130 ) die "process interrupted by user; dd exit code [$ret]" ;;
-        137 ) die "killed (OOM or kill -9); dd exit code [$ret]" ;;
-        138 ) die "bus error (SIGBUS); dd exit code [$ret]" ;;
+        126 ) rm -f "$_wd_tempfile"; die "dd not executable; dd exit code [$ret]" ;;
+        127 ) rm -f "$_wd_tempfile"; die "dd not found; dd exit code [$ret]" ;;
+        130 ) rm -f "$_wd_tempfile"; die "process interrupted by user; dd exit code [$ret]" ;;
+        137 ) rm -f "$_wd_tempfile"; die "killed (OOM or kill -9); dd exit code [$ret]" ;;
+        138 ) rm -f "$_wd_tempfile"; die "bus error (SIGBUS); dd exit code [$ret]" ;;
         *   ) die "unrecognized failure; dd exit code [$ret]" ;;
       esac
       ;;
-    [nN]* ) die "aborting, as instructed" ;;
-    [sS]* ) message "skipping wipe of $OUTPUTDEVICE, as instructed" ;;
-    *     ) die "invalid response to prompt for dd command"
+    [nN]* ) rm -f "$_wd_tempfile"; die "aborting, as instructed" ;;
+    [sS]* ) rm -f "$_wd_tempfile"; message "skipping wipe of $OUTPUTDEVICE, as instructed" ;;
+    *     ) rm -f "$_wd_tempfile"; die "invalid response to prompt for dd command"
   esac
 
   # remove the tempfile
   rm -f "$_wd_tempfile"
 
-  # reset the trap
-#  trap - INT TERM EXIT     ## not working
   unset -v _wd_total_bytes _wd_sector_size _wd_preferred_bs
   unset -v _wd_bs _wd_count _wd_EXPECT_DISK_FULL _wd_my_cmd _wd_msg _wd_res
   unset -v _wd_tempfile _wd_pid _wd_bytes_complete _wd_longest _wd_varlist
+  unset -v _wd_status_line _wd_stats_raw _wd_stats _wd_INT _wd_fsize _wd_mtime 
+  unset -v _wd_tempfile_stats
   return $ret
 }
+# @usage wipe_device <OUTPUTDEVICE>
+# @vars OUTPUTDEVICE (global)
+# @rule OUTPUTDEVICE must evaluate as a valid block device
+# @warn this will destroy all data on the target device
+# @ret 0: success, 1: general failure, 100(+): shell error
+# @deps sys-apps/util-linux (blockdev)
+# @deps linux kernel (/dev/urandom)
+# @deps GNU extensions (kill -USR1 [SIGUSR1])
+
 
 get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
 { # Note: crypt_keydev_mountpoint must be globally defined by the calling script
