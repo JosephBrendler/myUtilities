@@ -2489,7 +2489,7 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
 # @deps linux kernel (/proc/$pid/status and /proc/$pid/io)
 # @deps sys-apps/coreutils (dd, date, sleep, grep, awk, bc)
 
-get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
+get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
 { # Note: crypt_keydev_mountpoint must be globally defined by the calling script
   [ $# -lt 1 ] && { E_message "please specify crypt_keydev as arg \$1"; return 1 ; }
   _glk_crypt_keydev="$1"
@@ -2510,23 +2510,28 @@ get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
   # if _glk_crypt_keydev is not mounted, try to mount it
   # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
   # check /proc/mounts directly as the source of truth
+  message_n "checking if ${_glk_crypt_keydev} is mounted"
   if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
-    printf '%b' " (${BGon}mounted${Boff})"
-    right_status $TRUE
+    handle_result $TRUE "mounted" "not mounted"
   else
     message_n "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
     case $_glk_crypt_keydev_type in
        "devicename" ) mount "${_glk_crypt_keydev}" "${_glk_mnt_fixed}" ;;
        "UUID"       ) mount UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}" ;;
        "LABEL"      ) mount LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}" ;;
-       * ) printf '%b' " (${BRon}failed${Boff}) ..."; right_status 1 ; die "invalid _glk_crypt_keydev" ;;
+       * )
+        printf '%b' " (${BRon}failed${Boff}) ..."
+        right_status 1
+        E_message "invalid _glk_crypt_keydev"
+        return 1
+        ;;
     esac
-    _glk_result=$?
-    case $_glk_result in
-        0 ) printf '%b' " (${BGon}mounted${Boff})"; right_status $TRUE;;
-        * ) right_status 1; die "could not mount _glk_crypt_keydev ($_glk_crypt_keydev_type)";;
-    esac
+    handle_result $? "mounted" "could not mount _glk_crypt_keydev ($_glk_crypt_keydev_type)" || \
+      return 2
   fi
+  message_n "looking for keyfile"
+  [ -f "${_glk_mnt_fixed}/crypt/dat" ]
+  handle_result $? "found" "not found" || return 3
   # set keyfile pathname
   export keyfile="${_glk_mnt_fixed}/crypt/dat"
   unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
@@ -2538,7 +2543,7 @@ get_luks_keyfile()         # use arg1 (_glk_crypt_keydev) to identify keyfile
 # @deps mount grep right_status message_n die
 # @rule identifies device type (dev/UUID/LABEL) using POSIX case patterns
 # @rule verifies mount status via /proc/mounts with space-padding to prevent false matches
-# @ret 0 on success; calls die on mount failure
+# @ret 0: success; 1: invalid; 2: mount fail; 3: has key fail
 # @note Note: crypt_keydev_mountpoint must be globally defined by the calling script
 # @note exports the $keyfile variable for use by cryptsetup or other LUKS tools
 
