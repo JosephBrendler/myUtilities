@@ -17,14 +17,13 @@ assign_volume() {
 #        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
 #        d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
 #        _av_volume="/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
-# substitute for testing only -
-        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep -v 'gmki91' | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
+### substitute for testing only (ver 10.0+ changed from deselecting gmki91 to SELECTING test device)
+        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
         d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
-        _av_volume="/dev/mapper/$(lvs | grep -v 'gmki91' | grep $_av_prefix | awk '{print $2"-"$1}')"
+        _av_volume="/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep $_av_prefix | awk '{print $2"-"$1}')"
         eval "${_av_prefix}_volume=$_av_volume"
         ret=$?
-        d_handle_result $ret 1
-        d_message "_av_volume: [$_av_volume]" 3
+        d_handle_result $ret "$_av_volume" "failed to assign _av_volume" 1
     else
         message "No action. ${_av_prefix} volume already assigned [$_av_volume]"
     fi
@@ -34,32 +33,36 @@ assign_volume() {
 
 unlock_devices() {
     ret=0
-    # for version 4.x and beyond, this is a complete re-write of the unlocking procedure.
+    # for version 4.x+, this is a complete re-write of the unlocking procedure.
     # The unlock method has already been determined, and the script will now "scan" for LUKS
     # devices and automatically use the selected method (key vs prompt) to unlock all of them
+    # for version 10.0+, get_luks_edev_name is in script_header_joetoo and uses global $luks_partition_device
+    [ -z "$1" ] && die "error: no arg; unlock_device requires \$1 unlock_method"
     _ud_method=$1;
-    _ud_device="";
+    luks_partition_device="";
 
     # securely read the passphrase with POSIX ask_pass function if needed
     if [ "$_ud_method" = "prompt" ]; then _ud_pass=$(ask_pass "Enter LUKS passphrase: "); fi
 
-### substitute for testing only
-    for _ud_device in $(blkid | grep -i luks | grep -v 'UUID="ef4195f0-6c4a-4116-86dd-fc469ddb6e21"' |cut -d':' -f1 )
-###    for _ud_device in $(blkid | grep -i luks | cut -d':' -f1)
+### substitute for testing only (ver 10.0+ changed from deselecting gmki91 to SELECTING test device)
+      for luks_partition_device in $(blkid | grep -i luks | grep 'UUID="b3c2b95f-1477-4433-b653-310e03dbffc2"' |cut -d':' -f1 )
+#    for luks_partition_device in $(blkid | grep -i luks | cut -d':' -f1)
     do
-        # use get_luks_edev_name in script_header_joetoo to id each _ud_device /dev/sdxn with corresponding name edxn
-        get_luks_edev_name "$_ud_device"
+        d_message "calling get_luks_edev_name \"$luks_partition_device\"" 3
+        d_message "edev: $edev" 3
+        # use get_luks_edev_name in script_header_joetoo to id each luks_partition_device /dev/sdxn with corresponding name edxn
+        get_luks_edev_name "$luks_partition_device"
         case "$_ud_method" in
             "prompt")
                 # this is no longer a f-ing "indented" heredoc '-' tells it to ignore leading TABs (not spaces)
                 # so the next two lines MUS begin with tabs
-                message "About to run cryptsetup luksOpen ${_ud_device} ${edev} with passphrase provided ..."
-#               cryptsetup luksOpen "${_ud_device}" "${edev}" <<-EOF
-cryptsetup luksOpen "${_ud_device}" "${edev}" <<EOF
+                message "About to run cryptsetup luksOpen ${luks_partition_device} ${edev} with passphrase provided ..."
+#               cryptsetup luksOpen "${luks_partition_device}" "${edev}" <<-EOF
+cryptsetup luksOpen "${luks_partition_device}" "${edev}" <<EOF
 $_ud_pass
 EOF
                 _ud_result=$?
-                handle_result "$_ud_result" "Unlocked ${_ud_device} ${edev} with passphrase provided" "mycmd failed. Dropping to a shell ..."
+                handle_result "$_ud_result" "Unlocked ${luks_partition_device} ${edev} with passphrase provided" "mycmd failed. Dropping to a shell ..."
                 if [ ! "$_ud_result" -eq 0 ]; then
                     ret=1
                     d_do sh_countdown $(( $init_wait * 5 )) 4
@@ -71,15 +74,15 @@ EOF
                 # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
                 # unmount the passdevice when we are done with it
                 _ud_keyfile="${init_passdevice_mount_point%/}/${init_keyfile}"
-                message "About to execute command [ cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${_ud_device} ${edev} ]"
-                cryptsetup -d $(echo "${_ud_keyfile}") -S 1 luksOpen "${_ud_device}" "${edev}"
+                message "About to execute command [ cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${luks_partition_device} ${edev} ]"
+                cryptsetup -d $(echo "${_ud_keyfile}") -S 1 luksOpen "${luks_partition_device}" "${edev}"
                 _ud_result=$?
                 handle_result "$_ud_result"
                 if [ "$_ud_result" -eq 0 ]; then
-                    message "Unlocked ${_ud_device} ${edev} with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
+                    message "Unlocked ${luks_partition_device} ${edev} with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
                 else  # cryptsetup luksOpen with key failed
                     ret=1
-                    _ud_msg="${BRon}Error: Could not unlock ${BYon}${_ud_device} ${edev}"
+                    _ud_msg="${BRon}Error: Could not unlock ${BYon}${luks_partition_device} ${edev}"
                     _ud_msg="${_ud_msg} ${BRon}with key found at ${BMon}${_ud_keyfile}${Boff}"
                     E_message "${_ud_msg}"
                     if [ ! "${init_lock_down}" ]; then
@@ -91,12 +94,38 @@ EOF
                 ;;
         esac
     done
-    unset -v _ud_method _ud_device _ud_pass _ud_keyfile
+    unset -v _ud_method _ud_pass _ud_keyfile
     return $ret
 }
 
-
 ### ----[ end duplicated functions ]--------------------------------------------------------------------------------------------------------------
+
+mount_and_test_new_root() {
+    ret=0
+    separator "${PN}-${BUILD}" "(Mounting new root for testing ...)"
+    # previous version re-scanned here, but that now occurs after unlock
+    # note: script_header_joetoo v0.2.0+ changed arg sequence for color()
+    # color() - $1: FG code (30-37, 39); $2: Bold (0/1); $3: BG code (40-47, 49
+    d_message "$(color ${RED} ${BOLD} ${BBACK})running fsck.${root_fs} on $root_volume${Boff}" 1
+    "fsck.${root_fs}" -p "$root_volume"
+    d_message "$(color ${RED} ${BOLD} ${BBACK})running fsck.${usr_fs} on $usr_volume${Boff}" 1
+    "fsck.${usr_fs}" -p "$usr_volume"
+    # give more time to read display if debugging
+    d_do sh_countdown $init_wait 4
+    # mount root - drop to shell if not locked down
+    d_message_n "Mounting new root volume ..." 1
+    mount -r -t "${root_fs}" "${root_volume}" "${init_ROOT%/}/newroot" 2>/dev/null ; _mnr_result=$?
+    d_handle_result "$_mnr_result" '' "failed to mount root volume" 1
+    d_message_n "Mounting new usr volume ..." 1
+    mount -t "${usr_fs}" -o defaults,noatime "$usr_volume" "${init_ROOT%/}/newroot/usr" ; _mnr_result=$?
+    d_handle_result "$_mnr_result" '' "failed to mount usr volume" 1
+
+    separator "${PN}-${BUILD}" "(Mounts)"
+    mount | sed 's|^|    |'
+
+    unset -v _mnr_result 
+    return $ret
+}
 
 test() {
         verbosity=2
