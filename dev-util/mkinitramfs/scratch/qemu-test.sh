@@ -10,7 +10,8 @@ root_vg="vg_rock5bplus6401"
 luks_partition_device="/dev/sdb2"
 
 current_kernel="/boot/vmlinuz-6.12.63-gentoo-dist-hardened-joetoo"
-initramfs_img="boot/initramfs-6.12.63-202602010135"
+#initramfs_img="boot/initramfs-6.12.63-202602010135"
+initramfs_img="boot/initramfs.latest"
 
 q_verbosity=2
 

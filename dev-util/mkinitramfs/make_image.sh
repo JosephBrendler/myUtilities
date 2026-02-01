@@ -10,8 +10,10 @@
 #   for directory-references.  This script must also be run AFTER the make_sources.sh
 #   script is run, because the latter generates the BUILD file in ${SOURCES_DIR} that
 #   will be sourced here to instantiate the BUILD variable
-#source GLOBALS
-source GLOBALS.scratch_test
+source GLOBALS
+# subsititure below for testing only
+#source GLOBALS.scratch_test
+
 # source my usual functions and formatting "shortcuts" (must be run from the MAKE_DIR)
 source "${SCRIPT_HEADER_DIR}/script_header_joetoo"
 source "${SOURCES_DIR}/BUILD"
@@ -19,10 +21,10 @@ source "${SOURCES_DIR}/BUILD"
 # set verbosity if it was not set externally
 [ -z "$verbosity" ] && verbosity=1
 
-d_message "make_image.sh Debug - dump config" 2
-d_message "BUILD: [ ${BUILD} ]" 2
-d_message "MAKE_DIR: [ ${MAKE_DIR} ]" 2
-d_message "SOURCES_DIR: [ ${SOURCES_DIR} ]" 2
+d_message "make_image.sh Debug - dump config" 4
+d_message "BUILD: [ ${BUILD} ]" 4
+d_message "MAKE_DIR: [ ${MAKE_DIR} ]" 4
+d_message "SOURCES_DIR: [ ${SOURCES_DIR} ]" 4
 
 img_ROOT="/"
 # subsititure below for testing only

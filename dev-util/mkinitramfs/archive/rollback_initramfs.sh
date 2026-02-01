@@ -1,10 +1,6 @@
 #!/bin/bash
-# rotate_initramfs
-# joe Brendler 20 Nov 2020
-
-# determine direction
-direction="${1:-forward}"
-# guard - (below) must be either forward or backward
+# rollback_initramfs
+# joe Brendler 29 Dec 2024
 
 # the GLOBALS file identifies the BUILD, SOURCES_DIR (e.g. /usr/src/initramfs),
 #   and the MAKE_DIR (parent dir of this script)
@@ -29,7 +25,7 @@ verbosity=2
 # override (ROTATE and verbosity) variables with mkinitramfs.conf file
 source "${MAKE_CONF_DIR}/mkinitramfs.conf"
 
-#-----[ initialize shell-global variables ]-------------------------------------------------------
+#-----[ initialize script-global variables ]-------------------------------------------------------
 newinitramfs=""
 newtimestamp=""
 linkname=""
@@ -37,33 +33,12 @@ target=""
 latest=""
 working=""
 safe=""
-initramfs_list=()
 
 img_ROOT="/"
 # subsititure below for testing only
 #img_ROOT="${MAKE_DIR%/}/scratch/"
 
-
 #-----[ functions ]-----------------------------------------------------------------------
-identify_new_initramfs() {
-  # identify new initramfs
-  #   there should only be one, but examine all and overwrite variable to operate only on the last
-  #   (printf with timestamp tab-delimitted, sort reverse numeric,
-  #    drop timestamp (tab is default delimtter), keep only the top one)
-  newinitramfs=$(find . -maxdepth 1 -iname 'initramfs-*' -type f -printf '%Ts\t%p\n' | sort -r -n | cut -f2- | head -n 1)
-
-  # make sure there actually is a file to work with
-  if [ -z "$newinitramfs" ]; then
-    die "no new initramfs file found"
-  else
-    # make_image.sh put the new file-timestamp at the end of the initraamfs filename, after the "-" character
-     newtimestamp="${newinitramfs##*-}"
-    d_do '
-      message "${BYon}newinitramfs: [${Boff}${newinitramfs}${BYon}]${Boff}"
-      message "${BYon}newtimestamp: [${Boff}${newtimestamp}${BYon}]${Boff}"
-    ' 1
-  fi
-}
 
 identify_current_targets() {
   # if any exist, identify the current targets of links (latest, working, safe)
@@ -114,54 +89,28 @@ makelink() {
 checkroot
 separator "${PN}-${BUILD}" "($(hostname))"
 
-# move to boot
-message_n "saving current directory name; cd to ${img_ROOT%/}/boot/..."
+# move to /boot
+message_n "saving current directory name; cd to /boot/..."
 old_dir=$(pwd) && cd "${img_ROOT%/}/boot/"
 right_status $?
 
-case "$direction" in
-  "forward" )
-    #-----[ rotate forward logic ]---------------------------------------------------------------------
-    identify_new_initramfs
-    identify_current_targets
+message "Identifying current link targets ..."
+identify_current_targets
 
-    # rename new initramfs file in .working. format
-    message_n "renaming ${BYon}${newinitramfs}${BBon} initramfs.working.${newtimestamp}${Boff} ..."
-    mv "$newinitramfs" "initramfs.working.${newtimestamp}"
-    handle_result $? "renamed" '' || die "failed to rename new initramfs"
-    # reassign newinitramfs variable to the new name
-    newinitramfs="initramfs.working.${newtimestamp}"
+# delete the current latest
+if [ ! -z "${latest}" ]; then
+  message_n "removing current latest [${BRon}${latest}${Boff}]"
+  rm -f "${latest}" ; handle_result $? "removed" ''  # -f keeps shell from complaining if "$safe" was already deleted
+fi
 
-    # "retire" the oldext and demote the other, and insert the newest, if they exist
-    [ ! -z "$safe" ] && { message_n "removing oldest [${BRon}${safe}${Boff}]"
-        rm -f "$safe"; handle_result $? "removed" '' ; }   # -f keeps shell from complaining if it was already deleted
-    [ ! -z "$working" ] && makelink "$working" "initramfs.safe"
-    [ ! -z "$latest" ] && makelink "$latest" "initramfs.working"
-    makelink "${newinitramfs}" "initramfs.latest"
-    ;;
-  "back"   )
-    #-----[ rotate back (rollback) logic ]---------------------------------------------------------------------
+# rollback the remaining initramfs
+[ ! -z "${working}" ] && makelink "${working}" "initramfs.latest"
+[ ! -z "${safe}" ] && makelink "${safe}" "initramfs.working"
 
-    message "Identifying current link targets ..."
-    identify_current_targets
+# remove the obsolete link for "safe"
+[ -L initramfs.safe ] && { message_n "removing obsolete link [${BRon}initramfs.safe${Boff}]";
+  rm -f initramfs.safe ; handle_result $? "removed" '' ; } # -f keeps shell from complaining if "$safe" was already deleted
 
-    # delete (to roll back) the current "latest", promote the others, and drop ghost "safe" symlink
-    [ ! -z "${latest}" ] && { message_n "removing current latest [${BRon}${latest}${Boff}]"
-      rm -f "${latest}" ; handle_result $? "removed" '' ; }  # -f keeps shell from complaining if it was already deleted
-    [ ! -z "${working}" ] && makelink "${working}" "initramfs.latest"
-    [ ! -z "${safe}" ] && makelink "${safe}" "initramfs.working"
-    # remove the obsolete (ghost) link for "safe"
-    [ -L initramfs.safe ] && { message_n "removing obsolete link [${BRon}initramfs.safe${Boff}]";
-      rm -f initramfs.safe ; handle_result $? "removed" '' ; } # -f keeps shell from complaining if it was already deleted
-    ;;
-  *                ) die "invalid direction [$direction]"
-esac
-
-# move back where we came from
 message_n "returning to ${old_dir}..."
 cd "${old_dir}"
 right_status $?
-
-
-
-
