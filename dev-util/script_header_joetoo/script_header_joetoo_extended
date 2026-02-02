@@ -105,79 +105,54 @@ countdown() # output text message (arg $2, optional), and count-down seconds (ar
   done ; echo return 0
 }
 
-myBOX()     # draw an esc-seq single-line box
+box_msg_bash() # (LINUX BASH) $1=msg, $2=width, $3=center, $4=color
 {
-  local i; local ULrow; local ULcol; local WT; local HT; local myBOX=""
-  local FG; local BG; local B
-  # default position to centered, upper 1/3
-  [[ -z $3 ]] && WT=50 || WT=$3; [[ -z $4 ]] && HT=15 || HT=$4
-  [[ -z $1 ]] && ULrow=$(( $(termheight)/3 - $HT/2 )) || ULrow=$1
-  [[ -z $2 ]] && ULcol=$(( $(termwidth)/2 - $WT/2 )) || ULcol=$2
-  [[ -z $5 ]] && FG=${WHITE} || FG=$5; [[ -z $6 ]] && BG=${BACKoff} || BG=$6
-  [[ -z $7 ]] && B=${SGRoff} || B=$7
-  # begin box draw with openning escape sequence
-  myBOX=${myBOX}${ESCon}
-  # draw top line with spaces, UL corner, H-lines, UR corner, <CR>
-  myBOX=${myBOX}${Boff}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${UL_wall}$(repeat ${H_wall} ${WT})${UR_wall}${Boff}"\n"
-  # draw HT number of : space, V-line, space, V-line, <CR>
-  for ((i=1;i<${HT};i++)); do
-    myBOX=${myBOX}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${V_wall}$(repeat " " ${WT})${V_wall}${Boff}"\n"; done
-  # draw bottom line with spaces, LL corner, H-lines, LR corner, <CR>
-  myBOX=${myBOX}$(repeat " " ${ULcol})$(color ${FG} ${BG} ${B})${LL_wall}$(repeat ${H_wall} ${WT})${LR_wall}${Boff}"\n"
-  # complete box draw with closing escape sequnce
-  myBOX=${myBOX}${ESCoff}
-  # position curson at left of upper row inside box
-  CLR; CUP ${ULrow} 1
-  printf "${myBOX}"
-  CUP $(termheight) 1
-  return 0
-}
+    local _bm_msg="$1"
+    local _bm_tw=$(termwidth)
+    local _bm_target_w _bm_center
+    # defaults: width=tw/2, center=tw/2
+    [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
+    [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
+    local _bm_color_seq="${4:-$OFF}"
+    local _bm_lines=()   # array holding smart-wrapped lines of the message
+    local _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
+                         # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
 
-msgBOX()    # draw an esc-seq single-line message box
-{
-  local i; local ULrow; local ULcol; local WT; local HT; local myBOX=""
-  local FG; local BG; local B; local TITLE; local MSG; local LINE
-  # default position to centered, upper 1/3
-  [[ -z $3 ]] && WT=50 || WT=$3; [[ -z $4 ]] && HT=15 || HT=$4
-  [[ -z $1 ]] && ULrow=$(( $(termheight)/3 - $HT/2 )) || ULrow=$1
-  [[ -z $2 ]] && ULcol=$(( $(termwidth)/2 - $WT/2 )) || ULcol=$2
-  [[ -z $5 ]] && FG=${WHITE} || FG=$5; [[ -z $6 ]] && BG=${BACKoff} || BG=$6
-  [[ -z $7 ]] && B=${SGRoff} || B=$7
-  [[ -z $8 ]] && TITLE="joetoo MessageBox" || TITLE="$8"
-  [[ -z $9 ]] && MSG="Message goes here..." || MSG="$9"
+    # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
+    # if it uses 0 for left margin
+    local _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
+    # capture wrapped lines using smart_wrap_n as the engine
+#    readarray -t _bm_lines < <(smart_wrap_n 0 0 $(( _bm_tw - _bm_wrap_at)) "$_bm_msg")
+    readarray -t _bm_lines < <(smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg")
 
-  myBOX "$ULrow" "$ULcol" "$WT" "$HT" "$FG" "$BG" "$B"
-  LINE="${MSG:$(($WT - 4))}"
-  # break message up into appropriate width chuncks, using a 2-space margin inside the box
+    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
+    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0
+    _bm_h_line=$(full_repeat "$H_wall" $(( _bm_target_w  )) ) # -2 = corners +2 = pad
+    printf "%b" "$_bm_color_seq"
 
-  CUP $(termheight) 1
-  return 0
-}
+    # top border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI"
+    # body
+    for _bm_line in "${_bm_lines[@]}"; do
+        CUF "$_bm_l_margin"
+        printf "%b%b%b " "$SO" "$V_wall" "$SI"   # left wall
+        printf "%b" "$_bm_line"                  # pre-wrapped text
+        # calculate trailing gap to keep right wall vertical
+        _bm_cur_len=$(get_msg_len "$_bm_line")
+        _bm_gap=$(( _bm_target_w - _bm_cur_len ))
+#        [ "$_bm_gap" -gt 0 ] && repeat " " "$_bm_gap"
+        # ignore the gap, use absolute ref from left
+#        printf '\r'; CUF $((_bm_tw - _bm_l_margin ))
+        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
+        printf " %b%b%b\n" "$SO" "$V_wall" "$SI" # Right wall
+    done
 
-my_u_BOX()  # draw a unicode single-line box
-{
-  local i; local ULrow; local ULcol; local WT; local HT; local myBOX=""
-  [[ -z $1 ]] && ULrow=1 || ULrow=$1; [[ -z $2 ]] && ULcol=1 || ULcol=$2
-  [[ -z $3 ]] && WT=50 || WT=$3;      [[ -z $4 ]] && HT=15 || HT=$4
-  myBOX=${myBOX}$(repeat " " ${ULcol})${uUL_wall}$(repeat ${uH_wall} ${WT})${uUR_wall}"\n"
-  for ((i=1;i<${HT};i++)); do myBOX=${myBOX}$(repeat " " ${ULcol})${uV_wall}$(repeat " " ${WT})${uV_wall}"\n"; done
-  myBOX=${myBOX}$(repeat " " ${ULcol})${uLL_wall}$(repeat ${uH_wall} ${WT})${uLR_wall}"\n"
-  CLR; CUP ${ULrow} ${ULcol}
-  printf "${myBOX}"
-  return 0
-}
+    # bottom border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI"
+    printf "%b" "$OFF"
 
-my_uD_BOX() # draw a unicode double-line box
-{
-  local i; local ULrow; local ULcol; local WT; local HT; local myBOX=""
-  [[ -z $1 ]] && ULrow=1 || ULrow=$1; [[ -z $2 ]] && ULcol=1 || ULcol=$2
-  [[ -z $3 ]] && WT=50 || WT=$3;      [[ -z $4 ]] && HT=15 || HT=$4
-  myBOX=${myBOX}$(repeat " " ${ULcol})${uD_UL_wall}$(repeat ${uD_H_wall} ${WT})${uD_UR_wall}"\n"
-  for ((i=1;i<${HT};i++)); do myBOX=${myBOX}$(repeat " " ${ULcol})${uD_V_wall}$(repeat " " ${WT})${uD_V_wall}"\n"; done
-  myBOX=${myBOX}$(repeat " " ${ULcol})${uD_LL_wall}$(repeat ${uD_H_wall} ${WT})${uD_LR_wall}"\n"
-  CLR; CUP ${ULrow} ${ULcol}
-  printf "${myBOX}"
-  return 0
 }
 
 #---[ RGB ]--------------------------------------------------------
@@ -224,135 +199,6 @@ list_unused_disks()    # list block devices with no active mountpoint
     return 0
 }
 
-modular_msg()          # w/in margins, output externally assigned ${MSG} to array ${LINE[@]}
-{
-[[ $# -gt 1 ]] && E_message "Too many arguments" && E_message "exiting process [$$]" && exit 1
-local WT=0  ## width of box
-local WIDTH=0 ## width between box margins
-local LENGTH=0 ## length of current line
-
-[[ -z $1 ]] && WT=70 || WT=$1
-WIDTH=$(($WT - 4))
-
-d_message "Box width=[${WT}]" 3
-d_message "Available width=[${WIDTH}]" 3
-# Break the message up into appropriate width chunks, with a 2-space margin, by inserting newline character
-#   in place of appropriate spaces, or breaking words if the word itself is longer than the available width.
-#   Don't split or count length of escape sequences
-local i=1              ## line counter
-local ESFLAG=$FALSE    ## flag to indicate whether the current character is part of an esc sequence
-local c=0              ## character counter
-local char=""          ## current character
-local w=1              ## word counter
-local WORD=("")        ## current word
-local EOW=$FALSE       ## End of Word flag
-local breakpoint=0     ## pointer to where we might break up a word
-local LEFTOVER         ## part of a word that's left over if we have to break it up
-local EOL=$FALSE       ## End of Line flag
-
-d_message "MSG=[${MSG}]" 2
-echo
-
-MSG=$(echo "$MSG" | sed 's/^[ \t]*//')  # strip leading whitespace
-d_message "stripped MSG=[${MSG}]" 2
-echo
-
-# fill one line, one character at at time, escape sequences don't have "length" to count
-LINE[i]=""; let "LENGTH=0"  ## (re)initialize
-d_message "Now working on line $i" 3
-WORD[w]=""; let "WLEN=0"
-d_message "Now working on word $w" 3
-for ((c=0; c<${#MSG}; c++))
-do
-  ## fill a word until you get to a space or termination of escape sequence, then if it will fit, add the word
-  #    to the current line, if not then if it's not just longer than a whole line, add it to the next, else split
-  #    it to finish this and add the rest to the next
-  char=${MSG:$c:1}
-  d_message "  examining char $c, [${char}]" 3
-  case "${char}" in
-    '\' ) # escaped char(s) coming (this has no "length" so just keep adding to current word at no "length cost")
-      ESFLAG=$TRUE
-      d_message "Started escape sequence with special character [${char}]" 3
-      ;;
-    [tnrm] ) # these char's can terminate an escape sequence if ESFLAG is TRUE, if so they also terminate a word
-      # or they can count as length if not part of an esc seq
-      if [[ $ESFLAG ]]
-      then
-        EOW=$TRUE
-        ESFLAG=$FALSE
-        d_message "Terminated escape sequence and word with special character [${char}]" 3
-      else
-        let "WLEN+=1"
-        d_message "Added (tnrm) character [${char}] to WORD[$w]" 3
-      fi
-      ;;
-    " " )  # a space terminates a word
-      EOW=$TRUE
-      let  "WLEN+=1"
-      d_message "Added space character [${char}] to WORD[$w]" 3
-      ;;
-    * ) # all other characters, handle depending on status of ESFLAG
-      # count the char only if not part of an esc sequence
-      if [[ ! $ESFLAG ]]; then let "WLEN+=1"; d_message "Added (non-special) char [${char}] to WORD[$w]" 3 ;
-      else d_message "Added (non-special) char [${char}] to escape sequence WORD[$w]" 3 ; fi
-      ;;
-  esac
-  WORD[w]+="${char}"  # add char to the current word
-  d_message_n "${BYon}>>>${Boff}  " 3 ; [[ $verbosity -ge 3 ]] && d_echo "WORD[$w]=[${WORD[w]}]" 3
-  d_message "ESFLAG=[$(status_color $ESFLAG)$(TrueFalse $ESFLAG)${Boff}]" 3
-  d_message "EOW=[$(status_color $EOW)$(TrueFalse $EOW)${Boff}]" 3
-  d_message "EOL=[$(status_color $EOL)$(TrueFalse $EOL)${Boff}]" 3
-
-  # if we got to the end of the word, dispose of it and start a new one
-  if
- [[ $EOW ]]
-  then
-    if [[ $((${LENGTH} + ${WLEN})) -lt ${WIDTH} ]]
-    then   # its added length will fit, so just add the word to the current line, and count the new length
-      LINE[i]+="${WORD[w]}"
-      let "LENGTH+=${WLEN}"
-      d_message "Disposed of word by adding to current line" 3
-    elif [[ ${WLEN} -gt ${WIDTH} ]]
-    then   # it is bigger than a whole line, so break it to put what will fit on the current line and put the rest on the next line
-      breakpoint=$((${WIDTH} - ${LENGTH}))
-      LINE[i]+="${WORD[w]:0:${breakpoint}}"
-      LEFTOVER="${WORD[w]:${breakpoint}}"
-      let "LENGTH+=${breakpoint}"
-      EOL=$TRUE
-      d_message "Disposed of word by breaking it at [${breakpoint}] to finish LINE[$i]; LEFTOVER=[${LEFTOVER}]" 3
-    else   # close out this line, and add this word to the *next* line
-      EOL=$TRUE
-      LEFTOVER="${WORD[w]}"
-      d_message "Disposed of word WORD[$w], which was too big to fit on LINE[$i] but fits the next, by deferring it; LEFTOVER=[${LEFTOVER}]" 3
-    fi
-    d_message_n "${BYon}Final word: ${Boff}" 3 ; d_echo "WORD[$w]=[${WORD[w]}], WLEN=[${WLEN}]" 3
-    d_message_n "${BYon}Current line: ${Boff}" 2 ; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]" 2
-    let "w+=1"; d_echo 3 ; d_message "Now working on word $w" 3
-    WORD[w]=""; let "WLEN=0"; EOW=$FALSE  ## (re)initialize
-  fi
-  # if we filled the line, start a new one
-  if [[ $EOL ]]
-  then
-    d_message_n "${BMon}Final line: ${Boff}" 2 ; d_echo "LINE[$i]=[${LINE[i]}], LENGTH=[${LENGTH}]" 2
-    let "i+=1"; d_echo 2; d_message "Now working on line $i" 2
-    LINE[i]="${LEFTOVER}"; let "LENGTH=${#LEFTOVER}"; LEFTOVER=""; EOL=$FALSE  ## (re)initialize
-    d_message_n "Starting with LINE[$i]=" 2 ; d_echo "[${LINE[i]}], LENGTH=[${LENGTH}]" 2
-  fi
-done
-
-# now dump the array --> do something like this in calling function (see summarize_my_extension, below)
-#d_echo "dumping array ..." 1
-#for ((i=1; i<${#LINE[@]}; i++))
-#do
-#  SCP; echo -en ${LINE[i]}; RCP; CUD 1
-#done
-
-}
-
-non-stty-right_status() # w TERWIDTH set, output status at right margin
-{ local msg status=$1;
-  [[ $status -eq 0 ]] && msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}" || msg="${BBon}[ ${BRon}No ${BBon}]${Boff}";
-  echo -en "\r" && CUF $(( ${TERMWIDTH} - 7 )) && echo -e "$msg" && return 0 || return 1 ; }
 
 validate_status_file()  # validate or create command sequence status file $1 
 {

@@ -587,6 +587,58 @@ box_shift() # (POSIX) DEC box drawing using SO/SI toggling
   unset -v _bs_text _bs_len _bs_h_line
 }
 
+box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color
+{ ret=0; _bm_msg="$1"; _bm_tw=0;  _bm_target_w=0; _bm_center=0
+  _bm_color_seq=0; _bm_buffer=0; _bm_r_margin=0; _bm_l_margin=0
+  _bm_h_line=0; _bm_line=""
+
+  _bm_tw=$(termwidth);
+  # defaults: width=tw/2, center=tw/2
+  [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
+  [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
+  _bm_color_seq="${4:-$Boff}"
+  _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
+                   # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
+
+    # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
+    # if it uses 0 for left margin
+    _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
+    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
+    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0   # clamp to 0 in case negative
+    _bm_h_line=$(full_repeat "$H_wall" "$_bm_target_w") # -2 = corners +2 = pad
+
+    # top border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI" "$Boff"
+    # body - piped instead of array or here-string for POSIX compliance
+    # (capture wrapped lines using smart_wrap_n as the output engine)
+    # (smarw_wrap_n does not finish with a newline, so use the
+    #  || [ -n in case read wont take the input without a delimiter)
+    smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg" | \
+    while read -r _bm_line || [ -n "$_bm_line" ]; do
+        CUF "$_bm_l_margin"
+        printf "%b%b%b%b%b " "$_bm_color_seq" "$SO" "$V_wall" "$SI" "$Boff" # left wall
+        printf "%b" "$_bm_line"                  # pre-wrapped text
+        # ignore the gap, use absolute ref from left
+        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
+        printf " %b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$V_wall" "$SI" "$Boff" # Right wall
+    done
+    ret=$?
+
+    # bottom border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI" "$Boff"
+
+    unset -v _bm_msg _bm_tw _bm_target_w _bm_center _bm_color_seq
+    unset -v _bm_buffer _bm_r_margin _bm_l_margin _bm_h_line _bm_line
+    return $ret
+}
+# @usage box_msg "$message" "$width" "$center_point" "$color_sequence"
+# @vars _bm_ (prefixed local scope)
+# @deps termwidth, full_repeat, CUF, smart_wrap_n
+# @rule width and center_point must be numeric or null for defaults
+
+
 test_colors() # (POSIX) print the joetoo RGB name of each eponymous color
 { _rgb_color_names="BLACK RED GREEN YELLOW BLUE MAG CYAN WHITE"
   _h=$(termheight); _w=$(termwidth); _current_row=$(( (_h / 2) - 4 )); _c_idx=0
@@ -1017,151 +1069,152 @@ echo "got this far"; return 1
 # @deps _translate_escapes, strip_ansi
 # @warn failure to properly quote all args may result in unexpected behavior
 
-echo_n_long() # wordwrap string; $1 current col, $2 = indent, remainder = message words
-{ # @warn need to incorporate _msg=$(printf '%b' "$*" | tr '\t\n' '  ') to filter/translate these special cases - but don't want to break it so haven't done so yet
-#echo -e "args: $@"; message "args: $@"; d_message "args: $@" 1  ## debugging "residue"
-#  logFile=/var/tmp/_enl_trace.log  # debugging log
-  if [ $# -lt 2 ] ; then E_message "minimum 2 args: current_col, indent; remaining args = msg words"; return 1; fi
-  if ! isint $1 ; then E_message "Error: arg \$1 must be numeric starting caracter position"; return 1; fi
-  _enl_current_col=$1                                            # assign _enl_current_col
-  if isint "$2"; then _enl_indent=$2; else _enl_indent=0; fi  # assign _enl_indent
-  shift 2  # remainder of $* are the words of the message to be smart-wrapped
-  # (do not translate internal escapes ([:control:] chars like \n, \t, \r, etc.)
-  #  b/c want to preserve (e.g. multi-line prompt) line formatting, and
-  #  do not strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to get_msg_len)
-#  _enl_msg=$(printf '%b' "$*" | _translate_escapes)   # operate on entire set of args as a single string "$*"
-  _enl_msg="$*"   # operate on entire set of args as a single string "$*"
-  # perform controlled split on the remaining parameters ($@)
-  set -f     # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
-  # safely convert a positional parameters (either multiple args or a single quoted string) into individual words
-  set -- $_enl_msg    # set with $_enl_msg unquoted so each split word becomes a positional parameter
-  set +f     # re-enable globbing (minimize the "blast radius" of the globbing-disabled state)
-  # after shift and reassembly; set a default message argument to "<empty>" if none provided
-  [ $# -eq 0 ] && set -- "$@" "<empty>"
-  _enl_tw=$(termwidth); isint "$_enl_tw" || _enl_tw=80  # ensure _enl_tw is a save number for math
-  # calculate the "right_status collision zone" so the last wrap keeps us clear of it
-  _enl_status_width=6   # e.g. "[ Ok ]" = 6 char
-  _enl_buffer=4         # padding for more visually appealing wrapping
-  _enl_collision_limit=$(( _enl_tw - _enl_status_width - _enl_buffer ))
-  [ "$_enl_collision_limit" -lt 0 ] && _enl_collision_limit=0  # clamp to avoid negative math errors
-  _enl_line_len="$_enl_current_col" # initialize with starting position
-  _enl_trace=""  # for debuggin - use this to determine who printed what
-  # smartly consider whether to print each word or wrap it to the _enl_indent
-  _enl_FIRST_WORD=$TRUE  # don't wrap for first word
-#  d_log_message "_enl_tw: $_enl_tw" 5
-#  d_log_message "_enl_current_col: $_enl_current_col" 5
-#  d_log_message "_enl_indent: $_enl_indent" 5
-#  d_log_message "_enl_collision_limit: $_enl_collision_limit" 5
-#  d_log_message "_enl_line_len: $_enl_line_len" 5
-#  d_log_message "_enl_FIRST_WORD: $(TrueFalse $_enl_FIRST_WORD)" 5
-  while [ $# -gt 0 ]; do
-    # measure the length of remaining message
-    _enl_total_tail_len=$(get_msg_len "$*")
-    _enl_x_peak=$1; _enl_x_peak_len=$(get_msg_len "$_enl_x_peak") # preview; don't shift until necessary
-#    d_log_message "   [in while] _enl_total_tail_len: $_enl_total_tail_len" 5
-#    d_log_message "   [in while] _enl_x_peak: $_enl_x_peak" 5
-#    d_log_message "   [in while] _enl_x_peak_len: $_enl_x_peak_len" 5
-    # if not the first word check if the remaining message will cross the collision limit...
-    if [ $_enl_FIRST_WORD ]; then
-        # start of line case (do we wrap, finish, or step?)
-        if [ $(( _enl_line_len + _enl_x_peak_len )) -gt $_enl_collision_limit ]; then # wont fit; must wrap, but how?
-            if [ "$_enl_line_len" -ne "$_enl_indent" ] ; then   # this is the very first word (first line) - do  a soft wrap
-                # very first word is too big, switch to midline logic to wrap (stay "greedy")
-#                _enl_trace="${_enl_trace}<noprint-softwrap> W1\n"
-#                _enl_trace="${_enl_trace}   _enl_line_len: $_enl_line_len\n"
-#                _enl_trace="${_enl_trace}   _enl_collision_limit: $_enl_collision_limit\n"
-                printf "\n%b" "$(repeat ' ' $_enl_indent)"                  # W1: WRAP - soft-wrap
-                _enl_line_len=$_enl_indent                                  # Note: _enl_FIRST_WORD remains true on new line
-                continue   # skip the flow fi; fi; done; and while [] check; just restart while loop again with new state
-            else  # this is first word of other than first line; non-fit is emergency ==> force hard wrap
-                _enl_x="$1"; _enl_x_len=$(get_msg_len "$_enl_x"); shift    # E2: WRAP - hard-wrap
-                printf '%b' "$_enl_x"                                       # print whether it fits or not
-#                _enl_trace="${_enl_trace}${_enl_x} E2\n"
-                _enl_line_len=$(( _enl_line_len + _enl_x_len )); _enl_FIRST_WORD=$FALSE
-            fi
-        elif [ $(( _enl_line_len + _enl_total_tail_len )) -le $_enl_collision_limit ]; then
-            printf '%b' "$*";                                               # F3: FINISH: it all fits, so print it all! (we're done)
-#            _enl_trace="${_enl_trace}$* F3\n"
-            break
-        else  # start of line, first word exceeds limit
-            _enl_x="$1"; _enl_x_len=$(get_msg_len "$_enl_x"); shift        # S4: STEP: assign word, measure, then drop from remaining message
-            printf '%b' "$_enl_x"                                           #   print this word (start of line)
-#            _enl_trace="${_enl_trace}${_enl_x} S4\n"
-            _enl_line_len=$(( _enl_line_len + _enl_x_len ))
-            _enl_FIRST_WORD=$FALSE
-        fi  # start-of-line finish or step
-    else  # mid-line case (do we finish, step, or wrap?)
-        if [ $(( _enl_line_len + _enl_total_tail_len + 1 )) -le $_enl_collision_limit ]; then
-            printf " %b" "$*";                                              # F5: FINISH: it all fits, so print it all! (we're done)
-#            _enl_trace="${_enl_trace}$* F5\n"
-             break
-        elif [ $(( _enl_line_len + _enl_x_peak_len + 1 )) -le $_enl_tw ]; then # remainder DOESN"T fit left of collision zone
-            if  [ "$_enl_total_tail_len" -eq "$_enl_x_peak_len" ]; then     # this is the very last word
-                # && [ $(( _enl_line_len + _enl_x_peak_len + 1 )) -gt "$_enl_collision_limit" ]
-                #   is implied by the non selection of -le same things above for F5
-                # fits in margin but last word (and we know WONT fit left of collision zone from above) - must wrap
-                printf "\n$(repeat ' ' $_enl_indent)%s" "$_enl_x_peak"      # W6: WRAP/FINISH very last word, would fit in margin but not L of collision
-                shift                                                       # drop for remainder (overkill - break will jump us out anyway)
-#                _enl_trace="${_enl_trace}<last-word-soft-wrap> W6\n"
-                _enl_line_len=$(( _enl_indent + _enl_x_peak_len ))          # also overkill - very last word already printed; don't need this any more
-                break
-            else
-                # not last word - step (only last word needs to be bumped from collision zone
-                # so there is another line on which to put right_status
-                _enl_x="$_enl_x_peak"; _enl_x_len="$_enl_x_peak_len"; shift # S7: STEP: assign word, measure, then drop from remaining message
-                printf " %b" "$_enl_x"                                      #   print this word (it will fit)
-#                _enl_trace="${_enl_trace}${_enl_x} S7\n"
-                _enl_line_len=$(( _enl_line_len + _enl_x_len + 1 ))
-                # _enl_FIRST_WORD remains $FALSE
-            fi
+longone="I had been studying trail guides and maps of the Adirondacks on and off for years."
+longone="${longone} The desire to become a ${BGon}46er${Boff} was not new I had put it on my bucket list while I was still"
+longone="${longone}  in high school."
+longone="${longone}  This new idea on the other hand -- to do it as a through hike -- had begun to formulate in my mind"
+longone="${longone} shortly after I had finished hiking the Appalachian Trail and Long Trail in 2017. In 2018 and 2019"
+longone="${longone} I got updated maps and trail guides to study, but my hopes of doing this in 2020 were suffocated"
+longone="${longone} by COVID-19.  During the spring of 2021, after I got my second round of COVID vaccination in March,"
+longone="${longone} I tried to get serious and finalize my initial plans and preparation."
+longone="${longone}  I used both Alltrails and Gaia GPS on-line mapping software to design the routes for my draft plan."
+longone="${longone}  I watched online tutorials about how to use these tools for planning and real-time navigation,"
+longone="${longone}  and I created an initial draft route plan.  I also used that draft route plan to create a spreadsheet"
+longone="${longone}  (like I had used on the Appalachian Trail) to estimate achievable daily objectives peaks, distances,"
+longone="${longone}  water sources, camps, etc.  I knew my plan would change after I started executing it, but I felt much more"
+longone="${longone}  comfortable with this plan and a waterproof map in a Ziplock bag in the cargo pocket of my hiking pants."
+longone="${longone}   I also downloaded to my phone the topographic maps and route plans I needed for the phone's version"
+longone="${longone}  of the Alltrails and Gaia GPS apps, so that I could use the phone as a real-time GPS navigation device,"
+longone="${longone}  to both record my actual route and to enable me to compare that to my plan visually - or to see my"
+longone="${longone}  actual track, as I might intentionally deviate from my ${BRon}planned${Boff} route."
+
+smart_wrap_n() # wordwrap string $1 current col, $2 = l_margin, remainder = message words
+{
+    if [ $# -lt 3 ] ; then E_message "minimum 3 args: curr_col, l_margin, r_margin; remainder=msg"; return 1; fi
+    if ! isint $1 ; then E_message "Error: arg \$1 must be numeric starting column/caracter position"; return 1; fi
+    _sw_current_col=$1                                            # assign _sw_current_col
+    if isint "$2"; then _sw_l_margin=$2; else _sw_l_margin=0; fi  # assign _sw_l_margin
+    if isint "$3"; then _sw_r_margin=$3; else _sw_r_margin=0; fi  # assugb _sw_r_margin
+    shift 3
+    # (do not translate internal escapes ([:control:] chars like \n, \t, \r, etc.)
+    #  b/c want to preserve (e.g. multi-line prompt) line formatting, and
+    #  do not strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to get_msg_len)
+  _sw_msg=$(printf '%b' "$*" | _translate_escapes)   # operate on entire set of args as a single string "$*"
+#    _sw_msg="$*"   # operate on entire set of args as a single string "$*"
+    # determine the initial total visible length of the message
+    _sw_remaining_len=$(get_msg_len "$_sw_msg")  # Initialize the counter here
+    # perform controlled split on the remaining parameters ($@)
+    set -f     # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
+    # safely convert a positional parameters (either multiple args or a single quoted string) into individual words
+    set -- $_sw_msg    # set with $_sw_msg unquoted so each split word becomes a positional parameter
+    set +f     # re-enable globbing (minimize the "blast radius" of the globbing-disabled state)
+    # after shift and reassembly; set a default message argument to "<empty>" if none provided
+    [ $# -eq 0 ] && set -- "$@" "<empty>"
+    _sw_tw=$(termwidth); isint "$_sw_tw" || _sw_tw=80  # ensure _sw_tw is a save number for math
+    # calculate the "right_status collision zone" so the last wrap keeps us clear of it
+    _sw_status_width=6   # e.g. "[ Ok ]" = 6 char
+    _sw_buffer=4         # padding for more visually appealing wrapping
+    _sw_collision_limit=$(( _sw_tw - _sw_status_width - _sw_buffer ))
+    [ "$_sw_collision_limit" -lt 0 ] && _sw_collision_limit=0   # clamp to zero incase negative
+    # if r_margin is deep enough to cover the status zone, no special wrap is needed
+    if [ "$_sw_r_margin" -ge $(( _sw_status_width + _sw_buffer )) ]; then
+        _sw_force_status_wrap=$FALSE
+    else
+        _sw_force_status_wrap=$TRUE
+    fi
+
+    _sw_line_len="$_sw_current_col" # initialize with starting position
+    # smartly consider whether to print each word or wrap it to the _sw_l_margin
+    _sw_FIRST_WORD=$TRUE  # don't wrap for first word
+
+    while [ $# -gt 0 ]; do
+        if [ $# -eq 1 ]; then _sw_last_word=$TRUE; else _sw_last_word=$FALSE; fi
+        # use collision limit ONLY for last word; otherwise use the requested r_margin
+        if [ "$_sw_last_word" ]; then
+            _sw_boundary=$_sw_collision_limit
         else
-            printf "\n%b" "$(repeat ' ' $_enl_indent)"                      # W8: WRAP: word wont fit, so print newline and indent
-#            _enl_trace="${_enl_trace}<indent> W8\n"
-            _enl_line_len=$_enl_indent; _enl_FIRST_WORD=$TRUE
-        fi  # mid-line finish, step, or wrap
-    fi  # first word?
-  done
-#  d_log_message "${_enl_trace}" 4
-  # clean up variables to maintain "local" scope in sourced environments
-  unset -v _enl_buffer _enl_collision_limit _enl_current_col _enl_FIRST_WORD
-  unset -v _enl_indent _enl_line_len _enl_status_width _enl_total_tail_len
-  unset -v _enl_trace _enl_tw _enl_x _enl_x_len _enl_x_peak _enl_x_peak_len
+            _sw_boundary=$(( _sw_tw - _sw_r_margin ))
+        fi
+        # optimization - calculate if everything left fits on this line
+        _sw_space_left=$(( _sw_boundary - _sw_line_len ))
+        # first word goes alone; others preceded by space (+1)
+        [ "$_sw_FIRST_WORD" ] || _sw_space_left=$(( _sw_space_left - 1 ))
+        # if there is enough room for all of it, be done
+        if [ "$_sw_remaining_len" -le "$_sw_space_left" ]; then
+            [ "$_sw_FIRST_WORD" ] || printf " "
+            printf "%b" "$*"
+            break # done
+        fi
+
+        # not room for all of it, so step off a word
+        # (step logic - measure only the next word)
+        _sw_x_peak="$1"
+        _sw_x_peak_len=$(get_msg_len "$_sw_x_peak")
+        if [ "$_sw_FIRST_WORD" ]; then
+            _sw_needed=$(( _sw_line_len + _sw_x_peak_len ))
+        else
+            _sw_needed=$(( _sw_line_len + _sw_x_peak_len + 1 ))
+        fi
+
+        # if this word fits, print it, else wrap
+        if [ "$_sw_needed" -le "$_sw_boundary" ]; then
+            # it fits; print it (no longer 1st word if it was before)
+            [ "$_sw_FIRST_WORD" ] || printf " "
+            printf "%b" "$_sw_x_peak"
+            _sw_line_len=$_sw_needed  # keep track of what has been rendered
+            _sw_FIRST_WORD=$FALSE
+        else
+            # it won't fit - so wrap (incl logic for final word if margin is thin)
+            if [ $_sw_last_word ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
+                # last word; thin margin (avoid collision with status zone); wouldn't wrap otherwise, so force it
+                # wrap, advance to l_margin, print word
+                printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
+            else
+                # wrap, advance to l_margin (don't print word; just set first word ** )
+                printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
+                _sw_line_len=$_sw_l_margin
+                _sw_FIRST_WORD=$TRUE
+                continue #  (i.e. don't shift)(** evaluate the same word as FIRST_WORD, on the new line)
+            fi  # last word
+        fi  # fits?
+
+        # update total message remainder counter by subtraction
+        _sw_remaining_len=$(( _sw_remaining_len - _sw_x_peak_len ))
+        [ $# -gt 1 ] && _sw_remaining_len=$(( _sw_remaining_len - 1 ))
+        shift
+    done
+
+    # clean up variables to maintain "local" scope in sourced environments
+    unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD
+    unset -v _sw_l_margin _sw_line_len _sw_status_width _sw_total_tail_len
+    unset -v _sw_trace _sw_tw _sw_x _sw_x_len _sw_x_peak _sw_x_peak_len
 }
-# @usage echo_n_long "$start" "$indent" "$message"
+# @usage smart_wrap_n "$start" "$l_margin" "$r_margin" "$message"
 # @deps _translate_escapes, strip_ansi
-# @req The function must know two facts, for absolute reliability -- where it is starting and (b) how far to indent
-# @rule $1 (start) must be supplied as a decimal integer. This informs the engine where the cursor is located before it starts printing. (putting it there is the call>
-# @rule $2 (indent) must be set (either to a decimal integer or null value). This informs the engine where to put the indent on subsequent lines
+# @req The function must know, for absolute reliability -- where it is starting and (b) l_margin and r_margin
+# @rule $1 (start) must be supplied as a decimal integer.
+# @cont This informs the engine where the cursor is located before it starts printing. (putting it there is the call>
+# @rule $2 (l_margin) must be set (either to a decimal integer or null value)
+# @rule $3 (r_margin) must be set (either to a decimal integer or null value)
 # @note (1) This function is a fragment-aware smart-wrapping layout engine designed for posix ash compatibility
 # @note (2) Primary objective: deterministic word-wrapping to protect the right_status collision zone
-# @note (3) Secondary objective: visual alignment via hanging indentation
-# @warn The engine is highly reliable. Onus is on the caller to assign and provide the correct values for $1 and $2 and consequences of these choices are thus purely >
-#
+# @note (3) Secondary objective: visual alignment on the l_margin and wraps inside r_margin
+# @warn The engine is highly reliable. Onus is on the caller to assign and provide the correct values
+# @cont for $1, $2, $3, and consequences of these choices are thus purely the caller's responsibility
+# @note smart_wrap_n is the successor to echo_n_long (faster, plus right-margin aware)
 # Design and Maintenance Notes:
-# _enl_current_col is then used to initialize tracking needed to calculate
-#    (for every step) whether the considered output can fit on the current line or not,
-#    thus enabling the FINISH/STEP/WRAP methodology (the basic algorithm of the function)
-# _enl_indent indicates how far the engine should indent any second and/or subsequent line(s)
-#    and how to adjust its position-tracking when it word-wraps the output
-#    If set to a null value, the function will assign _enl_indent=0 (no hanging indent)
-# Guard/assignment logic rejects null input $1 (_enl_current_col),
-#     to prevent non-deterministic wrapping behavior
-# Guard/assignment logic allows a null input for $2 (_enl_indent),
-#     in which case, it will assign _enl_indent=0 (default)
-# use printf '%b' throughout, to handle ANSI color codes, etc
+# use printf '%b' throughout, to handle ANSI color codes and embedded backslashes (e.g.\n)
 # loop uses set -- $* inside set -f/set +f globbing protection to safely force word-splitting
 #   of strings for word-by-word evaluation
-# clean scope is maintained by unsetting all _enl_ prefixed variables at exit
-# history: originally was a dedicated backend helper for display_vars, later generalized
-#   to support multiple callers objectively
+# clean scope is maintained by unsetting all _sw_ prefixed variables at exit
 # 'set -- ...' (described above) tells the command to stop looking for options;
 #   everything that follows is a positional argument (so e.g. "-o" or "--example"
 #   won't be seen as command options
 # The engine employs a word wrapping algorithm to display its message --
 #   it begins wherever the cursor is when called, then -
-#   it respects the callers indentation request for the left edge of every wrapped line, and
-#   it respects the space required for right_status on the right margin of the last line
-#     of the message
+#   it respects the callers l_margination request for the left edge of every wrapped line, and
+#   it respects the r_margin and space required for right_status on the right margin of the
+#   last line of the message
 
 ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
 { # @usage ask_pass "prompt_string"
@@ -1410,14 +1463,15 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
             eval "_dv_key=\$${_dv_var}"
             # | * longestvarname ..: [
             # |123              4  567  (_dv_maxlen already padded for two dots)
-            # [disregard - should work quoted now] use with ${_dv_key} (unquoted) so echo_n_long can split and wrap words properly
+            # [disregard - should work quoted now] use with ${_dv_key} (unquoted) so smart_wrap_n can split and wrap words properly
             _dv_start_col=$(( _dv_maxlen + 7 )); _dv_indent="${_dv_start_col}"
 #            d_log_message "_dv_var: $_dv_var" 5
 #            d_log_message "_dv_maxlen: $_dv_maxlen" 5
 #            d_log_message "_dv_start_col: $_dv_start_col" 5
 #            d_log_message "_dv_indent: $_dv_indent" 5
             message_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
-            echo_n_long "${_dv_start_col}" "${_dv_indent}" "${_dv_key}"
+#            echo_n_long "${_dv_start_col}" "${_dv_indent}" "${_dv_key}"
+            smart_wrap_n "${_dv_start_col}" "${_dv_indent}" "" "${_dv_key}"
             printf '%b\n' " ${BBon}]${Boff}"
             ;;
           *      )
@@ -1444,11 +1498,11 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
 # @args $1 integer: length of the longest variable name for column alignment
 # @args $2+ list of variable names (optionally typed: bool.VAR, yn.VAR, lv.VAR)
 # @ret colorized table of variable states emitted to stdout
-# @deps isint get_msg_len repeat TrueFalse status_color message message_n echo_n_long
+# @deps isint get_msg_len repeat TrueFalse status_color message message_n smart_wrap_n
 # @deps _translate_escapes, strip_ansi
 # @rule type bool: renders [ True/False ] based on global logic
 # @rule type yn: renders [ yes/no ] as raw strings
-# @rule type lv: renders [ value ] with word-wrap (echo_n_long) for long strings
+# @rule type lv: renders [ value ] with word-wrap (smart_wrap_n) for long strings
 # @note uses eval for dynamic symbol resolution; ensures layout-aware padding via repeat
 
 show_config() # (POSIX) show config with get_longest and display_vars
@@ -1637,17 +1691,18 @@ message_n()   # (POSIX) display text message $@ w/o newline
   [ "$_mn_collision_threshold" -lt 0 ] && _mn_collision_threshold=0   # clamp to 0 if negative
   printf " ${BGon}*${Boff} ";  # print the "prefix *"
   if [ $_mn_msg_len -gt $_mn_collision_threshold ]; then
-    # use echo_n_long with "$_mn_msg" quoted for smart word-wrap; room for right_status; and align w indent
-    echo_n_long "${_mn_col}" "${_mn_indent}" "$_mn_msg"
+    # use smart_wrap_n with "$_mn_msg" quoted for smart word-wrap; room for right_status; and align w indent
+#    echo_n_long "${_mn_col}" "${_mn_indent}" "$_mn_msg"
+    smart_wrap_n "${_mn_col}" "${_mn_indent}" "${_mn_indent}" "$_mn_msg"
   else
     printf '%b' "$*"        # use "$*" quoted to pass a single string
   fi; unset -v _mn_msg _mn_msg_len _mn_status_width _mn_buffer _mn_tw _mn_collision_threshold _mn_col _mn_indent; }
 # @usage message_n "msg string"
 # @args $* the message to display
-# @deps get_msg_len termwidth echo_n_long
-# @rule echo_n_long uses a collision threshold for last-word-wrapping, which
+# @deps get_msg_len termwidth smart_wrap_n
+# @rule smart_wrap_n uses a collision threshold for last-word-wrapping, which
 # @cont protects the right_status collision zone for subsequent right_status calls
-# @note message family indent is 3; echo_n_long requires valid numbers for col and indent
+# @note message family indent is 3; smart_wrap_n requires valid numbers for col, l_margin, r_margin
 
 W_message()   # (POSIX) display text warning message $@
 { printf " ${BYon}*${Boff} " ; printf '%b\n' "$*" ; }
@@ -2630,7 +2685,7 @@ summarize_header() # (POSIX) list functions and notes in installed headers
   if [ ! -f "$1" ]; then E_message "No header sources found in ${_sh_dir}"; return 1; fi
   # begin output with separator
   separator "summarize_header-${BUILD}" "(content summary)"
-  # now that message_n employs echo_n_long, use that to word-wrap this
+  # now that message_n employs smart_wrap_n, use that to word-wrap this
   _sh_msg="This script header defines ${BYon}common variables${Boff}, ${BYon}ANSI sequences${Boff}, "
   _sh_msg="${_sh_msg}and the following ${BGon}functions/utilities${Boff} as described below:\n"
   message_n ${_sh_msg}; printf "\n"   # message unquoted to enable word-wrap
@@ -2664,11 +2719,11 @@ summarize_header() # (POSIX) list functions and notes in installed headers
     d_message "_sh_fn_max_len: $_sh_fn_max_len" 4
     # assign the internal separator to appear between function name and padding
     _sh_fn_sep=" "
-    # calculate length of the column (between the gutters) to be passed to pad()-->echo_n_long
+    # calculate length of the column (between the gutters) to be passed to pad()-->smart_wrap_n
     _sh_fn_col_width=$(( _sh_fn_max_len + ${#_sh_fn_sep} ))
     # determine the offset to the function description column that accomodates
     # the entire column and the gutters - this is where the cursor
-    #   will be when echo_n_long is called to smart-wrap the description
+    #   will be when smart_wrap_n is called to smart-wrap the description
     #   Math: _sh_fn_max_len + 2c.Lpad + 2c.dots(min) + 2c.Rpad
     _sh_fn_col=$((_sh_fn_col_width + 2 + 2 + 2 ))
     d_message "_sh_fn_col: $_sh_fn_col" 4
@@ -2689,7 +2744,7 @@ summarize_header() # (POSIX) list functions and notes in installed headers
     _sh_label_col_width=$(( _sh_label_max_len + ${#_sh_label_sep} ))
     # determine the offset to the function metadata payload column that accomodates
     # the entire column and the gutters - this is where the cursor
-    #   will be when echo_n_long is called to smart-wrap the metadata payload
+    #   will be when smart_wrap_n is called to smart-wrap the metadata payload
     #   Math: _sh_label_max_len + 4c.Lpad + 2c.dots(min) + 2c.Rpad
     _sh_label_col=$((_sh_label_col_width + 4 + 2 + 2 ))
     d_message "_sh_label_col: $_sh_label_col" 4
@@ -2746,8 +2801,9 @@ summarize_header() # (POSIX) list functions and notes in installed headers
             pad "$_sh_fn_name" ' ' "2" "${_func_color}" '.' "${_sh_fn_col_width}"
 #            pad "$_sh_fn_name" ' ' "2" "${Yon}" '.' "${_sh_fn_col_width}"        <--- change from yellow to _func_color
             printf "  "  # inter-column pad spacing
-            echo_n_long "$_sh_fn_col" "$_sh_fn_indent" "$_sh_comment"               # smart-word wrap comment
-            printf "\n"   # newline for hanging echo_n_long
+#            echo_n_long "$_sh_fn_col" "$_sh_fn_indent" "$_sh_comment"               # smart-word wrap comment
+            smart_wrap_n "$_sh_fn_col" "$_sh_fn_indent" "" "$_sh_comment"               # smart-word wrap comment
+            printf "\n"   # newline for hanging smart_wrap_n
         # handle metadata tags
         elif printf '%s\n' "$_sh_line" | grep -Eq "$_sh_METADATA_REGEX"; then
             # extract and parse tag (text between '@' and first space)
@@ -2792,7 +2848,8 @@ summarize_header() # (POSIX) list functions and notes in installed headers
 #            d_message "_sh_tag: [$_sh_tag]" 4
 #            d_message "_sh_label_payload: [$_sh_label_payload]" 4
 
-            echo_n_long "${_sh_label_col}" "${_sh_label_indent}" "$_sh_label_payload"
+#            echo_n_long "${_sh_label_col}" "${_sh_label_indent}" "$_sh_label_payload"
+            smart_wrap_n "${_sh_label_col}" "${_sh_label_indent}" "" "$_sh_label_payload"
             printf "\n"   # newline for hanging echo_n_long
         else  # safety catch for unexpected matches
         printf "  ${BRon}UNKNOWN:  %s${Boff}\n" "$_sh_line"
@@ -2818,7 +2875,7 @@ _dh_show_capabilities()   # demonstrate classes of capability in this header fil
 # preview the command syntax
   # should print two lines like this but theme-colored --
   # message "Description of header capabilities..."
-  # printf "   "; message_n ""; echo_n_long 7 7 "${BCon}Section: content..."
+  # printf "   "; message_n ""; smart_wrap_n 7 7 7 "${BCon}Section: content..."
   # this requires a complex sequence of commands, so build it by line and parts
   # line 1 - message "Description of header capabilities..."
   _dh_cmd="${_func_color}message${_Boff} ${_quote_color}\"Description of header capabilities...\"${_Boff}\n"
@@ -2826,51 +2883,51 @@ _dh_show_capabilities()   # demonstrate classes of capability in this header fil
   _dh_cmd="${_dh_cmd} ${_cmd_color}printf${_Boff} ${_quote_color}\"    \"${_Boff};"
   # line 2 part 2 - message_n ""     # message_n displayed as a function
   _dh_cmd="${_dh_cmd} ${_func_color}message_n${_Boff} ${_quote_color}\"\"${_Boff};"
-  # line 2 part 3 - echo_n_long 7 7  # ${_Boff} ${_data_color} in case not bold
-  _dh_cmd="${_dh_cmd}  ${_func_color}echo_n_long${_Boff} ${_data_color}7 7${_Boff}"
+  # line 2 part 3 - smart_wrap_n 7 7 7  # ${_Boff} ${_data_color} in case not bold
+  _dh_cmd="${_dh_cmd}  ${_func_color}smart_wrap_n${_Boff} ${_data_color}7 7 7${_Boff}"
   # line 2 part 4 - "${BCon}Section: content..."
   _dh_cmd="${_dh_cmd} ${_quote_color}\"\${BCon}Section: content...\"${_Boff}"
 
   printf "\n"; message "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
   # execute the actual demonstration
   _dh_msg="This script header is a robust ${BYon}POSIX-compliant utility suite${Boff}. Its core capabilities include:"
-  message_n ""; echo_n_long 3 3 "${_dh_msg}"
+  message_n ""; smart_wrap_n 3 3 3 "${_dh_msg}"
   printf "\n"
 
   # Variable Definitions
   _dh_msg="${BCon}Variable Definitions:${Boff} Constants for error messages, pseudo-booleans "
   _dh_msg="${_dh_msg}(${BYon}TRUE=0/FALSE=\"\"${Boff}), and terminal state defaults."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # Validation Functions
   _dh_msg="${BCon}Validation Functions:${Boff} Logic to verify specific numeric types like integers, "
   _dh_msg="${_dh_msg}hex values, and floats (${BYon}isint, ishexint, isfloat_posix${Boff}), consolidated in ${BYon}isnumeric${Boff}."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # System and Shell Checks
   _dh_msg="${BCon}System and Shell Checks:${Boff} Tools to verify root status (${BYon}checkroot${Boff}), "
   _dh_msg="${_dh_msg}specific mount points (e.g., ${BYon}checkboot${Boff}), and shell interactivity."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # ANSI Escape Sequences
   _dh_msg="${BCon}ANSI Escape Sequences:${Boff} A comprehensive set of variables for text styling "
   _dh_msg="${_dh_msg}(colors, bold, underline, reverse) and cursor manipulation (${BYon}HCU/SCU, SCP/RCP, CUP${Boff})."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # Messaging Tier
   _dh_msg="${BCon}Messaging Tier:${Boff} A categorized system including standard (${BYon}message${Boff}), "
   _dh_msg="${_dh_msg}warning (${BYon}W_message${Boff}), and error (${BYon}E_message${Boff}) outputs with visual color-coded distinction."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # Box Drawing
   _dh_msg="${BCon}Box Drawing:${Boff} Mappings for DEC Special Graphics characters (e.g., "
   _dh_msg="${_dh_msg}${BYon}H_wall='q', V_wall='x', corners${Boff}) and state control (${BYon}ESCon, SO, SI${Boff})."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
 
   # Debugging and Logging
   _dh_msg="${BCon}Debugging and Logging:${Boff} Conditional execution/messaging based on verbosity "
   _dh_msg="${_dh_msg}levels and timestamped file logging functions (e.g., ${BYon}d_log_message${Boff})."
-  printf "    "; message_n ""; echo_n_long 7 7 "${_dh_msg}"; printf "\n"
+  printf "    "; message_n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
   printf "\n"
   unset -v _dh_cmd _dh_msg
   return 0
@@ -3248,7 +3305,7 @@ _dh_demo_boolean() # (POSIX) demonstrate bool truth validation with a variety of
 
   printf "\n"
   E_message_n ""
-  echo_n_long 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
+  smart_wrap_n 3 3 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
   printf "\n"
 
   [ "$_dh_FAILED" = "$TRUE" ] && _dh_ret=1
@@ -3553,8 +3610,19 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
   printf "\n"
 
-  #-----[ part 3: sh_countdown - timed safety pause ]-------------------------------------------------------------------
-  # construct the command preview string - 
+  #-----[ part 3: box_msg ]---------------------------------------------------------------------------------------------
+  # construct the command preview string -
+  # line 1 -    box_msg "$longone"  $(( 8 * $(termwidth) / 10)) '' "${BCon}"
+  _dh_cmd="   ${_func_color}box_msg${_Boff} ${_quote_color}\"${_var_color}\$longone${_quote_color}\""
+  _dh_cmd="${_dh_cmd} ${_op_color}\$(( ${_data_color}8 ${_op_color}* ${_op_color}\$(${_func_color}termwidth${_op_color})"
+  _dh_cmd="${_dh_cmd} / ${_data_color}10${_op_color} ))${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_op_color}'' ${_quote_color}\"${_var_color}\${BCon}${_quote_color}\"${_Boff}"
+  printf "\n"; message "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+  box_msg "$longone" $(( 8 * $(termwidth) / 10 )) '' "${BCon}"
+  handle_result $? "" "" || _dh_FAILED=$TRUE
+
+  #-----[ part 4: sh_countdown - timed safety pause ]-------------------------------------------------------------------
+  # construct the command preview string -
   # line 1 -    sh_countdown 3 "Safety pause before deployment";
   _dh_cmd="   ${_func_color}sh_countdown${_Boff} ${_data_color}3${_Boff} "
   _dh_cmd="${_dh_cmd}${_quote_color}\"Safety pause before deployment\"${_Boff}${_op_color};${_Boff}\n"

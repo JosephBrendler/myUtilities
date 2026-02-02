@@ -4,7 +4,7 @@
 script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
 
 echo -n "sourcing test header"
-source "${script_header_installed_dir}/script_header_joetoo_posix"
+source "${script_header_installed_dir}/script_header_joetoo"
 right_status $?
 
 _verbosity=${1:-1}
