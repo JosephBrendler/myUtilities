@@ -335,6 +335,30 @@ UL_wall='\154'     # Upper-Left corner (0x6C)
 UR_wall='\153'     # Upper-Right corner (0x6B)
 LL_wall='\155'     # Lower-Left corner (0x6D)
 LR_wall='\152'     # Lower-Right corner (0x6A)
+
+# note - below are unicode (do not need SI/SO)
+# Single-Line T-junctions & Intersections (UTF-8 Octal)
+T_down='\342\224\254'       # ┬ (0x252C)
+T_up='\342\224\264'         # ┴ (0x2534)
+T_right='\342\224\234'      # ├ (0x251C)
+T_left='\342\224\244'       # ┤ (0x2524)
+CROSS='\342\224\274'        # ┼ (0x253C)
+
+# Double-Line segments (UTF-8 Octal)
+H_wall_dbl='\342\225\220'     # ═ (0x2550)
+V_wall_dbl='\342\225\221'     # ║ (0x2551)
+UL_wall_dbl='\342\225\224'    # ╔ (0x2554)
+UR_wall_dbl='\342\225\227'    # ╗ (0x2557)
+LL_wall_dbl='\342\225\232'    # ╚ (0x255A)
+LR_wall_dbl='\342\225\235'    # ╝ (0x255D)
+
+# Double-Line T-junctions & Intersections (UTF-8 Octal)
+T_down_dbl='\342\225\246'     # ╦ (0x2566)
+T_up_dbl='\342\225\251'       # ╩ (0x2569)
+T_right_dbl='\342\225\240'    # ╠ (0x2560)
+T_left_dbl='\342\225\243'     # ╣ (0x2563)
+CROSS_dbl='\342\225\254'      # ╬ (0x256C)
+
 # note: these should NOT be pre-cooked like the control sequences above
 #   b/c that would convert them to binary representation of letters (e.g. \161 => q)
 #   and we need to presesrve the octal code so it cab be interpreted as graphic
@@ -549,6 +573,64 @@ CUB() # (ANSI) Move the cursor back/left ($1 cells)
 # @args $1: Number of cells to move (default 1)
 # @ret 0 if moved; 1 if arg is not an integer
 
+CPR() # (POSIX) [r|c|s] - Cursor Position Report
+{ ret=0; _cpr_opt="$1"; _cpr_pos=""; _cpr_old_stty=""; _cpr_QUERY="${CSI}6n"
+  # save state and disable canonical mode
+  # (switch to "cbreak" mode (to read without a newline)
+  # (if this fails, we likely don't have a TTY (exit status 1) ; cannot continue)
+  _cpr_old_stty=$(stty -g 2>/dev/null) || { ret=$?; return $ret; }
+  stty -icanon -echo 2>/dev/null || ret=2
+  # query terminal (CSI 6n)
+  # (use in=/dev/tty to ensure it will work even if stdin is redirected)
+  printf '%b' "$_cpr_QUERY" > /dev/tty 2>/dev/null || ret=$((ret + 4))
+  # read response: format is "^[[row;colR"
+  # (read until 'R' using 'dd' because POSIX 'read' can't change delimiters)
+  # (use in=/dev/tty to ensure it will work even if stdin is redirected)
+  _cpr_pos=$(dd if=/dev/tty count=1 2>/dev/null) || ret=$((ret + 8))
+  # restore terminal immediately
+  stty "$_cpr_old_stty" 2>/dev/null || ret=$((ret + 16))
+  # strip leading ESC[ and trailing R
+  _cpr_pos=${_cpr_pos#*[}; _cpr_pos=${_cpr_pos%R}
+  # split row/col using positional parameters (the POSIX "array")
+  _cpr_old_ifs="$IFS"; IFS=';'; set -- ${_cpr_pos:-0;0}; IFS="$_cpr_old_ifs"
+  # global-ish persistence for QCR/QCC (not localized with prefix)
+  CPR_ROW=$1
+  CPR_COL=$2
+  # handle command line options
+  case "$_cpr_opt" in
+    [rR]) echo "$CPR_ROW" ;;
+    [cC]) echo "$CPR_COL" ;;
+    [sS]) : ;;
+    *)    echo "$CPR_ROW $CPR_COL" ;;
+  esac
+
+  unset -v _cpr_opt _cpr_pos _cpr_old_stty _cpr_old_ifs _cpr_QUERY
+  return $ret
+}
+# @usage CPR [r|c|s]
+# @args $1: report option: 'r' (row), 'c' (col), 's' (silent), null (both)
+# @vars CPR_ROW, CPR_COL (set globally for use by QCR/QCC)
+# @ret emitted: row, col, or both, based on $1
+# @ret status: 0 (success) or failure bitmask: 1=init, 2=config, 4=query, 8=read, 16=restore
+# @deps stty, printf, dd
+# @rule uses stty -icanon; terminal state is saved and restored via stty -g
+# @note reliable on modern systems (Linux 2.6+ / BSD)
+# @cont to be 100% robust against high-latency fragmentation, dd read
+# @cont could be wrapped in a 'while' loop until 'R' is received
+# @note see "stty --help" (fascinatingly arcane detail on tty driver)
+
+QCR() { CPR s; echo "$CPR_ROW"; }
+# @usage QCR
+# @vars CPR_ROW (updated via CPR s)
+# @ret emitted: current cursor row index
+# @deps CPR
+
+QCC() { CPR s; echo "$CPR_COL"; }
+# @usage QCC
+# @vars CPR_COL (updated via CPR s)
+# @ret emitted: current cursor column index
+# @deps CPR
+
 box_esca() # (POSIX) DEC box drawing usingw ESCon/off (Explicit G0 mapping)
 { # @usage box_esca "text"
   # @args $1: String to be boxed
@@ -587,7 +669,7 @@ box_shift() # (POSIX) DEC box drawing using SO/SI toggling
   unset -v _bs_text _bs_len _bs_h_line
 }
 
-box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color
+box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color, $5=style
 { ret=0; _bm_msg="$1"; _bm_tw=0;  _bm_target_w=0; _bm_center=0
   _bm_color_seq=0; _bm_buffer=0; _bm_r_margin=0; _bm_l_margin=0
   _bm_h_line=0; _bm_line=""
@@ -597,19 +679,29 @@ box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color
   [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
   [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
   _bm_color_seq="${4:-$Boff}"
+  case "$5" in
+    2 ) _bm_H_wall="$H_wall_dbl"; _bm_V_wall="$V_wall_dbl"; _bm_UL_wall="$UL_wall_dbl";
+        _bm_UR_wall="$UR_wall_dbl"; _bm_LL_wall="$LL_wall_dbl"; _bm_LR_wall="$LR_wall_dbl";
+        _bm_SO=""; _bm_SI="";;
+    * ) _bm_H_wall="$H_wall"; _bm_V_wall="$V_wall"; _bm_UL_wall="$UL_wall";
+        _bm_UR_wall="$UR_wall"; _bm_LL_wall="$LL_wall"; _bm_LR_wall="$LR_wall";
+        _bm_SO="$SO"; _bm_SI="$SI"; vt_init ;;
+  esac
+
   _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
                    # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
 
     # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
     # if it uses 0 for left margin
-    _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
-    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
-    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0   # clamp to 0 in case negative
-    _bm_h_line=$(full_repeat "$H_wall" "$_bm_target_w") # -2 = corners +2 = pad
+    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))      # where we actually draw the left wall
+    _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))   # where we smart_wrap
+    _bm_r_wall=$(( _bm_l_margin + _bm_target_w ))            # where we actually draw the right wall
+    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0              # clamp to 0 in case negative
+    _bm_h_line=$(full_repeat "$_bm_H_wall" "$_bm_target_w")  # -2 = corners +2 = pad
 
     # top border
     CUF "$_bm_l_margin"
-    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI" "$Boff"
+    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$_bm_SO" "$_bm_UL_wall" "$_bm_h_line" "$_bm_UR_wall" "$_bm_SI" "$Boff"
     # body - piped instead of array or here-string for POSIX compliance
     # (capture wrapped lines using smart_wrap_n as the output engine)
     # (smarw_wrap_n does not finish with a newline, so use the
@@ -617,20 +709,21 @@ box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color
     smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg" | \
     while read -r _bm_line || [ -n "$_bm_line" ]; do
         CUF "$_bm_l_margin"
-        printf "%b%b%b%b%b " "$_bm_color_seq" "$SO" "$V_wall" "$SI" "$Boff" # left wall
+        printf "%b%b%b%b%b " "$_bm_color_seq" "$_bm_SO" "$_bm_V_wall" "$_bm_SI" "$Boff" # left wall
         printf "%b" "$_bm_line"                  # pre-wrapped text
         # ignore the gap, use absolute ref from left
-        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
-        printf " %b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$V_wall" "$SI" "$Boff" # Right wall
+        printf '\r'; CUF "${_bm_r_wall}"
+        printf " %b%b%b%b%b\n" "$_bm_color_seq" "$_bm_SO" "$_bm_V_wall" "$_bm_SI" "$Boff" # Right wall
     done
     ret=$?
 
     # bottom border
     CUF "$_bm_l_margin"
-    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI" "$Boff"
+    printf "%b%b%b%b%b%b%b\n" "$_bm_color_seq" "$_bm_SO" "$_bm_LL_wall" "$_bm_h_line" "$_bm_LR_wall" "$_bm_SI" "$Boff"
 
     unset -v _bm_msg _bm_tw _bm_target_w _bm_center _bm_color_seq
     unset -v _bm_buffer _bm_r_margin _bm_l_margin _bm_h_line _bm_line
+    unset -v _bm_H_wall _bm_V_wall _bm_UL_wall _bm_UR_wall _bm_LL_wall _bm_LR_wall _bm_SO _bm_SI
     return $ret
 }
 # @usage box_msg "$message" "$width" "$center_point" "$color_sequence"
