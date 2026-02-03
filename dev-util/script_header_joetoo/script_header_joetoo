@@ -185,17 +185,18 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 #034 - 037	1C-1F	FS-US	Separators
 #177	7F	DEL	Delete
 # potentially useful in scripts --
-NUL='\000'  # only for matching  (do not try to print)
-BEL='\007'  # only when you literally need bells and whistles
-BS='\010'   # note: this is non-destructive (not a delete)
-HT='\011'   # equiv \t
-LF='\012'   # equiv \l
-VT='\013'   #
-FF='\014'   # equiv \f
-CR='\015'   # equiv \r
-ESC='\033'  # see CSI, ESCon, ESG0
-DEL='\177'  # delete
-EOF='\032'  # End of File (aka SUB)
+NUL=$(printf '\000')  # only for matching  (do not try to print)
+BEL=$(printf '\007')  # only when you literally need bells and whistles
+BS=$(printf '\010')   # note: this is non-destructive (not a delete)
+HT=$(printf '\011')   # equiv \t
+LF=$(printf '\012')   # equiv \l
+VT=$(printf '\013')   #
+FF=$(printf '\014')   # equiv \f
+CR=$(printf '\015')   # equiv \r
+ESC=$(printf '\033')  # see CSI, ESCon, ESG0
+US=$(printf '\037')   # Unit Separator (The ideal delimiter)
+DEL=$(printf '\177')  # delete
+EOF=$(printf '\032')  # End of File (aka SUB)
 
 # (POSIX) CSI - define the control sequence initiator: ascii "\e[", octal "\033[", or hex "\x1b["
 # which is used for Parameterized Control (e.g., cursor positioning, setting colors, clearing screen)
@@ -203,7 +204,7 @@ EOF='\032'  # End of File (aka SUB)
 # LEGACY: assigning CSI='\033[' stores the characters of the "Literal Escape Sequence" in a string
 #   requires an interpreter (echo -e or printf %b) to convert the '\' '0' '3' '3'
 #   strings into a real control character
-# UPGRADED: assigning CSI=$(printf '\033[') stores the "Raw ANSI Control Sequence"
+# UPGRADED: pre-cooking the ESC above and assigning CSI="${ESC}[") stores the "Raw ANSI Control Sequence"
 # The subshell executes and emits the actual non-printing Escape Byte (Hex 1B)
 # This is "Pre-Cooked" -- it works in printf '%s' because the byte is already binary
 # Note: using octal \033 rather than hex \x1b because octal remains the gold standard
@@ -213,7 +214,7 @@ EOF='\032'  # End of File (aka SUB)
 #   treat \x1b as literal text, and while some specific BusyBox or Alpine Linux versions
 #   of ash might have expanded printf to include \x, this is a non-standard extension;
 #   relying on it (\x1b) makes the script less portable
-CSI=$(printf "${ESC}[")
+CSI="${ESC}["
 
 #-----[ Select Graphics Rendition on/off ]------------------------------------------
 BOLD="1"         # bold on
@@ -317,10 +318,10 @@ _op_color="${Gon}"     # operators (e.g. &&, ||, |, >)
 # another sequence shifts it again
 
 # ESC(C Sequences (Explicit G0 Selection)
-ESCon=$(printf "${ESC}(0")   # Maps G0 to DEC Special Graphics
-ESCoff=$(printf "${ESC}(B")  # Maps G0 to Standard ASCII
+ESCon="${ESC}(0"   # Maps G0 to DEC Special Graphics
+ESCoff="${ESC}(B"  # Maps G0 to Standard ASCII
 # ESC)C Sequence (Explicit G1 Selection)
-ESG1=$(printf "${ESC})0")    # Maps G1 to DEC Special Graphics
+ESG1="${ESC})0"    # Maps G1 to DEC Special Graphics
 # Shift In/Out Control Characters (Fast G0/G1 Toggling)
 SO=$(printf '\016')        # Shift Out (Activate G1, Graphics ON - ASCII 14, hex \x0E)
 SI=$(printf '\017')        # Shift In (Activate G0, Standard ASCII ON - ASCII 15, hex \x0F)
@@ -794,7 +795,7 @@ test_terminal() # (POSIX} full-suite validation of cursor manipulation and termi
     CUP $((_start_row + 4)) 1
     repeat "=" "$_W"
     # move cursor to bottom for prompt
-    CUP $(("$_H"-2)) 1; printf "\nTest Complete. Press Enter"
+    CUP $(( _H - 2 )) 1; printf "\nTest Complete. Press Enter"
     read _junk < /dev/tty
     unset -v _W _H _msg _msg_len _start_col _start_row _junk
 }
@@ -2100,8 +2101,9 @@ log_right_status()  # output rigit_status to stdout and logFile
   fi
   # get width for screen positioning
   _lrs_tw=$(termwidth); isint "$_lrs_tw" || _lrs_tw=80  # fallback to standard 80 cols
+  _lrs_offset=$(( _lrs_tw - 7 ))
   printf "\r"
-  if CUF $(( "$_lrs_tw" - 7 )) ; then printf '%b\n' "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
+  if CUF "$_lrs_offset" ; then printf '%b\n' "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
   # clean logging
   if [ -n "$logFile" ]; then
     printf '%s\n' "$_lrs_plain" >> "$logFile" || \
@@ -2114,7 +2116,8 @@ log_right_status()  # output rigit_status to stdout and logFile
 # @rule uses \r and CUF to align terminal status to the far right margin
 # @rule provides a clean [ Ok ] or [ !! ] entry to $logFile without timestamping
 # @note maintainer note: deliberate decision to NOT have log_right_status timestamp
-# @note its entries to help this "context aware" logging scheme be more readable# maintainer note: deliberate decision to NOT have log_right_status timestamp
+# @note its entries to help this "context aware" logging scheme be more readable
+# maintainer note: deliberate decision to NOT have log_right_status timestamp
 #   its entries to help this "context aware" logging scheme be more readable
 #   the alternative would be to "revert" to an "atomic" logging scheme
 #   in which logged action goes on a separate line with its own timestamp

@@ -9,182 +9,6 @@
 # note: this header expects this to be assigned already
 #script_header_installed_dir=/usr/sbin
 
-isnumeric() # wrapper for broadest determination
-{ # @rule will over-ride the POSIX version of isnumeric if sourced afterwards
-  isint "$1" || ishexint "$1" || isfloat_posix "$1" || isfloat_regex "$1"; }
-
-isfloat() # deprecated (now a wrapper for isfloat_regex
-{ isfloat_regex "$@"; }
-
-isfloat_regex() # regex (non-POSIX) test if $1 is a floating point number; return true/false
-{ inputstring="$1"
-  if  [[ "$inputstring" =~ ^[+-]?([0-9]*\.)?[0-9]+([eE][+-]?[0-9]+)?$ ]] ; then
-    return 0; else return 1; fi; }
-# @usage isfloat_regex "input"
-# @args $1: the string to be validated
-# @ret 0 if valid float; 1 if not
-# @rule supports scientific notation (e.g., 1.2e+10); requires Bash/Ksh/Zsh
-# @note broader than isfloat_posix; will return true for integers (e.g., 123)
-# @rule isfloat moved here due to ash-incompatibility (uses regex compare =~)
-
-map()           # linearly map input number from input range to output range
-{ # trap non-numeric input
-! isfloat $1 && E_message "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
-! isfloat $2 && E_message "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
-! isfloat $3 && E_message "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
-! isfloat $4 && E_message "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
-! isfloat $5 && E_message "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
-[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
- map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
- scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
-# trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
-(( $(echo "$map_val < $from_lower" | bc -l) )) || \
-    (( $(echo "$map_val > $from_upper" | bc -l) )) && \
-    E_message "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
-# trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
-#[ $to_upper -lt $to_lower ] && E_message "invalid input range [ $to_upper - $to_lower ]" && return 1
-#[ $from_upper -lt $from_lower ] && E_message "invalid input range [ $from_upper - $from_lower ]" && return 1
-# initialize result variable
-result=999999
-# calculate scaling factor
- from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
- to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l) 
- from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
- map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
-# ratio > 1 means scaling up to a "wider" range (even if lower numbers)
-# ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
-# scale the input offset against the output range
- to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
-# now offset (above the to_lower bound) the scaled number into the output range
-result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
-return 0
-}
-
-countdown() # output text message (arg $2, optional), and count-down seconds (arg $1)
-{
-  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
-  # store current minutes and seconds
-  min=10#$(date +%M) ; sec=10#$(date +%S)
-  wait_time=10#60  #default = 1 minute
-  [[ ! -z $1 ]] && wait_time="10#${1}"
-  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
-  if [[ "${wait_time}" -ge "60" ]] ; then
-    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
-  else
-    wait_min=10#0  ;  wait_sec=${wait_time}
-  fi
-  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
-  if [[ "${tgt_sec}" -ge "60" ]] ; then
-    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
-  fi
-  min="$(date +%M)"  ;  sec="$(date +%S)"
-  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
-  # default message is "Pausing, ", else get from arg $2
-  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
-  while [[ "${rem}" -gt "0" ]] ; do
-    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
-    sleep 0.1
-    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
-    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
-    echo -n "    $rem seconds left..."
-  done ; echo return 0
-}
-
-box_msg_bash() # (LINUX BASH) $1=msg, $2=width, $3=center, $4=color
-{
-    local _bm_msg="$1"
-    local _bm_tw=$(termwidth)
-    local _bm_target_w _bm_center
-    # defaults: width=tw/2, center=tw/2
-    [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
-    [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
-    local _bm_color_seq="${4:-$OFF}"
-    local _bm_lines=()   # array holding smart-wrapped lines of the message
-    local _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
-                         # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
-
-    # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
-    # if it uses 0 for left margin
-    local _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
-    # capture wrapped lines using smart_wrap_n as the engine
-#    readarray -t _bm_lines < <(smart_wrap_n 0 0 $(( _bm_tw - _bm_wrap_at)) "$_bm_msg")
-    readarray -t _bm_lines < <(smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg")
-
-    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
-    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0
-    _bm_h_line=$(full_repeat "$H_wall" $(( _bm_target_w  )) ) # -2 = corners +2 = pad
-    printf "%b" "$_bm_color_seq"
-
-    # top border
-    CUF "$_bm_l_margin"
-    printf "%b%b%b%b%b\n" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI"
-    # body
-    for _bm_line in "${_bm_lines[@]}"; do
-        CUF "$_bm_l_margin"
-        printf "%b%b%b " "$SO" "$V_wall" "$SI"   # left wall
-        printf "%b" "$_bm_line"                  # pre-wrapped text
-        # calculate trailing gap to keep right wall vertical
-        _bm_cur_len=$(get_msg_len "$_bm_line")
-        _bm_gap=$(( _bm_target_w - _bm_cur_len ))
-#        [ "$_bm_gap" -gt 0 ] && repeat " " "$_bm_gap"
-        # ignore the gap, use absolute ref from left
-#        printf '\r'; CUF $((_bm_tw - _bm_l_margin ))
-        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
-        printf " %b%b%b\n" "$SO" "$V_wall" "$SI" # Right wall
-    done
-
-    # bottom border
-    CUF "$_bm_l_margin"
-    printf "%b%b%b%b%b\n" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI"
-    printf "%b" "$OFF"
-
-}
-
-#---[ RGB ]--------------------------------------------------------
-#ToDo: experiment with rgb methods for color-setting
-# NOTE: this might work in a Konsole or Gnome terminal, but not lxterminal!!
-# see "well known" triplet values at https://en.wikipedia.org/wiki/ANSI_escape_code
-#  RED=(205, 0, 0)
-#  ESC[ ... 38;2;<r>;<g>;<b> ... m Select RGB foreground color
-#  ESC[ ... 48;2;<r>;<g>;<b> ... m Select RGB background color
-RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
-{ local FG="38;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${FG};${R};${G};${B}m" ; }
-RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
-{ local BG="48;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${BG};${R};${G};${B}m" ; }
-
-list_unused_disks()    # list block devices with no active mountpoint
-{  # set TERMWIDTH now, or it would be an inappropriate use of io control
-   # for stdin during while loop's redirection for "read line"
-   TERMWIDTH=$(termwidth)
-    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
-    while read line ; do
-        # use eval to interpret the -P pairs as variable assignments
-        eval ${line}
-        if [[ "${TYPE}" == "disk" ]] ; then
-            # look for disks with no children (TYPE crypt, part, lvm) mounted
-            candidate_name=$NAME ; candidate_type=$TYPE
-            INUSE=$FALSE
-            message_n "checking ${candidate_type} ${candidate_name} ..."
-            while read innerline; do
-                eval ${innerline}
-                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
-                    INUSE=$TRUE
-                fi
-            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
-            if [[ ! $INUSE ]] ; then
-                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
-                non-stty-right_status $TRUE
-                lsblk /dev/${candidate_name} | sed 's|^|    |'
-            else
-                echo -en "${BRon}(in use)${Boff}"
-                non-stty-right_status 1
-            fi
-        fi
-    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
-    return 0
-}
-
-
 validate_status_file()  # validate or create command sequence status file $1 
 {
     [ $# -ne 1 ] && E_message "Error: must specify status_file" && return 1
@@ -222,56 +46,6 @@ linear_search()        # find $2 in array $1, return index
     for ((i=0; i<${#haystack[@]}; i++ )) ; do
         [[ "${haystack[$i]}" == "${needle}" ]] && echo $i && return $i
     done
-}
-
-bs()                   # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
-{
-  # return the index number of the entry in the list, or -1 if not found
-  # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
-  target="$1"; shift;  start="$1"; shift;  end="$1"; shift; remainder="$@"
-  search_list=($(alpha_words ${remainder}))   # alphabetize the list so the binary search can work
-  if [ $verbosity -ge 4 ] ; then
-    message_n "search_list: ["
-    echo -n "${search_list[@]}"
-    echo "]"
-    message "search_list length is [${#search_list[@]}]"
-  fi
-  let "result=-1"
-  if [[ $depth -gt ${#search_list[@]} ]]
-  then
-    E_message "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
-    return 1  # can't go deeper than the length of the list
-  fi
-  diff=$(( $end - $start ))
-  middle=$(( $start + $(( $diff / 2 )) ))
-  ## guarantee to look at both start and end before giving up
-  if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
-  d_message " depth=[$depth]" 4;  d_message " start=[$start]" 4;  d_message "   end=[$end]" 4;  d_message "middle=[$middle]" 4
-  d_message ">> [${search_list[${middle}]}] <<" 4
-  if [[ "${search_list[${middle}]}" == "${target}" ]]
-  then
-    result=$middle   # equal
-  else  # not yet equal, so search either the upper or lower half of the remaining range
-    [[ $start -eq $end ]] && return 1
-    let "depth+=1"   # increment recursive depth and then recurse
-    if [[ "${search_list[${middle}]}" > "${target}" ]]
-    then   # found element is greater than target (search lower half next)
-      [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
-      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
-      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 3; return 1; else d_message "DIFF1 flags not yet both true" 3; fi
-      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next" 4
-      bs $target $start $middle ${search_list[@]}
-    else   # found element is less than target (search upper half next)
-      [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
-      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
-      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 3; return 1; else d_message "DIFF1 flags not yet both true" 3; fi
-      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next" 4
-      bs $target $middle $end ${search_list[@]}
-    fi
-  fi
-  d_message "about to return from depth [$depth]" 5
-  [ $depth -eq 0 ] && d_message "result: [$result]" 5
-  let "depth-=1";  return 0
 }
 
 usage()                # explain default usage; mod with local "usage module"
@@ -606,6 +380,183 @@ process_compound_arg()    # process a compount argument
     return 0
 }
 
+#-----[ non-cli stuff ------------------------------------------------------------------------------------------------------
+
+isnumeric() # wrapper for broadest determination
+{ # @rule will over-ride the POSIX version of isnumeric if sourced afterwards
+  isint "$1" || ishexint "$1" || isfloat_posix "$1" || isfloat_regex "$1"; }
+
+isfloat() # deprecated (now a wrapper for isfloat_regex
+{ isfloat_regex "$@"; }
+
+isfloat_regex() # regex (non-POSIX) test if $1 is a floating point number; return true/false
+{ inputstring="$1"
+  if  [[ "$inputstring" =~ ^[+-]?([0-9]*\.)?[0-9]+([eE][+-]?[0-9]+)?$ ]] ; then
+    return 0; else return 1; fi; }
+# @usage isfloat_regex "input"
+# @args $1: the string to be validated
+# @ret 0 if valid float; 1 if not
+# @rule supports scientific notation (e.g., 1.2e+10); requires Bash/Ksh/Zsh
+# @note broader than isfloat_posix; will return true for integers (e.g., 123)
+# @rule isfloat moved here due to ash-incompatibility (uses regex compare =~)
+
+map()           # linearly map input number from input range to output range
+{ # trap non-numeric input
+! isfloat $1 && E_message "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
+! isfloat $2 && E_message "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
+! isfloat $3 && E_message "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
+! isfloat $4 && E_message "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
+! isfloat $5 && E_message "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
+[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
+ map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
+ scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
+# trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
+(( $(echo "$map_val < $from_lower" | bc -l) )) || \
+    (( $(echo "$map_val > $from_upper" | bc -l) )) && \
+    E_message "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
+# trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
+#[ $to_upper -lt $to_lower ] && E_message "invalid input range [ $to_upper - $to_lower ]" && return 1
+#[ $from_upper -lt $from_lower ] && E_message "invalid input range [ $from_upper - $from_lower ]" && return 1
+# initialize result variable
+result=999999
+# calculate scaling factor
+ from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
+ to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l) 
+ from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
+ map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
+# ratio > 1 means scaling up to a "wider" range (even if lower numbers)
+# ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
+# scale the input offset against the output range
+ to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
+# now offset (above the to_lower bound) the scaled number into the output range
+result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
+return 0
+}
+
+countdown() # output text message (arg $2, optional), and count-down seconds (arg $1)
+{
+  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
+  # store current minutes and seconds
+  min=10#$(date +%M) ; sec=10#$(date +%S)
+  wait_time=10#60  #default = 1 minute
+  [[ ! -z $1 ]] && wait_time="10#${1}"
+  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
+  if [[ "${wait_time}" -ge "60" ]] ; then
+    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
+  else
+    wait_min=10#0  ;  wait_sec=${wait_time}
+  fi
+  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
+  if [[ "${tgt_sec}" -ge "60" ]] ; then
+    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
+  fi
+  min="$(date +%M)"  ;  sec="$(date +%S)"
+  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+  # default message is "Pausing, ", else get from arg $2
+  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
+  while [[ "${rem}" -gt "0" ]] ; do
+    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
+    sleep 0.1
+    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
+    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+    echo -n "    $rem seconds left..."
+  done ; echo return 0
+}
+
+box_msg_bash() # (LINUX BASH) $1=msg, $2=width, $3=center, $4=color
+{
+    local _bm_msg="$1"
+    local _bm_tw=$(termwidth)
+    local _bm_target_w _bm_center
+    # defaults: width=tw/2, center=tw/2
+    [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
+    [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
+    local _bm_color_seq="${4:-$OFF}"
+    local _bm_lines=()   # array holding smart-wrapped lines of the message
+    local _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
+                         # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
+
+    # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
+    # if it uses 0 for left margin
+    local _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
+    # capture wrapped lines using smart_wrap_n as the engine
+#    readarray -t _bm_lines < <(smart_wrap_n 0 0 $(( _bm_tw - _bm_wrap_at)) "$_bm_msg")
+    readarray -t _bm_lines < <(smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg")
+
+    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
+    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0
+    _bm_h_line=$(full_repeat "$H_wall" $(( _bm_target_w  )) ) # -2 = corners +2 = pad
+    printf "%b" "$_bm_color_seq"
+
+    # top border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI"
+    # body
+    for _bm_line in "${_bm_lines[@]}"; do
+        CUF "$_bm_l_margin"
+        printf "%b%b%b " "$SO" "$V_wall" "$SI"   # left wall
+        printf "%b" "$_bm_line"                  # pre-wrapped text
+        # calculate trailing gap to keep right wall vertical
+        _bm_cur_len=$(get_msg_len "$_bm_line")
+        _bm_gap=$(( _bm_target_w - _bm_cur_len ))
+#        [ "$_bm_gap" -gt 0 ] && repeat " " "$_bm_gap"
+        # ignore the gap, use absolute ref from left
+#        printf '\r'; CUF $((_bm_tw - _bm_l_margin ))
+        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
+        printf " %b%b%b\n" "$SO" "$V_wall" "$SI" # Right wall
+    done
+
+    # bottom border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI"
+    printf "%b" "$OFF"
+
+}
+
+#---[ RGB ]--------------------------------------------------------
+#ToDo: experiment with rgb methods for color-setting
+# NOTE: this might work in a Konsole or Gnome terminal, but not lxterminal!!
+# see "well known" triplet values at https://en.wikipedia.org/wiki/ANSI_escape_code
+#  RED=(205, 0, 0)
+#  ESC[ ... 38;2;<r>;<g>;<b> ... m Select RGB foreground color
+#  ESC[ ... 48;2;<r>;<g>;<b> ... m Select RGB background color
+RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local FG="38;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${FG};${R};${G};${B}m" ; }
+RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local BG="48;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${BG};${R};${G};${B}m" ; }
+
+list_unused_disks()    # list block devices with no active mountpoint
+{  # set TERMWIDTH now, or it would be an inappropriate use of io control
+   # for stdin during while loop's redirection for "read line"
+   TERMWIDTH=$(termwidth)
+    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
+    while read line ; do
+        # use eval to interpret the -P pairs as variable assignments
+        eval ${line}
+        if [[ "${TYPE}" == "disk" ]] ; then
+            # look for disks with no children (TYPE crypt, part, lvm) mounted
+            candidate_name=$NAME ; candidate_type=$TYPE
+            INUSE=$FALSE
+            message_n "checking ${candidate_type} ${candidate_name} ..."
+            while read innerline; do
+                eval ${innerline}
+                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
+                    INUSE=$TRUE
+                fi
+            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
+            if [[ ! $INUSE ]] ; then
+                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status $TRUE
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
+            else
+                echo -en "${BRon}(in use)${Boff}"
+                non-stty-right_status 1
+            fi
+        fi
+    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
+    return 0
+}
+
 ## parking this here until I figure out what I want to do with it
 progress() # show progress arrow (visualize $1 of $2 steps complete)
 { # intended to be called in each iteration of some monitored process
@@ -641,69 +592,53 @@ progress() # show progress arrow (visualize $1 of $2 steps complete)
            _p_percent _p_fill _p_start _p_end _p_color _p_bar _p_mid
   return 0 ; }
 
-
-#-----[ script ]------------------------
-#LINE=("")  ## array of lines the message will be converted to
-#modular_message $@
-#separator "Here's my output"
-#for ((i=0; i<${#LINE[@]}; i++))
-#do
-#  echo -e ${LINE[i]}
-#done
-
-summarize_my_extension()  # generate this helpful display
+bs()                   # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
 {
-  # generate text to display in an example message box
-  LINE=("")
-  title="$(color ${WHITE} ${BBACK} ${BOLD})script_header_joetoo_extended$(color ${WHITE} ${BBACK} 0)"
-  MSG="$(color ${YELLOW} ${BBACK} ${BOLD})After sourcing $(color ${LBLUE} ${BBACK} ${BOLD})script_header_joetoo, "
-  MSG+="$(color ${GREEN} ${BBACK} ${BOLD})this script $(color ${WHITE} ${BBACK} ${BOLD})may be sourced, in order to "
-  MSG+="extend the former's definition of $(color ${MAG} ${BBACK} ${BOLD})useful functions$(color ${WHITE} ${BBACK} ${BOLD}) "
-  MSG+="to be subsequently available for use in various scripts, as described below.${Boff}"
-
-  # set width (W); height of box (H); rows in box (R); center-offset for box or left wall position (C)
-  #  W=70; H=8; R=$(( $(termheight)/3 - $H/2  ));  C=$(( $(termwidth)/2 - $W/2 ))
-  W=$(( $(termwidth) - 12 )); H=6; R=4;  C=$(( $(termwidth)/2 - $W/2 ))
-
-  # turn off verbosity unless testing modular_msg function
-  old_verbosity=$verbosity;  verbosity=0
-  d_message "MSG = [${MSG}]" 2
-  d_message "calling modular_msg with W=[${W}] ..." 2
-  # call modular_message to populate an array ${LINE[@]} of with MSG, using margins for width W
-  modular_msg $W
-  verbosity=$old_verbosity
-
-  # now clear screen (will then start at row, col 1, 1); then draw a box to contain the message
-  CLR; myBOX $R $C $W $H ${YELLOW} ${BBACK} ${BOLD}
-
-  # print a title inside the left wall, on the first line in the box
-  CUP $(termheight) 1                 # go to bottom left
-  CUP $(($R+1)) $(($C+4))             # go to 4th col inside the left wall on the first row of the box (*)
-  SCP; echo -en ${title}; RCP; CUD 3  # save cursor pos (*); print title; return to cursor pos (*); then down 3
-
-  # now output the array of lines assigned by modular_msg
-  for ((i=1; i<${#LINE[@]}; i++))
-  do
-    # save cursor at start (* - inside L wall, this row); print line; return (*); move down 1
-    SCP; echo -en ${LINE[i]}; RCP; CUD 1
-  done
-  # silently get current row and column
-  COORDS= ; CPR s; ROW=${COORDS[0]}
-  # Print general instructions
-  echo; echo; echo; echo; echo; echo
-  CUP $((${ROW}+6)) 24; echo -e "${BWon}script_header_joetoo_extended${Boff}"
-  CUP $((${ROW}+8)) 9; echo -e "${BYon}After sourcing ${BGon}script_header_joetoo${Boff}, ${BWon}this script ${Boff} may be "
-  CUP $((${ROW}+9)) 9; echo -e "sourced, in order to extend the former's definition of ${BMon}useful${Boff}"
-  CUP $((${ROW}+10)) 9; echo -e "${BMon}functions${Boff} to be subsequently available for use in various"
-  CUP $((${ROW}+11)) 9; echo -e "scripts, as described below.${Boff}\n"
-  CUP $((${ROW}+12)) 9; echo -e "${BYon}Note: whereas ${BGon}script_header_joetoo${BYon} can run in a minimal (ash) shell"
-  CUP $((${ROW}+13)) 9; echo -e "context, ${BGon}script_header_joetoo_extended${BYon} expects a bash shell context${Boff}\n"
-  echo
-  # print summary of included functions (indent left)
-  grep "()" ${script_header_installed_dir%/}/script_header_joetoo_extended | grep -v "grep" | sed 's|^|  |'
-  echo
-  message "${BYon}Map input value 16 from input range 10-30 to output range 10-100 (scale to one decimal point) with ${BGon}map${Boff} 16 10 30 10 100 1" && \
-  map 16 10 30 10 100 1 && echo "result: $result"
-  echo
-
+  # return the index number of the entry in the list, or -1 if not found
+  # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
+  target="$1"; shift;  start="$1"; shift;  end="$1"; shift; remainder="$@"
+  search_list=($(alpha_words ${remainder}))   # alphabetize the list so the binary search can work
+  if [ $verbosity -ge 4 ] ; then
+    message_n "search_list: ["
+    echo -n "${search_list[@]}"
+    echo "]"
+    message "search_list length is [${#search_list[@]}]"
+  fi
+  let "result=-1"
+  if [[ $depth -gt ${#search_list[@]} ]]
+  then
+    E_message "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+  diff=$(( $end - $start ))
+  middle=$(( $start + $(( $diff / 2 )) ))
+  ## guarantee to look at both start and end before giving up
+  if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
+  d_message " depth=[$depth]" 4;  d_message " start=[$start]" 4;  d_message "   end=[$end]" 4;  d_message "middle=[$middle]" 4
+  d_message ">> [${search_list[${middle}]}] <<" 4
+  if [[ "${search_list[${middle}]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else  # not yet equal, so search either the upper or lower half of the remaining range
+    [[ $start -eq $end ]] && return 1
+    let "depth+=1"   # increment recursive depth and then recurse
+    if [[ "${search_list[${middle}]}" > "${target}" ]]
+    then   # found element is greater than target (search lower half next)
+      [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 3; return 1; else d_message "DIFF1 flags not yet both true" 3; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next" 4
+      bs $target $start $middle ${search_list[@]}
+    else   # found element is less than target (search upper half next)
+      [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then d_message "both diff=1 cases examined. not found" 3; return 1; else d_message "DIFF1 flags not yet both true" 3; fi
+      d_message "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next" 4
+      bs $target $middle $end ${search_list[@]}
+    fi
+  fi
+  d_message "about to return from depth [$depth]" 5
+  [ $depth -eq 0 ] && d_message "result: [$result]" 5
+  let "depth-=1";  return 0
 }
+
