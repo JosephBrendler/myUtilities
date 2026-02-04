@@ -1,0 +1,241 @@
+#!/bin/ash
+# takes no args
+
+script_header_installed_dir="/usr/sbin"
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+# source script_header
+header="${script_header_installed_dir%/}/script_header_joetoo"
+
+echo "header: $header"
+
+if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+
+#-----[ variables ]----------------------------------------------------
+
+# note: all of these (including logFile and verbosity) get them anulled; need to explicitly reassign below
+varlist="PN BUILD user logFile status_file config_dir verbosity"
+varlist="${varlist} bool.INTERACTIVE bool.RESUME num_cmds starting_step stopping_step"
+
+#-----[ functions ]----------------------------------------------------
+
+configure_posix() {
+  separator "$PN" "(configuring)"
+  _c_FLAGGED=$FALSE
+
+  # sets all variables named in varlist to null/$FALSE/No
+  initialize_vars $varlist
+  message "done initialization"
+
+  # tier 0 - prerequisites (note: can't log until logging is set up below
+  # initialize package name for this script
+  message_n "assigning PN"
+  PN="${0##*/}"   # equivalent to PN=$(basename "$0") but w/o subshell
+  handle_result $? "$PN" '' || _c_FLAGGED=$TRUE
+
+  # identify and assign user name
+  message_n "assigning user"
+  user=$(whoami)
+  handle_result $? "$user" '' || _c_FLAGGED=$TRUE
+
+  # assign and/or check logFile (may have been set by config
+  # (do this after $user is assigned but before starting logging
+  d_message "draft logFile name: /var/log/${PN}.log" 2
+  message_n "assigninging logFile"
+  if [ -z "$logFile" ]; then
+    logFile="/var/log/${PN}.log"
+    handle_result $? "now assigned: $logFile" "error assigning logFile" || _c_FLAGGED=$TRUE
+  else
+    printf '%b' " (${BYon}already assigned: ${Gon}$logFile${Boff})"
+    right_status 0
+  fi
+  # if it exists already, rotate it (with sudo, in a subshell)
+  if [ -f "$logFile" ]; then
+    # shift existing archives (delete the oldest, move others up)
+    # use sudo sh -c "..." so we only need to call sudo once if needed for $user
+    # (note: with " outside, the ' inside is just a literal single-quote
+    #  char - interpreted AFTER expansion)
+    message_n "rotating existing logFile(s)"
+    sudo sh -c "
+      [ -f '${logFile}.2' ] && mv -f '${logFile}.2' '${logFile}.3'
+      [ -f '${logFile}.1' ] && mv -f '${logFile}.1' '${logFile}.2'
+      mv -f '$logFile' '${logFile}.1'
+      touch '$logFile'
+      chown '${user}:${user}' '$logFile'
+    " >/dev/null 2>&1
+    handle_result $? "rotated" "error rotating logFile" || _c_FLAGGED=$TRUE
+  else
+    # create it and set permissoins
+    message_n "creating logFile"
+    sudo sh -c "
+      touch '$logFile'
+      chown '${user}:${user}' '$logFile'
+    " >/dev/null 2>&1
+    handle_result $? "created" "error rotating logFile" || _c_FLAGGED=$TRUE
+  fi
+
+  # tier 1 - global configuration
+  # validate package config directory
+  log_message_n "assigning config_dir"
+  config_dir="/etc/${PN}"
+  log_handle_result $? "$config_dir" "error assigning config_dir" || _c_FLAGGED=$TRUE
+  validate_dir_posix "$config_dir"
+
+  # BUILD="string" should be located in config_dir
+  log_message_n "sourcing BUILD variable assignment"
+  . "${config_dir}/BUILD"
+  log_handle_result $? "$BUILD" '' || _c_FLAGGED=$TRUE
+
+  # initialize INTERACTIVE - can be overridden by sourced config below (and cmdline)
+  log_message_n "assigning default INTERACTIVE"
+  INTERACTIVE=$TRUE
+  log_handle_result $? "$INTERACTIVE" '' || _c_FLAGGED=$TRUE
+
+  # initialize RESUME - can be overridden by sourced config below (and cmdline)
+  log_message_n "assigning default RESUME"
+  RESUME=$FALSE
+  log_handle_result $? "$RESUME" '' || _c_FLAGGED=$TRUE
+
+  # if the package has a config file at /etc/$PN or in customization_root configure it here
+  log_message "looking for config file(s)"
+  validate_dir_posix "/etc/${PN}"
+  for _c_file in $(find "/etc/${PN}" -name "*.conf" -type f); do
+    log_message_n "sourcing $_c_file"
+    . "$_c_file"; log_handle_result $? || _c_FLAGGED=$TRUE
+  done
+
+  # tier 2 - local configuration
+  # assign customization_root
+  log_message_n "assigning customization_root variable"
+  customization_root="${HOME}/.config/${PN}/"
+  log_handle_result $? "$customization_root" "error assigning customization_root" || _c_FLAGGED=$TRUE
+
+  # assign and validate status_file and customization_root
+  log_message_n "assigning status_file variable"
+  status_file="${customization_root%/}/${PN}.status"
+  log_handle_result $? "$status_file" '' || _c_FLAGGED=$TRUE
+  validate_file_posix "$status_file"   # note this also validates the directory
+
+  # find (validates) *_example_local.cmdline_arguments; assign first match
+  log_message_n "looking for local_cmdline_arguments"
+  local_cmdline_arguments=$( \
+    find "${customization_root%/}/" \
+      -name "[[:alnum:]]*_example_local.cmdline_arguments" | \
+    head -n 1 )
+  log_handle_result $? "$local_cmdline_arguments" "error finding local_cmdline_arguments" || _c_FLAGGED=$TRUE
+
+  # find (validates) *_example_local.cmdline_compound_arguments; assign first match
+  log_message_n "looking for local_cmdline_compound_arguments"
+  local_cmdline_compound_arguments=$( \
+    find "${customization_root%/}/" \
+      -name "[[:alnum:]]*_example_local.cmdline_arguments" | \
+    head -n 1 )
+  log_handle_result $? "$local_cmdline_compound_arguments" "error finding local_cmdline_compound_arguments" || _c_FLAGGED=$TRUE
+
+  # set default verbosity if not set externally
+  log_message_n "maybe assigning verbosity"
+  if [ -z "$verbosity" ] ; then
+    verbosity=3
+    log_handle_result $? "now set: $verbosity" '' || _c_FLAGGED=$TRUE
+  else
+    log_handle_result $TRUE "already set: $verbosity" ''
+  fi
+
+  initialize_command_sequence_posix; _c_result=$?
+  log_message_n "command_sequence initialization status"
+  log_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
+
+  [ "$_c_FLAGGED" ] && ret=1
+  unset -v _c_FLAGGED _c_file _c_result
+  return $ret
+}
+# @usage configure_posix
+# @vars PN, BUILD, user, logFile, status_file, config_dir, verbosity, INTERACTIVE, RESUME
+# @vars num_cmds, starting_step, stopping_step, varlist, FALSE, TRUE
+# @deps separator, initialize_vars, message, message_n, handle_result, d_message, log_message_n
+# @deps log_handle_result, sourcing, check_dir, check_file, process_cmdline_posix, initialize_command_sequence_posix
+# @rule initializes and validates the entire script environment before execution
+# @ret 0 on success; 1 if _c_FLAGGED is set during configuration
+# @rules PN is package name and should be assigned = $(basename "$0") or ${0##*/} to identify the calling script
+# @rules POSIX assignment 'BUILD="string"' should reside in "${customization_root%/}/BUILD"
+# @rules customization_root may contain XXXX_local.cmdline_arguments extension file
+# @rules customization_root may contain XXXX_local.cmdline_compound_arguments extension file
+
+
+initialize_command_sequence_posix() # (POSIX) initialize command sequence for joetoo cli framework
+{ ret=0
+  _ics_FLAGGED=$FALSE
+  log_message_n "creating tempfile for command sequnce"
+  cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
+  log_handle_result $? "$cmd_seq_file" '' || _ics_FLAGGED=$TRUE
+
+  log_message_n "setting trap to remove tempfile on EXIT"
+  trap 'rm -f "$cmd_seq_file"' EXIT
+
+  log_message_n "initializing command sequence"
+  num_cmds=0   # global variable holding the length of the sequence
+# heredoc needs to be on the left edge; no leading whitespace
+# initialize/clear the command sequence file
+while IFS= read -r _ics_entry; do
+      [ -z "$_ics_entry" ] && continue
+      # write directly to the file instead of using  ' set -- "$@" '
+      printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
+      num_cmds=$(( num_cmds + 1 ))
+done <<EOF
+printf '%s\n' "this is line 1"${US}print example line number one
+printf '%s\n' "this is line 2"${US}print example line number two
+printf '\n'${US}print a newline
+printf '%s\n' "this is line 3 (after a blank line)"${US}print line number 3
+test_function "${BGon}hello${Boff}"${US}run test_function
+EOF
+  log_handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
+
+  log_message_n "initailizing starting_step"
+  starting_step=1
+  log_handle_result $? "$starting_step" '' || _ics_FLAGGED=$TRUE
+
+  log_message_n "initializing stopping step"
+  stopping_step="$num_cmds"
+  log_handle_result $? "$stopping_step" '' || _ics_FLAGGED=$TRUE
+
+  [ "$_ics_FLAGGED" ] && ret=1
+  export num_cmds
+  export cmd_seq_file
+  unset -v _ics_entry
+  return $ret
+}
+# @usage initialize_command_sequence_posix || die "failed to initialize_command_sequence_posix"
+# @vars sets global num_cmds, cmd_seq_file
+# @vars initializes global starting_step=1, stopping_step=$num_cmds
+# @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
+# @rule command sequency entry format 'command_string${US}description_string'
+# @cont where: command_string is POSIX executable
+# @cont and:   ${US} is teletype ero unit separator char \037 pre-cooked with printf
+# @cont and:   description_string is a human-readable description of the command
+# @ret 0 on success; 1 on failure
+
+ #-----[ for testing only ]------------------------------------------------
+test_function() {
+  ret=0; _tf_in="$1"
+  printf '%b\n' "this was printed by the test function: $_tf_in" || ret=1
+  unset -v _tf_in
+  return $ret
+}
+# @usage test_function <message>
+#-----[ main script ]----------------------------------------------------
+
+configure_posix || die "failed to configure_posix"
+
+
+log_show_config
+log_message "(BEFORE process_cmdline_posix)"
+
+process_cmdline_posix "$@" || die "failed to process_cmdline_posix"
+
+log_show_config
+log_message "(AFTER process_cmdline_posix)"
+
+run_sequence_posix "$status_file" '' ''
+ret=$?
+log_message_n "run_sequence_posix completed with "
+log_handle_result $ret '' ''
+exit $ret
