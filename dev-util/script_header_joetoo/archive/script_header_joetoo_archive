@@ -881,3 +881,175 @@ QCR()       # use silent CPR to report row
 QCC()       # use silent CPR to report column
 { CPR s; echo "${COORDS[1]}" ; }
 
+### this piece of shit Gemini suggestion does NOT work
+process_cmdline() {
+    separator "$PN" "(process_cmdline)"
+
+    # pre-process all positional parameters to extract numbers and use to assign
+    #   RESUME and starting_step, with last-man-wins prioritization
+    d_log_message "about to start preprocessing with \$@: [$@]" 1
+    _pc_new_args=""
+    for _pc_arg in "$@"; do
+        d_log_message "BREAK ============================================================" 1
+        d_log_message "starting a new opro-processing loop iteration" 1
+        d_log_message "_pc_arg: $_pc_arg" 1
+        case "$_pc_arg" in
+            --*)      # shield - ignore long-options completely
+                _pc_new_args="${_pc_new_args} $_pc_arg"
+                ;;
+
+            -*[0-9]*) # "peeler" - matches -r27, -i3n17, -22, etc.
+                # (matches any single-dash arg containing at least one digit)
+                _pc_nums=$(printf '%s' "$_pc_arg" | tr -c '0-9' ' ')
+                _pc_nums=$(echo $_pc_nums)    # squeeze spaces (not sure this is necessary)
+                _pc_int=${_pc_nums##* }       # get last integer (last man wins)
+                if [ ! -z "$_pc_int" ]; then
+                    starting_step="$_pc_int"
+                    RESUME=$TRUE
+                    d_log_message "set RESUME = $(status_color $RESUME)$(TrueFalse RESUME)${Boff}; starting_step: [${Mon}$starting_step${Bof>
+                fi
+                # strip digits to leave clean flags (e.g., -i3n17 -> -in)
+                _pc_clean_flag=$(printf '%s' "$_pc_arg" | tr -d '0-9')
+                # Only pass back if it contains characters besides just the dash
+                [ "$_pc_clean_flag" != "-" ] && _pc_new_args="${_pc_new_args} $_pc_clean_flag"
+                ;;
+
+            [0-9]*)   # "standalone" --matches "27" ( in (e.g.) --resume 27, or even -rsv 21, or JUST 5 )
+                starting_step="$_pc_arg"
+                RESUME=$TRUE
+                d_log_message "set RESUME = $(status_color $RESUME)$(TrueFalse RESUME)${Boff}; starting_step: [${Mon}$starting_step${Boff}]">
+                ;;
+
+            *)        # default - 4. DEFAULT: Matches -i, -v, or non-numeric positional strings
+                _pc_new_args="${_pc_new_args} $_pc_arg"
+                ;;
+        esac
+    done
+    # now set the result as the new positional parameters
+    set -- $_pc_new_args
+    OPTIND=0
+    # now use nested loops to process --long_options in the outer loop and
+    #   short_option clusters in the inner loop (with getopts)
+    # optstring establishes the list of recognized flags) (see getopts --help)
+    _pc_optstring="insrvq"
+    d_log_message "_pc_optstring: $_pc_optstring" 5
+    d_log_message "\$@: $@" 5
+    while [ $# -gt 0 ]; do
+        d_log_message "BREAK ============================================================" 1
+        d_log_message "starting a new outer loop iteration" 1
+        d_log_message "_pc_opt: $_pc_opt" 1
+        d_log_message "OPTIND: $OPTIND" 1
+        d_log_message "OPTARG: $OPTARG" 1
+        d_log_message "OPTERR: $OPTERR" 1
+        d_log_message "NAME: $NAME" 1
+        d_log_message "\$1: $1" 1
+        d_log_message "\$@: $@" 1
+        case "$1" in
+            # tier 1 - standard long options
+            --status)  # POSIX math: report step-1 as completed
+                if [ -f "$status_file" ]; then read _pc_val < "$status_file"
+                    log_message "${BWon}Status: Step $(( _pc_val - 1 )) complete; next is [ ${BMon}${_pc_val}${BWon} ]${Boff}"
+                else log_message "${BWon}Status: No status file; sequence not yet started${Boff}"; fi; exit 0 ;;
+            --resume) RESUME=$TRUE; if isint "$2"; then starting_step="$2"; shift 2
+                else  read starting_step < "$status_file" 2>/dev/null || starting_step=1; shift; fi
+                d_log_message "set RESUME = $(status_color $RESUME)$(TrueFalse RESUME)${Boff}; starting_step: [${Mon}$starting_step${Boff}]">
+            --interactive)    INTERACTIVE=$TRUE; shift
+                d_log_message "set INTERACTIVE = $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff};" 2 ;;
+            --noninteractive) INTERACTIVE=$FALSE; shift
+                d_log_message "set INTERACTIVE = $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff};" 2 ;;
+            --verbose)        verbosity=$(( verbosity + 1 )); shift
+                d_log_message "set verbosity: [${Mon}$verbosity${Boff}]" 2 ;;
+            --quiet)          verbosity=$(( verbosity - 1 )); shift
+                d_log_message "set verbosity: [${Mon}$verbosity${Boff}]" 2 ;;
+            # NOTE: to enable local extension of this baseline parser, unrecognized --options must
+            #   be allowed to "fall through" to be processed by the local hook-script, if available
+##            --* )  log_E_message "unrecognized long_option $1; (ignoring it)"; shift ;;
+
+            # tier 2 - clustered shorts & embedded numbers (e.g. -iv12)
+            -[!-]*)  # use getopts to process single-hyphen prefixed "short" (single-char) options
+                # this inner-loop allows getopts to automatically advance through positional parameters
+                # until it encounters an unrecognized option, at which point it will ... (what exactly?)
+                # any non-failing iteration will assign _pc_opt (to "?" if unrecognized), and
+                # the inner-loop case logic deals with each accordingly
+                #
+                # each iteration of "getopts $_pc_optstring _pc_opt" assigns the next
+                # letter in the current positional parameter and OPTIND pointing at
+                # the next parameter which will be processed when we run out of letters in the current one
+                # (getopts then increments OPTIND, so the outer loop will know how many "shifts" to do before
+                # resetting OPTIND to 1 and looping to the next word
+                while getopts "$_pc_optstring" _pc_opt; do
+                    d_log_message "BREAK -----------------------------------------------------" 1
+                    d_log_message "starting a new inner loop iteration" 1
+                    d_log_message "_pc_opt: $_pc_opt" 1
+                    d_log_message "OPTIND: $OPTIND" 1
+                    d_log_message "OPTARG: $OPTARG" 1
+                    d_log_message "OPTERR: $OPTERR" 1
+                    d_log_message "NAME: $NAME" 1
+                    d_log_message "\$1: $1" 1
+                    d_log_message "\$@: $@" 1
+
+                   case "$_pc_opt" in
+                        i) INTERACTIVE=$TRUE
+                            d_log_message "set INTERACTIVE = $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff};" 2 ;;
+                        n) INTERACTIVE=$FALSE
+                            d_log_message "set INTERACTIVE = $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff};" 2 ;;
+                        v) [ "$verbosity" -lt 6 ] && verbosity=$(( verbosity + 1 ))
+                            d_log_message "set verbosity: [${Mon}$verbosity${Boff}]" 2 ;;
+                        q) [ "$verbosity" -gt 0 ] && verbosity=$(( verbosity - 1 ))
+                            d_log_message "set verbosity: [${Mon}$verbosity${Boff}]" 2 ;;
+                        r) RESUME=$TRUE
+                            # read file only if no number was found in this cluster
+                            if [ -z "$_pc_num" ]; then read starting_step < "$status_file" 2>/dev/null || starting_step=1; fi
+                            d_log_message "set RESUME = $(status_color $RESUME)$(TrueFalse RESUME)${Boff}  starting_step: [${Mon}$starting_s>
+                        s) # re-use the status logic above (manually)
+                           read _pc_val < "$status_file" 2>/dev/null || _pc_val=1
+                           log_message "Next step: $_pc_val"; exit 0 ;;
+                        *) # "bow out" and defer to hook script named by $local_process_cmdline_arguments, if it exists
+                            if [ -f "$local_process_cmdline_arguments" ]; then
+                                d_log_message "running hook script $local_process_cmdline_arguments $_pc_opt" 2
+                                "$local_process_cmdline_arguments $_pc_opt"
+                                # got here w/o getting shunted to usage - check return from local extension
+                                # (code 0: success; 6: used an operand (need extra shift); other: fail
+                                [ "$_rs_result" -eq 6 ] && shift
+                                ret="$_rs_result"
+                            else
+                                d_log_message "unrecognized option [$_pc_opt]" 2
+                            fi
+                            ;;
+                    esac
+                done  # current positional parameter's letters have all been checked
+                d_log_message "just exited inner loop with \$1 = $1" 1
+                shift $(( OPTIND - 1 )) # shift to next word/arg
+                OPTIND=1 ;;             # point at first word/arg again
+
+            # tier 3 - any unrecognized - or -- options should be examined by local hook extension, if it exists
+
+            *)  # defer to hook script named by $local_process_cmdline_arguments, if it exists
+                if [ -f "$local_process_cmdline_arguments" ]; then
+                    d_log_message "running hook script $local_process_cmdline_arguments" 2
+                    "$local_process_cmdline_arguments"
+                    # got here w/o getting shunted to usage - check return from local extension
+                    # (code 0: success; 6: used an operand (need extra shift); other: fail
+                    [ "$_rs_result" -eq 6 ] && shift
+                    ret="$_rs_result"
+                else
+                   d_log_message "unrecognized option [$1]" 2
+                fi
+                ;;
+        esac
+    done  # done with $1 - each case above shifted at least 1, so drive on
+
+    unset -v _pc_optstring _pc_cluster _pc_num _pc_val _pc_opt _pc_total_steps
+    unset -f _pc_emit_status
+    return $ret
+}
+# usage process_cmdline [args]
+# args $@: command line arguments to be parsed
+# vars INTERACTIVE, RESUME, starting_step, verbosity, status_file
+# ret 0: success; exit 1: invalid operand or out of range
+# deps isint, log_message, d_log_message, log_E_message, usage, tr, printf, read, cat
+# rule  if $local_process_cmdline_arguments file exists,
+# @cont it extends functionality local to the calling script
+# rule starting_step is validated against global num_cmds
+# rule last-instruction-wins precedence is enforced via linear while-loop;
+# ex process_cmdline -iv24; process_cmdline --resume 5; process_cmdline -s
