@@ -1665,7 +1665,9 @@ separator() # (POSIX) draw a horizontal line with preface $1 and title $2
   # @deps termwidth repeat
   # @rule calculates terminal width to draw a full-width horizontal rule
   # @note subtracts 8 characters for brackets and spacing to prevent wrapping
-  _s_preface=${1:-$(hostname)}; _s_title=${2:-$(basename "$0")}; _s_tw=$(termwidth)
+  _s_preface=${1:-$(hostname)}; _s_tw=$(termwidth)
+#  _s_title=${2:-$(basename "$0")};
+  _s_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
   _s_reps=$(( _s_tw - ( ${#_s_preface} + ${#_s_title} + 8 ) ))
   [ "$_s_reps" -lt 0 ] && _s_reps=0  # clamp to 0 if negative
   printf '%b' "${BYon}---[${BRon} ${_s_preface} ${BCon}${_s_title} ${BYon}]"
@@ -1958,7 +1960,9 @@ timestamp() # (POSIX) echo a simple timestamp (yyyymmdd-hh:mm:ss)
 # @note used for unique filenames, log entries, and non-blocking timehacks
 
 log_separator() # (POSIX) output separator() to stdout and similar to logFile
-{ ret=0; _ls_preface=${1:-$(hostname)}; _ls_title=${2:-$(basename "$0")}
+{ ret=0; _ls_preface=${1:-$(hostname)};
+#  _ls_title=${2:-$(basename "$0")}
+  _ls_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
   _ls_ts="$(timestamp)"; _ls_tw=80  # standard fixed width for log files
   # construct the header string: "timestamp - ---[ preface title ]"
   _ls_clean_header="${_ls_ts} - ---[ ${_ls_preface} ${_ls_title} ]"
@@ -2936,15 +2940,15 @@ app_configure_posix() {
   # initialize INTERACTIVE - can be overridden by sourced config below (and cmdline)
   log_message_n "assigning default INTERACTIVE"
   INTERACTIVE=$TRUE
-  log_handle_result $? "$INTERACTIVE" '' || _c_FLAGGED=$TRUE
+  log_handle_result $? "$(TrueFalse $INTERACTIVE)" '' || _c_FLAGGED=$TRUE
 
   # initialize RESUME - can be overridden by sourced config below (and cmdline)
   log_message_n "assigning default RESUME"
   RESUME=$FALSE
-  log_handle_result $? "$RESUME" '' || _c_FLAGGED=$TRUE
+  log_handle_result $? "$(TrueFalse $RESUME)" '' || _c_FLAGGED=$TRUE
 
   # if the package has a config file at /etc/$PN or in app_customization_root configure it here
-  log_message "looking for config file(s)"
+  log_message "looking for config file(s) in /etc/${PN}"
   validate_dir_posix "/etc/${PN}"
   for _c_file in $(find "/etc/${PN}" -name "*.conf" -type f); do
     log_message_n "sourcing $_c_file"
@@ -2959,7 +2963,7 @@ app_configure_posix() {
   [ -z "$app_customization_root" ] && app_customization_root="/etc/${PN}/"
   log_handle_result $? "$app_customization_root" "error assigning app_customization_root" || _c_FLAGGED=$TRUE
   log_message_n "validating app_customization_root"
-  validate_dir "$app_customization_root"
+  validate_dir_posix"$app_customization_root"
 
   # assign and validate status_file
   # this is NOT the app_customization_root, it is normally in the user's $HOME/.config/
@@ -2977,7 +2981,8 @@ app_configure_posix() {
     find "${app_customization_root%/}/" \
       -name "[[:alnum:]]*_local.cmdline_arguments" | \
     head -n 1 )
-  log_handle_result $? "$local_cmdline_arguments" "error finding local_cmdline_arguments" || _c_FLAGGED=$TRUE
+  _c_result=${local_cmdline_arguments:-"none found"}
+  log_handle_result $? "$_c_result" "error finding local_cmdline_arguments" || _c_FLAGGED=$TRUE
 
   # find (validates) *_example_local.cmdline_compound_arguments; assign first match
   log_message_n "looking for local_cmdline_compound_arguments"
@@ -2985,7 +2990,8 @@ app_configure_posix() {
     find "${app_customization_root%/}/" \
       -name "[[:alnum:]]*_local.cmdline_compound_arguments" | \
     head -n 1 )
-  log_handle_result $? "$local_cmdline_compound_arguments" "error finding local_cmdline_compound_arguments" || _c_FLAGGED=$TRUE
+  _c_result=${local_cmdline_compound_arguments:-"none found"}
+  log_handle_result $? "$_c_result" "error finding local_cmdline_compound_arguments" || _c_FLAGGED=$TRUE
 
   # find (validates) *_example_local.cmdline_compound_arguments; assign first match
   log_message_n "looking for local_usage file"
@@ -2993,7 +2999,8 @@ app_configure_posix() {
     find "${app_customization_root%/}/" \
       -name "[[:alnum:]]*_local.usage" | \
     head -n 1 )
-  log_handle_result $? "$local_usage" "error finding local_usage" || _c_FLAGGED=$TRUE
+  _c_result=${local_usage:-"none found"}
+  log_handle_result $? "$_c_result" "error finding local_usage" || _c_FLAGGED=$TRUE
 
   # set default verbosity if not set externally
   log_message_n "maybe assigning verbosity"
@@ -3073,7 +3080,7 @@ validate_dir_posix()  # validate or create a directory $1
 {   ret=0
     [ $# -ne 1 ] && { log_E_message "Error: must specify dir_to_validate" ; return 1 ; }
     _vd_dir_to_validate=$1
-    log_message_n "validating dir"
+    log_message_n "validating dir ${_vd_dir_to_validate}"
     if [ -d "${_vd_dir_to_validate}" ] ; then
         printf '%b%s%b' "${BGon}" " (valid)" "${Boff}"
         log_right_status $TRUE
@@ -3100,9 +3107,10 @@ validate_file_posix()  # validate or create command sequence status file $1
 {   ret=0
     [ $# -ne 1 ] && { log_E_message "Error: must specify file_to_validate" ; return 1 ; }
     _vf_file_to_validate=$1
-    _vf_dir_to_validate=$(dirname "${_vf_file_to_validate}")
+#    _vf_dir_to_validate=$(dirname "${_vf_file_to_validate}")
+    _vf_dir_to_validate="${_vf_file_to_validate%/*}"   #equivalent to dirname, but w/o subshell function call
     validate_dir_posix "$_vf_dir_to_validate"
-    log_message_n "validating file"
+    log_message_n "validating file $_vf_file_to_validate"
     if [ -w "${_vf_file_to_validate}" ] ; then
         printf '%b%s%b' "${BGon}" " (valid)" "${Boff}"
         log_right_status $TRUE
@@ -3610,7 +3618,8 @@ summarize_header() # (POSIX) list functions and notes in installed headers
       continue  # if grep id'd a bad filename, skip to next in for loop
     fi
     # generate a separator for each module
-    separator "${_sh_PN}-${BUILD}" "($(basename ${_sh_filespec}))"
+#    separator "${_sh_PN}-${BUILD}" "($(basename ${_sh_filespec}))"
+    separator "${_sh_PN}-${BUILD}" "(${_sh_filespec##*/})"   # equivalent to basename but w/o subshell function call
 
     # make two passes through the selected header file, use regex-parsing to select all lines
     #   that are either a function definition or a metadata tag/paylod
