@@ -2949,11 +2949,15 @@ app_configure_posix() {
 
   # if the package has a config file at /etc/$PN or in app_customization_root configure it here
   log_message "looking for config file(s) in /etc/${PN}"
+  config_files=""
   validate_dir_posix "/etc/${PN}"
   for _c_file in $(find "/etc/${PN}" -name "*.conf" -type f); do
+    # accumulate found files in config_files, prepending a space only if it is not the first entry
+    config_files="${config_files:+ }$_c_file"
     log_message_n "sourcing $_c_file"
-    . "$_c_file"; log_handle_result $? || _c_FLAGGED=$TRUE
+    . "$_c_file"; log_handle_result $? "$_c_file" ""|| _c_FLAGGED=$TRUE
   done
+  log_message "config_files: [$config_files]"
 
   # tier 2 - application configuration
   # assign and validate app_customization_root
@@ -2962,8 +2966,8 @@ app_configure_posix() {
   log_message_n "assigning app_customization_root variable"
   [ -z "$app_customization_root" ] && app_customization_root="/etc/${PN}/"
   log_handle_result $? "$app_customization_root" "error assigning app_customization_root" || _c_FLAGGED=$TRUE
-  log_message_n "validating app_customization_root"
-  validate_dir_posix"$app_customization_root"
+  log_message "validating app_customization_root [${Mon}$app_customization_root${Boff}]"
+  validate_dir_posix "$app_customization_root"
 
   # assign and validate status_file
   # this is NOT the app_customization_root, it is normally in the user's $HOME/.config/
@@ -2979,7 +2983,7 @@ app_configure_posix() {
   log_message_n "looking for local_cmdline_arguments"
   local_cmdline_arguments=$( \
     find "${app_customization_root%/}/" \
-      -name "[[:alnum:]]*_local.cmdline_arguments" | \
+      -name "*local.cmdline_arguments" | \
     head -n 1 )
   _c_result=${local_cmdline_arguments:-"none found"}
   log_handle_result $? "$_c_result" "error finding local_cmdline_arguments" || _c_FLAGGED=$TRUE
@@ -2988,7 +2992,7 @@ app_configure_posix() {
   log_message_n "looking for local_cmdline_compound_arguments"
   local_cmdline_compound_arguments=$( \
     find "${app_customization_root%/}/" \
-      -name "[[:alnum:]]*_local.cmdline_compound_arguments" | \
+      -name "*local.cmdline_compound_arguments" | \
     head -n 1 )
   _c_result=${local_cmdline_compound_arguments:-"none found"}
   log_handle_result $? "$_c_result" "error finding local_cmdline_compound_arguments" || _c_FLAGGED=$TRUE
@@ -2997,7 +3001,7 @@ app_configure_posix() {
   log_message_n "looking for local_usage file"
   local_usage=$( \
     find "${app_customization_root%/}/" \
-      -name "[[:alnum:]]*_local.usage" | \
+      -name "*local.usage" | \
     head -n 1 )
   _c_result=${local_usage:-"none found"}
   log_handle_result $? "$_c_result" "error finding local_usage" || _c_FLAGGED=$TRUE
@@ -3018,7 +3022,7 @@ app_configure_posix() {
   log_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
 
   [ "$_c_FLAGGED" ] && ret=1
-  un#set -v _c_FLAGGED _c_file _c_result
+  unset -v _c_FLAGGED _c_file _c_result
   return $ret
 }
 # @usage app_configure_posix
@@ -3086,14 +3090,16 @@ validate_dir_posix()  # validate or create a directory $1
         log_right_status $TRUE
     else
         # use sudo in case current user is not root
-        sudo sh -c "
-            printf ' (%b%s%b)' '${BYon}' 'creating' '${Boff}'
-            mkdir -p '${_vd_dir_to_validate}'
-            chown '${user}:${user}' '${_vd_dir_to_validate}'
-        " >/dev/null 2>&1
+        printf ' (%b%s%b)' "${BYon}" "creating" "${Boff}"
+        sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "
         log_handle_result $? "created" "failed to create $_vd_dir_to_validate" || return 1
     fi
-    [ -d "${_vd_dir_to_validate}" ] ; ret=$?     # final validation
+    # set ownership either way, using sudo in case current user is not root
+    # (note: chown -R to give all contents to user)
+    log_message_n "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
+    sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
+    log_handle_result $? "ownership set" "failed to set ownership" || return 1
+    [ -w "${_vd_dir_to_validate}" ] ; ret=$?     # final validation (writable by user)
     unset -v _vd_dir_to_validate
     return $ret
 }
@@ -3109,6 +3115,8 @@ validate_file_posix()  # validate or create command sequence status file $1
     _vf_file_to_validate=$1
 #    _vf_dir_to_validate=$(dirname "${_vf_file_to_validate}")
     _vf_dir_to_validate="${_vf_file_to_validate%/*}"   #equivalent to dirname, but w/o subshell function call
+    # just in case the file is in the current directory (name passed w/o path)
+    [ "$_vf_dir_to_validate" = "$_vf_file_to_validate" ] && _vf_dir_to_validate="."
     validate_dir_posix "$_vf_dir_to_validate"
     log_message_n "validating file $_vf_file_to_validate"
     if [ -w "${_vf_file_to_validate}" ] ; then
@@ -3116,12 +3124,11 @@ validate_file_posix()  # validate or create command sequence status file $1
         log_right_status $TRUE
     else
         # use sudo in case current user is not root
+        printf ' (%b%s%b)' "${BYon}" "creating/fixing" "${Boff}"
         sudo sh -c "
-            printf ' (%b%s%b)' '${BYon}' 'creating' '${Boff}'
-            printf '%s\n' '1' > '${_vf_file_to_validate}'  # 1-indexed command sequence
-            chown '${user}:${user}' '${_vf_file_to_validate}'
+             touch '${_vf_file_to_validate}' && chown '${user}:${user}' '${_vf_file_to_validate}'
         " >/dev/null 2>&1
-        log_handle_result $? "created" "failed to create ${_vf_file_to_validate}" || return 1
+        log_handle_result $? "file ready for owner" "failed to fix/set ownership of ${_vf_file_to_validate}" || return 1
     fi
     # final validation
     [ -f "${_vf_file_to_validate}" ] ; ret=$?
@@ -3357,6 +3364,7 @@ process_argument_posix() # (POSIX) process one argument (considering the next a 
     # note: unrecgnized args should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg_posix $1 ;;")
+d_message "local_cmdline_arguments: $local_cmdline_arguments" 1
       if [ -f "$local_cmdline_arguments" ] ; then
           . "$local_cmdline_arguments"
 #      if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
@@ -3439,6 +3447,7 @@ process_compound_arg_posix()    # process a compount argument
                 ;;
             *   )    # note: unrecognized args should fall through to this default
                 # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage_posix ;;")
+d_message "local_cmdline_compound_arguments: $local_cmdline_compound_arguments" 1
                 if [ -f "$local_process_cmdline_compound_arguments" ] ; then
                     . "$local_process_cmdline_compound_arguments"
 #                if [ -f /etc/${BPN}/local.cmdline_compound_arguments ] ;then
