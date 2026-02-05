@@ -2978,33 +2978,28 @@ app_configure_posix() {
   validate_file_posix "$status_file"   # note this also validates the directory
 
   # tier 3 - application customization and extension
-  # this is done in app_customization_root directory
+  # this should reside in app_customization_root directory
+  # contains handle_local_arg(), handle_local_compound_arg(), and handle_local_usage
   # find (validates) *_local.cmdline_arguments; assign first match
-  log_message_n "looking for local_cmdline_arguments"
-  local_cmdline_arguments=$( \
-    find "${app_customization_root%/}/" \
-      -name "*local.cmdline_arguments" | \
-    head -n 1 )
-  _c_result=${local_cmdline_arguments:-"none found"}
-  log_handle_result $? "$_c_result" "error finding local_cmdline_arguments" || _c_FLAGGED=$TRUE
+  log_message_n "looking for *local.cmdline_arg_handler "
+  local_cmdline_arg_handler=$(find "${app_customization_root%/}/" -name "*local.cmdline_arg_handler" | head -n 1 )
+  _c_result="${local_cmdline_arg_handler:-"none found"}"
+  log_handle_result $? "${_c_result##*/}" "error" || _c_FLAGGED=$TRUE  # =${var##*/} is equivalent to =$(basename $var) but w/o subshell and function call
+  if [ -f "$local_cmdline_arg_handler" ]; then
+    log_message_n "sourcing local_cmdline_arg_handler"
+    . "$local_cmdline_arg_handler"
+    log_handle_result $? "sourced" "error sourcing local_cmdline_arg_handler" || _c_FLAGGED=$TRUE
+  fi
 
-  # find (validates) *_example_local.cmdline_compound_arguments; assign first match
-  log_message_n "looking for local_cmdline_compound_arguments"
-  local_cmdline_compound_arguments=$( \
-    find "${app_customization_root%/}/" \
-      -name "*local.cmdline_compound_arguments" | \
-    head -n 1 )
-  _c_result=${local_cmdline_compound_arguments:-"none found"}
-  log_handle_result $? "$_c_result" "error finding local_cmdline_compound_arguments" || _c_FLAGGED=$TRUE
-
-  # find (validates) *_example_local.cmdline_compound_arguments; assign first match
-  log_message_n "looking for local_usage file"
-  local_usage=$( \
-    find "${app_customization_root%/}/" \
-      -name "*local.usage" | \
-    head -n 1 )
-  _c_result=${local_usage:-"none found"}
-  log_handle_result $? "$_c_result" "error finding local_usage" || _c_FLAGGED=$TRUE
+  # use POSIX method of indirect variable assignment to display the existence of local handlers
+  for x in handle_local_arg handle_local_compound_arg handle_local_usage; do
+    log_message_n "setting variable to display whether $x EXISTS"
+    _c_extester="${x}_EXISTS"
+    command -v "$x" >/dev/null 2>/dev/null ; _c_result=$?
+    if [ "$_c_result" -eq 0 ] ; then eval "${_c_extester}=$TRUE"; else eval "${_c_extester}=$FALSE"; fi
+    printf ' (%b%s%b)' "$(eval status_color \$$_c_extester)" "$(eval TrueFalse \$$_c_extester)" "${Boff}"
+    log_right_status "$_c_result"
+  done
 
   # set default verbosity if not set externally
   log_message_n "maybe assigning verbosity"
@@ -3034,12 +3029,12 @@ app_configure_posix() {
 # @ret 0 on success; 1 if _c_FLAGGED is set during configuration
 # @rules PN is package name and should be assigned = $(basename "$0") or ${0##*/} to identify the calling script
 # @rules POSIX assignment 'BUILD="string"' should reside in "${app_customization_root%/}/BUILD"
-# @rules app_customization_root may contain XXXX_local.cmdline_arguments extension file
-# @rules app_customization_root may contain XXXX_local.cmdline_compound_arguments extension file
+# @rules app_customization_root may contain *local.cmdline_arg_handler extension file
+# @cont which can contain handle_local_arg(), handle_local_compound_arg(), and handle_local_usage()
 
 usage_posix()                # explain default usage; mod with local "usage module"
 {
-  N=$(( ${num_cmds} -1 ))
+  N="${num_cmds}"
   separator "${PN}-${BUILD}" "(usage)"
   log_E_message "${BRon}Usage: ${BGon}${PN} [-[options]] ${Boff}"
   log_message "${BYon}valid commandline options --${Boff}"
@@ -3050,17 +3045,19 @@ usage_posix()                # explain default usage; mod with local "usage modu
   log_message "  -r | --resume....: resume at next step in status_file"
   log_message "  -v | --verbose...: increase verbosity"
   log_message "  -q | --quiet.....: decrease verbosity"
-  log_message "  -[0-${N}]..........: save N to status file and resume at step N"
+  log_message "  -[1-${N}]..........: save N to status file and resume at step N"
   log_message "  ${BYon}*${Boff} Single-character options may be combined."
   log_message "    e.g. ${BGon}${PN} --verbose -nqr8${Boff} would resume non-interactively"
   log_message "    (automatic, unsupervised) at step 8 with normal verbosity"
   log_message "${BMon}Caveat:${Boff}"
   log_message "   -i (interactive/supervised) is on by default"
   log_message "   -r (resume) sets starting_step to # in [ $status_file ]"
-  log_message "   -[0-${N}] sets starting_step (default 0 otherwise)"
+  log_message "   -[1-${N}] sets starting_step (default 1 otherwise)"
   # source user-script specific usage-module which should be built in the same format
   log_message "${BMon}additional ${app_customization_root} - commandline options:${Boff}"
-  [ -f ${local_usage} ] && . ${local_usage}
+  if command -v handle_local_usage >/dev/null 2>&1; then
+     handle_local_usage  || E_message "error in handle_local_usage"
+  fi
   printf '\n'
   log_message "${BYon}${PN} workflow sequence (steps):${Boff}"
   for _u_step in $(seq 1 $num_cmds); do
@@ -3150,38 +3147,44 @@ process_cmdline_posix() # (POSIX) process command line arguments
   _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))"
 
   _pc_last=""
-  d_message "processing command line with [ ${arglist} ]" "$notice"
+  d_message "processing command line with [ ${_pc_arglist} ]" "$info"
   d_message "my PID: $$" "$info"
   # shift each argument into position $1 and examine it
   #   process the argument or process it with its own arguments
   while [ ! -z "$1" ]; do
-    d_message "arg1 = [ $1 ]" "$notice"
+    d_message "arg1 = [ $1 ]" "$info"
     # if arg begins with a single dash, process it alone
     case $1 in
 
       -- )     # end of options (possible future use to care for the rest of $*
-          shift; break ;;
+        d_message "$1 means \"end of options\" (remainder of \@ is arguments" "$info"
+        shift; break   # drop the solo '--' with 'shift' and the rest is args 'future to do'
+        ;;
 
       -[!-]* ) # short option try processing alone, but it could be a clustered compound argument
-        d_message "processing [ $1 ] alone as single-dash argument" "$notice"
+        d_message "processing [ $1 ] alone as single-dash argument" "$info"
         process_argument_posix "$1" "$2"   # incl $2 in case $1 uses an operand
         _pc_result=$?
-        [ "${_pc_result}" -eq 6 ] && shift  # extra shift to clear operand
-        shift ;;   # normal shift to next argument
+        [ "${_pc_result}" -eq 6 ] && shift  # extra 'shift' to clear operand
+        shift  # normal 'shift' to next argument
+        ;;
 
       --* )    # if arg begins with a double dash, process it alone
-        d_message "processing [ $1 ] alone as double-dash argument" "$notice"
+        d_message "processing [ $1 ] alone as double-dash argument" "$info"
         process_argument_posix "$1" "$2"  # incl $2 in case $1 uses an operand
         _pc_result=$?
-        [ "${_pc_result}" -eq 6 ] && shift  # extra shift to clear operand
-        shift ;;   # normal shift to next argument
+        [ "${_pc_result}" -eq 6 ] && 'shift'  # extra shift to clear operand
+        shift  # normal 'shift' to next argument
+        ;;
 
       * )      # invalid
-        d_message "does not start with - or --" "$notice"
-        usage_posix; E_message "exiting process [$$]"; ret=1 ;;
+        d_message "$1 does not start with - or --" "$info"
+        usage_posix  # usage will exit or return status 1
+        ;;
     esac
   done
   d_message "done with process_command_line_posix" "$notice"
+  d_message "remaining arguments: [$*]" "$warning"
 
   unset -v _pc_last _pc_arglist _pc_result _pc_adjust_verbosity _pc_operator
   return $ret
@@ -3304,11 +3307,11 @@ _pc_action_verbosity() # (POSIX) increase or decrease verbosity using predefined
   return $ret
 }
 
-process_argument_posix() # (POSIX) process one argument (considering the next a potential operand)
+process_argument_posix() # (POSIX) process one argument $! (considering the next $2 a potential operand)
 { ret=0
   d_message "about to process [ $* ]" "$notice"
   d_message "1: [ $1 ], 2: [ $2 ]" "$notice"
-  d_message "my PID: $$" "$info"
+  d_message "my PID: $$" "$debug"
   # process command line argument (must be one of the following)
   [ -z "$1" ] && { E_message "empty arg1 [$1]"; return 1; }
   case "$1" in
@@ -3324,25 +3327,22 @@ process_argument_posix() # (POSIX) process one argument (considering the next a 
       ret=$?
       ;;
     -*[0-9]*  )
-        # what we know: first char is '-' and there is at least one '0-9' in $1;
-        # so (for process_argument) if the whole thing is int, in range action it, else hand off compound
-        #  b/c it could be a multi-char arg w letters as well as numbers
-        _pa_arg="${1#?}"  # drop the leading "-" (strip shortest match of any single char '?')
-        # if the second char is - (e.g. --24) strip that, too
-        [ "${_pa_arg%${_pa_arg#?}}" = "-" ] && _pa_arg="${1#?}"
-        # if we now have an int action it, else hand off compound
-        if isint "$_pa_arg" ; then
-            _pc_action_number "$_pa_arg"  # this will include checking if it is in range
-            ret=$?
-        else
-            # it may be a combination of numbers and letters - hand off to process_compound_arg_posix
-            # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg_posix expects that)
-            process_compound_arg_posix "-${_pa_arg}"
-            ret=$?
-        fi
-        ;;
-    "-"[hH] | "--help"           )      # help
-      usage_posix
+      # what we know: first char is '-' and there is at least one '0-9' in $1;
+      # so (for process_argument) if the whole thing is int, in range action it, else hand off compound
+      #  b/c it could be a multi-char arg w letters as well as numbers
+      _pa_arg="${1#?}"  # drop the leading "-" (strip shortest match of any single char '?')
+      # if the second char is - (e.g. --24) strip that, too
+      [ "${_pa_arg%${_pa_arg#?}}" = "-" ] && _pa_arg="${1#?}"
+      # if we now have an int action it, else hand off compound
+      if isint "$_pa_arg" ; then
+        _pc_action_number "$_pa_arg"  # this will include checking if it is in range
+        ret=$?
+      else
+        # it may be a combination of numbers and letters - hand off to process_compound_arg_posix
+        # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg_posix expects that)
+        process_compound_arg_posix "-${_pa_arg}"
+        ret=$?
+      fi
       ;;
     "-"[iI] | "--interactive"    )      # interactive
       export INTERACTIVE=$TRUE;
@@ -3364,14 +3364,18 @@ process_argument_posix() # (POSIX) process one argument (considering the next a 
     # note: unrecgnized args should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg_posix $1 ;;")
-d_message "local_cmdline_arguments: $local_cmdline_arguments" 1
-      if [ -f "$local_cmdline_arguments" ] ; then
-          . "$local_cmdline_arguments"
-#      if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
-#          source /etc/${BPN}/local.cmdline_arguments
-          # each should set ret as shown above, and if needed USED_OPERAND
+      d_log_message "pa case \*): w/ \$1: $1" "$notice"
+      # command -v locates a command returns 0 if found (built-in or in PATH) non-zero if not found
+      if command -v handle_local_arg >/dev/null; then
+          d_log_message "pa case \*): [running handle_local_arg $1 $2]" "$notice"
+          handle_local_arg "$1" "$2"
+          ret=$?
+          # ret 0: success; 6: success (AND used operand); 1: error/not found
+          # if not found, give process_compound_arg_posix a chance
+          [ $ret -eq 1 ] && process_compound_arg_posix "$1"
       else
           # it still may be a combination of single char args and numbers
+          d_log_message "pa case \*): running [process_compound_arg_posix $1]" "$notice"
           process_compound_arg_posix "$1"
           ret=$?
       fi
@@ -3382,11 +3386,10 @@ d_message "local_cmdline_arguments: $local_cmdline_arguments" 1
   unset -v _pa_desc _pa_msg _pa_arg
   return $ret
 }
-# @usage process_argument_posix <arg> [operand]
+# @usage process_argument_posix <arg> [potential_operand]
 # @args $1 (string) the flag or argument to process
-# @args $2 (string) the potential operand following the flag
+# @args $2 (string) the potential_operand following the flag
 # @vars status_file, starting_step, num_cmds, verbosity, INTERACTIVE, RESUME
-# @vars local_cmdline_arguments
 # @deps d_message, message, E_message, _get_entry_posix, isint, process_compound_arg_posix
 # @deps status_color, TrueFalse
 # @rule parses flags (-s, -r, -i, -n, -q, -v) and numeric resume points (-[0-9])
@@ -3397,8 +3400,8 @@ d_message "local_cmdline_arguments: $local_cmdline_arguments" 1
 
 process_compound_arg_posix()    # process a compount argument
 {   ret=0
-    d_message "about to process compound [ $* ]" "$notice"
-    d_message "my PID: $$" "$info"
+    d_message "about to process compound [ $* ]" "$info"
+    d_message "my PID: $$" "$debug"
     # must begin with a single dash | "${var%${var#?}}" = 1st char, or "left_most()" but save a function call
     if [ ! "${1%${1#?}}" = "-" ]; then E_message "${E_BAD_ARGS}"; usage_posix; E_message "exiting process [$$]"; return 1; fi
     # must not begin with two dashes (would have been picked in process_argument_posix) | "${var%${var#??}}" = 1st 2 chars
@@ -3408,6 +3411,7 @@ process_compound_arg_posix()    # process a compount argument
     # handle remaining characters in sequence --
     # ( ***one char at at time except possibly double-digit numbers below *** )
     while [ ! -z "${_pca_args}" ]; do
+         d_log_message "top of _pca w/ _pca_args: $_pca_args" "$debug"
         #handle one character at at time, from the left (last loop action, after esac, is to strip the first char to "shift"
         case "${_pca_args}" in
             [sS]* )  # display status
@@ -3447,11 +3451,12 @@ process_compound_arg_posix()    # process a compount argument
                 ;;
             *   )    # note: unrecognized args should fall through to this default
                 # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage_posix ;;")
-d_message "local_cmdline_compound_arguments: $local_cmdline_compound_arguments" 1
-                if [ -f "$local_process_cmdline_compound_arguments" ] ; then
-                    . "$local_process_cmdline_compound_arguments"
-#                if [ -f /etc/${BPN}/local.cmdline_compound_arguments ] ;then
-#                    source /etc/${BPN}/local.cmdline_compound_arguments
+                d_log_message "_pca \*) w/ local_cmdline_compound_arguments: $local_cmdline_compound_arguments" "$debug"
+                d_log_message "_pca \*) w/ _pca_args: $_pca_args" "$debug"
+                if command -v handle_local_compound_arg >/dev/null; then
+                    d_log_message "pa case \*): running [handle_local_compound_arg $1]" "$notice"
+                    handle_local_compound_arg "$1"
+                    ret=$?   # 0: success; 6: 1: error/not found
                 else
                     E_message "${E_BAD_ARGS}"
                     usage_posix
@@ -3461,7 +3466,8 @@ d_message "local_cmdline_compound_arguments: $local_cmdline_compound_arguments" 
         #strip first char from _pca_args (i.e. "shift" one character)
         _pca_args="${_pca_args#?}"   # strip 1st char
     done
-    d_message "done with process_compount_arg_posix" "$notice"
+    d_message "done with process_compount_arg_posix" "$debug"
+    d_message "returning status code [$ret]" "$debug"
 
     unset -v _pca_msg _pca_args _pca_num
     return $ret
