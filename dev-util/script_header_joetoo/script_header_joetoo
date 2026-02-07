@@ -3250,7 +3250,9 @@ _pc_action_resume() # (POSIX) process resume flag
   # resume at stored step unless that is overridden by a new start # (below)
   d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" "$notice"
   export RESUME=$TRUE
-  read starting_step < "${status_file}"
+  read _pr_tmp < "${status_file}"
+  # wrap num_cmds + 1 bac to 1
+  starting_step=$(( 1 + ( _pr_tmp % num_cmds ) ))
   _pr_desc=$(_get_entry_posix "starting_step" 1)
   _pr_msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
   _pr_msg="${_pr_msg} --[ ${BGon}${_pr_desc}${BWon} ]--${Boff}"
@@ -3267,7 +3269,8 @@ _pc_action_resume() # (POSIX) process resume flag
 _pc_action_number() # (POSIX) process resume flag
 { ret=0 _pn_arg="$1"
   # if int and in range, save to status_file and resume at this step
-  if isint "$_pn_arg" && [ "$_pnParg" -ge 1 ] && [ "$_pn_arg" -le "$num_cmds" ] ; then
+  d_log_message "pc_an with $1" "$debug"
+  if isint "$_pn_arg" && [ "$_pn_arg" -ge 1 ] && [ "$_pn_arg" -le "$num_cmds" ] ; then
       export RESUME=$TRUE
       export starting_step="$_pn_arg";
       _pn_msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
@@ -3325,10 +3328,13 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       ret=$?
       ;;
     -*[0-9]*  )
+      d_log_message "pa 0-9)  with $1" "$debug"
       # what we know: first char is '-' and there is at least one '0-9' in $1;
       # so (for process_argument) if the whole thing is int, in range action it, else hand off compound
       #  b/c it could be a multi-char arg w letters as well as numbers
       _pa_arg="${1#?}"  # drop the leading "-" (strip shortest match of any single char '?')
+      d_log_message "pa 0'9) sriipped 1st char; _pa_arg: $_pa_arg" "$debug"
+
       # if the second char is - (e.g. --24) strip that, too
       [ "${_pa_arg%${_pa_arg#?}}" = "-" ] && _pa_arg="${1#?}"
       # if we now have an int action it, else hand off compound
@@ -3541,9 +3547,11 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
         ret=1; break ;;
     esac
     _rs_step=$(( _rs_step + 1 ))
-    d_log_message_n "writing step [$_rs_step] (next up) to status_file"
-    printf '%s\n' "$_rs_step" > "$status_file"
-    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" || ret=1
+    d_log_message_n "writing step [$_rs_step] (next up) to status_file" "$crit"
+    # status_file holds NEXT step number after last successfully completed
+    # so, wrap at num_steps, back to 1
+    printf '%s\n' "$(( 1 + ( _rs_step  % num_cmds ) ))" > "$status_file"
+    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$crit" || ret=1
   done
   unset -v _rs_status_file _rs_step _rs_cmd _rs_result _rs_entry _rs_desc
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg
