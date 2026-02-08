@@ -2258,7 +2258,7 @@ log_right_status() # (POSIX) output rigit_status to stdout and logFile
 
 log_show_config()   # show & log config w get_longest and display_vars
 { log_sc_ret=0
-  d_log_message "in lg_show_config" "$info"
+  d_log_message "in log_show_config" "$info"
   log_separator "${PN}-${BUILD}" "(configuration)"
   _longest=$(get_longest ${varlist})
   display_vars "${_longest}" ${varlist}
@@ -2889,6 +2889,21 @@ get_luks_edev_name()       # determine an edev name to use with this device
 
 # @note =====[ Section 8: Command Sequence Framework ]================================================================
 
+# NOTE: varlist variables are initialized by app_configure_posix() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+## note: all varlist variables (including logFile and verbosity) get anulled by initialize_vars,
+# so they must be explicitly reassigned (as app_configure_posix does for this set).
+# the easiest way to ensure custom additions to varlist are properly initialized and then reassigned
+# prior to main script use is to place the extending definitions in .conf file in the
+# /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
+# information is provided in the template config file to exemplify
+varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
+varlist="${varlist} bool.INTERACTIVE bool.RESUME num_cmds starting_step stopping_step BREAK"
+varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
+varlist="${varlist} bool.handle_local_usage_EXISTS"
+varlist="${varlist} app_customization_root local_cmdline_arg_handler"
+
 app_configure_posix() {
   separator "$PN" "(configuring)"
   _c_FLAGGED=$FALSE
@@ -3175,17 +3190,17 @@ process_cmdline_posix() # (POSIX) process command line arguments
   # shift each argument into position $1 and examine it
   #   process the argument or process it with its own arguments
   while [ ! -z "$1" ]; do
-    d_message "arg1 = [ $1 ]" "$info"
+    d_log_message "arg1 = [ $1 ]" "$info"
     # if arg begins with a single dash, process it alone
     case $1 in
 
       -- )     # end of options (possible future use to care for the rest of $*
-        d_message "$1 means \"end of options\" (remainder of \@ is arguments" "$info"
+        d_log_message "$1 means \"end of options\" (remainder of \@ is arguments" "$info"
         shift; break   # drop the solo '--' with 'shift' and the rest is args 'future to do'
         ;;
 
       -[!-]* ) # short option try processing alone, but it could be a clustered compound argument
-        d_message "processing [ $1 ] alone as single-dash argument" "$info"
+        d_log_message "processing [ $1 ] alone as single-dash argument" "$info"
         process_argument_posix "$1" "$2"   # incl $2 in case $1 uses an operand
         _pc_result=$?
         case "$_pc_result" in
@@ -3197,7 +3212,7 @@ process_cmdline_posix() # (POSIX) process command line arguments
         ;;
 
       --* )    # if arg begins with a double dash, process it alone
-        d_message "processing [ $1 ] alone as double-dash argument" "$info"
+        d_log_message "processing [ $1 ] alone as double-dash argument" "$info"
         process_argument_posix "$1" "$2"  # incl $2 in case $1 uses an operand
         _pc_result=$?
         case "$_pc_result" in
@@ -3209,13 +3224,13 @@ process_cmdline_posix() # (POSIX) process command line arguments
         ;;
 
       * )      # invalid
-        d_message "$1 does not start with - or --" "$info"
+        d_log_message "$1 does not start with - or --" "$info"
         usage_posix  # usage will exit or return status 1
         ;;
     esac
   done
-  d_message "done with process_command_line_posix" "$notice"
-  d_message "remaining arguments: [$*]" "$warning"
+  d_log_message "done with process_command_line_posix" "$notice"
+  d_log_message "remaining arguments: [$*]" "$warning"
 
   unset -v _pc_last _pc_arglist _pc_result _pc_adjust_verbosity _pc_operator
   return $pc_ret
@@ -3234,8 +3249,8 @@ _get_entry_posix() # (POSIX) get human readable description for command sequence
   _ge_desc="${_ge_entry#*${US}}"  # human readable description
   _ge_raw_cmd="${_ge_entry%%${US}*}"  # the actual command
   _ge_clean_cmd=$(printf -- '%b' "$_pa_cmd" | strip_ansi | _translate_escapes)
-#  d_message "_ge_entry: $_ge_entry" "$debug"
-#  d_message "_ge_desc: $_ge_desc" "$debug"
+#  d_log_message "_ge_entry: $_ge_entry" "$debug"
+#  d_log_message "_ge_desc: $_ge_desc" "$debug"
   case $2 in
     1 ) printf '%s' "$_ge_desc" ;;
     2 ) printf '%s' "$_ge_clean_cmd" ;;
@@ -3271,7 +3286,7 @@ _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(las
 
   _pas_msg="${BYon}Status: ${BWon}next step would be [ ${Boff}${Mon}${_pas_val}${BWon} ]"
   _pas_msg="${_pas_msg} ( ${BGon}${_pas_desc}${BWon} )${Boff}"
-  log_message "${_pas_msg}"
+  d_log_message "${_pas_msg}" "$notice"
   unset -v _pas_val _pas_desc _pas_msg
   # that is it; we are done - do not return from here; use leave() [ more polite than die() ]
   # to exit/return depending on whether $- contains an "i" (interactive)
@@ -3297,10 +3312,10 @@ _pc_action_resume() # (POSIX) process resume flag
   # resume at stored step
   export RESUME=$TRUE
   export starting_step="$_par_val"
-  _par_desc=$(_get_entry_posix "starting_step" 1)
-  _par_msg="${BWon}Resuming at step [ ${Mon}$starting_step${BWon} ]"
-  _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BWon} )${Boff}"
-  d_message "${_par_msg}" "$notice"
+  _par_desc=$(_get_entry_posix "$starting_step" 1)
+  _par_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
+  _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BYon} )${Boff}"
+  d_log_message "${_par_msg}" "$notice"
   unset -v _par_msg _par_desc
   return $par_ret
 }
@@ -3311,25 +3326,24 @@ _pc_action_resume() # (POSIX) process resume flag
 # @ret sets global starting_step, and returns 0 on completion
 
 _pc_action_number() # (POSIX) process resume flag
-{ pan_ret=0 _pn_arg="$1"
+{ pan_ret=0 _pan_arg="$1"
   # if int and in range, save to status_file and resume at this step
   d_log_message "pc_an with $1" "$debug"
-  if isint "$_pn_arg" && [ "$_pn_arg" -ge 1 ] && [ "$_pn_arg" -le "$num_cmds" ] ; then
+  if isint "$_pan_arg" && [ "$_pan_arg" -ge 1 ] && [ "$_pan_arg" -le "$num_cmds" ] ; then
       export RESUME=$TRUE
-      export starting_step="$_pn_arg";
-      _pn_msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
-      _pn_msg="${_pn_msg} to status file [${Boff}${status_file}${BYon}]${Boff}"
-      d_message "${_pn_msg}" "$notice"
-      echo "$starting_step" > "$status_file"
+      export starting_step="$_pan_arg";
+      # dont write this step number to the status file, b/c a subsequent -r needs to be able
+      # to read the old stored value and override this earlier number;
+      # also - the standard is to write the next number when the step is complete (so don't write just now)
   else
       E_message "invalid starting_step [${starting_step}]"
       usage_posix  # does not return here
   fi
-  _pn_desc=$(_get_entry_posix "starting_step" 1)
-  _pn_msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
-  _pn_msg="${_pn_msg} --[ ${BGon}${_pn_desc}${BWon} ]--${Boff}"
-  d_message "${_pn_msg}" "$notice"
-  unset -v _pn_desc _pn_msg _pn_arg
+  _pan_desc=$(_get_entry_posix "$starting_step" 1)
+  _pan_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
+  _pan_msg="${_pan_msg} ( ${BGon}${_pan_desc}${BYon} )${Boff}"
+  d_log_message "${_pan_msg}" "$notice"
+  unset -v _pan_desc _pan_msg _pan_arg
   return $pan_ret
 }
 # @usage _pc_action_number
@@ -3342,21 +3356,24 @@ _pc_action_verbosity() # (POSIX) increase or decrease verbosity using predefined
 { pav_ret=0
   # _pc_adjust_verbosity is a dynamic macro defined at the top of process_cmdline_posix
   # adjust according to operator, if in range, else set-clamp (in case environment had it out of range)
+  # as of ver 0.3.6, verbosity is aligned with RFC 5424 severity levels from 0: emerg to 7: debug
+  d_message "in _pc_action_verbosity with _pc_operator: [$_pc_operator]" "$debug"
+  d_message "_pc_adjust_verbosity=[$_pc_adjust_verbosity]" "$debug"
   case "$_pc_operator" in
-    "+" ) if [ "$verbosity" -lt 6 ]; then _pv_action="increased"; else _pv_action="clamped"; verbosity=6; fi ;;
+    "+" ) if [ "$verbosity" -lt 7 ]; then _pv_action="increased"; else _pv_action="clamped"; verbosity=7; fi ;;
     "-" ) if [ "$verbosity" -gt 0 ]; then _pv_action="decreased"; else _pv_action="clamped"; verbosity=0; fi ;;
     *   ) E_message "invalid operator [$_pc_operator]; verbosity unchanged: ${Boff}${Con}${verbosity}${Boff}"; pav_ret=1 ;;
   esac
   [ ! "$_pv_action" = "clamped" ] && { eval "$_pc_adjust_verbosity"; pav_ret=$? ; }
-  d_message "${BYon}verbosity ${_pv_action}: ${BBon}[${Boff}${Mon}${verbosity}${BBon}]${Boff}" "$notice"
+  d_log_message "${BYon}verbosity ${_pv_action}: ${BBon}[${Boff}${Mon}${verbosity}${BBon}]${Boff}" "$notice"
   unset -v _pv_action
   return $pav_ret
 }
 
 process_argument_posix() # (POSIX) process one argument $! (considering the next $2 a potential operand)
 { pa_ret=0
-  d_message "pa about to process [ $* ]" "$notice"
-  d_message "1: [ $1 ], 2: [ $2 ]" "$notice"
+  d_log_message "pa about to process [ $* ]" "$notice"
+  d_log_message "1: [ $1 ], 2: [ $2 ]" "$notice"
   # process command line argument (must be one of the following)
   [ -z "$1" ] && { E_message "empty arg1 [$1]"; return 1; }
   case "$1" in
@@ -3368,6 +3385,7 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       usage_posix
       ;;
     "-"[rR] | "--resume"         )      # resume at stored step
+      d_log_message "pa -[rR]): [running _pc_action_resume]" "$debug"
       _pc_action_resume
       pa_ret=$?
       ;;
@@ -3377,7 +3395,7 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       # so (for process_argument) if the whole thing is int, in range action it, else hand off compound
       #  b/c it could be a multi-char arg w letters as well as numbers
       _pa_arg="${1#?}"  # drop the leading "-" (strip shortest match of any single char '?')
-      d_log_message "pa 0'9) sriipped 1st char; _pa_arg: $_pa_arg" "$debug"
+      d_log_message "pa 0-9) sriipped 1st char; _pa_arg: $_pa_arg" "$debug"
 
       # if the second char is - (e.g. --24) strip that, too
       [ "${_pa_arg%${_pa_arg#?}}" = "-" ] && _pa_arg="${1#?}"
@@ -3388,19 +3406,21 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       else
         # it may be a combination of numbers and letters - hand off to process_compound_arg_posix
         # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg_posix expects that)
+        d_log_message "pa case -*[0-9]*): running [process_compound_arg_posix $1]" "$notice"
         process_compound_arg_posix "-${_pa_arg}"
         pa_ret=$?
       fi
       ;;
     "-"[iI] | "--interactive"    )      # interactive
+      d_log_message "pa -[iI]): [running export INTERACTIVE=$TRUE]" "$debug"
       export INTERACTIVE=$TRUE;
       pa_ret=$?
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
+      d_lgo_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
       ;;
     "-"[nN] | "--noninteractive" )      # non-interactive
       export INTERACTIVE=$FALSE
       pa_ret=$?
-      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
+      d_log_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
       ;;
     "-"[qQ] | "--quiet"          )      # decrease verbosity
       _pc_operator="-"; _pc_action_verbosity; pa_ret=$?
@@ -3412,24 +3432,27 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
     # note: unrecgnized args should fall through to this default
     *                            )
       # run local arg module if it exists (must end with "* ) process_compound_arg_posix $1 ;;")
-      d_log_message "pa case \*): w/ \$1: $1" "$notice"
+      d_log_message "pa case *): w/ \$1: $1" "$notice"
       # command -v locates a command returns 0 if found (built-in or in PATH) non-zero if not found
       if command -v handle_local_arg >/dev/null; then
-          d_log_message "pa case \*): [running handle_local_arg $1 $2]" "$notice"
-          handle_local_arg "$1" "$2"
-          pa_ret=$?
-          # pa_ret 0: success; 6: success (AND used operand); 1: error/not found
-          # if not found, give process_compound_arg_posix a chance
-          [ $pa_ret -eq 1 ] && process_compound_arg_posix "$1"
+        d_log_message "pa case *): [running handle_local_arg $1 $2]" "$notice"
+        handle_local_arg "$1" "$2"
+        # handle_local_arg returns 0: success; 1: error; 6: consumed operand; 7: not found
+        pa_ret=$?
+        # if not found, give process_compound_arg_posix a chance
+        [ "$pa_ret" -eq 7 ] && {
+          d_log_message "pa case *): [handle_local_arg did not find \$1; running process_compound_arg_posix $1]" "$notice"
+          process_compound_arg_posix "$1"; pa_ret=$? ; }
       else
-          # it still may be a combination of single char args and numbers
-          d_log_message "pa case \*): running [process_compound_arg_posix $1]" "$notice"
-          process_compound_arg_posix "$1"
-          pa_ret=$?
+        # it still may be a combination of single char args and numbers
+        d_log_message "pa case *): running [process_compound_arg_posix $1]" "$notice"
+        process_compound_arg_posix "$1"
+        pa_ret=$?
       fi
       ;;
   esac
-  d_message "done with process_argument_posix" "$notice"
+  d_message "done with process_argument_posix, returning exit status [$pa_ret]" "$notice"
+#  d_message "done with process_argument_posix, returning exit status [$pa_ret]" "$emerg"
 
   unset -v _pa_desc _pa_msg _pa_arg
   return $pa_ret
@@ -3513,8 +3536,8 @@ process_compound_arg_posix()    # process a compount argument
     #strip first char from _pca_args (i.e. "shift" one character)
     _pca_args="${_pca_args#?}"   # strip 1st char
   done
-  d_message "done with process_compount_arg_posix" "$debug"
-  d_message "returning status code [$pca_ret]" "$debug"
+  d_message "done with process_compount_arg_posix; returning status code [$pca_ret]" "$debug"
+#  d_message "done with process_compount_arg_posix; returning status code [$pca_ret]" "$emerg"
 
   unset -v _pca_msg _pca_args _pca_num
   return $pca_ret

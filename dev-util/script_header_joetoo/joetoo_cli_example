@@ -9,22 +9,45 @@ header="${script_header_installed_dir%/}/script_header_joetoo"
 echo "header: $header"
 
 if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+printf '%s' "Checking for header commands to confirm sourcing"
+if command -v toc >/dev/null 2>&1 && command -v run_sequence_posix >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot continue"; exit 1; fi
 
 #-----[ variables ]----------------------------------------------------
 
-# varlist - these are initialized by app_configure_posix() and displayed by show_config()
-## note: all of these (including logFile and verbosity) get anulled by initialize_vars;
-#  need to explicitly reassign (as app_configure_posix does) or override in a .conf file
-varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
-varlist="${varlist} bool.INTERACTIVE bool.RESUME num_cmds starting_step stopping_step BREAK"
-varlist="${varlist} app_customization_root local_cmdline_arg_handler"
-varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
-varlist="${varlist} bool.handle_local_usage_EXISTS"
+# NOTE: varlist variables are initialized by app_configure_posix() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+# An example is provided in the joetoo_cli_example script and in the template joetoo_cli_example.conf
+#
+# BREAK tells display_vars to add a newline spacer in its output
+# $LOCALIZED exemplifies use of the joetoo pseudo-boolean data type for POSIX scripts
+# $EXAMPLE and $DEFAULTS are pseudo-booleans defined in joetoo_cli_example_local.cmdline_arg_handler
+# $INITIALIZED_ME and $SOURCED_ME exemplify use of the joetoo yn data type
+# Note how each is named and how these types are prefixed in the varlist, to inform initialize_vars
+# and display_vars how to handle them.
+# $longone is a long string defined in script_header_joetoo to test and illustrate smart wrapping
+# by the smart_wrap_n() function. its name is prefixed "lv." in this localized extension of varlist
+# to indicate (long variable), so display_vars will use smart_wrap_n() to display the content of
+# $longone (which is long-one btw, not long-gone)
+#
+# CAVEAT: varlist is instantiated when script_header_joetoo is sourced (above), so it IS safe to add
+# variable names to it in a "variables" section at the top of your main script, but note that
+# the standard joetoo cli script layout calls app_configure_posix() after that --
+# so anything you add to varlist before app_configure_posix will be over-written when app_configure_posix
+# calls initialize_var. which sets all bool. to $FALSE, all yn. to "no" and all others to ""
+#
+# Bottom line: you can append variable names to varlist at the top of your script, but if you do, you
+# ALSO need to reassign them AFTER app_configure_posix runs. Thus it is "easier" to just append
+# variable names to varlist in the .conf file, which app_configure_posix() loads AFTER it calls
+# initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
+LOCALIZED=$FALSE; INITIALIZED_ME="no"
+varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
 
 #-----[ functions ]----------------------------------------------------
 
 initialize_command_sequence_posix() # (POSIX) initialize command sequence for joetoo cli framework
-{ ret=0
+{ ics_ret=0
   _ics_FLAGGED=$FALSE
   log_message_n "creating tempfile for command sequnce"
   cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
@@ -60,11 +83,11 @@ EOF
   stopping_step="$num_cmds"
   log_handle_result $? "$stopping_step" '' || _ics_FLAGGED=$TRUE
 
-  [ "$_ics_FLAGGED" ] && ret=1
+  [ "$_ics_FLAGGED" ] && ics_ret=1
   export num_cmds
   export cmd_seq_file
   unset -v _ics_entry
-  return $ret
+  return $ics_ret
 }
 # @usage initialize_command_sequence_posix || die "failed to initialize_command_sequence_posix"
 # @vars sets global num_cmds, cmd_seq_file
@@ -78,16 +101,24 @@ EOF
 
  #-----[ for testing only ]------------------------------------------------
 test_function() {
-  ret=0; _tf_in="$1"
-  printf '%b\n' "this was printed by the test function: $_tf_in" || ret=1
+  test_ret=0; _tf_in="$1"
+  printf '%b\n' "this was printed by the test function: $_tf_in" || test_ret=1
   unset -v _tf_in
-  return $ret
+  return $test_ret
 }
 # @usage test_function <message>
 #-----[ main script ]----------------------------------------------------
 
 app_configure_posix || die "failed to app_configure_posix"
 
+# re-assign varlist variables appended at the top of the script and thus
+# over-written by app_configure_posix
+d_log_message_n "(re)assigning LOCALIZED" "$notice"
+LOCALIZED=$TRUE
+d_log_message $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED" "$notice"
+d_log_message_n "(re)assigning" "$notice"
+INITIALIZED_ME="yes"
+d_log_message $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
 
 log_show_config
 log_message "(BEFORE process_cmdline_posix)"
@@ -98,7 +129,7 @@ log_show_config
 log_message "(AFTER process_cmdline_posix)"
 
 run_sequence_posix "$status_file" "$starting_step" "$stopping_step"
-ret=$?
-log_message_n "run_sequence_posix completed with "
-log_handle_result $ret '' ''
-exit $ret
+result=$?
+log_message_n "PN complete. Results:"
+log_handle_result $result "exemplary success" "exemplary failure"
+exit $result
