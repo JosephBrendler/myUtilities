@@ -3562,11 +3562,12 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
   ! isint "$_rs_stop" && { log_E_message "run_sequence_posix: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; }
   if [ "$_rs_stop" -lt 1 ] || [ "$_rs_stop" -gt "$num_cmds" ]; then
     log_E_message "run_sequence_posix: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; fi
-#  _rs_step=1
-  _rs_step="$_rs_start"
-  while [ "$_rs_step" -le "$_rs_stop" ]; do        # enforces upper bound
-    if [ "$_rs_step" -lt "$_rs_start" ]; then
-      _rs_step=$(( _rs_step + 1 )); continue; fi   # enforces lower bound (shift into range)
+  # initialize both starting step (command) and loop counter
+  _rs_step="$_rs_start"   # points to the number of the actual command that is "up" next (gets wrapped to 1 after num_cmds)
+  _rs_count="$_rs_start"  # points to current step + 1 (does NOT wrap at num_cmds; so loop can detect completion)
+  while [ "$_rs_count" -le "$_rs_stop" ]; do        # enforce upper bound
+    if [ "$_rs_step" -lt "$_rs_start" ]; then       # enforce lower bound (shift into range)
+      _rs_count=$(( _rs_count + 1 )); _rs_step=$(( _rs_step + 1 )); continue; fi
     # assign commadn and description from input, delimitted by unit separator ($US)
     _rs_entry=$(sed -n "${_rs_step}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
     _rs_cmd="${_rs_entry%%${US}*}"  # the actual command
@@ -3613,12 +3614,14 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
         d_log_message "${BRon}Aborting sequence, as instructed${Boff}" "$crit"
         rs_ret=1; break ;;
     esac
-    _rs_step=$(( _rs_step + 1 ))
-    d_log_message_n "writing step [$_rs_step] (next up) to status_file" "$crit"
-    # status_file holds NEXT step number after last successfully completed
-    # so, wrap at num_steps, back to 1
-    printf '%s\n' "$(( 1 + ( _rs_step  % num_cmds ) ))" > "$status_file"
-    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$crit" || rs_ret=1
+    # use 1-indexed modular increment to wrap _rs_step back to 1 at num_cmds
+    # but just increment _rs_count w/o wrap, so loop can detect completion
+    _rs_step=$(( (_rs_step % num_cmds) + 1 ))
+    _rs_count=$(( _rs_count + 1 ))
+    # store the pointer to the command that is actually "up" next (not the loop counter)
+    d_log_message_n "writing step [$_rs_step] (next up) to status_file" "$notice"
+    printf '%s\n' "$_rs_step" > "$status_file"
+    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$notice" || rs_ret=1
   done
   unset -v _rs_status_file _rs_step _rs_cmd _rs_result _rs_entry _rs_desc
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg
