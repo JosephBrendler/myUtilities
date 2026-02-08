@@ -200,7 +200,7 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 #012	0A	LF	Line Feed / Newline (\n)
 #013	0B	VT	Vertical Tab
 #014	0C	FF	Form Feed (\f)
-#015	0D	CR	Carriage Return (\r)
+#015	0D	CR	Carriage return (\r)
 #016 - 032	0E-1A	SO-SUB	Shift Out to Substitute; note S0 & S1 ar "pre-cooked" below
 #033	1B	ESC	Escape (Start of your ${CSI})
 #034 - 037	1C-1F	FS-US	Separators
@@ -516,33 +516,33 @@ vt_init() # (POSIX) Initialize G0/G1 character sets for DEC SI/SO graphics
 
 #---[ Simple Cursor State Control ]-----------------------------------
 SCP() # (ANSI) save the current cursor position
-{ printf '%b' "${CSI}s" ; return $?; }
+{ printf '%b' "${CSI}s" ; }
 # @usage SCP
 # @ret 0 on success (sequence emitted)
 # @note Positions are terminal-internal; not stored in shell variables
 
 RCP() # (ANSI) restore the cursor to the saved position
-{ printf '%b' "${CSI}u" ; return $?; }
+{ printf '%b' "${CSI}u" ; }
 # @usage RCP
 # @ret 0 on success
 
 HCU() # (ANSI) Hide the cursor (Note: the trailing character is lowercase L)
-{ printf '%b' "${CSI}?25l" ; return $?; }
+{ printf '%b' "${CSI}?25l" ; }
 # @usage HCU
 # @ret 0 on success
 
 SCU() # (ANSI) Show the cursor
-{ printf '%b' "${CSI}?25h" ; return $?; }
+{ printf '%b' "${CSI}?25h" ; }
 # @usage SCU
 # @ret 0 on success
 
 CLR() # (ANSI) Clear stdout
-{ printf '%b' "${CSI}2J" ; return $?; }
+{ printf '%b' "${CSI}2J" ; }
 # @usage CLR
 # @ret 0 on success
 
 EL() # (ANSI) Erase line
-{ printf '%b' "${CSI}K" ; return $?; }
+{ printf '%b' "${CSI}K" ; }
 # @usage EL
 # @ret 0 on success
 
@@ -599,21 +599,21 @@ CUB() # (ANSI) Move the cursor back/left ($1 cells)
 # @ret 0 if moved; 1 if arg is not an integer
 
 CPR() # (POSIX) [r|c|s] - Cursor Position Report
-{ ret=0; _cpr_opt="$1"; _cpr_pos=""; _cpr_old_stty=""; _cpr_QUERY="${CSI}6n"
+{ cpr_ret=0; _cpr_opt="$1"; _cpr_pos=""; _cpr_old_stty=""; _cpr_QUERY="${CSI}6n"
   # save state and disable canonical mode
   # (switch to "cbreak" mode (to read without a newline)
   # (if this fails, we likely don't have a TTY (exit status 1) ; cannot continue)
-  _cpr_old_stty=$(stty -g 2>/dev/null) || { ret=$?; return $ret; }
-  stty -icanon -echo 2>/dev/null || ret=2
+  _cpr_old_stty=$(stty -g 2>/dev/null) || { cpr_ret=$?; return $cpr_ret; }
+  stty -icanon -echo 2>/dev/null || cpr_ret=2
   # query terminal (CSI 6n)
   # (use in=/dev/tty to ensure it will work even if stdin is redirected)
-  printf '%b' "$_cpr_QUERY" > /dev/tty 2>/dev/null || ret=$((ret + 4))
+  printf '%b' "$_cpr_QUERY" > /dev/tty 2>/dev/null || cpr_ret=$((cpr_ret + 4))
   # read response: format is "^[[row;colR"
   # (read until 'R' using 'dd' because POSIX 'read' can't change delimiters)
   # (use in=/dev/tty to ensure it will work even if stdin is redirected)
-  _cpr_pos=$(dd if=/dev/tty count=1 2>/dev/null) || ret=$((ret + 8))
+  _cpr_pos=$(dd if=/dev/tty count=1 2>/dev/null) || cpr_ret=$((cpr_ret + 8))
   # restore terminal immediately
-  stty "$_cpr_old_stty" 2>/dev/null || ret=$((ret + 16))
+  stty "$_cpr_old_stty" 2>/dev/null || cpr_ret=$((cpr_ret + 16))
   # strip leading ESC[ and trailing R
   _cpr_pos=${_cpr_pos#*[}; _cpr_pos=${_cpr_pos%R}
   # split row/col using positional parameters (the POSIX "array")
@@ -630,7 +630,7 @@ CPR() # (POSIX) [r|c|s] - Cursor Position Report
   esac
 
   unset -v _cpr_opt _cpr_pos _cpr_old_stty _cpr_old_ifs _cpr_QUERY
-  return $ret
+  return $cpr_ret
 }
 # @usage CPR [r|c|s]
 # @args $1: report option: 'r' (row), 'c' (col), 's' (silent), null (both)
@@ -661,18 +661,22 @@ box_esca() # (POSIX) DEC box drawing usingw ESCon/off (Explicit G0 mapping)
   # @args $1: String to be boxed
   # @note Uses Explicit G0 mapping (slower but state-safe)
   # @note text is displayed inside a single-wall box
+  be_ret=0
   _be_text="$1"
-  _be_len=${#_be_text}   # length of text determines width of box
+  _be_len=$(get_msg_len "${_be_text}")   # the visible length of text determines width of box
+  _be_tw=$(termwidth)
+  [ "$_be_len" -gt "$_be_tw" ] && { E_message "error: box_esca handles only one-line messages, but \$1 is too big"; return 1; }
   # use fixed width printf to create proper length string of spaces | tr into wall segment
   _be_h_line=$(printf "%*s" "$((_be_len + 2))" "" | tr ' ' "${H_wall}")
   # safely handle each part in a separate bucket to ensure proper interpretation (%s for the text)
   # top line
-  printf "%b%b%s%b%b\n" "$ESCon" "$UL_wall" "$_be_h_line" "$UR_wall" "$ESCoff"
+  printf "%b%b%s%b%b\n" "$ESCon" "$UL_wall" "$_be_h_line" "$UR_wall" "$ESCoff" || be_ret=2
   # content
-  printf "%b%b %b%s%b %b%b\n" "$ESCon" "$V_wall" "$ESCoff" "$_be_text" "$ESCon" "$V_wall" "$ESCoff"
+  printf "%b%b %b%s%b %b%b\n" "$ESCon" "$V_wall" "$ESCoff" "$_be_text" "$ESCon" "$V_wall" "$ESCoff" || be_ret=3
   # bottom
-  printf "%b%b%s%b%b\n" "$ESCon" "$LL_wall" "$_be_h_line" "$LR_wall" "$ESCoff"
-  unset -v _be_text _be_len _be_h_line
+  printf "%b%b%s%b%b\n" "$ESCon" "$LL_wall" "$_be_h_line" "$LR_wall" "$ESCoff" || be_ret=4
+  unset -v _be_text _be_len _be_h_line _be_tw
+  return $be_ret
 }
 
 box_shift() # (POSIX) DEC box drawing using SO/SI toggling
@@ -680,22 +684,26 @@ box_shift() # (POSIX) DEC box drawing using SO/SI toggling
   # @args $1: String to be boxed
   # @note Uses SO/SI toggling (faster)
   # @note text is displayed inside a single-wall box
+  bs_ret=0
   _bs_text="$1"
-  _bs_len=${#_bs_text}   # length of text determines width of box
+  _bs_len=$(get_msg_len "${_bs_text}")   # the visible length of text determines width of box
+  _bs_tw=$(termwidth)
+  [ "$_bs_len" -gt "$_bs_tw" ] && { E_message "error: box_esca handles only one-line messages, but \$1 is too big"; return 1; }
   # use fixed width printf to create proper length string of spaces | tr into wall segment
   _bs_h_line=$(printf "%*s" "$((_bs_len + 2))" "" | tr ' ' "${H_wall}")
   # safely handle each part in a separate bucket to ensure proper interpretation (%s for the text)
   # Top Line
-  printf "%b%b%s%b%b\n" "$SO" "$UL_wall" "$_bs_h_line" "$UR_wall" "$SI"
+  printf "%b%b%s%b%b\n" "$SO" "$UL_wall" "$_bs_h_line" "$UR_wall" "$SI" || bs_ret=2
   # Content
-  printf "%b%b %b%s%b %b%b\n" "$SO" "$V_wall" "$SI" "$_bs_text" "$SO" "$V_wall" "$SI"
+  printf "%b%b %b%s%b %b%b\n" "$SO" "$V_wall" "$SI" "$_bs_text" "$SO" "$V_wall" "$SI" || bs_ret=3
   # Bottom
-  printf "%b%b%s%b%b\n" "$SO" "$LL_wall" "$_bs_h_line" "$LR_wall" "$SI"
-  unset -v _bs_text _bs_len _bs_h_line
+  printf "%b%b%s%b%b\n" "$SO" "$LL_wall" "$_bs_h_line" "$LR_wall" "$SI" || bs_ret=4
+  unset -v _bs_text _bs_len _bs_h_line _bs_tw
+  return $bs_ret
 }
 
 box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color, $5=style
-{ ret=0; _bm_msg="$1"; _bm_tw=0;  _bm_target_w=0; _bm_center=0
+{ bm_ret=0; _bm_msg="$1"; _bm_tw=0;  _bm_target_w=0; _bm_center=0
   _bm_color_seq=0; _bm_buffer=0; _bm_r_margin=0; _bm_l_margin=0
   _bm_h_line=0; _bm_line=""
 
@@ -740,7 +748,7 @@ box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color, $5=style
         printf '\r'; CUF "${_bm_r_wall}"
         printf " %b%b%b%b%b\n" "$_bm_color_seq" "$_bm_SO" "$_bm_V_wall" "$_bm_SI" "$Boff" # Right wall
     done
-    ret=$?
+    bm_ret=$?
 
     # bottom border
     CUF "$_bm_l_margin"
@@ -749,7 +757,7 @@ box_msg() # (POSIX) $1=msg, $2=width, $3=center, $4=color, $5=style
     unset -v _bm_msg _bm_tw _bm_target_w _bm_center _bm_color_seq
     unset -v _bm_buffer _bm_r_margin _bm_l_margin _bm_h_line _bm_line
     unset -v _bm_H_wall _bm_V_wall _bm_UL_wall _bm_UR_wall _bm_LL_wall _bm_LR_wall _bm_SO _bm_SI
-    return $ret
+    return $bm_ret
 }
 # @usage box_msg "$message" "$width" "$center_point" "$color_sequence"
 # @vars _bm_ (prefixed local scope)
@@ -779,8 +787,9 @@ test_colors() # (POSIX) print the joetoo RGB name of each eponymous color
   done
   CUP "$_h" 1
 #  printf '%b' "$(CUP "$_h" 1)"
-  unset -v _rgb_color_names _h _current_row _c_idx _name _fg_code \
-      _bg_code _esc_start _esc_reset _colored_text _w _col ; }
+unset -v _rgb_color_names _h _current_row _c_idx _name _fg_code
+unset -v _bg_code _esc_start _esc_reset _colored_text _w _col
+}
 # @usage test_colors
 # @note validates SGR color rendering and vertical centering logic
 # @note special case: forces white background for BLACK text to ensure visibility
@@ -970,7 +979,7 @@ checkshell() # reset colors if this shell is not interactive
 # @note used to prevent ANSI escape "garbage" in cron jobs or piped output
 
 validate_logfile()  # validate existence and ownership of logFile
-{ d_log_message "in validate_logfile" "$info"
+{ vl_ret=0; d_log_message "in validate_logfile" "$info"
   _logFile_owner_uid=""; _logFile_group_gid=""
   _user_uid=""; _user_gid=""
   _msg=""
@@ -1000,12 +1009,11 @@ validate_logfile()  # validate existence and ownership of logFile
           _msg="bad ownership on logFile [${logFile}]\n"
           _msg="${_msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
           log_E_message "${_msg}"
-          unset -v _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _msg
-          return 1
+          vl_ret=1
       fi # ownership
   fi # existence
   unset -v _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _msg
-  return 0
+  return $vl_ret
 }
 # @usage validate_logfile
 # @req logFile and user must be set apriori
@@ -1020,10 +1028,8 @@ validate_logfile()  # validate existence and ownership of logFile
 # @note =====[ Section 4: String & Layout Utilities ]===============================================================
 
 strip_ansi() # (POSIX) Strip ANSI escape sequences from stdin
-{
-  # Works with standard sed to remove color/UI codes for clean logging
-  sed "s/${CSI}[0-9;]*[mK]//g"
-}
+{ # Works with standard sed to remove color/UI codes for clean logging
+ sed "s/${CSI}[0-9;]*[mK]//g" ; }
 # @usage strip_ansi "string" OR echo "string" | strip_ansi
 # @args $*: the string containing ANSI sequences
 # @ret String with all \033[...m sequences removed
@@ -1032,16 +1038,14 @@ strip_ansi() # (POSIX) Strip ANSI escape sequences from stdin
 # @note global CSI=$(printf "${ESC}[") is defined at the top of this header
 
 _translate_escapes() # (POSIX) translate layout control chars to spaces, preserve ESC
-{
-  # explicitly target "layout breakers", not the entire [:control:] class --
+{ # explicitly target "layout breakers", not the entire [:control:] class --
   # \010 = BS (backspace)
   # \011 = HT (tab)
   # \012 = LF (newline)
   # \013 = VT (vertical tab)
   # \014 = FF (form feed)
   # \015 = CR (carriage return)
-  tr '\010\011\012\013\014\015' ' '
-}
+  tr '\010\011\012\013\014\015' ' ' ; }
 # @usage _translate_escapes
 # @ret Cleaned string with layout-breakers converted to spaces
 # @rule targets BS, HT, LF, VT, FF, CR (octal 010-015)
@@ -1054,7 +1058,7 @@ get_msg_len() # helper not to be called directly (get actual printable length of
   # then strip ANSI to get the visible length
   _stripped=$(printf '%b' "$*" | _translate_escapes | strip_ansi)
   _len="${#_stripped}"; echo "${_len:-0}" # if empty, return 0
-  unset -v _stripped _len; }
+  unset -v _stripped _len ; }
 # @usage get_msg_len "string"
 # @ret (int) count of visible characters
 # @deps _translate_escapes strip_ansi
@@ -1072,11 +1076,11 @@ get_longest() # echo length of longest string in input $@
 #{ _ans=0; for _x in $@; do [ ${#_x} -gt $_ans ] && _ans=${#_x}; done ; printf '%s' "$_ans"; unset -v _ans _x; }
 
 repeat() # (POSIX) quickly output a string of char $1 (of len $2)
-{ ret=0; _r_marker="${1:--}"; _r_reps="${2:-40}";
+{ r_ret=0; _r_marker="${1:--}"; _r_reps="${2:-40}";
   ! isint "$_r_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1; }
   [ "${#_r_marker}" -gt 1 ] && _r_marker=$(printf -- '%s' "${_r_marker%${_r_marker#?}}")
-  printf -- "%${_r_reps}s" | tr -- ' ' "$_r_marker"
-  unset -v _r_marker _r_reps; return $ret ; }
+  printf -- "%${_r_reps}s" | tr -- ' ' "$_r_marker" ; r_ret=$?
+  unset -v _r_marker _r_reps; return $r_ret ; }
 # @usage repeat "marker" "count"
 # @args $1 char to repeat; $2 number of times
 # @ret (emits) string of repeated characters
@@ -1084,13 +1088,14 @@ repeat() # (POSIX) quickly output a string of char $1 (of len $2)
 # maintainer note: '--' indicates 'end of options' to prevent cmd from interpreting '-' in str as opt
 
 full_repeat() # (POSIX) repeat full input string pattern $1 $2 times
-{ ret=0; _fr_marker=${1:--}; _fr_reps=${2:-40}
+{ fr_ret=0; _fr_marker=${1:--}; _fr_reps=${2:-40}
   ! isint "$_fr_reps" && { E_message "error: $2 (_fr_reps) must be an integer"; return 1; }
   _fr_i=0; while [ "$_fr_i" -lt "$_fr_reps" ]; do
-    printf -- '%b' "$_fr_marker"; _fr_i=$((_fr_i + 1))
-  done ; ret=$?
+    printf -- '%b' "$_fr_marker"
+    _fr_i=$((_fr_i + 1))
+  done ; fr_ret=$?
   unset -v _fr_reps _fr_marker _fr_i
-  return $ret
+  return $fr_ret
 }
 # @usage full_repeat "string" "<integer>"
 # @args $1: the string or character pattern to be repeated (default: "-")
@@ -1107,7 +1112,7 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
 { # initial guard - all six arguments must exist (some can be null to be defaulted)
   [ $# -lt 6 ] && { E_message "#args: $#; 6 args required: cur, sep, min, color, marker, col"; return 1; }
   # assign localized variables with parameters received or defaults where allowable (secondary guard)
-  _pad_cur="$1"; _pad_sep="${2:- }"; _pad_min="${3:-2}";
+  p_ret=0; _pad_cur="$1"; _pad_sep="${2:- }"; _pad_min="${3:-2}";
   _pad_color="$4"; _pad_marker="${5:-.}"; _pad_col="$6"
   # exercise additional guards --
     # $1: reject null current element
@@ -1117,22 +1122,22 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
     # $3: min is defaulted above :- (exists?) in "${3:-2}" ensures that null (or even unset) is reassigned
     # $4: initial guard ensures existence, and null is OK for printf,
     #     so, ensure color is a proper ANSI SGR sequence and not printable text (e.g.: ${CSI}${RED};${BOLD}m = ${BRon})
-      if [ -n "$_pad_color" ]; then
-        case "$_pad_color" in
-          "${CSI}"*m?*)    # reject if there is anything after the 'm'
-            E_message "arg4 (color) contains trailing printable characters"; return 1 ;;
-          "${CSI}"*m) : ;; # Valid sequence, do nothing and continue
-          *)               # everything else is malformed or printable text
-            E_message "arg4 (color) must be a valid ANSI sequence (e.g. \${CSI}31m)"; return 2 ;;
-        esac
-      fi
+    if [ -n "$_pad_color" ]; then
+      case "$_pad_color" in
+        "${CSI}"*m?*)    # reject if there is anything after the 'm'
+          E_message "arg4 (color) contains trailing printable characters"; return 1 ;;
+        "${CSI}"*m) : ;; # Valid sequence, do nothing and continue
+        *)               # everything else is malformed or printable text
+          E_message "arg4 (color) must be a valid ANSI sequence (e.g. \${CSI}31m)"; return 2 ;;
+      esac
+    fi
     # $5: marker is defaulted above :- (exists?) in "${5:-.}" ensures that null (or even unset) is reassigned
     # $5: remove ansi from  separator (will be colored by $color if that is provided) and truncate
-      _pad_marker=$(printf '%s' "$_pad_marker" | _translate_escapes | strip_ansi)
-      # truncate marker to a single character
-      # ? matches a single char, so ${_pad_marker#? returns all after the first (result)
-      # ${_pad_marker%  strips shortest match for (result) from the tail - leaving only the first
-      _pad_marker="${_pad_marker%${_pad_marker#?}}"
+    _pad_marker=$(printf '%s' "$_pad_marker" | _translate_escapes | strip_ansi)
+    # truncate marker to a single character
+    # ? matches a single char, so ${_pad_marker#? returns all after the first (result)
+    # ${_pad_marker%  strips shortest match for (result) from the tail - leaving only the first
+    _pad_marker="${_pad_marker%${_pad_marker#?}}"
     # $6: reject null column width
     ! isint "$_pad_col" && { E_message "arg6 (int col) cannot be null"; return 2; }
   # use get_msg_len for ANSI stripping just to get the length of current element
@@ -1143,20 +1148,19 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
   # (R->L): col - (cur_len + sep_len) + min
   _pad_length=$(( _pad_min + _pad_col - (_pad_cur_len + _pad_sep_len) ))
   # generate the full pad as a string
-#  d_echo "_pad_cur: $_pad_cur" 4
-#  d_echo "_pad_sep: $_pad_sep" 4
-#  d_echo "_pad_min: _pad_min" 4
-#  d_echo "_pad_color: ${_pad_color}this${Boff}" 4
-#  d_echo "_pad_marker: $_pad_marker" 4
-#  d_echo "__pad_col: $_pad_col" 4
-#  d_echo "_pad_length: $_pad_length" 4
+#  d_echo "_pad_cur: $_pad_cur" "$debug"
+#  d_echo "_pad_sep: $_pad_sep" "$debug"
+#  d_echo "_pad_min: _pad_min" "$debug"
+#  d_echo "_pad_color: ${_pad_color}this${Boff}" "$debug"
+#  d_echo "_pad_marker: $_pad_marker" "$debug"
+#  d_echo "__pad_col: $_pad_col" "$debug"
+#  d_echo "_pad_length: $_pad_length" "$debug"
   _pad_string=$(repeat "$_pad_marker" "$_pad_length")
   # output the pad
-  printf "%b%s%b" "$_pad_color" "$_pad_string" "$Boff"
+  printf "%b%s%b" "$_pad_color" "$_pad_string" "$Boff" ; p_ret=$?
   unset -v _pad_cur _pad_sep _pad_min _pad_color _pad_marker _pad_col
   unset -v _pad_cur_len _pad_sep_len _pad_length _pad_string
-  return 0
-echo "got this far"; return 1
+  return $p_ret
 }
 # @usage pad "cur" "sep" "min" "color" "marker" "col"
 # @req all 6 args must be supplied; see below how some '' vals can default
@@ -1199,105 +1203,107 @@ echo_n_long() # deprecated - use smart_wrap_n
   smart_wrap_n "$_enl_start_col" "$_ens_indent" "" "$_enl_msg" ; }
 
 smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainder = message words
-{
-    if [ $# -lt 3 ] ; then E_message "minimum 3 args: curr_col, l_margin, r_margin; remainder=msg"; return 1; fi
-    if ! isint $1 ; then E_message "Error: arg \$1 must be numeric starting column/caracter position"; return 1; fi
-    _sw_current_col=$1                                            # assign _sw_current_col
-    if isint "$2"; then _sw_l_margin=$2; else _sw_l_margin=0; fi  # assign _sw_l_margin
-    if isint "$3"; then _sw_r_margin=$3; else _sw_r_margin=0; fi  # assugb _sw_r_margin
-    shift 3
-    # (do not translate internal escapes ([:control:] chars like \n, \t, \r, etc.)
-    #  b/c want to preserve (e.g. multi-line prompt) line formatting, and
-    #  do not strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to get_msg_len)
-  _sw_msg=$(printf '%b' "$*" | _translate_escapes)   # operate on entire set of args as a single string "$*"
+{ swr_ret=0
+  if [ $# -lt 3 ] ; then E_message "minimum 3 args: curr_col, l_margin, r_margin; remainder=msg"; return 1; fi
+  if ! isint $1 ; then E_message "Error: arg \$1 must be numeric starting column/caracter position"; return 1; fi
+  _sw_current_col=$1                                            # assign _sw_current_col
+  if isint "$2"; then _sw_l_margin=$2; else _sw_l_margin=0; fi  # assign _sw_l_margin
+  if isint "$3"; then _sw_r_margin=$3; else _sw_r_margin=0; fi  # assugb _sw_r_margin
+  shift 3
+  # (do not translate internal escapes ([:control:] chars like \n, \t, \r, etc.)
+  #  b/c want to preserve (e.g. multi-line prompt) line formatting, and
+  #  do not strip_ansi b/c want to preserve color codes, etc; only remove those in subshell to get_msg_len)
+ _sw_msg=$(printf '%b' "$*" | _translate_escapes)   # operate on entire set of args as a single string "$*"
 #    _sw_msg="$*"   # operate on entire set of args as a single string "$*"
-    # determine the initial total visible length of the message
-    _sw_remaining_len=$(get_msg_len "$_sw_msg")  # Initialize the counter here
-    # perform controlled split on the remaining parameters ($@)
-    set -f     # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
-    # safely convert a positional parameters (either multiple args or a single quoted string) into individual words
-    set -- $_sw_msg    # set with $_sw_msg unquoted so each split word becomes a positional parameter
-    set +f     # re-enable globbing (minimize the "blast radius" of the globbing-disabled state)
-    # after shift and reassembly; set a default message argument to "<empty>" if none provided
-    [ $# -eq 0 ] && set -- "$@" "<empty>"
-    _sw_tw=$(termwidth); isint "$_sw_tw" || _sw_tw=80  # ensure _sw_tw is a save number for math
-    # calculate the "right_status collision zone" so the last wrap keeps us clear of it
-    _sw_status_width=6   # e.g. "[ Ok ]" = 6 char
-    _sw_buffer=4         # padding for more visually appealing wrapping
-    _sw_collision_limit=$(( _sw_tw - _sw_status_width - _sw_buffer ))
-    [ "$_sw_collision_limit" -lt 0 ] && _sw_collision_limit=0   # clamp to zero incase negative
-    # if r_margin is deep enough to cover the status zone, no special wrap is needed
-    if [ "$_sw_r_margin" -ge $(( _sw_status_width + _sw_buffer )) ]; then
-        _sw_force_status_wrap=$FALSE
+  # determine the initial total visible length of the message
+  _sw_remaining_len=$(get_msg_len "$_sw_msg")  # Initialize the counter here
+  # perform controlled split on the remaining parameters ($@)
+  set -f     # Disable globbing to prevent interpretation of "*" as wildcard to be expanded, etc.
+  # safely convert a positional parameters (either multiple args or a single quoted string) into individual words
+  set -- $_sw_msg    # set with $_sw_msg unquoted so each split word becomes a positional parameter
+  set +f     # re-enable globbing (minimize the "blast radius" of the globbing-disabled state)
+  # after shift and reassembly; set a default message argument to "<empty>" if none provided
+  [ $# -eq 0 ] && set -- "$@" "<empty>"
+  _sw_tw=$(termwidth); isint "$_sw_tw" || _sw_tw=80  # ensure _sw_tw is a save number for math
+  # calculate the "right_status collision zone" so the last wrap keeps us clear of it
+  _sw_status_width=6   # e.g. "[ Ok ]" = 6 char
+  _sw_buffer=4         # padding for more visually appealing wrapping
+  _sw_collision_limit=$(( _sw_tw - _sw_status_width - _sw_buffer ))
+  [ "$_sw_collision_limit" -lt 0 ] && _sw_collision_limit=0   # clamp to zero incase negative
+  # if r_margin is deep enough to cover the status zone, no special wrap is needed
+  if [ "$_sw_r_margin" -ge $(( _sw_status_width + _sw_buffer )) ]; then
+    _sw_force_status_wrap=$FALSE
+  else
+    _sw_force_status_wrap=$TRUE
+  fi
+
+  _sw_line_len="$_sw_current_col" # initialize with starting position
+  # smartly consider whether to print each word or wrap it to the _sw_l_margin
+  _sw_FIRST_WORD=$TRUE  # don't wrap for first word
+
+  while [ $# -gt 0 ]; do
+    if [ $# -eq 1 ]; then _sw_last_word=$TRUE; else _sw_last_word=$FALSE; fi
+    # use collision limit ONLY for last word; otherwise use the requested r_margin
+    if [ "$_sw_last_word" ]; then
+      _sw_boundary=$_sw_collision_limit
     else
-        _sw_force_status_wrap=$TRUE
+      _sw_boundary=$(( _sw_tw - _sw_r_margin ))
+    fi
+    # optimization - calculate if everything left fits on this line
+    _sw_space_left=$(( _sw_boundary - _sw_line_len ))
+    # first word goes alone; others preceded by space (+1)
+    [ "$_sw_FIRST_WORD" ] || _sw_space_left=$(( _sw_space_left - 1 ))
+    # if there is enough room for all of it, be done
+    if [ "$_sw_remaining_len" -le "$_sw_space_left" ]; then
+      [ "$_sw_FIRST_WORD" ] || printf " "
+      printf "%b" "$*"
+      break # done
     fi
 
-    _sw_line_len="$_sw_current_col" # initialize with starting position
-    # smartly consider whether to print each word or wrap it to the _sw_l_margin
-    _sw_FIRST_WORD=$TRUE  # don't wrap for first word
+    # not room for all of it, so step off a word
+    # (step logic - measure only the next word)
+    _sw_x_peak="$1"
+    _sw_x_peak_len=$(get_msg_len "$_sw_x_peak")
+    if [ "$_sw_FIRST_WORD" ]; then
+      _sw_needed=$(( _sw_line_len + _sw_x_peak_len ))
+    else
+      _sw_needed=$(( _sw_line_len + _sw_x_peak_len + 1 ))
+    fi
 
-    while [ $# -gt 0 ]; do
-        if [ $# -eq 1 ]; then _sw_last_word=$TRUE; else _sw_last_word=$FALSE; fi
-        # use collision limit ONLY for last word; otherwise use the requested r_margin
-        if [ "$_sw_last_word" ]; then
-            _sw_boundary=$_sw_collision_limit
-        else
-            _sw_boundary=$(( _sw_tw - _sw_r_margin ))
-        fi
-        # optimization - calculate if everything left fits on this line
-        _sw_space_left=$(( _sw_boundary - _sw_line_len ))
-        # first word goes alone; others preceded by space (+1)
-        [ "$_sw_FIRST_WORD" ] || _sw_space_left=$(( _sw_space_left - 1 ))
-        # if there is enough room for all of it, be done
-        if [ "$_sw_remaining_len" -le "$_sw_space_left" ]; then
-            [ "$_sw_FIRST_WORD" ] || printf " "
-            printf "%b" "$*"
-            break # done
-        fi
+    # if this word fits, print it, else wrap
+    if [ "$_sw_needed" -le "$_sw_boundary" ]; then
+      # it fits; print it (no longer 1st word if it was before)
+      [ "$_sw_FIRST_WORD" ] || printf " "
+      printf "%b" "$_sw_x_peak"
+      _sw_line_len=$_sw_needed  # keep track of what has been rendered
+      _sw_FIRST_WORD=$FALSE
+    else
+      # it won't fit - so wrap (incl logic for final word if margin is thin)
+      if [ $_sw_last_word ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
+        # last word; thin margin (avoid collision with status zone); wouldn't wrap otherwise, so force it
+        # wrap, advance to l_margin, print word
+        printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
+      else
+        # wrap, advance to l_margin (don't print word; just set first word ** )
+        printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
+        _sw_line_len=$_sw_l_margin
+        _sw_FIRST_WORD=$TRUE
+        continue #  (i.e. don't shift)(** evaluate the same word as FIRST_WORD, on the new line)
+      fi  # last word
+    fi  # fits?
 
-        # not room for all of it, so step off a word
-        # (step logic - measure only the next word)
-        _sw_x_peak="$1"
-        _sw_x_peak_len=$(get_msg_len "$_sw_x_peak")
-        if [ "$_sw_FIRST_WORD" ]; then
-            _sw_needed=$(( _sw_line_len + _sw_x_peak_len ))
-        else
-            _sw_needed=$(( _sw_line_len + _sw_x_peak_len + 1 ))
-        fi
+    # update total message remainder counter by subtraction
+    _sw_remaining_len=$(( _sw_remaining_len - _sw_x_peak_len ))
+    [ $# -gt 1 ] && _sw_remaining_len=$(( _sw_remaining_len - 1 ))
+    shift
+  done
+  swr_ret=$?
 
-        # if this word fits, print it, else wrap
-        if [ "$_sw_needed" -le "$_sw_boundary" ]; then
-            # it fits; print it (no longer 1st word if it was before)
-            [ "$_sw_FIRST_WORD" ] || printf " "
-            printf "%b" "$_sw_x_peak"
-            _sw_line_len=$_sw_needed  # keep track of what has been rendered
-            _sw_FIRST_WORD=$FALSE
-        else
-            # it won't fit - so wrap (incl logic for final word if margin is thin)
-            if [ $_sw_last_word ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
-                # last word; thin margin (avoid collision with status zone); wouldn't wrap otherwise, so force it
-                # wrap, advance to l_margin, print word
-                printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
-            else
-                # wrap, advance to l_margin (don't print word; just set first word ** )
-                printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
-                _sw_line_len=$_sw_l_margin
-                _sw_FIRST_WORD=$TRUE
-                continue #  (i.e. don't shift)(** evaluate the same word as FIRST_WORD, on the new line)
-            fi  # last word
-        fi  # fits?
-
-        # update total message remainder counter by subtraction
-        _sw_remaining_len=$(( _sw_remaining_len - _sw_x_peak_len ))
-        [ $# -gt 1 ] && _sw_remaining_len=$(( _sw_remaining_len - 1 ))
-        shift
-    done
-
-    # clean up variables to maintain "local" scope in sourced environments
-    unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD
-    unset -v _sw_l_margin _sw_line_len _sw_status_width _sw_total_tail_len
-    unset -v _sw_trace _sw_tw _sw_x _sw_x_len _sw_x_peak _sw_x_peak_len
+  # clean up variables to maintain "local" scope in sourced environments
+  unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD
+  unset -v _sw_l_margin _sw_line_len _sw_status_width _sw_total_tail_len
+  unset -v _sw_trace _sw_tw _sw_x _sw_x_len _sw_x_peak _sw_x_peak_len
+  return $swr_ret
 }
 # @usage smart_wrap_n "$start" "$l_margin" "$r_margin" "$message"
 # @deps _translate_escapes, strip_ansi
@@ -1333,22 +1339,22 @@ ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
   # @ret 0: success; 1: fail
   # @rule uses stderr for the prompt to keep stdout clean for capturing the password
   # @rule uses 'stty -echo' to disable terminal character display
-    ret=0
+    ap_ret=0
     printf '%s' "$1" >&2  # use stderr so the prompt goes to the screen
     stty -echo
-    read -r _pass || ret=1
+    read -r _pass || ap_ret=1
     stty echo
-    printf "\n" >&2 || ret=1
+    printf "\n" >&2 || ap_ret=1
     printf '%s' "$_pass"
     unset -v _pass
-    return $ret
+    return $ap_ret
 }
 
 alpha_words() # (POSIX) alphabetize the words in a quoted input string
-{ [ $# -eq 0 ] && return 0  # guard clause; just return 0 success if no args
+{ aw_ret=0; [ $# -eq 0 ] && return 0  # guard clause; just return 0 success if no args
   for _x in "$@"; do printf '%s\n' "$_x"; done | LC_ALL=en_US.UTF-8 sort -db 2>/dev/null || \
-    for _x in "$@"; do printf '%s\n' "$_x"; done | sort -db # Fallback if UTF-8 locale is missing
-  unset -v _x ; }
+    for _x in "$@"; do printf '%s\n' "$_x"; done | sort -db ; aw_ret=$?  # Fallback if UTF-8 locale is missing
+  unset -v _x ; return $aw_ret ; }
 # @usage alpha_words "word list"
 # @args $* string of words to be sorted
 # @ret newline-separated list of alphabetized words
@@ -1357,9 +1363,9 @@ alpha_words() # (POSIX) alphabetize the words in a quoted input string
 # @note sort -b (ignore leading blanks) in case string has accidental leading spaces
 
 right_most() # (POSIX) echo the right-most character in a string variable $1
-{ _rm_str="$1"; [ -z "$_rm_str" ] && return 1; # guard clause; reject empty string
-printf -- '%s' "${_rm_str#${_rm_str%?}}"     # -- prevents printf from treating leading "-" as a flag
-unset -v _rm_str; }                       # clean up local variable
+{ rm_ret=0; _rm_str="$1"; [ -z "$_rm_str" ] && return 1; # guard clause; reject empty string
+printf -- '%s' "${_rm_str#${_rm_str%?}}" ; rm_ret=$?    # -- prevents printf from treating leading "-" as a flag
+unset -v _rm_str; return $rm_ret ; }                       # clean up local variable
 # @usage right_most "string"
 # @args $1 input string
 # @ret the single final character of the input string
@@ -1373,20 +1379,20 @@ unset -v _rm_str; }                       # clean up local variable
 # echo ${_rm_str} | rev | cut -c 1 ; }          # other way 3 (non-POSIX rev/cut -c and slower external cut/rev)
 
 left_most() # (POSIX) echo the left-most character in a string variable $1
-{ _lm_str="$1"; [ -z "$_lm_str" ] && return 1
-  printf -- '%s' "${_lm_str%${_lm_str#?}}"
-  unset -v _lm_str ; }
+{ lm_ret=0; _lm_str="$1"; [ -z "$_lm_str" ] && return 1
+  printf -- '%s' "${_lm_str%${_lm_str#?}}" ; lm_ret=$?
+  unset -v _lm_str ; return $lm_ret ; }
 # @usage left_most "string"
 # @args $1 input string
 # @ret the single first character of the input string
 # @rule uses POSIX parameter expansion ${str%${str#?}} to extract character
 
 print_center() # (POSIX) print text $2 centered on row $1
-{ _pc_row="$1"; _pc_text="$2"; _pc_w=$(termwidth)
+{ p_ctr_ret=0; _pc_row="$1"; _pc_text="$2"; _pc_w=$(termwidth)
   _pc_len=${#_pc_text}; _pc_col=$(( (_pc_w / 2) - (_pc_len / 2) ))
   [ "$_pc_col" -lt 1 ] && _pc_col=1  # Prevent negative/zero column
-  CUP "$_pc_row" "$_pc_col" ; printf '%s' "$_pc_text" ;
-  unset -v _pc_row _pc_text _pc_w _pc_len _pc_col ; }
+  CUP "$_pc_row" "$_pc_col" ; printf '%s' "$_pc_text" ; p_ctr_ret=$?
+  unset -v _pc_row _pc_text _pc_w _pc_len _pc_col ; return $p_ctr_ret ; }
 # @usage print_center "row" "text"
 # @args $1 row number; $2 text to center
 # @deps termwidth CUP
@@ -1430,26 +1436,25 @@ status_color() # (POSIX) emit escape seq for color per arg $1
 # 20260119 - update trying 1 among map to BRon (test if this "breaks" something)
 
 vercomp() # (almost POSIX)(portible w/ coreutils) compare versions return [0:equal|1:greaterthan|2:lessthan]
-{ # @usage vercomp "v1" "v2"
-  # @args $1 candidate version; $2 comparison version
-  # @ret 0:equal | 1:greater than | 2:less than
-  # @deps sort -V (coreutils)
-  # @rule uses sort -V for natural version sorting (e.g., 1.10 > 1.2)
-  _candidate1="$1"; _candidate2="$2"; _first=""
+{ vc_ret=0; _candidate1="$1"; _candidate2="$2"; _first=""
   if [ "$_candidate1" = "$_candidate2" ]; then
-    unset -v _candidate1 _candidate2 _first
-    return 0;
+    vc_ret=0    # equal
   else
      _first=$(printf '%b' "$1\n$2" | sort -V | head -n1);
     if [ "$_first" = "$_candidate2" ]; then
-      unset -v _candidate1 _candidate2 _first
-      return 1;
+      vc_ret=1  # greater
     else
-      unset -v _candidate1 _candidate2 _first
-      return 2;
+      vc_ret=2  # less
     fi;  # _first
   fi;  # _candidates
+  unset -v _candidate1 _candidate2 _first
+  return $vc_ret
 }
+# @usage vercomp "v1" "v2"
+# @args $1 candidate version; $2 comparison version
+# @ret 0:equal | 1:greater than | 2:less than
+# @deps sort -V (coreutils)
+# @rule uses sort -V for natural version sorting (e.g., 1.10 > 1.2)
 
 show_result() # (POSIX) show the result of vercomp comparison, in english
 { case $1 in
@@ -1475,15 +1480,7 @@ my_short_date() # (POSIX) echo shorter date string (yyyymmdd-timehack)
 # @note optimized for log file naming or compact timestamps
 
 initialize_vars() # initialize values for vars in $@; incl bool. lv.
-{ # @usage initialize_vars [type.var_name] ...
-  # @args $@ list of variables to initialize, optionally prefixed by type (e.g., bool.VAR)
-  # @ret 0: success; 1: fail (no args); 2: fail (invalid type)
-  # @deps d_message d_message_n d_right_status
-  # @rule type prefixes: bool (set $FALSE), yn (set 'no'), lv (set '')
-  # @rule handles untyped variables by initializing them to NULL ('')
-  # @note uses eval for dynamic variable assignment; handles case-insensitive type prefixes
-  # @note skips 'verbosity' to prevent accidental reset of script state
-  [ $# -lt 1 ] && {  unset -v _iv_item _iv_parmlist _iv_var_name _iv_type _iv_var; return 1; }
+{ [ $# -lt 1 ] && return 1
   _iv_parmlist=""
   for _iv_item in "$@"; do case "$_iv_item" in
       *verbosity*|*bool.VERBOSE*|*VERBOSE*) continue ;;
@@ -1540,10 +1537,18 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv.
   unset -v _iv_item _iv_parmlist _iv_var_name _iv_type _iv_var
   return 0
 }
+# @usage initialize_vars [type.var_name] ...
+# @args $@ list of variables to initialize, optionally prefixed by type (e.g., bool.VAR)
+# @ret 0: success; 1: fail (no args); 2: fail (invalid type)
+# @deps d_message d_message_n d_right_status
+# @rule type prefixes: bool (set $FALSE), yn (set 'no'), lv (set '')
+# @rule handles untyped variables by initializing them to NULL ('')
+# @note uses eval for dynamic variable assignment; handles case-insensitive type prefixes
+# @note skips 'verbosity' to prevent accidental reset of script state
 
 
 display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
-{
+{ dv_ret=0
   if ! isint $1 ; then
     E_message "Error: arg \$1 must be numeric longest expected input var name"
     exit
@@ -1600,9 +1605,9 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
         message "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}${_dv_key} ${BBon}]${Boff}"
         ;;
     esac
-  done
+  done ; dv_ret=$?
   unset -v _dv_maxlen _dv_var_name _dv_type _dv_var _dv_pad _dv_key _dv_start_col _dv_indent
-  return 0
+  return $dv_ret
 }
 # @usage display_vars $longest "type.var1" "type.var2" ...
 # @args $1 integer: length of the longest variable name for column alignment
@@ -1616,9 +1621,9 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
 # @note uses eval for dynamic symbol resolution; ensures layout-aware padding via repeat
 
 show_config() # (POSIX) show config with get_longest and display_vars
-{ d_message "in show_config" "$info" ; separator "${PN}-${BUILD}" "(configuration)"
-  _longest=$(get_longest ${varlist}) ; display_vars ${_longest} ${varlist} ;
-  unset -v _longest; }
+{ sc_ret=0; d_message "in show_config" "$info" ; separator "${PN}-${BUILD}" "(configuration)"
+  _longest=$(get_longest ${varlist}) ; display_vars ${_longest} ${varlist} ; sc_ret=$?
+  unset -v _longest; return $sc_ret ; }
 # @usage show_config
 # @vars varlist (list of variables to display)
 # @vars PN, BUILD (for separator title)
@@ -1630,9 +1635,9 @@ show_config() # (POSIX) show config with get_longest and display_vars
 #-----[ Baseline Messaging ]-----------------------------------------------------------------------------------
 
 get_severity() # (POSIX) map integer $1 severity levels to RFC 5424 keywords and (if $2=[dD]*) descriptions
-{ ret=0
+{ gs_ret=0
   ! isint $1 && { E_message "$E_BAD_ARGS [$@]; get_severity requires integer severity level 0-7"; return 1; }
-  [ $# -ge 2 ] && case "$2" in [dD]* ) ;; * ) E_message "invalid arg \$2 [$2]; only [dD]* allowed"; return 1;; esac
+  [ $# -ge 2 ] && case "$2" in [dD]* ) ;; * ) E_message "invalid arg \$2 [$2]; only [dD]* allowed"; return 2 ;; esac
   case "$1" in
     0 ) _gs_level="emerg"; _gs_desc="system is unusable" ;;
     1 ) _gs_level="alert"; _gs_desc="immediate action required" ;;
@@ -1645,11 +1650,12 @@ get_severity() # (POSIX) map integer $1 severity levels to RFC 5424 keywords and
     * ) E_message "$E_BAD_ARGS [$@]; get_severity requires integer severity level 0-7"; ret=1 ;;
   esac
   _gs_msg="$_gs_level"
+  # maybe also append description, if $2 = d
   case $2 in [dD]* ) _gs_msg="${_gs_msg} - ${_gs_desc}" ;; esac
-  printf '%s\n' "$_gs_msg"
+  printf '%s\n' "$_gs_msg" ; gs_ret=$?
 
   unset -v _gs_level _gs_desc _gs_msg
-  return $ret
+  return $gs_ret
 }
 # @usage get_severity <0-7> [d]
 # @args $1 (int) syslog-standard severity level (0-7)
@@ -1659,20 +1665,25 @@ get_severity() # (POSIX) map integer $1 severity levels to RFC 5424 keywords and
 # @ret 0 on success (emit keyword/description to stdout); 1 on invalid input
 
 separator() # (POSIX) draw a horizontal line with preface $1 and title $2
-{ # to facilitate separation of portions of the output of various scripts
-  # @usage separator "preface" "title"
-  # @args $1 preface string (defaults to hostname); $2 title string (defaults to script name)
-  # @deps termwidth repeat
-  # @rule calculates terminal width to draw a full-width horizontal rule
-  # @note subtracts 8 characters for brackets and spacing to prevent wrapping
-  _s_preface=${1:-$(hostname)}; _s_tw=$(termwidth)
-#  _s_title=${2:-$(basename "$0")};
+{ s_ret=0; _s_preface=${1:-$(hostname)}; _s_tw=$(termwidth)
   _s_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
   _s_reps=$(( _s_tw - ( ${#_s_preface} + ${#_s_title} + 8 ) ))
   [ "$_s_reps" -lt 0 ] && _s_reps=0  # clamp to 0 if negative
-  printf '%b' "${BYon}---[${BRon} ${_s_preface} ${BCon}${_s_title} ${BYon}]"
-  repeat '-' "$_s_reps"; printf '%b\n' "${Boff}"
-  unset -v _s_preface _s_title _s_tw _s_reps; }
+  # build this as one block so we can get a maintainable format and a single exit status code
+  ( set -- '%b---[ %b%s %b%s %b]%s%b'
+    set -- "$@" "$BYon" "$BRon"
+    set -- "$@" "$_s_preface" "${Boff}${BCon}" "$_s_title"
+    set -- "$@" "$BYon" "$(repeat '-' "$_s_reps")" "$Boff"
+    printf "$@" ; ) ; s_ret=$?
+  unset -v _s_preface _s_title _s_tw _s_reps
+  return $s_ret
+}
+# to facilitate separation of portions of the output of various scripts
+# @usage separator "preface" "title"
+# @args $1 preface string (defaults to hostname); $2 title string (defaults to script name)
+# @deps termwidth repeat
+# @rule calculates terminal width to draw a full-width horizontal rule
+# @note subtracts 8 characters for brackets and spacing to prevent wrapping
 
 non_stty_separator() # (deprecated; use separator)
 { W_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
@@ -1685,10 +1696,11 @@ prompt() # deprecated (use yn_prompt)
   yn_prompt "$@"; }
 
 yn_prompt() # (POSIX) set external variable $answer based on reponse to prompt $1
-{ _ps="$*"; answer=""; printf '%b' "\n\n"; CUU; SCP;
+{ yn_ret=0; _yn_ps="$*"; answer=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${answer:- }" : '[yYnN]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; message_n "$_ps [Y/n]: " && read -r answer < /dev/tty; done; unset -v _ps ; }
+RCP; message_n "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
+unset -v _yn_ps ; return $yn_ret ; }
 # @usage prompt "question text"
 # @args $1 string: the question to ask the user
 # @vars answer (global): modified by this function
@@ -1704,10 +1716,11 @@ new_prompt() # deprecated (use yns_prompt)
   yns_prompt "$@"; }
 
 yns_prompt() # (POSIX) set external variable $answer based on reponse to prompt $1
-{ _ps="$*"; response=""; printf '%b' "\n\n"; CUU; SCP;
+{ yns_ret=0 ; _yns_ps="$*"; response=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${response:- }" : '[yYnNsS]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; message_n "$_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; unset -v _ps ; }
+RCP; message_n "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
+unset -v _yns_ps ; return $yns_ret ; }
 # @usage yns_prompt "question text"
 # @args $1 string: the question to ask the user
 # @vars response (global): modified by this function
@@ -1762,7 +1775,7 @@ leave() # (POSIX) display reason with message and exit/return with status 0
 # @rule detects shell state via $- to avoid closing interactive terminals
 
 progress_inline() # (POSIX) show progress of silent process on next line $1=step, $2=total
-{ _p_step=$1; _p_total=$2; _p_tw=$(termwidth); isint "$_p_tw" || _p_tw=80
+{ pil_ret=0; _p_step=$1; _p_total=$2; _p_tw=$(termwidth); isint "$_p_tw" || _p_tw=80
   _p_percent=$(( (100 * _p_step) / _p_total ))
   # use 1/4 of screen width for the bar to keep room for text
   _p_bar_max=$(( _p_tw / 4 ))
@@ -1781,20 +1794,22 @@ progress_inline() # (POSIX) show progress of silent process on next line $1=step
   # this printf command is going to be over 190 characters, and I don't like using "\"
   # to break commands over multiple lines because you cannot safely copy/paste those lines
   # (e.g. for testing in another terminal), so I will use set to build it up
+  # inside a curly brace block to capture one exit status
   #   start with the format string (see BUCKETS above note %b vs %s for ANSI color etc)
-  set -- "\r Working: [%b%b] %b%3d%%%b (%d/%d)"
+  { set -- "\r Working: [%b%b] %b%3d%%%b (%d/%d)"
   #   append the bar segment buckets
-#  set -- "$@" "${_p_color}$(repeat "#" $_p_filled)${Boff}"    # colored progress bar
-  set -- "$@" "${Bon}$(repeat "#" $_p_filled)${Boff}"         # monotone progress bar
-#  set -- "$@" "$(repeat "#" $_p_filled)${Boff}"               # uncolored monotone progress bar
+  #  set -- "$@" "${_p_color}$(repeat "#" $_p_filled)${Boff}"    # status-changing colored progress bar
+  set -- "$@" "${Bon}$(repeat "#" $_p_filled)${Boff}"            # single-color (blue) monotone progress bar
+  #  set -- "$@" "$(repeat "#" $_p_filled)${Boff}"               # uncolored monotone progress bar
   set -- "$@" "${BBon}$(repeat "." $_p_empty)${Boff}"
   #   append the remaining status variables
   set -- "$@" "${_p_color}" "$_p_percent" "${Boff}" "$_p_step" "$_p_total"
   #   execute (double quotes are vital here, to preserve the quoting of the arguments)
-  printf "$@"
+  printf "$@" ; } ; pil_ret=$?
   # on 100%, move to next line so the bar remains as a record
   [ "$_p_step" -eq "$_p_total" ] && printf "\n"
-  unset -v _p_step _p_total _p_tw _p_percent _p_bar_max _p_filled _p_empty _p_color ; }
+  unset -v _p_step _p_total _p_tw _p_percent _p_bar_max _p_filled _p_empty _p_color
+  return $pil_ret ; }
 # @usage progress_inline $current $total
 # @args $1 current step; $2 total steps
 # @deps termwidth isint repeat
@@ -1804,25 +1819,24 @@ progress_inline() # (POSIX) show progress of silent process on next line $1=step
 # @note automatically emits newline upon reaching 100% to preserve the bar
 
 sh_countdown() # (POSIX) count-down seconds (arg $1)
-{ # special note: bb sh cannot use base#number notation with prefix 10# to ensure interpretation as base 10
+{ shc_ret=0
   _shc_rem_time="${1:-30}"  # guard; default to 30 sec. if no arg given
   [ "$1" = "" ] && message "No argument given, defaulting to 30 seconds"
   # execute countdown
   while [ "${_shc_rem_time}" -ge "0" ] ; do  # use -ge 0 to display the final state
-    # bucket 1 - includes CSI + text + CSI
-    # bucket 2 - the 2-digit integer formatted by %02d
-    # bucket 3 - includes CSI + text + eraser spaces
-    printf "\r%b%02d%b" \
-      "${BGon}*${Boff} Pausing. [ ${BGon}" "$_shc_rem_time" "${Boff} ] seconds remaining...   "
+    # build this with set -- in curly braces to protect parameters, make it more readable on two lines and to get one exit status
+    { set -- '\r%b Pausing. [ %b%02d%b ] seconds remaining ...   ';
+      set -- "$@" "${BGon}*${Boff}" "${BGon}" "$_shc_rem_time" "${Boff}";
+      printf "$@" ; } ; [ ! $? -eq 0 ] && shc_ret=1
     # exit loop immediatly after reaching/printing 00 (don't do "last" sleep cycle)
     [ "$_shc_rem_time" -eq 0 ] && break
     sleep 1; _shc_rem_time=$(($_shc_rem_time - 1))
-  done
+  done || shc_ret=2
   printf "\n"  #clean up the line for the next command
-  unset -v _shc_rem_time ; return 0 ; }
+  unset -v _shc_rem_time ; return $shc_ret ; }
 # @usage sh_countdown [seconds]
 # @args $1 number of seconds to pause (defaults to 30)
-# @ret 0 always
+# @ret 0 if no error; 1 if print error; 2 in countdown error
 # @rule uses \r for in-place counter updates
 # @note special note: bb sh cannot use base#number notation (don't prefix w 10#)
 # @note breaks immediately at 0 to avoid an unnecessary final sleep cycle
@@ -1885,7 +1899,7 @@ E_message_n() # (POSIX) display text error message $@ (no CR) (like echo -e -n)
 # @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout
-{ ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+{ hr_ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
   if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
   if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
   if [ "$_exit_status" -eq 0 ] ; then
@@ -1894,10 +1908,10 @@ handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout
   else
       printf '%b' "${_err_msg}"  # replicates echo -e -n
       right_status 1
-      ret=1
+      hr_ret=1
   fi
   unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in
-  return $ret; }
+  return $hr_ret; }
 # @usage handle_result "$?" "ok_msg" "err_msg"
 # @args $1 exit status; $2 success message; $3 error message
 # @deps right_status status_color
@@ -1960,7 +1974,7 @@ timestamp() # (POSIX) echo a simple timestamp (yyyymmdd-hh:mm:ss)
 # @note used for unique filenames, log entries, and non-blocking timehacks
 
 log_separator() # (POSIX) output separator() to stdout and similar to logFile
-{ ret=0; _ls_preface=${1:-$(hostname)};
+{ ls_ret=0; _ls_preface=${1:-$(hostname)};
 #  _ls_title=${2:-$(basename "$0")}
   _ls_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
   _ls_ts="$(timestamp)"; _ls_tw=80  # standard fixed width for log files
@@ -1975,9 +1989,9 @@ log_separator() # (POSIX) output separator() to stdout and similar to logFile
   { printf '%s' "$_ls_clean_header"
     repeat '-' "$_ls_reps"
     printf "\n"
-  } >> "$logFile" || ret=1
+  } >> "$logFile" || ls_ret=1
   unset -v _ls_preface _ls_title _ls_ts _ls_clean_header _ls_reps _ls_len
-  return $ret
+  return $ls_ret
 }
 # @usage log_separator "preface" "title"
 # @args $1 preface; $2 title
@@ -1987,7 +2001,7 @@ log_separator() # (POSIX) output separator() to stdout and similar to logFile
 # @note enforces a standard 80-character fixed width for log files to ensure readability
 
 log_message() # (POSIX) message() to stdout and $logFile owned by $user (like echo -e)
-{ ret=0
+{ log_m_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -1995,9 +2009,9 @@ log_message() # (POSIX) message() to stdout and $logFile owned by $user (like ec
   # filter the message through strip_ansi before logging
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   # print clean, timestamped message to logFile
-  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile" || ret=1
+  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile" || log_m_ret=1
   unset -v _ts _clean_msg
-  return $ret
+  return $log_m_ret
 }
 # @usage log_message "msg string"
 # @args $* the message to log (treated as a single string)
@@ -2010,7 +2024,7 @@ log_message() # (POSIX) message() to stdout and $logFile owned by $user (like ec
 # @note use '%s' for timestamp
 
 log_message_n() # (POSIX) message() to stdout and $logFile owned by $user (like echo -e -n)
-{ ret=0
+{ log_mn_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2019,7 +2033,7 @@ log_message_n() # (POSIX) message() to stdout and $logFile owned by $user (like 
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_mn_ret
 }
 # @usage log_message_n "msg string"
 # @args $* the message to log
@@ -2034,7 +2048,7 @@ log_message_n() # (POSIX) message() to stdout and $logFile owned by $user (like 
 # @note use '%s' for timestamp
 
 log_echo() # (POSIX) echo to stdout and $logFile owned by $user (like echo)
-{ ret=0
+{ log_e_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2042,7 +2056,7 @@ log_echo() # (POSIX) echo to stdout and $logFile owned by $user (like echo)
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_e_ret
 }
 # @usage log_echo "msg string"
 # @args $* the message string
@@ -2055,7 +2069,7 @@ log_echo() # (POSIX) echo to stdout and $logFile owned by $user (like echo)
 # @note use '%s' for timestamp
 
 log_echo_e() # (POSIX) echo -e to stdout and $logFile owned by $user (like echo -e)
-{ ret=0
+{ log_ee_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2063,7 +2077,7 @@ log_echo_e() # (POSIX) echo -e to stdout and $logFile owned by $user (like echo 
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_ee_ret
 }
 # @usage log_echo_e "msg string"
 # @args $* the message containing escape sequences
@@ -2075,7 +2089,7 @@ log_echo_e() # (POSIX) echo -e to stdout and $logFile owned by $user (like echo 
 # @note use '%s' for timestamp
 
 log_echo_n() # (POSIX) echo -n "$1" to stdout and $logFile owned by $user (like echo -n)
-{ ret=0
+{ log_en_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2083,7 +2097,7 @@ log_echo_n() # (POSIX) echo -n "$1" to stdout and $logFile owned by $user (like 
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_en_ret
 }
 # @usage log_echo_n "msg string"
 # @args $* the message string
@@ -2095,7 +2109,7 @@ log_echo_n() # (POSIX) echo -n "$1" to stdout and $logFile owned by $user (like 
 # @note use '%s' for timestamp
 
 log_echo_e_n() # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user (like echo -e -n)
-{ ret=0
+{ log_een_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2103,7 +2117,7 @@ log_echo_e_n() # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user (
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_een_ret
 }
 # @usage log_echo_e_n "msg string"
 # @args $* string with escape sequences
@@ -2115,7 +2129,7 @@ log_echo_e_n() # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user (
 # @note use '%s' for timestamp
 
 log_E_message() # (POSIX) E_message() to stdout and $logFile owned by $user (like echo -e)
-{ ret=0
+{ log_E_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2123,7 +2137,7 @@ log_E_message() # (POSIX) E_message() to stdout and $logFile owned by $user (lik
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_E_ret
 }
 # @usage log_E_message "error string"
 # @args $* the error message components
@@ -2137,7 +2151,7 @@ log_E_message() # (POSIX) E_message() to stdout and $logFile owned by $user (lik
 # @note use '%s' for timestamp
 
 log_E_message_n() # (POSIX) E_message_n() to stdout and $logFile owned by $user (like echo -e -n)
-{ ret=0
+{ log_En_ret=0
   # guard - ensure log is writable by current user
   [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
   _ts="$(timestamp)"  # set timestamp for log entry
@@ -2145,7 +2159,7 @@ log_E_message_n() # (POSIX) E_message_n() to stdout and $logFile owned by $user 
   _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
   printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
   unset -v _ts _clean_msg
-  return $ret
+  return $log_En_ret
 }
 # @usage log_E_message_n "error string"
 # @args $* the error message components
@@ -2177,7 +2191,7 @@ loggit() # (POSIX) send a job completion status message to the cron logger
 # @note interfaces with the system logger (syslog) under the 'cron' facility
 
 log_handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout and logFile
-{ ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+{ log_hr_ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
   if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
   if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
   if [ "$_exit_status" -eq 0 ]; then
@@ -2190,10 +2204,10 @@ log_handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout and 
       _c_msg=$(printf '%s' "${_err_msg}" | _translate_escapes | strip_ansi)
       printf "%s" "$_c_msg" >> "$logFile"
       log_right_status 1
-      ret=1
+      log_hr_ret=1
   fi
   unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in _c_msg
-  return $ret
+  return $log_hr_ret
 }
 # @usage log_handle_result "$?" "ok_msg" "err_msg"
 # @args $1 exit status; $2 success string; $3 error string
@@ -2205,7 +2219,7 @@ log_handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout and 
 # @note substitute no_msg=" \b" for either, to "suppress"
 
 log_right_status() # (POSIX) output rigit_status to stdout and logFile
-{ ret=0
+{ log_rs_ret=0
   # guard - reject zero args
   [ $# -lt 1 ] && { E_message "Error: 0 args. right_status requires integer status code"; return 1; }
   _lrs_status=$1; if [ "$_lrs_status" -eq 0 ] ; then
@@ -2221,9 +2235,9 @@ log_right_status() # (POSIX) output rigit_status to stdout and logFile
   printf "\r"
   if CUF "$_lrs_offset" ; then printf '%b\n' "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
   # clean logging
-  if [ -n "$logFile" ]; then printf '%s\n' "$_lrs_plain" >> "$logFile" || ret=1; fi
+  if [ -n "$logFile" ]; then printf '%s\n' "$_lrs_plain" >> "$logFile" || log_rs_ret=1; fi
   unset -v _lrs_msg _lrs_status _lrs_plain _lrs_tw _lrs_offset
-  return $ret
+  return $log_rs_ret
 }
 # @usage log_right_status "status"
 # @args $1 integer status code
@@ -2243,15 +2257,15 @@ log_right_status() # (POSIX) output rigit_status to stdout and logFile
 #  exactly one (and no accidental extra) newline
 
 log_show_config()   # show & log config w get_longest and display_vars
-{ ret=0
+{ log_sc_ret=0
   d_log_message "in lg_show_config" "$info"
   log_separator "${PN}-${BUILD}" "(configuration)"
   _longest=$(get_longest ${varlist})
   display_vars "${_longest}" ${varlist}
   # strip backslash escapes and ANSI codes and append to logFile
-  display_vars "${_longest}" ${varlist} | _translate_escapes | strip_ansi >> "$logFile" || ret=1
+  display_vars "${_longest}" ${varlist} | _translate_escapes | strip_ansi >> "$logFile" || log_sc_ret=1
   unset -v _longest
-  return $ret
+  return $log_sc_ret
 }
 # @usage log_show_config
 # @vars varlist, logFile, PN, BUILD
@@ -2310,7 +2324,7 @@ d_do() # (POSIX) IAW verbosity, execute complex (multi-command) jobs
       "$@"       # Otherwise, execute the arguments directly.
     fi  # zero or one command arg?
   else
-    :  # if global verbosity level does not exceed the conditional _dd_level, just return 0
+    :  # if global verbosity level does not exceed the conditional severity _dd_level, just return 0
   fi  # verbosity?
   unset -v _dd_level _dd_arg_count _i _dd_arg
   return 0
@@ -2440,7 +2454,7 @@ fe() # find ebuild files matching filter "*$1*"
 # @note searches recursively within /var/db/repos/
 
 pur() # (POSIX) ping ip address $1 until it is ready (0% loss of 3 packets)
-{ _pur_target="$1"; SCP; _pur_count=1; _hits=0; _hit_color="${Boff}"; _pur_max_retries=1000 ;
+{ pur_ret=0; _pur_target="$1"; SCP; _pur_count=1; _hits=0; _hit_color="${Boff}"; _pur_max_retries=1000 ;
   while [ "$_hits" -lt 3 ] && [ "$_pur_count" -lt "$_pur_max_retries" ]; do
     if ping -c1 -W1 "$_pur_target" >/dev/null 2>&1; then _hits=$((_hits + 1)); else _hits=0; fi;
     case "$_hits" in [01]) _hit_color="${BRon}";; 2) _hit_color="${BYon}";; 3) _hit_color="${BGon}";; esac;
@@ -2448,10 +2462,12 @@ pur() # (POSIX) ping ip address $1 until it is ready (0% loss of 3 packets)
     _pur_count=$((_pur_count + 1)); [ "$_hits" -lt 3 ] && sleep 1; done;
   RCP; EL ; # erase from cursor to end of line
   if [ "$_hits" -lt 3 ] ; then
-    RCP; E_message "timed out"; unset -v _pur_target _pur_count _hits _hit_color _pur_max_retries; return 1 ;
+    RCP; E_message "timed out"; pur_ret=1
   else
-    RCP; message "${BGon}OK${Boff} - ready now" ; unset -v _pur_target _pur_count _hits _hit_color _pur_max_retries; return 0 ;
+    RCP; message "${BGon}OK${Boff} - ready now"
   fi
+  unset -v _pur_target _pur_count _hits _hit_color _pur_max_retries
+  return $pur_ret
 }
 # @usage pur <ip_address>
 # @args $1: target IP or hostname
@@ -2460,7 +2476,7 @@ pur() # (POSIX) ping ip address $1 until it is ready (0% loss of 3 packets)
 # @note uses SCP/RCP for in-place terminal status updates
 
 swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is ready
-{ [ $# -lt 1 ] && return 1 ;   # guard; reject null target
+{ swr_ret=0; [ $# -lt 1 ] && return 1 ;   # guard; reject null target
   _swr_target="$1"; _swr_max_retries=10; _swr_count=0; _ssh_port="${2:-22}";  # default to port 22 but allow another to be specified as $2
   _yellow_thresh=$(($_swr_max_retries * 33/100)); _red_thresh=$(($_swr_max_retries * 75/100));
   pur "$_swr_target";
@@ -2487,13 +2503,13 @@ swr() # (POSIX) use pur() to check first; then ssh when netcat indicates port is
   if nc -z -w 1 "$_swr_target" "$_ssh_port" 2>/dev/null; then
     RCP; EL; message "${BGon}OK${Boff} - $_swr_target sshd is ready"
     ssh -p "$_ssh_port" "$_swr_target"
-    _result=0
+    swr_ret=0
   else
     RCP; EL; E_message "sshd port $_ssh_port on $_swr_target not responding after $_swr_max_retries tries"
-    _result=1
+    swr_ret=1
   fi
   unset -v _swr_target _ssh_port _swr_max_retries _swr_count _swr_color _yellow_thresh _red_thresh
-  return $_result
+  return $swr_ret
 }
 # @usage swr <target> [port]
 # @args $1: target IP/host; $2: SSH port (default 22)
@@ -2506,14 +2522,16 @@ maybe_format_warning() # (POSIX) issue a warning if INTERACTIVE is $TRUE
 { if [ $INTERACTIVE ] ; then format_warning "$@" || return 1; fi; return 0 ; }
 
 format_warning() # (POSIX) issue a warning that the operation will destroy target device
-{ ret=0
+{ fw_ret=0
   [ -z "$1" ] && { E_message "\$1 is null but must not be; Specify target_device"; return 1; }
   _fw_target_device="$1"
   : "${PN:=$(hostname)}"
   separator "$PN" "(format warning)"
   answer=""
-  _fw_msg1="${BMon}*   ${BRon}Warning:${BYon} this process will destroy all data on device [ ${BRon}${_fw_target_device}${BYon} ]${Boff}   ${BMon}*${Boff}"
-  _fw_msg2="${BMon}*   ${BYon}Warning:${BRon} this process will destroy all data on device [ ${BYon}${_fw_target_device}${BRon} ]${Boff}   ${BMon}*${Boff}"
+  _fw_msg1="${BMon}*   ${BRon}Warning:${BYon} this process will destroy all data on device"
+  _fw_msg1="${_fw_msg1} [ ${BRon}${_fw_target_device}${BYon} ]${Boff}   ${BMon}*${Boff}"
+  _fw_msg2="${BMon}*   ${BYon}Warning:${BRon} this process will destroy all data on device"
+  _fw_msg2="${_fw_msg2} [ ${BYon}${_fw_target_device}${BRon} ]${Boff}   ${BMon}*${Boff}"
   # estimate message() function left side padding
   # adjust for non-printing chars and message() padding
   _fw_msg_width=$(get_msg_len "$_fw_msg1")
@@ -2524,14 +2542,14 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
   printf '  %s\n' "$_fw_msg2"
   printf '  %s\n' "$_fw_msg1"
   printf '  %s' "${BMon}"; repeat '*' "${_fw_msg_width}"; printf '%s\n' "${Boff}"
-  prompt "$_fw_msg3"
+  yn_prompt "$_fw_msg3"
   case ${answer} in
-    [yY]* ) message "Affirmative response from user; continuing"; ret=0 ;;
-    [nN]* ) E_message "Negative response from user; quitting"; ret=0 ;;
-    * ) E_message "invalid response to format_warning"; ret=1 ;;
+    [yY]* ) message "Affirmative response from user; continuing"; fw_ret=0 ;;
+    [nN]* ) E_message "Negative response from user; quitting"; fw_ret=0 ;;
+    * ) E_message "invalid response to format_warning"; fw_ret=1 ;;
   esac
   unset -v _fw_msg1 _fw_msg2 _fw_msg_width _fw_msg3
-  return $ret ; }
+  return $fw_ret ; }
 # @usage format_warning
 # @vars PN _fw_target_device answer (globals)
 # @ret 0: user confirmed; 1: user denied or invalid input
@@ -2541,7 +2559,7 @@ format_warning() # (POSIX) issue a warning that the operation will destroy targe
 # @note uses get_msg_len to strip non-printing chars
 
 wipe_device() # (LINUX) use dd to fill target device $1 with random data
-{ ret=0
+{ wd_ret=0
   [ -z "$1" ] && { E_message "\$1 is null but must not be. Specify target_device"; return 1 ; }
   _wd_target_device="$1"
   [ -b "$_wd_target_device" ] || die "wipe_device: [$_wd_target_device] is not a block device"
@@ -2721,9 +2739,9 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
 
       # wait for dd to finish and capture its exit status code
       wait "$_wd_pid"
-      ret=$?
+      wd_ret=$?
       set -m  # re-enable monitor mode (job control) after background process is done
-      case $ret in
+      case $wd_ret in
         # exit codes from the dd cmd above are 0: success, 1: general error (disk full, I/O error, permission denied)
         #   or over 100 for shell errors (e.g. 126 dd not executable, or 127 dd not found ..)
         #   and exit code 130 means the user hit CTRL-C to quit
@@ -2737,14 +2755,14 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
           if [ "$_wd_EXPECT_DISK_FULL" ]; then
             progress_inline "$_wd_total_bytes" "$_wd_total_bytes"   # Success
           else
-            die "general failure; dd exit code [$ret]"
+            die "general failure; dd exit code [$wd_ret]"
           fi ;;
-        126 ) die "dd not executable; dd exit code [$ret]" ;;
-        127 ) die "dd not found; dd exit code [$ret]" ;;
-        130 ) die "process interrupted by user; dd exit code [$ret]" ;;
-        137 ) die "killed (OOM or kill -9); dd exit code [$ret]" ;;
-        138 ) die "bus error (SIGBUS); dd exit code [$ret]" ;;
-        *   ) die "unrecognized failure; dd exit code [$ret]" ;;
+        126 ) die "dd not executable; dd exit code [$wd_ret]" ;;
+        127 ) die "dd not found; dd exit code [$wd_ret]" ;;
+        130 ) die "process interrupted by user; dd exit code [$wd_ret]" ;;
+        137 ) die "killed (OOM or kill -9); dd exit code [$wd_ret]" ;;
+        138 ) die "bus error (SIGBUS); dd exit code [$wd_ret]" ;;
+        *   ) die "unrecognized failure; dd exit code [$wd_ret]" ;;
       esac
       ;;
     [nN]* ) die "aborting, as instructed" ;;
@@ -2757,8 +2775,8 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
   unset -v _wd_EXPECT_DISK_FULL _wd_my_cmd _wd_varlist _wd_longest
   unset -v _wd_msg _wd_res _wd_start_time _wd_pid _wd_timeout
   unset -v _wd_bytes_complete _wd_state _wd_curr_time _wd_elapsed _wd_elapsed_time
-  unset -v _wd_rate _wd_stats _wd_DSTATE _wd_INT _wd_offset 
-  return $ret
+  unset -v _wd_rate _wd_stats _wd_DSTATE _wd_INT _wd_offset
+  return $wd_ret
 }
 # @usage wipe_device <_wd_target_device>
 # @vars _wd_target_device (global)
@@ -2804,11 +2822,12 @@ get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
         printf '%b' " (${BRon}failed${Boff}) ..."
         right_status 1
         E_message "invalid _glk_crypt_keydev"
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
         return 1
         ;;
     esac
     handle_result $? "mounted" "could not mount _glk_crypt_keydev ($_glk_crypt_keydev_type)" || \
-      return 2
+      { unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result; return 2 ; }
   fi
   message_n "looking for keyfile"
   [ -f "${_glk_mnt_fixed}/crypt/dat" ]
@@ -3011,14 +3030,18 @@ app_configure_posix() {
   fi
 
   # user's application script (which sources this header file)
-  #   MUST have a initialize_command_sequence_posix() function
-  initialize_command_sequence_posix; _c_result=$?
-  log_message_n "command_sequence initialization status"
-  log_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
+  #   should have a initialize_command_sequence_posix() function
+  #   (MUST, if it uses run_sequence_posix)
+  # so, check for it and call it if it exists
+  if command -v initialize_command_sequence_posix; then
+    initialize_command_sequence_posix; _c_result=$?
+    log_message_n "command_sequence initialization status"
+    log_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
+  fi
 
-  [ "$_c_FLAGGED" ] && ret=1
+  [ "$_c_FLAGGED" ] && c_ret=1
   unset -v _c_FLAGGED _c_file _c_result
-  return $ret
+  return $c_ret
 }
 # @usage app_configure_posix
 # @vars PN, BUILD, user, logFile, status_file, config_dir, verbosity, INTERACTIVE, RESUME
@@ -3078,7 +3101,7 @@ usage_posix()                # explain default usage; mod with local "usage modu
 # @note uses _u_ prefix for internal loop variables; unsets before termination
 
 validate_dir_posix()  # validate or create a directory $1
-{   ret=0
+{   vd_ret=0
     [ $# -ne 1 ] && { log_E_message "Error: must specify dir_to_validate" ; return 1 ; }
     _vd_dir_to_validate=$1
     log_message_n "validating dir ${_vd_dir_to_validate}"
@@ -3089,16 +3112,18 @@ validate_dir_posix()  # validate or create a directory $1
         # use sudo in case current user is not root
         printf ' (%b%s%b)' "${BYon}" "creating" "${Boff}"
         sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "
-        log_handle_result $? "created" "failed to create $_vd_dir_to_validate" || return 1
+        log_handle_result $? "created" "failed to create $_vd_dir_to_validate" || \
+            { unset -v _vd_dir_to_validate; return 1 ; }
     fi
     # set ownership either way, using sudo in case current user is not root
     # (note: chown -R to give all contents to user)
     log_message_n "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
     sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
-    log_handle_result $? "ownership set" "failed to set ownership" || return 1
-    [ -w "${_vd_dir_to_validate}" ] ; ret=$?     # final validation (writable by user)
+    log_handle_result $? "ownership set" "failed to set ownership" || \
+        { unset -v _vd_dir_to_validate; return 1 ; }
+    [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
     unset -v _vd_dir_to_validate
-    return $ret
+    return $vd_ret
 }
 # @usage validate_dir_posix <path>
 # @args $1 (string) path to the directory to validate or create
@@ -3107,30 +3132,29 @@ validate_dir_posix()  # validate or create a directory $1
 # @ret 0 if directory exists or was successfully created; 1 otherwise
 
 validate_file_posix()  # validate or create command sequence status file $1
-{   ret=0
-    [ $# -ne 1 ] && { log_E_message "Error: must specify file_to_validate" ; return 1 ; }
-    _vf_file_to_validate=$1
-#    _vf_dir_to_validate=$(dirname "${_vf_file_to_validate}")
-    _vf_dir_to_validate="${_vf_file_to_validate%/*}"   #equivalent to dirname, but w/o subshell function call
-    # just in case the file is in the current directory (name passed w/o path)
-    [ "$_vf_dir_to_validate" = "$_vf_file_to_validate" ] && _vf_dir_to_validate="."
-    validate_dir_posix "$_vf_dir_to_validate"
-    log_message_n "validating file $_vf_file_to_validate"
-    if [ -w "${_vf_file_to_validate}" ] ; then
-        printf '%b%s%b' "${BGon}" " (valid)" "${Boff}"
-        log_right_status $TRUE
-    else
-        # use sudo in case current user is not root
-        printf ' (%b%s%b)' "${BYon}" "creating/fixing" "${Boff}"
-        sudo sh -c "
-             touch '${_vf_file_to_validate}' && chown '${user}:${user}' '${_vf_file_to_validate}'
-        " >/dev/null 2>&1
-        log_handle_result $? "file ready for owner" "failed to fix/set ownership of ${_vf_file_to_validate}" || return 1
-    fi
-    # final validation
-    [ -f "${_vf_file_to_validate}" ] ; ret=$?
-    unset -v _vf_file_to_validate _vf_dir_to_validate
-    return $ret
+{ vf_ret=0
+  [ $# -ne 1 ] && { log_E_message "Error: must specify file_to_validate" ; return 1 ; }
+  _vf_file_to_validate=$1
+  _vf_dir_to_validate="${_vf_file_to_validate%/*}"   #equivalent to dirname, but w/o subshell function call
+  # just in case the file is in the current directory (name passed w/o path)
+  [ "$_vf_dir_to_validate" = "$_vf_file_to_validate" ] && _vf_dir_to_validate="."
+  validate_dir_posix "$_vf_dir_to_validate"
+  log_message_n "validating file $_vf_file_to_validate"
+  if [ -w "${_vf_file_to_validate}" ] ; then
+    printf '%b%s%b' "${BGon}" " (valid)" "${Boff}"
+    log_right_status $TRUE
+  else
+    # use sudo in case current user is not root
+    printf ' (%b%s%b)' "${BYon}" "creating/fixing" "${Boff}"
+    sudo sh -c "
+      touch '${_vf_file_to_validate}' && chown '${user}:${user}' '${_vf_file_to_validate}'
+    " >/dev/null 2>&1
+    log_handle_result $? "file ready for owner" "failed to fix/set ownership of ${_vf_file_to_validate}" || return 1
+  fi
+  # final validation
+  [ -f "${_vf_file_to_validate}" ] ; vf_ret=$?
+  unset -v _vf_file_to_validate _vf_dir_to_validate
+  return $vf_ret
 }
 # @usage validate_file_posix <path>
 # @args $1 (string) path to the status file to validate or create
@@ -3140,7 +3164,7 @@ validate_file_posix()  # validate or create command sequence status file $1
 # @ret 0 if file exists or was successfully created; 1 otherwise
 
 process_cmdline_posix() # (POSIX) process command line arguments
-{ ret=0
+{ pc_ret=0
   _pc_arglist="$@"
   # pre-define a dynamic macro for adjusting verbosity
   # usage example: _pc_operator="+"; eval "$_pc_adjust_verbosity"
@@ -3164,7 +3188,11 @@ process_cmdline_posix() # (POSIX) process command line arguments
         d_message "processing [ $1 ] alone as single-dash argument" "$info"
         process_argument_posix "$1" "$2"   # incl $2 in case $1 uses an operand
         _pc_result=$?
-        [ "${_pc_result}" -eq 6 ] && shift  # extra 'shift' to clear operand
+        case "$_pc_result" in
+          0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
+          6 ) shift; pc_ret=0  ;;        # process_argument consumed an operand, so 'shift' extra
+          * ) E_message "invalid result code from process_argument [$_pc_result]"; pc_ret=7 ;;    # invalid result code
+        esac
         shift  # normal 'shift' to next argument
         ;;
 
@@ -3172,7 +3200,11 @@ process_cmdline_posix() # (POSIX) process command line arguments
         d_message "processing [ $1 ] alone as double-dash argument" "$info"
         process_argument_posix "$1" "$2"  # incl $2 in case $1 uses an operand
         _pc_result=$?
-        [ "${_pc_result}" -eq 6 ] && 'shift'  # extra shift to clear operand
+        case "$_pc_result" in
+          0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
+          6 ) shift; pc_ret=0  ;;        # process_argument consumed an operand, so 'shift' extra
+          * ) E_message "invalid result code from process_argument [$_pc_result]"; pc_ret=7 ;;    # invalid result code
+        esac
         shift  # normal 'shift' to next argument
         ;;
 
@@ -3186,7 +3218,7 @@ process_cmdline_posix() # (POSIX) process command line arguments
   d_message "remaining arguments: [$*]" "$warning"
 
   unset -v _pc_last _pc_arglist _pc_result _pc_adjust_verbosity _pc_operator
-  return $ret
+  return $pc_ret
 }
 # @usage process_cmdline_posix "$@"
 # @args $@: positional parameters from the command line
@@ -3197,19 +3229,21 @@ process_cmdline_posix() # (POSIX) process command line arguments
 # @note uses _pc_result to track loop status and prevent arithmetic errors
 
 _get_entry_posix() # (POSIX) get human readable description for command sequence step number
-{ ret=0; if ! isint "$1"; then E_message "error: zero args; _get_desc requires $1 step number"; return 1; fi
-  _gd_entry=$(sed -n "${1}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
-  _gd_desc="${_pa_entry#*${US}}"  # human readable description
-  _gd_raw_cmd="${_pa_entry%%${US}*}"  # the actual command
-  _gd_clean_cmd=$(printf -- '%b' "$_pa_cmd" | strip_ansi | _translate_escapes)
+{ ge_ret=0; if ! isint "$1"; then E_message "error: zero args; _get_desc requires $1 step number"; return 1; fi
+  _ge_entry=$(sed -n "${1}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
+  _ge_desc="${_ge_entry#*${US}}"  # human readable description
+  _ge_raw_cmd="${_ge_entry%%${US}*}"  # the actual command
+  _ge_clean_cmd=$(printf -- '%b' "$_pa_cmd" | strip_ansi | _translate_escapes)
+#  d_message "_ge_entry: $_ge_entry" "$debug"
+#  d_message "_ge_desc: $_ge_desc" "$debug"
   case $2 in
-    1 ) printf '%s' "_gd_desc" ;;
-    2 ) printf '%s' "_gd_clean_cmd" ;;
-    3 ) printf '%s' "_gd_raw_cmd" ;;
-    * ) E_message "invalid format [$2]"; ret=1
+    1 ) printf '%s' "$_ge_desc" ;;
+    2 ) printf '%s' "$_ge_clean_cmd" ;;
+    3 ) printf '%s' "$_ge_raw_cmd" ;;
+    * ) E_message "invalid format [$2]"; ge_ret=1
   esac
-  unset -v _gd_entry _gd_desc _gd_raw_cmd _gd_clean_cmd
-  return $ret
+  unset -v _ge_entry _ge_desc _ge_raw_cmd _ge_clean_cmd
+  return $ge_ret
 }
 # @usage _get_entry_posix <step_number> <format_type>
 # @args $1 (int) the 1-indexed step number to retrieve from the command sequence
@@ -3220,24 +3254,28 @@ _get_entry_posix() # (POSIX) get human readable description for command sequence
 # @deps isint, E_message, sed, printf, strip_ansi, _translate_escapes
 # @rule extracts specific lines from the command sequence file and parses by $US delimiter
 # @ret 0 on success (prints requested string to stdout); 1 on invalid arguments
-# @note uses _gd_ prefix for local variables; unsets all before returning
+# @note uses _ge_ prefix for local variables; unsets all before returning
 # @note format 2 uses strip_ansi and _translate_escapes for log-safe output
 
 _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(last complete + 1)
-{ ret=0
+{  _pas_val=1 # initialize
   if [ -f "$status_file" ]; then
     d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" "$notice"
-    read _ps_val < "$status_file"
-    log_message "${BWon}Status: Step $(( _ps_val - 1 )) complete; next is [ ${BMon}${_ps_val:-1}${BWon} ]${Boff}"
-  else
-    log_message "${BWon}Status: No status file; sequence not yet started${Boff}"
+    read _pas_val < "$status_file"
+    # if null/non-int or 0 bump to 1; if already complete, wrap to 1
+    if ! isint "$_pas_val"  || [ "$_pas_val" -lt 1 ] || [ "$_pas_val" -ge "$num_cmds" ] ; then _pas_val=1; fi
   fi
-  _ps_desc=$(_get_entry_posix "starting_step" 1)
-  _ps_msg="${_ps_msg} next step would be [ ${BMon}$starting_step${BWon} ]"
-  _ps_msg="${_ps_msg} --[ ${BGon}${_ps_desc}${BWon} ]${Boff}"
-  message "${_ps_msg}"
-  unset -v _ps_val _ps_desc _ps_msg
-  return $ret
+#  d_log_message "_pas_val: $_pas_val" "$debug"
+  _pas_desc=$(_get_entry_posix "$_pas_val" 1)
+#  d_log_message "_pas_desc: $_pas_desc" "$debug"
+
+  _pas_msg="${BYon}Status: ${BWon}next step would be [ ${Boff}${Mon}${_pas_val}${BWon} ]"
+  _pas_msg="${_pas_msg} ( ${BGon}${_pas_desc}${BWon} )${Boff}"
+  log_message "${_pas_msg}"
+  unset -v _pas_val _pas_desc _pas_msg
+  # that is it; we are done - do not return from here; use leave() [ more polite than die() ]
+  # to exit/return depending on whether $- contains an "i" (interactive)
+  leave
 }
 # @usage _pc_action_status
 # @vars status_file (global) path to the command sequence status file
@@ -3246,19 +3284,25 @@ _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(las
 # @ret emits number of last completed step, returns 0 on completion
 
 _pc_action_resume() # (POSIX) process resume flag
-{ ret=0
-  # resume at stored step unless that is overridden by a new start # (below)
-  d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" "$notice"
+{ par_ret=0
+  if [ -f "$status_file" ]; then
+    d_message "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}" "$notice"
+    read _par_val < "$status_file"
+    # if null/non-int or 0 bump to 1; if already complete, wrap to 1
+    if ! isint "$_par_val"  || [ "$_par_val" -lt 1 ] || [ "$_par_val" -ge "$num_cmds" ] ; then _par_val=1; fi
+  else
+    # for resume, if the status file does not exist, we can't continue
+    die "_pc_action_resume finds no status file exists"
+  fi
+  # resume at stored step
   export RESUME=$TRUE
-  read _pr_tmp < "${status_file}"
-  # wrap num_cmds + 1 bac to 1
-  starting_step=$(( 1 + ( _pr_tmp % num_cmds ) ))
-  _pr_desc=$(_get_entry_posix "starting_step" 1)
-  _pr_msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
-  _pr_msg="${_pr_msg} --[ ${BGon}${_pr_desc}${BWon} ]--${Boff}"
-  d_message "${_pr_msg}" "$notice"
-  unset -v _pr_msg _pr_desc
-  return $ret
+  export starting_step="$_par_val"
+  _par_desc=$(_get_entry_posix "starting_step" 1)
+  _par_msg="${BWon}Resuming at step [ ${Mon}$starting_step${BWon} ]"
+  _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BWon} )${Boff}"
+  d_message "${_par_msg}" "$notice"
+  unset -v _par_msg _par_desc
+  return $par_ret
 }
 # @usage _pc_action_resume
 # @vars RESUME, status_file (global) path to the command sequence status file
@@ -3267,7 +3311,7 @@ _pc_action_resume() # (POSIX) process resume flag
 # @ret sets global starting_step, and returns 0 on completion
 
 _pc_action_number() # (POSIX) process resume flag
-{ ret=0 _pn_arg="$1"
+{ pan_ret=0 _pn_arg="$1"
   # if int and in range, save to status_file and resume at this step
   d_log_message "pc_an with $1" "$debug"
   if isint "$_pn_arg" && [ "$_pn_arg" -ge 1 ] && [ "$_pn_arg" -le "$num_cmds" ] ; then
@@ -3286,7 +3330,7 @@ _pc_action_number() # (POSIX) process resume flag
   _pn_msg="${_pn_msg} --[ ${BGon}${_pn_desc}${BWon} ]--${Boff}"
   d_message "${_pn_msg}" "$notice"
   unset -v _pn_desc _pn_msg _pn_arg
-  return $ret
+  return $pan_ret
 }
 # @usage _pc_action_number
 # @vars RESUME, status_file (global) path to the command sequence status file
@@ -3295,22 +3339,22 @@ _pc_action_number() # (POSIX) process resume flag
 # @ret sets global starting_step, and returns 0 on completion
 
 _pc_action_verbosity() # (POSIX) increase or decrease verbosity using predefined macro
-{ ret=0
+{ pav_ret=0
   # _pc_adjust_verbosity is a dynamic macro defined at the top of process_cmdline_posix
   # adjust according to operator, if in range, else set-clamp (in case environment had it out of range)
   case "$_pc_operator" in
     "+" ) if [ "$verbosity" -lt 6 ]; then _pv_action="increased"; else _pv_action="clamped"; verbosity=6; fi ;;
     "-" ) if [ "$verbosity" -gt 0 ]; then _pv_action="decreased"; else _pv_action="clamped"; verbosity=0; fi ;;
-    *   ) E_message "invalid operator [$_pc_operator]; verbosity unchanged: ${Boff}${Con}${verbosity}${Boff}"; ret=1 ;;
+    *   ) E_message "invalid operator [$_pc_operator]; verbosity unchanged: ${Boff}${Con}${verbosity}${Boff}"; pav_ret=1 ;;
   esac
-  [ ! "$_pv_action" = "clamped" ] && { eval "$_pc_adjust_verbosity"; ret=$? ; }
+  [ ! "$_pv_action" = "clamped" ] && { eval "$_pc_adjust_verbosity"; pav_ret=$? ; }
   d_message "${BYon}verbosity ${_pv_action}: ${BBon}[${Boff}${Mon}${verbosity}${BBon}]${Boff}" "$notice"
   unset -v _pv_action
-  return $ret
+  return $pav_ret
 }
 
 process_argument_posix() # (POSIX) process one argument $! (considering the next $2 a potential operand)
-{ ret=0
+{ pa_ret=0
   d_message "pa about to process [ $* ]" "$notice"
   d_message "1: [ $1 ], 2: [ $2 ]" "$notice"
   # process command line argument (must be one of the following)
@@ -3318,14 +3362,14 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
   case "$1" in
     "-"[sS] | "--status"         )      # display status
       _pc_action_status
-      ret=$?
+      pa_ret=$?
       ;;
     "-"[hH] | "--help"           )      # help
       usage_posix
       ;;
     "-"[rR] | "--resume"         )      # resume at stored step
       _pc_action_resume
-      ret=$?
+      pa_ret=$?
       ;;
     -*[0-9]*  )
       d_log_message "pa 0-9)  with $1" "$debug"
@@ -3340,29 +3384,29 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       # if we now have an int action it, else hand off compound
       if isint "$_pa_arg" ; then
         _pc_action_number "$_pa_arg"  # this will include checking if it is in range
-        ret=$?
+        pa_ret=$?
       else
         # it may be a combination of numbers and letters - hand off to process_compound_arg_posix
         # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg_posix expects that)
         process_compound_arg_posix "-${_pa_arg}"
-        ret=$?
+        pa_ret=$?
       fi
       ;;
     "-"[iI] | "--interactive"    )      # interactive
       export INTERACTIVE=$TRUE;
-      ret=$?
+      pa_ret=$?
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
       ;;
     "-"[nN] | "--noninteractive" )      # non-interactive
       export INTERACTIVE=$FALSE
-      ret=$?
+      pa_ret=$?
       d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
       ;;
     "-"[qQ] | "--quiet"          )      # decrease verbosity
-      _pc_operator="-"; _pc_action_verbosity; ret=$?
+      _pc_operator="-"; _pc_action_verbosity; pa_ret=$?
       ;;
     "-"[vV] | "--verbose"        )      # increase verbosity
-      _pc_operator="+"; _pc_action_verbosity; ret=$?
+      _pc_operator="+"; _pc_action_verbosity; pa_ret=$?
       ;;
 
     # note: unrecgnized args should fall through to this default
@@ -3373,22 +3417,22 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       if command -v handle_local_arg >/dev/null; then
           d_log_message "pa case \*): [running handle_local_arg $1 $2]" "$notice"
           handle_local_arg "$1" "$2"
-          ret=$?
-          # ret 0: success; 6: success (AND used operand); 1: error/not found
+          pa_ret=$?
+          # pa_ret 0: success; 6: success (AND used operand); 1: error/not found
           # if not found, give process_compound_arg_posix a chance
-          [ $ret -eq 1 ] && process_compound_arg_posix "$1"
+          [ $pa_ret -eq 1 ] && process_compound_arg_posix "$1"
       else
           # it still may be a combination of single char args and numbers
           d_log_message "pa case \*): running [process_compound_arg_posix $1]" "$notice"
           process_compound_arg_posix "$1"
-          ret=$?
+          pa_ret=$?
       fi
       ;;
   esac
   d_message "done with process_argument_posix" "$notice"
 
   unset -v _pa_desc _pa_msg _pa_arg
-  return $ret
+  return $pa_ret
 }
 # @usage process_argument_posix <arg> [potential_operand]
 # @args $1 (string) the flag or argument to process
@@ -3403,77 +3447,77 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
 # @ret return 1 if error
 
 process_compound_arg_posix()    # process a compount argument
-{   ret=0
-    d_message "about to process compound [ $* ]" "$info"
-    # must begin with a single dash | "${var%${var#?}}" = 1st char, or "left_most()" but save a function call
-    if [ ! "${1%${1#?}}" = "-" ]; then E_message "${E_BAD_ARGS}"; usage_posix; E_message "exiting process [$$]"; return 1; fi
-    # must not begin with two dashes (would have been picked in process_argument_posix) | "${var%${var#??}}" = 1st 2 chars
-    if [ "${1%${1#??}}" = "--" ]; then E_message "${E_BAD_ARGS}"; usage_posix; E_message "exiting process [$$]"; return 1; fi
-    # strip leading dash(es)
-    _pca_args="${1##-}"   # strip longest match to - from left
-    # handle remaining characters in sequence --
-    # ( ***one char at at time except possibly double-digit numbers below *** )
-    while [ ! -z "${_pca_args}" ]; do
-         d_log_message "top of _pca w/ _pca_args: $_pca_args" "$debug"
-        #handle one character at at time, from the left (last loop action, after esac, is to strip the first char to "shift"
-        case "${_pca_args}" in
-            [sS]* )  # display status
-                _pc_action_status
-                ret=$?
-                ;;
-            [hH]* )      # help
-                usage_posix
-                ;;
-            [rR]* )  # resume at stored step
-                _pc_action_resume
-                ret=$?
-                ;;
-            [0-9]* ) # resume at this step
-                # what we know: 1st char was -, and was stripped; current 1st char is not (guards 1, 2, 3 above enforce this)
-                # we also know 1st char is now a num '0-9' since $_pca_args matched this case
-                # since there may be > 10 (i.e. multi-digit) steps, then append whatever consecutive digits are there
-                _pca_num="${_pca_args%%[!0-9]*}"     # extract ALL consecutive digits from the left
-                _pca_args="_${_pca_args#$_pca_num}"  # prepended dummy '_' to remainder, protecting it from final loop-strip below
-                # action the result
-                _pc_action_number "$_pca_num"  # this will include checking if it is in range
-                ret=$?
-                ;;
-            [iI]* )  # interactive
-                export INTERACTIVE=$TRUE
-                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
-                ;;
-            [nN]* )  # non-interactive
-                export INTERACTIVE=$FALSE
-                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
-                ;;
-            [qQ]* )  # decrease verbosity
-                _pc_operator="-"; _pc_action_verbosity; ret=$?
-                ;;
-            [vV]* )  # increase verbosity
-                _pc_operator="+"; _pc_action_verbosity; ret=$?
-                ;;
-            *   )    # note: unrecognized args should fall through to this default
-                # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage_posix ;;")
-                d_log_message "_pca \*) w/ local_cmdline_compound_arguments: $local_cmdline_compound_arguments" "$debug"
-                d_log_message "_pca \*) w/ _pca_args: $_pca_args" "$debug"
-                if command -v handle_local_compound_arg >/dev/null; then
-                    d_log_message "pa case \*): running [handle_local_compound_arg $1]" "$notice"
-                    handle_local_compound_arg "$1"
-                    ret=$?   # 0: success; 6: 1: error/not found
-                else
-                    E_message "${E_BAD_ARGS}"
-                    usage_posix
-                fi
-                ;;
-        esac
-        #strip first char from _pca_args (i.e. "shift" one character)
-        _pca_args="${_pca_args#?}"   # strip 1st char
-    done
-    d_message "done with process_compount_arg_posix" "$debug"
-    d_message "returning status code [$ret]" "$debug"
+{ pca_ret=0
+  d_message "about to process compound [ $* ]" "$info"
+  # must begin with a single dash | "${var%${var#?}}" = 1st char, or "left_most()" but save a function call
+  if [ ! "${1%${1#?}}" = "-" ]; then E_message "${E_BAD_ARGS}"; usage_posix; E_message "exiting process [$$]"; return 1; fi
+  # must not begin with two dashes (would have been picked in process_argument_posix) | "${var%${var#??}}" = 1st 2 chars
+  if [ "${1%${1#??}}" = "--" ]; then E_message "${E_BAD_ARGS}"; usage_posix; E_message "exiting process [$$]"; return 1; fi
+  # strip leading dash(es)
+  _pca_args="${1##-}"   # strip longest match to - from left
+  # handle remaining characters in sequence --
+  # ( ***one char at at time except possibly double-digit numbers below *** )
+  while [ ! -z "${_pca_args}" ]; do
+    d_log_message "top of _pca w/ _pca_args: $_pca_args" "$debug"
+    #handle one character at at time, from the left (last loop action, after esac, is to strip the first char to "shift"
+    case "${_pca_args}" in
+      [sS]* )  # display status
+        _pc_action_status
+        pca_ret=$?
+        ;;
+      [hH]* )      # help
+        usage_posix
+        ;;
+      [rR]* )  # resume at stored step
+        _pc_action_resume
+        pca_ret=$?
+        ;;
+      [0-9]* ) # resume at this step
+        # what we know: 1st char was -, and was stripped; current 1st char is not (guards 1, 2, 3 above enforce this)
+        # we also know 1st char is now a num '0-9' since $_pca_args matched this case
+        # since there may be > 10 (i.e. multi-digit) steps, then append whatever consecutive digits are there
+        _pca_num="${_pca_args%%[!0-9]*}"     # extract ALL consecutive digits from the left
+        _pca_args="_${_pca_args#$_pca_num}"  # prepended dummy '_' to remainder, protecting it from final loop-strip below
+        # action the result
+        _pc_action_number "$_pca_num"  # this will include checking if it is in range
+        pca_ret=$?
+        ;;
+      [iI]* )  # interactive
+        export INTERACTIVE=$TRUE
+        d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
+        ;;
+      [nN]* )  # non-interactive
+        export INTERACTIVE=$FALSE
+        d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" "$notice"
+        ;;
+      [qQ]* )  # decrease verbosity
+        _pc_operator="-"; _pc_action_verbosity; pca_ret=$?
+        ;;
+      [vV]* )  # increase verbosity
+        _pc_operator="+"; _pc_action_verbosity; pca_ret=$?
+        ;;
+      *   )    # note: unrecognized args should fall through to this default
+        # run local arg module if it exists (must end with "* ) E_message "${E_BAD_ARGS}" && usage_posix ;;")
+        d_log_message "_pca \*) w/ local_cmdline_compound_arguments: $local_cmdline_compound_arguments" "$debug"
+        d_log_message "_pca \*) w/ _pca_args: $_pca_args" "$debug"
+        if command -v handle_local_compound_arg >/dev/null; then
+          d_log_message "pa case \*): running [handle_local_compound_arg $1]" "$notice"
+          handle_local_compound_arg "$1"
+          pca_ret=$?   # 0: success; 6: 1: error/not found
+        else
+          E_message "${E_BAD_ARGS}"
+          usage_posix
+        fi
+        ;;
+    esac
+    #strip first char from _pca_args (i.e. "shift" one character)
+    _pca_args="${_pca_args#?}"   # strip 1st char
+  done
+  d_message "done with process_compount_arg_posix" "$debug"
+  d_message "returning status code [$pca_ret]" "$debug"
 
-    unset -v _pca_msg _pca_args _pca_num
-    return $ret
+  unset -v _pca_msg _pca_args _pca_num
+  return $pca_ret
 }
 # @usage process_compound_arg_posix "string"
 # @args $1: the compound argument string (e.g., "qv")
@@ -3483,7 +3527,7 @@ process_compound_arg_posix()    # process a compount argument
 # @ret 0 on success
 
 run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $3=stop
-{ ret=0
+{ rs_ret=0
   # guard 1 - minimum arguments check (status, start, stop, + at least 1 cmd)
   [ $# -lt 3 ] && { log_E_message "usage_posix: run_sequence_posix <status_file> <start> <stop>"; return 1; }
   _rs_status_file="$1"           # assign the status file
@@ -3517,8 +3561,8 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
 
     # if INTERACTIVE, confirm before executing the step
     if [ "$INTERACTIVE" ]; then
-      _rs_msg="${BYon}Are you ready to (${_data_color}${_rs_step}${BYon})"
-      _rs_msg="${_rs_msg} ${_op_color}${_rs_desc}${BYon}? ${Boff}"
+      _rs_msg="${BYon}Are you ready to [${_data_color}${_rs_step}${BYon}]"
+      _rs_msg="${_rs_msg} (${_op_color}${_rs_desc}${BYon}) ? ${Boff}"
       yns_prompt "$_rs_msg"
       _rs_response="$response"
     else
@@ -3535,27 +3579,27 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
         eval "$_rs_cmd"; _rs_result=$?
         ### don't die - let the calling script decide what to do based on return
         ### d_log_handle_result $_rs_result "$crit" || die "failed to execute step [$_rs_step]: $_rs_clean_cmd"
-        # display/log result and set bit in ret status binary bitmask
+        # display/log result and set bit in rs_ret status binary bitmask
         d_log_handle_result $_rs_result '' "failed with exit code [$_rs_result]" "$crit" || \
-            ret=$(( ret | 1 << _rs_step )) ;;
+            rs_ret=$(( rs_ret | 1 << _rs_step )) ;;
       [Ss]* )
         _rs_msg="${BYon}Skipping step [${_data_color}${_rs_step}${BYon}]:"
         _rs_msg="${_rs_msg} ${_op_color}${_rs_desc}${BYon} as instructed${Boff}"
         d_log_message "$_rs_msg" "$crit" ;;
       * )
         d_log_message "${BRon}Aborting sequence, as instructed${Boff}" "$crit"
-        ret=1; break ;;
+        rs_ret=1; break ;;
     esac
     _rs_step=$(( _rs_step + 1 ))
     d_log_message_n "writing step [$_rs_step] (next up) to status_file" "$crit"
     # status_file holds NEXT step number after last successfully completed
     # so, wrap at num_steps, back to 1
     printf '%s\n' "$(( 1 + ( _rs_step  % num_cmds ) ))" > "$status_file"
-    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$crit" || ret=1
+    d_log_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$crit" || rs_ret=1
   done
   unset -v _rs_status_file _rs_step _rs_cmd _rs_result _rs_entry _rs_desc
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg
-  return $ret
+  return $rs_ret
 }
 # @usage: run_sequence_posix <status_file> <start> <stop>
 # @args: $1 (string) path to sequence status file
@@ -3567,15 +3611,15 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
 # @ret: 0 on success, 1 on abort, or bitmask of failed steps
 # @deps: isint, yns_prompt, d_log_separator, d_log_message, d_log_handle_result, strip_ansi, _translate_escapes
 
-linear_search_posix() {
-    ret=0
-    _ls_needle=$1
-    # find line number where command (before US) matches needle
-    _ls_idx=$(grep -n "^${_ls_needle}${US}" "$cmd_seq_file" | cut -d: -f1)
-    printf '%s' "$_ls_idx"
-    [ -z "$_ls_idx" ] && ret=1
-    unset -v _ls_needle _ls_idx
-    return $ret
+linear_search_posix() # (POSIX) linear seart for needle $1 in haystack (global cmd_seq_file)
+ { linear_ret=0
+  _ls_needle=$1
+  # find line number where command (before US) matches needle
+  _ls_idx=$(grep -n "^${_ls_needle}${US}" "$cmd_seq_file" | cut -d: -f1)
+  printf '%s' "$_ls_idx"
+  [ -z "$_ls_idx" ] && linear_ret=1
+  unset -v _ls_needle _ls_idx
+  return $linear_ret
 }
 # @usage linear_search_posix <target_string> <file_path>
 # @args $1 (string) the command or key to search for
@@ -3881,10 +3925,7 @@ _dh_show_capabilities()   # demonstrate classes of capability in this header fil
 }
 
 _dh_demo_verbosity() # (POSIX) demonstrate the use of status_color, TrueFalse, to display system verbosity
-{ # @usage _dh_demo_verbosity
-  # @args none
-  # @rules called by demonstrate_header
-
+{  demo_verb_ret=0
   separator "demonstrate_header-${BUILD}" "(verbosity)"
   if [ "$verbosity" -gt 0 ]; then _dv_VERBOSE=$TRUE; else _dv_VERBOSE=$FALSE; fi
 
@@ -3909,24 +3950,22 @@ _dh_demo_verbosity() # (POSIX) demonstrate the use of status_color, TrueFalse, t
   # Set state for demonstration
   _dv_VERBOSE=$TRUE; verbosity=3
   message "  ${BYon}_dv_VERBOSE is currently $(status_color $_dv_VERBOSE)$(TrueFalse $_dv_VERBOSE)${Boff}"
-  _dh_result=$?
+  demo_verb_ret=$?
   # Restore state
   verbosity=$_dh_oldv
   printf "\n"
 
   unset -v _dh_cmd _dh_oldV _dh_oldv _dv_VERBOSE
-  return $_dh_result
+  return $demo_verb_ret
 }
+# @usage _dh_demo_verbosity
+# @args none
+# @rules called by demonstrate_header
 
-_dh_demo_versions()
-{ # @usage _dh_demo_versions
-  # @args none
-  # @rules called by demonstrate_header
-
+_dh_demo_versions() # (POSIX) demonstrate version comparison
+{ demo_vers_ret=0
   separator "demonstrate_header-${BUILD}" "(version comparison)"
-
   _dh_FAILED=$FALSE
-  _dh_ret=0
 
 # preview the command syntax
   _dh_cmd="${_ctl_color}for${_Boff} ${_var_color}v${_Boff} ${_ctl_color}in${_Boff} ${_quote_color}\"1 1\" \"2 1\" \"1 2\" ...${_Boff}; ${_ctl_color}do${_Boff}\n"
@@ -3950,18 +3989,16 @@ _dh_demo_versions()
   done
   printf "\n"
 
-  [ "$_dh_FAILED" ] && _dh_ret=1
+  [ "$_dh_FAILED" ] && demo_vers_ret=1
   unset -v _dh_cmd _dh_vtest _dh_v1 _dh_v2 _dh_vercomp_result _dh_show_result_exit _dh_FAILED
-  return "$_dh_ret"
+  return "$demo_vers_ret"
 }
+# @usage _dh_demo_versions
+# @args none
+# @rules called by demonstrate_header
 
 _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
-{ # @usage _dh_demo_numeric
-  # @args none
-  # @rules called by demonstrate_header
-
-  separator "demonstrate_header-${BUILD}" "(numeric validation)"
-
+{ separator "demonstrate_header-${BUILD}" "(numeric validation)"
   # preview the command syntax
   _dh_cmd="${_func_color}isnumeric${_Boff} ${_quote_color}\"123.45\"${_Boff}${_op_color};${_Boff} ${_func_color}isint${_Boff} ${_quote_color}\"123\"${_Boff}   "
   _dh_cmd="${_dh_cmd} ${_cmt_color}# using two-pass column alignment and pad() utility${_Boff}"
@@ -3972,7 +4009,7 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
   _dh_tests="isint|123|0 isint|abc|1 isfloat_posix|3.14|0 isfloat_posix|123|1 ishexint|0xAF|0 ishexint|123|1 isnumeric|42.5|0 isnumeric|0xCC|0 isnumeric|xyz|1"
   _dh_sep=" "; _dh_sep_len=${#_dh_sep}; _dh_min=2
   _dh_FAILED=$FALSE
-  _dh_ret=0
+  demo_num_ret=0
 
   # notes on pad() usage: pad "cur" "sep" "min" "color" "marker" "col"
   # (  need to make 2 passes to parse the test data
@@ -4060,21 +4097,22 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
   done
   printf "\n"
 
-  [ "$_dh_FAILED" ] && _dh_ret=1
+  [ "$_dh_FAILED" ] && demo_num_ret=1
   unset -v _dh_cmd _dh_tests _dh_sep _dh_sep_len _dh_min _dh_max_test_len _dh_max_val_len
   unset -v _dh_opening _dh_open_len _dh_test_total_sep _dh_col_test _dh_col_val _dh_col_TF
   unset -v _dh_t _dh_test _dh_val _dh_exp _dh_result _dh_RESULT_BOOL _dh_bool_str
   unset -v _dh_bool_color _dh_pass_fail _dh_v_label _dh_col1_text _dh_FAILED
 
-  return "$_dh_ret"
+  return "$demo_num_ret"
 }
+# @usage _dh_demo_numeric
+# @args none
+# @rules called by demonstrate_header
+
 
 _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional execution and messaging)
-{ # @usage _dh_demo_debug_utils
-  # @args none
-  # @rules demonstrating conditional messaging and status utilities
-  _dh_FAILED=$FALSE
-  _dh_ret=0
+{ _dh_FAILED=$FALSE
+  demo_debug_ret=0
   if [ "$verbosity" -gt 0 ]; then _dh_VERBOSE=$TRUE; else _dh_VERBOSE=$FALSE; fi
 
   separator "demonstrate_header-${BUILD}" "(debugging utilities)"
@@ -4196,22 +4234,20 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
   d_do 'echo "   line 1.1"; echo "   line 1.2"' "$notice"
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
 
-  [ "$_dh_FAILED" = "$TRUE" ] && _dh_ret=1
+  [ "$_dh_FAILED" = "$TRUE" ] && demo_debug_ret=1
   # restore previous system verbosity
   verbosity=$_dh_oldv
   printf "\n"
 
   unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_oldV _dh_oldv _dh_file_bogus _dh_file_real _dh_header _dh_VERBOSE
-  return $_dh_ret
+  return $demo_debug_ret
 }
-
+# @usage _dh_demo_debug_utils
+# @args none
+# @rules demonstrating conditional messaging and status utilities
 
 _dh_demo_boolean() # (POSIX) demonstrate bool truth validation with a variety of data types
-{ # @usage _dh_demo_boolean
-  # @args none
-  # @rules demonstrating truth-testing and conversion helpers
-
-  _dh_ret=0
+{ demo_bool_ret=0
   _dh_FAILED=$FALSE
 
   separator "demonstrate_header-${BUILD}" "(boolean utilities)"
@@ -4285,17 +4321,17 @@ _dh_demo_boolean() # (POSIX) demonstrate bool truth validation with a variety of
   smart_wrap_n 3 3 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
   printf "\n"
 
-  [ "$_dh_FAILED" = "$TRUE" ] && _dh_ret=1
+  [ "$_dh_FAILED" = "$TRUE" ] && demo_bool_ret=1
 
   unset -v _dh_cmd _dh_FAILED _dh_t _dh_label _dh_val _dh_exp _dh_out _dh_status _dh_tests _dh_PN
-  return $_dh_ret
+  return $demo_bool_ret
 }
+# @usage _dh_demo_boolean
+# @args none
+# @rules demonstrating truth-testing and conversion helpers
 
 _dh_demo_terminal_io() # (POSIX) demonstrate terminal io, animation, box drawing
-{ # @usage _dh_demo_terminal_io
-  # @args none
-  # @rules demonstrating cursor state and DEC graphics
-  _dh_ret=0
+{ demo_term_ret=0
   _dh_FAILED=$FALSE
   _dh_cock="${BRon}-*-${Boff}"    # define a 3-char shuttlecock (stationary)
   _dh_r_cock="${BRon}--*${Boff}"  # define a 3-char shuttlecock (right bound)
@@ -4380,16 +4416,16 @@ _dh_demo_terminal_io() # (POSIX) demonstrate terminal io, animation, box drawing
   box_esca "${_dh_text}"
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
 
-  [ "$_dh_FAILED" = "$TRUE" ] && _dh_ret=1
+  [ "$_dh_FAILED" = "$TRUE" ] && demo_term_ret=1
   unset -v _dh_cmd _dh_FAILED _dh_i _dh_cycle _dh_cock _dh_wait
-  return $_dh_ret
+  return $demo_term_ret
 }
+# @usage _dh_demo_terminal_io
+# @args none
+# @rules demonstrating cursor state and DEC graphics
 
 _dh_demo_environment() # (POSIX) demonstrate environment checks (isroot, checknotroot, checkboot, etc)
-{ # @usage _dh_demo_environment
-  # @args none
-  # @rules demonstrating environment and privilege checks
-  _dh_ret=0
+{ demo_env_ret=0
   _dh_FAILED=$FALSE
 
   separator "demonstrate_header-${BUILD}" "(environment & privileges)"
@@ -4497,18 +4533,18 @@ _dh_demo_environment() # (POSIX) demonstrate environment checks (isroot, checkno
   fi  # check boot reports error?
   # Note: we are NOT double-checking if checkboot says all ok
 
-  [ "$_dh_FAILED" ] && _dh_ret=1
+  [ "$_dh_FAILED" ] && demo_env_ret=1
   unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_OK_msg _dh_FAIL_msg
   unset -v _dh_result _dh_i _dh_targets _dh_tgt _dh_MOUNTPOINT
   unset -v _dh_BOOT_REALITY
-  return $_dh_ret
+  return $demo_env_ret
 }
+# @usage _dh_demo_environment
+# @args none
+# @rules demonstrating environment and privilege checks
 
 _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
-{ # @usage _dh_demo_widgets
-  # @args none
-  # @rules demonstrating established decorative and informative UI elements
-  _dh_ret=0
+{ demo_widg_ret=0
   _dh_FAILED=$FALSE
 
   _dh_46="Donaldson Emmons Seward Seymour Panther Couchsachraga Santanoni"
@@ -4612,20 +4648,16 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
   printf "\n"
 
-  [ "$_dh_FAILED" ] && _dh_ret=1
+  [ "$_dh_FAILED" ] && demo_widg_ret=1
   unset -v _dh_cmd _dh_FAILED _dh_46 _dh_longest _dh_offset _dh_i _dh_wait _dh_peak
-  return $_dh_ret
+  return $demo_widg_ret
 }
-
-#______________________________________________######################################-----------------------------------------
+# @usage _dh_demo_widgets
+# @args none
+# @rules demonstrating established decorative and informative UI elements
 
 demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of this header
-{
-  # @usage demonstrate_header
-  # @args none
-  # @note each script header file in the script_header_joetoo family has a similarly named demonstrate_header function
-  # @note e.g. demonstrate_header_unicode() in script_header_joetoo_unicode
-  _dh_final_status=0   # clear all bits of this status "bitmask" variable
+{ dh_final_status=0   # clear all bits of this status "bitmask" variable
 
   # begin output with separator
   separator "demonstrate_header-${BUILD}" "(demonstration)"
@@ -4633,29 +4665,29 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
   # execute sub-modules ( use a bitmask status "byte" to track overall status, indetail )
   # var|(1<<i) means: var = (binary shift a 1 i bits to the left) then bitwise OR that number with var
   # i.e. SET the ith most significant bit
-  _dh_show_capabilities        || _dh_final_status=$(( _dh_final_status|(1<<0) ))
-  _dh_demo_verbosity           || _dh_final_status=$(( _dh_final_status|(1<<1) ))
-  _dh_demo_versions            || _dh_final_status=$(( _dh_final_status|(1<<2) ))
-  _dh_demo_numeric             || _dh_final_status=$(( _dh_final_status|(1<<3) ))
-  _dh_demo_debug_utils         || _dh_final_status=$(( _dh_final_status|(1<<4) ))
-  _dh_demo_boolean             || _dh_final_status=$(( _dh_final_status|(1<<5) ))
-  _dh_demo_terminal_io         || _dh_final_status=$(( _dh_final_status|(1<<6) ))
-  _dh_demo_environment         || _dh_final_status=$(( _dh_final_status|(1<<7) ))
-  _dh_demo_widgets             || _dh_final_status=$(( _dh_final_status|(1<<8) ))
+  _dh_show_capabilities        || dh_final_status=$(( dh_final_status | ( 1 << 0 ) ))
+  _dh_demo_verbosity           || dh_final_status=$(( dh_final_status | ( 1 << 1 ) ))
+  _dh_demo_versions            || dh_final_status=$(( dh_final_status | ( 1 << 2 ) ))
+  _dh_demo_numeric             || dh_final_status=$(( dh_final_status | ( 1 << 3 ) ))
+  _dh_demo_debug_utils         || dh_final_status=$(( dh_final_status | ( 1 << 4 ) ))
+  _dh_demo_boolean             || dh_final_status=$(( dh_final_status | ( 1 << 5 ) ))
+  _dh_demo_terminal_io         || dh_final_status=$(( dh_final_status | ( 1 << 6 ) ))
+  _dh_demo_environment         || dh_final_status=$(( dh_final_status | ( 1 << 7 ) ))
+  _dh_demo_widgets             || dh_final_status=$(( dh_final_status | ( 1 << 8 ) ))
 
   #-----[ results summary ]------------------------------------------------------------------------------------
   # preview the command syntax
   # line 1 - message_n "${BCon}Finishing with status of summarization${Boff}"
   cmd="  ${_func_color}message_n${_Boff} ${_quote_color}\"\${BCon}Finishing with status of summarization\${Boff}\"${_Boff}\n"
-  # line 2 - right_status $_dh_final_status
-  cmd="${cmd}   ${_func_color}right_status${_Boff} ${_var_color}\$_dh_final_status${_Boff}"
+  # line 2 - right_status $dh_final_status
+  cmd="${cmd}   ${_func_color}right_status${_Boff} ${_var_color}\$dh_final_status${_Boff}"
   # demonstrate message_n and right_status
   message "${BYon}About to run:${Boff}\n ${cmd}"
   message_n "${BCon}Finishing with status of summarization${Boff}"
   # also capture the final status in the bitmask
-  _dh_result=$?; [ "$_dh_result" -eq 0 ] || _dh_final_status=$((_dh_final_status|(1<<9) ))
-  printf " (exit status: %b%s%b) --->" " $(status_color $_dh_final_status)" "${_dh_final_status}" "$Boff"
-  right_status $_dh_final_status
+  _dh_result=$?; [ "$_dh_result" -eq 0 ] || dh_final_status=$((dh_final_status|(1<<9) ))
+  printf " (exit status: %b%s%b) --->" " $(status_color $dh_final_status)" "${dh_final_status}" "$Boff"
+  right_status $dh_final_status
   printf "\n"
 
   #-----[ results summary ]------------------------------------------------------------------------------------
@@ -4679,7 +4711,7 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
     # read the ith most significant bit
     # (binary shift binary value right by i bits) (binary bitwise AND with 1)
     # check if the ith bit is set: bit=$(( (mask >> i) & 1 ))
-    _dh_bit=$(( (_dh_final_status >> _dh_i) & 1 ))
+    _dh_bit=$(( (dh_final_status >> _dh_i) & 1 ))
     # output Test i: testname
     printf " Test %02d: [${BMon}%-${_dh_fw}s${Boff}]" "$((_dh_i + 1))" "${_dh_test_name}"
     # render status using the handle_result library function
@@ -4699,9 +4731,8 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
   unset -v _sh_line _sh_tmp _sh_fn_name _sh_meta _sh_tag _sh_payload
   unset -v _dh_result cmd _dh_tests _dh_longest
   unset -v  _dh_fw _dh_i _dh_test_name _dh_bit
-  return $_dh_final_status
+  return $dh_final_status
 }
-# metadata to FOLLOW summarize_header other output --
 # @usage demonstrate_header
 # @deps _dh_test_render message separator
 # @rule iterates through core UI components (colors, cursor, math, messaging)
@@ -4713,11 +4744,11 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
 # @note "$@" (Quoted) -> THE GOLD STANDARD. Preserves arguments exactly as passed
 # @cont Example: [ "arg one" "arg two" ] stays [ "arg one" "arg two" ]
 # @cont Use for: d_do, wrappers, and passing arguments to other functions
-# @note 
+# @note
 # @note "$*" (Quoted) -> THE STRING BUILDER. Flattens all arguments into ONE string
 # @cont Example: [ "arg one" "arg two" ] becomes [ "arg one arg two" ]
 # @cont Use for: log_message, echo, and strip_ansi (treats message as a single blob)
-# @note 
+# @note
 # @note $@ or $* (Unquoted) -> THE WORD SPLITTER. Dangerous/Rarely used
 # @cont Triggers "Internal Field Separation" (IFS). Spaces break into new arguments
 # @cont Example: [ "arg one" ] becomes [ "arg" "one" ]
