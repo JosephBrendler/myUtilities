@@ -1073,3 +1073,520 @@ old_checkboot() # check to see if /boot is a mountpoint and is properly mounted
 # @note status 2 indicates /boot is likely just a directory on the root partition
 # @note fstab format: |<device|uuid> /boot ...| i.e. mountpoint is colunm 2 preceded by <device|uuid> and ${W1}
 # @cont followed by whitespace or (rarely) simply the end of the line -- (${W1}|$)
+
+message() # (POSIX) display text message $@ (like echo -e)
+{ printf " ${BGon}*${Boff} " ; printf '%b\n' "$*" ; }
+# @usage message "msg string"
+# @args $* the message to display (quoted string recommended)
+# @ret formatted message with green asterisk prefix to stdout
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
+
+
+W_message() # (POSIX) display text warning message $@ (like echo -e)
+{ printf " ${BYon}*${Boff} " ; printf '%b\n' "$*" ; }
+# @usage W_message "warning string"
+# @args $@ message components
+# @ret formatted warning with yellow asterisk prefix to stdout
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
+
+E_message() # (POSIX) display text error message $@ (like echo -e)
+{ { printf " ${BRon}*${Boff} "; printf '%b\n' "$*"; } >&2; }
+# @usage E_message "error string"
+# @args $* the error message
+# @ret formatted error with red asterisk prefix to stderr (FD 2)
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
+
+
+log_message() # (POSIX) message() to stdout and $logFile owned by $user (like echo -e)
+{ log_m_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  message "$*"        # print regular message w/o timestamp
+  # filter the message through strip_ansi before logging
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  # print clean, timestamped message to logFile
+  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile" || log_m_ret=1
+  unset -v _ts _clean_msg
+  return $log_m_ret
+}
+# @usage log_message "msg string"
+# @args $* the message to log (treated as a single string)
+# @vars logFile
+# @deps timestamp message _translate_escapes strip_ansi
+# @note dual-output: terminal receives timestamped color message; log receives plain text
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+log_echo() # (POSIX) echo to stdout and $logFile owned by $user (like echo)
+{ log_e_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  printf "%s\n" "$*" # screen gets color codes
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_e_ret
+}
+# @usage log_echo "msg string"
+# @args $* the message string
+# @vars logFile
+# @deps timestamp _translate_escapes strip_ansi
+# @rule simple echo wrapper with automated timestamping and log archival
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%s' (no expand backslash) to interpret e.g. \n in message (like echo)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+
+
+log_E_message() # (POSIX) E_message() to stdout and $logFile owned by $user (like echo -e)
+{ log_E_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  E_message "$*"
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_E_ret
+}
+# @usage log_E_message "error string"
+# @args $* the error message components
+# @vars logFile
+# @deps timestamp E_message _translate_escapes strip_ansi
+# @rule directs colorized output to stderr and sanitized plain-text to $logFile
+# @note dual-stream logic: terminal sees RED alert; log records timestamped event
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+old_d_message()   # (POSIX) IAW verbosity, display text debugging message $@
+{ d_do message "$@" >&2 ; }
+# @usage d_message "message string" <level>
+
+dE_message()   # (POSIX) IAW verbosity, display text debugging error message $@
+{ d_do E_message "$@" >&2 ; }
+# @usage dE_message "message string" <level>
+
+d_log_message()     # (POSIX) display and log message IAW verbosity
+{ d_do log_message "$@" >&2 ; }
+# @usage d_log_message "message string" <level>
+
+d_log_E_message()   # (POSIX) display and log error message IAW verbosity
+{ d_do log_E_message "$@" >&2 ; }
+# @usage d_log_E_message "message string" <level>
+
+log_echo() # (POSIX) echo to stdout and $logFile owned by $user (like echo)
+{ log_e_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  printf "%s\n" "$*" # screen gets color codes
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s\n" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_e_ret
+}
+# @usage log_echo "msg string"
+# @args $* the message string
+# @vars logFile
+# @deps timestamp _translate_escapes strip_ansi
+# @rule simple echo wrapper with automated timestamping and log archival
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%s' (no expand backslash) to interpret e.g. \n in message (like echo)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+d_echo()   # (POSIX) IAW verbosity, display text debugging message $@ (like echo)
+{ d_do echo "$@" >&2 ; }
+# @usage d_echo "message string" <level>
+
+de_echo()   # (POSIX) IAW verbosity, display text debugging message $@ (like echo -e)
+{ d_do echo -e "$@" >&2 ; }
+# @usage de_echo "message string" <level>
+
+d_log_echo()        # (POSIX) display and log simple message IAW verbosity (like echo)
+{ d_do log_echo "$@" >&2 ; }
+# @usage d_log_echo "message string" <level>
+
+d_log_echo_e()      # (POSIX) display and log simple message IAW verbosity (like echo -e)
+{ d_do log_echo_e "$@" >&2 ; }
+# @usage d_log_echo_e "message string" <level>
+
+separator() # (POSIX) draw a horizontal line with preface $1 and title $2
+{ s_ret=0; _s_preface=${1:-$(hostname)}; _s_tw=$(termwidth)
+  _s_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
+  _s_reps=$(( _s_tw - ( ${#_s_preface} + ${#_s_title} + 8 ) ))
+  [ "$_s_reps" -lt 0 ] && _s_reps=0  # clamp to 0 if negative
+  # build this as one block so we can get a maintainable format and a single exit status code
+  ( set -- '%b---[ %b%s %b%s %b]%s%b'
+    set -- "$@" "$BYon" "$BRon"
+    set -- "$@" "$_s_preface" "${Boff}${BCon}" "$_s_title"
+    set -- "$@" "$BYon" "$(repeat '-' "$_s_reps")" "$Boff"
+    printf "$@" ; ) ; s_ret=$?
+  unset -v _s_preface _s_title _s_tw _s_reps
+  return $s_ret
+}
+# to facilitate separation of portions of the output of various scripts
+# @usage separator "preface" "title"
+# @args $1 preface string (defaults to hostname); $2 title string (defaults to script name)
+# @deps termwidth repeat
+# @rule calculates terminal width to draw a full-width horizontal rule
+# @note subtracts 8 characters for brackets and spacing to prevent wrapping
+
+non_stty_separator() # (deprecated; use separator)
+{ W_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
+  separator "$@"; }
+# @usage non_stty_separator "preface" "title"
+# @note legacy wrapper; redirects to separator() after emitting a warning
+
+log_separator() # (POSIX) output separator() to stdout and similar to logFile
+{ ls_ret=0; _ls_preface=${1:-$(hostname)};
+#  _ls_title=${2:-$(basename "$0")}
+  _ls_title=${2:-${0##*/}}   # ${0##*/} is equivalent to basename "$0" but w/o subshell function call
+  _ls_ts="$(timestamp)"; _ls_tw=80  # standard fixed width for log files
+  # construct the header string: "timestamp - ---[ preface title ]"
+  _ls_clean_header="${_ls_ts} - ---[ ${_ls_preface} ${_ls_title} ]"
+  _ls_len=$(printf '%s' "$_ls_clean_header" | wc -c)
+  _ls_reps=$(( _ls_tw - $_ls_len ))  # calculate the length of the rest of the  ----- line
+  [ "$_ls_reps" -lt 0 ] && _ls_reps=0      # if negative, clamp to 0
+  # output (console screen first, then log)
+  separator "$_ls_preface" "$_ls_title"    # out to console screen
+  # output a "clean" version (w/o colors) to the log file
+  { printf '%s' "$_ls_clean_header"
+    repeat '-' "$_ls_reps"
+    printf "\n"
+  } >> "$logFile" || ls_ret=1
+  unset -v _ls_preface _ls_title _ls_ts _ls_clean_header _ls_reps _ls_len
+  return $ls_ret
+}
+# @usage log_separator "preface" "title"
+# @args $1 preface; $2 title
+# @vars logFile
+# @deps timestamp separator repeat
+# @rule emits colorized line to stdout and a 80-char timestamped plain-text line to $logFile
+# @note enforces a standard 80-character fixed width for log files to ensure readability
+
+
+d_log_separator() # (POSIX) conditionally output separator() to stdout and similar to logFile IAW verbosity
+{ d_do log_separator "$@" >&2 ; }
+# @usage d_log_separator "preface" "title" <level>
+
+
+right_status() # (POSIX) output 8 char [ ok/fail ] status at the right margin
+{ [ $# -lt 1 ] && { E_message "Error: 0 args. right_status requires integer status code"; return 1; }
+  _rs_status=$1; _rs_msg=""
+  if [ "$_rs_status" -eq 0 ] ; then
+    _rs_msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}"
+  else
+    _rs_msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}"
+  fi
+  # go to start of line, *then* move fwd to 7 chars from the right margin
+  # Note: "[ xx ]" is 6 chars, so this should ensure no accidental extra line wrap
+  _rs_tw=$(termwidth)
+  # ensure we have a valid width for arithmetic
+  isint "$_rs_tw" || _rs_tw=80
+  # calculate movement value separately for clarity/safety
+  _rs_move=$(( _rs_tw - 7 ))
+  # clamp move value to 0 to prevent negative arguments to CUF
+  [ "$_rs_move" -lt 0 ] && _rs_move=0
+  # move
+  printf '%b' "\r"  # beginning of current line (return 1 if failed)
+  if ! CUF "$_rs_move" ; then unset -v _rs_status _rs_msg _rs_tw _rs_move; return 1; fi
+  # final status output
+  printf '%b' "${_rs_msg}\n"; unset -v _rs_status _rs_msg _rs_tw _rs_move; return 0; }
+# @usage right_status "status"
+# @args $1 integer status code
+# @deps termwidth isint CUF
+# @rule calculates movement value as termwidth - 7 to protect right margin
+# @rule clamps move value to 0 to prevent negative CUF arguments
+# @ret exit 0 on success; exit 1 on movement failure
+# @ex message_n "good_test" ; right_status $?
+# @ex E_message_n "fail_test" && cat unexistent 2>/dev/null; right_status $?
+# @note go to start of line, *then* move fwd to 7 chars from the right margin
+# @note "[ xx ]" is 6 chars, so this should ensure no accidental extra line wrap # @usage right_status "status"
+# @args status must be integer status code
+# guard - reject zero args
+# @ex message_n "good_test" ; right_status $?
+# @ex E_message_n "fail_test" && cat unexistent 2>/dev/null; right_status $?
+
+old_log_right_status() # (POSIX) output rigit_status to stdout and logFile
+{ log_rs_ret=0
+  # guard - reject zero args
+  [ $# -lt 1 ] && { E_message "Error: 0 args. right_status requires integer status code"; return 1; }
+  _lrs_status=$1; if [ "$_lrs_status" -eq 0 ] ; then
+    _lrs_msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}"
+    _lrs_plain="[ Ok ]"
+  else
+    _lrs_msg="${BBon}[ ${BRon}!! ${BBon}]${Boff}"
+    _lrs_plain="[ !! ]"
+  fi
+  # get width for screen positioning. note: termwidth() will fallback
+  #   to standard 80 cols if COLUMNS, tput, and stty don't work
+  _lrs_tw=$(termwidth); isint "$_lrs_tw"; _lrs_offset=$(( _lrs_tw - 7 ))
+  printf "\r"
+  if CUF "$_lrs_offset" ; then printf '%b\n' "$_lrs_msg"; else printf " %b\n" "$_lrs_msg"; fi
+  # clean logging
+  if [ -n "$logFile" ]; then printf '%s\n' "$_lrs_plain" >> "$logFile" || log_rs_ret=1; fi
+  unset -v _lrs_msg _lrs_status _lrs_plain _lrs_tw _lrs_offset
+  return $log_rs_ret
+}
+# @usage log_right_status "status"
+# @args $1 integer status code
+# @deps termwidth isint CUF E_message
+# @rule uses \r and CUF to align terminal status to the far right margin
+# @rule provides a clean [ Ok ] or [ !! ] entry to $logFile without timestamping
+# @note maintainer note: deliberate decision to NOT have log_right_status timestamp
+# @note its entries to help this "context aware" logging scheme be more readable
+# @ex log_message_n "good_test" ; log_right_status $?
+# @ex log_E_message_n "fail_test" && cat unexistent 2>/dev/null; log_right_status $?
+# maintainer note: deliberate decision to NOT have log_right_status timestamp
+#   its entries to help this "context aware" logging scheme be more readable
+#   the alternative would be to "revert" to an "atomic" logging scheme
+#   in which logged action goes on a separate line with its own timestamp
+# note: 7 is the offset from right margin for six char status
+#  [ ok ] or [ !! ], because it leaves a one-char buffer to guarantee
+#  exactly one (and no accidental extra) newline
+
+old_d_right_status()    # output rigit_status IAW verbosity
+{ d_do right_status "$@" >&2 ; }
+# @usage d_right_status <status_code> <level>
+
+old_d_log_right_status()# output log_right_status IAW verbosity
+{ d_do log_right_status "$@" >&2 ; }
+# @usage d_log_right_status "message string" <level>
+
+non_stty_right_status()    # (deprecated; use right_status)
+{
+  W_message "${BYon}Warning:${Boff} non_stty_right_status is deprecated (use right_status(), which has been upgraded)"
+  right_status "$@"
+}
+
+
+handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout
+{ hr_ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+  if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  if [ "$_exit_status" -eq 0 ] ; then
+      printf '%b' "${_ok_msg}"  # replicates echo -e -n
+      right_status 0
+  else
+      printf '%b' "${_err_msg}"  # replicates echo -e -n
+      right_status 1
+      hr_ret=1
+  fi
+  unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in
+  return $hr_ret; }
+# @usage handle_result "$?" "ok_msg" "err_msg"
+# @args $1 exit status; $2 success message; $3 error message
+# @deps right_status status_color
+# @rule handles optional message suppression via no_msg variable
+# @ret exit 0 on success; exit 1 on failure
+# @note usage - message_n ...; <command>] ; handle_result "$?" "_ok_msg" "_err_msg"
+# @note notes - substitute no_msg=" \b" for either, to "suppress"
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
+
+old_log_handle_result() # (POSIX) output ok_/_err_msg and right_stats to stdout and logFile
+{ log_hr_ret=0; _exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+  if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  if [ "$_exit_status" -eq 0 ]; then
+      printf "%b" "${_ok_msg}"             # print to screen (expanded)
+      _c_msg=$(printf '%s' "${_ok_msg}" | _translate_escapes | strip_ansi)
+      printf "%s" "$_c_msg" >> "$logFile"  # write to log (safe/cleaned) - NO NEW TIMESTAMP
+      log_right_status 0
+  else
+      printf "%b" "${_err_msg}"
+      _c_msg=$(printf '%s' "${_err_msg}" | _translate_escapes | strip_ansi)
+      printf "%s" "$_c_msg" >> "$logFile"
+      log_right_status 1
+      log_hr_ret=1
+  fi
+  unset -v _exit_status _ok_msg _err_msg _ok_msg_in _err_msg_in _c_msg
+  return $log_hr_ret
+}   
+# @usage log_handle_result "$?" "ok_msg" "err_msg"
+# @args $1 exit status; $2 success string; $3 error string
+# @note appends to existing screen/log entry w/o new timestamp
+# @deps log_echo_e_n log_right_status
+# @rule handles optional message suppression via no_msg variable
+# @ret exit 0 on success; exit 1 on failure
+# @ex log_message_n ...; <command>] ; log_handle_result "$?" "_ok_msg" "_err_msg"
+# @note substitute no_msg=" \b" for either, to "suppress"
+
+old_d_log_handle_result() # output ok_/_err_msg and right_stats to stdout and logFile
+{ d_do log_handle_result "$@" >&2 ; }
+# @usage d_log_handle_result "message string" <level>
+
+old_d_handle_result() # output ok_/_err_msg and right_stats to stdout and logFile
+{ d_do handle_result "$@" >&2 ; }
+# @usage d_handle_result "message string" <level>
+
+old_message_n() # (POSIX) display text message $@ w/o newline (like echo -e -n)
+{ _mn_msg="$*"; _mn_msg_len=$(get_msg_len "$_mn_msg")
+  _mn_status_width=6   # e.g. "[ Ok ]" = 6 char
+  _mn_buffer=4         # padding for more visually appealing wrapping
+  # | * message
+  #  123
+  _mn_col=3; _mn_indent=3; _mn_tw=$(termwidth)
+  _mn_collision_threshold=$(( _mn_tw - _mn_status_width - _mn_buffer - _mn_col )) # prep to protect long msg
+  [ "$_mn_collision_threshold" -lt 0 ] && _mn_collision_threshold=0   # clamp to 0 if negative
+  printf " ${BGon}*${Boff} ";  # print the "prefix *"
+  if [ $_mn_msg_len -gt $_mn_collision_threshold ]; then
+    # use smart_wrap_n with "$_mn_msg" quoted for smart word-wrap; room for right_status; and align w indent
+#    echo_n_long "${_mn_col}" "${_mn_indent}" "$_mn_msg"
+    smart_wrap_n "${_mn_col}" "${_mn_indent}" "${_mn_indent}" "$_mn_msg"
+  else
+    printf '%b' "$*"        # use "$*" quoted to pass a single string
+  fi; unset -v _mn_msg _mn_msg_len _mn_status_width _mn_buffer _mn_tw _mn_collision_threshold _mn_col _mn_indent; }
+# @usage message_n "msg string"
+# @args $* the message to display
+# @deps get_msg_len termwidth smart_wrap_n
+# @rule smart_wrap_n uses a collision threshold for last-word-wrapping, which
+# @cont protects the right_status collision zone for subsequent right_status calls
+# @note message family indent is 3; smart_wrap_n requires valid numbers for col, l_margin, r_margin
+
+E_message_n() # (POSIX) display text error message $@ (no CR) (like echo -e -n)
+{ { printf " ${BRon}*${Boff} " ; printf '%b' "$*" ; } >&2; }
+# @usage E_message_n "error string"
+# @args $* the error message
+# @ret formatted error with red asterisk prefix to stderr without trailing newline
+# @note protects the right_status collision zone for subsequent right_status calls
+# @note use "$*" to bind message as a single string (no word-split)
+# @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
+
+ 
+log_message_n() # (POSIX) message() to stdout and $logFile owned by $user (like echo -e -n)
+{ log_mn_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  message_n "$*"
+  # filter the message through strip_ansi before logging
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_mn_ret
+}
+# @usage log_message_n "msg string"
+# @args $* the message to log
+# @vars logFile
+# @deps timestamp message_n _translate_escapes strip_ansi
+# @rule suppresses newline in both stdout and $logFile
+# @note protects the right_status collision zone for subsequent right_status calls
+# @note useful for logging status start-points before a process completes
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+                                                           [ Ok ]
+log_message_n() # (POSIX) message() to stdout and $logFile owned by $user (like echo -e -n)
+{ log_mn_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  message_n "$*"
+  # filter the message through strip_ansi before logging
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_mn_ret
+}
+# @usage log_message_n "msg string"
+# @args $* the message to log
+# @vars logFile
+# @deps timestamp message_n _translate_escapes strip_ansi
+# @rule suppresses newline in both stdout and $logFile
+# @note protects the right_status collision zone for subsequent right_status calls
+# @note useful for logging status start-points before a process completes
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+d_message_n()   # (POSIX) IAW verbosity, display text debugging message $@ (no CR)
+{ d_do message_n "$@" >&2 ; }
+# @usage d_message_n "message string" <level>
+
+dE_message_n()   # (POSIX) IAW verbosity, display text debugging error message $@ (w/o CR)
+{ d_do E_message_n "$@" >&2 ; }
+# @usage dE_message_n "message string" <level>
+
+
+d_log_message_n()     # (POSIX) display and log message IAW verbosity (w/o CR)
+{ d_do log_message_n "$@" >&2 ; }
+# @usage d_log_message_n "message string" <level>
+
+
+
+d_log_E_message_n() # (POSIX) display and log error message IAW verbosity (w/o CR)
+{ d_do log_E_message_n "$@" >&2 ; }
+# @usage d_log_E_message_n "message string" <level>
+
+d_echo_n() # (POSIX) IAW verbosity, display text debugging message $@ (like echo -n)
+{ d_do echo -n "$@" >&2 ; }
+# @usage d_echo_n "message string" <level>
+
+de_echo_n()   # (POSIX) IAW verbosity, display text debugging message $@ (like echo -en)
+{ d_do echo -e -n "$@" >&2 ; }
+# @usage d_echo_n "message string" <level>
+
+#~~~~~[ debuggimg w logging ]~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+d_log_echo_n()      # (POSIX) display and log simple message IAW verbosity (like echo -n)
+{ d_do log_echo_n "$@" >&2 ; }
+# @usage d_log_echo_n "message string" <level>
+
+d_log_echo_e_n()    # (POSIX) display and log simple message IAW verbosity (like echo -en)
+{ d_do log_echo_e_n "$@" >&2 ; }
+# @usage d_log_echo_e_n "message string" <level>
+
+log_echo_n() # (POSIX) echo -n "$1" to stdout and $logFile owned by $user (like echo -n)
+{ log_en_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  printf "%s" "$*"
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_en_ret
+}
+# @usage log_echo_n "msg string"
+# @args $* the message string
+# @deps timestamp _translate_escapes strip_ansi
+# @rule outputs string without newline; sanitizes for log file storage
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%s' (no expand backslash) to interpret e.g. \n in message (like echo)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
+log_echo_e_n() # (POSIX) echo -e -n "$1" to stdout and $logFile owned by $user (like echo -e -n)
+{ log_een_ret=0
+  # guard - ensure log is writable by current user
+  [ ! -w "$logFile" ] && { E_message "Error: logFile is not writable"; return 1 ; }
+  _ts="$(timestamp)"  # set timestamp for log entry
+  printf "%b" "$*"
+  _clean_msg=$(printf '%s' "$*" | _translate_escapes | strip_ansi)
+  printf "%s - %s" "$_ts" "$_clean_msg" >> "$logFile"
+  unset -v _ts _clean_msg
+  return $log_een_ret
+}
+# @usage log_echo_e_n "msg string"
+# @args $* string with escape sequences
+# @deps timestamp _translate_escapes strip_ansi
+# @rule interprets escapes via %b and suppresses trailing newline in both outputs
+# @note use "$*" to bind message as a single string (no word-split)
+# @note for stdout, message() uses '%b' (expand backslash) to interpret e.g. \n in message (like echo -e)
+# @note for logFile, use '%s' since piping through | _translate_escapes | strip_ansi to _clean_msg
+# @note use '%s' for timestamp
+
