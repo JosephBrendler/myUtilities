@@ -1478,11 +1478,18 @@ my_short_date() # (POSIX) echo shorter date string (yyyymmdd-timehack)
 initialize_vars() # initialize values for vars in $@; incl bool. lv. (info severity)
 { [ $# -lt 1 ] && return 1
   _iv_parmlist=""
-  for _iv_item in "$@"; do case "$_iv_item" in
-      *verbosity*|*bool.VERBOSE*|*VERBOSE*) continue ;;   # effectively remove these from the list, if user included them
+  for _iv_item in "$@"; do
+#    debug_msg "considering whether to include [$_iv_item] in _iv_parmlist"
+    case "$_iv_item" in
+      # effectively remove these from the list, if user included them
+      *verbosity|*VERBOSE|*QUIET|*DEBUG)
+#        debug_msg "NOT including [$_iv_item] in _iv_parmlist"
+        continue
+        ;;
       *) _iv_parmlist="$_iv_parmlist $_iv_item" ;;        # thus NOT re-initializing these system-wide globals
-  esac; done
-  info_msg "initializing vars: $_iv_parmlist"
+    esac
+  done
+  debug_msg "initializing vars: $_iv_parmlist"
   for _iv_var_name in $_iv_parmlist
   do
     info_msg_n "about to initialize $_iv_var_name"
@@ -2305,6 +2312,18 @@ info_handle_result() # (POSIX) "demote" handle_result() to INFO severity, and lo
     d_do handle_result "$@" "$info"; ihr_ret=$?
   fi; return $ihr_ret ; }
 # @usage info_handle_result <status> <ok_msg> <err_msg> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+notice_echo_msg() # (POSIX) "conditionalize" echo_msg() at NOTICE severity, and local verbosity++ if DEBUG
+{ iem_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=5 d_do echo_msg "$@" "$notice"; iem_ret=$?
+  else
+    d_do echo_msg "$@" "$notice"; iem_ret=$?
+  fi; return $iem_ret ; }
+# @usage info_echo_msg <message>
 # @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
 # @cont (it would run anyway since it operates at notice severity),
 # @cont  this is to make it NOT run when verbosity is 5
@@ -3148,11 +3167,11 @@ get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
 
 # @note =====[ Section 8: Command Sequence Framework ]================================================================
 
-# NOTE: varlist variables are initialized by app_configure_posix() and displayed by show_config();
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
 # the basic set of varlist variables is defined in script_header_joetoo and can be extended
 # either in the using script or in its .conf files.
 ## note: all varlist variables (including logFile and verbosity) get anulled by initialize_vars,
-# so they must be explicitly reassigned (as app_configure_posix does for this set).
+# so they must be explicitly reassigned (as app_configure does for this set).
 # the easiest way to ensure custom additions to varlist are properly initialized and then reassigned
 # prior to main script use is to place the extending definitions in .conf file in the
 # /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
@@ -3164,13 +3183,13 @@ varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_
 varlist="${varlist} bool.handle_local_usage_EXISTS"
 varlist="${varlist} app_customization_root local_cmdline_arg_handler"
 
-app_configure_posix() # (POSIX) initialize, set defaults, load config files, define cmd sequence
+app_configure() # (POSIX) initialize, set defaults, load config files, define cmd sequence
 {
   separator "$PN" "(configuring)"
   _c_FLAGGED=$FALSE
 
   # sets all variables named in varlist to null/$FALSE/No
-  if [ "$verbosity" -lt "$info" ] ; then
+  if [ ! "$DEBUG" ] && [ "$verbosity" -lt "$info" ] ; then
     # provide anounce/act/report-result summary report for initialize_vars
     # which operates at info severity
     notice_msg_n "initializing variables ..."
@@ -3265,7 +3284,7 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   info_msg_n "assigning config_dir"
   config_dir="/etc/${PN}"
   info_handle_result $? "$config_dir" "error assigning config_dir" || _c_FLAGGED=$TRUE
-  validate_dir_posix "$config_dir"   # does its own announce/act/report-results
+  validate_dir "$config_dir"   # does its own announce/act/report-results
 
   # BUILD="string" should be located in config_dir
   info_msg_n "sourcing BUILD variable assignment"
@@ -3280,7 +3299,7 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   # if the package has a config file at /etc/$PN or in app_customization_root configure it here
   info_msg "looking for config file(s) in /etc/${PN}"
   config_files=""
-  validate_dir_posix "/etc/${PN}"
+  validate_dir "/etc/${PN}"
   for _c_file in $(find "/etc/${PN}" -name "*.conf" -type f); do
     # accumulate found files in config_files, prepending a space only if it is not the first entry
     config_files="${config_files:+ }$_c_file"
@@ -3298,7 +3317,7 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   [ -z "$app_customization_root" ] && app_customization_root="/etc/${PN}/"
    info_handle_result $? "$app_customization_root" "error assigning app_customization_root" || _c_FLAGGED=$TRUE
   info_msg "validating app_customization_root [${Mon}$app_customization_root${Boff}]"
-  validate_dir_posix "$app_customization_root"
+  validate_dir "$app_customization_root"
 
   # assign and validate status_file
   # this is NOT the app_customization_root, it is normally in the user's $HOME/.config/
@@ -3306,7 +3325,7 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   info_msg_n "assigning status_file variable"
   [ -z "$status_file" ] && status_file="${HOME}/.config/${PN}.status"
    info_handle_result $? "$status_file" '' || _c_FLAGGED=$TRUE
-  validate_file_posix "$status_file"   # note this also validates the directory
+  validate_file "$status_file"   # note this also validates the directory
 
   # tier 3 - application customization and extension
   # this should reside in app_customization_root directory
@@ -3336,11 +3355,11 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   done
 
   # user's application script (which sources this header file)
-  #   should have a initialize_command_sequence_posix() function
-  #   (MUST, if it uses run_sequence_posix)
+  #   should have a initialize_command_sequence() function
+  #   (MUST, if it uses run_sequence)
   # so, check for it and call it if it exists
-  if command -v initialize_command_sequence_posix >/dev/null 2>&1; then
-    initialize_command_sequence_posix; _c_result=$?
+  if command -v initialize_command_sequence >/dev/null 2>&1; then
+    initialize_command_sequence; _c_result=$?
     info_msg_n "command_sequence initialization status"
     info_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
   fi
@@ -3348,18 +3367,18 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   # final sanity checks
   if [ "$INTERACTIVE" ] && [ "$verbosity" -lt "$notice" ]; then
     verbosity="$notice"
-    info_msg "${BYon}process_cmdline_posix clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
+    info_msg "${BYon}process_cmdline clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
   fi
 
   [ "$_c_FLAGGED" ] && c_ret=1
   unset -v _c_FLAGGED _c_file _c_result _c_handler
   return $c_ret
 }
-# @usage app_configure_posix
+# @usage app_configure
 # @vars PN, BUILD, user, logFile, status_file, config_dir, verbosity, INTERACTIVE, RESUME
 # @vars num_cmds, starting_step, stopping_step, varlist, FALSE, TRUE
 # @deps separator, initialize_vars, notice_msg, notice_msg_n, handle_result, notice_msg, notice_msg_n
-# @deps handle_result, sourcing, check_dir, check_file, process_cmdline_posix, initialize_command_sequence_posix
+# @deps handle_result, sourcing, check_dir, check_file, process_cmdline, initialize_command_sequence
 # @rule initializes and validates the entire script environment before execution
 # @ret 0 on success; 1 if _c_FLAGGED is set during configuration
 # @rules PN is package name and should be assigned = $(basename "$0") or ${0##*/} to identify the calling script
@@ -3367,7 +3386,7 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
 # @rules app_customization_root may contain *local.cmdline_arg_handler extension file
 # @cont which can contain handle_local_arg(), handle_local_compound_arg(), and handle_local_usage()
 
-usage_posix()                # explain default usage; mod with local "usage module"
+usage()                # explain default usage; mod with local "usage module"
 {
   N="${num_cmds}"
   separator "${PN}-${BUILD}" "(usage)"
@@ -3393,29 +3412,34 @@ usage_posix()                # explain default usage; mod with local "usage modu
   notice_msg "   -[1-${N}] sets starting_step (default 1 otherwise)"
   # source user-script specific usage-module which should be built in the same format
   notice_msg "${BMon}additional ${app_customization_root} - commandline options:${Boff}"
+
+
   if command -v handle_local_usage >/dev/null 2>&1; then
      handle_local_usage  || error_msg "error in handle_local_usage"
   fi
-  printf '\n'
-  notice_msg "${BYon}${PN} workflow sequence (steps):${Boff}"
-  for _u_step in $(seq 1 $num_cmds); do
-    _u_entry=$(sed -n "${_u_step}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
-    _u_desc="${_u_entry#*${US}}"                     # human readable description
-    printf '    %b[%b%02d%b]%b ' "${BBon}" "${Boff}${Yon}" "$_u_step" "${BBon}" "${Boff}"
-    printf '%b%s%b\n' "${Con}" "${_u_desc}" "${Boff}"
-  done
-
+  notice_echo_msg ""  # conditionalized newline, respecting messaging policy
+  # can only display workflow (command sequence) if there is one, so look for $cmd_seq_file
+  if [ -f "$cmd_seq_file" ] ; then
+    notice_msg "${BYon}${PN} workflow sequence (steps):${Boff}"
+    for _u_step in $(seq 1 $num_cmds); do
+      _u_entry=$(sed -n "${_u_step}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
+      _u_desc="${_u_entry#*${US}}"                     # human readable description
+#      printf '    %b[%b%02d%b]%b ' "${BBon}" "${Boff}${Yon}" "$_u_step" "${BBon}" "${Boff}"
+      notice_msg  "${BBon}[${Boff}${Yon}${_u_step}${BBon}]${Boff} ${Con}${_u_desc}${Boff}"
+#      printf '%b%s%b\n' "${Con}" "${_u_desc}" "${Boff}"
+    done
+  fi 
   unset -v _u_step _u_entry _u_desc
   leave "normal exit from usage"
 }
-# @usage usage_posix
+# @usage usage
 # @vars PN, BUILD, num_cmds, status_file, app_customization_root, cmd_seq_file, US
 # @deps separator, error_msg, notice_msg, die, sed, seq, printf
 # @rule displays standard options, sources local.usage if present, and prints workflow
 # @ret calls die, resulting in exit 1 (non-zero) from script
 # @note uses _u_ prefix for internal loop variables; unsets before termination
 
-validate_dir_posix()  # validate or create a directory $1
+validate_dir()  # validate or create a directory $1
 {   vd_ret=0
     [ $# -ne 1 ] && { error_msg "Error: must specify dir_to_validate" ; return 1 ; }
     _vd_dir_to_validate=$1
@@ -3439,20 +3463,20 @@ validate_dir_posix()  # validate or create a directory $1
     unset -v _vd_dir_to_validate
     return $vd_ret
 }
-# @usage validate_dir_posix <path>
+# @usage validate_dir <path>
 # @args $1 (string) path to the directory to validate or create
 # @deps error_msg, notice_msg_n, right_status, handle_result, sudo, mkdir
 # @rule ensures a directory exists, creating it with sudo -p if necessary
 # @ret 0 if directory exists or was successfully created; 1 otherwise
 
-validate_file_posix()  # validate or create command sequence status file $1
+validate_file()  # validate or create command sequence status file $1
 { vf_ret=0
   [ $# -ne 1 ] && { error_msg "Error: must specify file_to_validate" ; return 1 ; }
   _vf_file_to_validate=$1
   _vf_dir_to_validate="${_vf_file_to_validate%/*}"   #equivalent to dirname, but w/o subshell function call
   # just in case the file is in the current directory (name passed w/o path)
   [ "$_vf_dir_to_validate" = "$_vf_file_to_validate" ] && _vf_dir_to_validate="."
-  validate_dir_posix "$_vf_dir_to_validate"
+  validate_dir "$_vf_dir_to_validate"
   info_msg_n "validating file $_vf_file_to_validate"
   if [ -w "${_vf_file_to_validate}" ] ; then
     d_do 'printf "%b%s%b" "${BGon}" " (valid)" "${Boff}"; right_status $TRUE' "$info"
@@ -3469,14 +3493,14 @@ validate_file_posix()  # validate or create command sequence status file $1
   unset -v _vf_file_to_validate _vf_dir_to_validate
   return $vf_ret
 }
-# @usage validate_file_posix <path>
+# @usage validate_file <path>
 # @args $1 (string) path to the status file to validate or create
 # @vars  user
-# @deps error_msg, validate_dir_posix, notice_msg_n, right_status, handle_result, sudo, dirname
+# @deps error_msg, validate_dir, notice_msg_n, right_status, handle_result, sudo, dirname
 # @rule ensures file exists; initializes with '1' and sets ownership to $user if created
 # @ret 0 if file exists or was successfully created; 1 otherwise
 
-process_cmdline_posix() # (POSIX) process command line arguments
+process_cmdline() # (POSIX) process command line arguments
 { pc_ret=0
   _pc_arglist="$@"
   # pre-define a dynamic macro for adjusting verbosity
@@ -3499,7 +3523,7 @@ process_cmdline_posix() # (POSIX) process command line arguments
 
       -[!-]* ) # short option try processing alone, but it could be a clustered compound argument
         info_msg "processing [ $1 ] alone as single-dash argument"
-        process_argument_posix "$1" "$2"   # incl $2 in case $1 uses an operand
+        process_argument "$1" "$2"   # incl $2 in case $1 uses an operand
         _pc_result=$?
         case "$_pc_result" in
           0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
@@ -3511,7 +3535,7 @@ process_cmdline_posix() # (POSIX) process command line arguments
 
       --* )    # if arg begins with a double dash, process it alone
         info_msg "processing [ $1 ] alone as double-dash argument"
-        process_argument_posix "$1" "$2"  # incl $2 in case $1 uses an operand
+        process_argument "$1" "$2"  # incl $2 in case $1 uses an operand
         _pc_result=$?
         case "$_pc_result" in
           0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
@@ -3523,29 +3547,29 @@ process_cmdline_posix() # (POSIX) process command line arguments
 
       * )      # invalid
         info_msg "$1 does not start with - or --"
-        usage_posix  # usage will exit or return status 1
+        usage  # usage will exit or return status 1
         ;;
     esac
   done
   if [ "$INTERACTIVE" ] && [ "$verbosity" -lt "$notice" ]; then
     verbosity="$notice"
-    info_msg "${BYon}process_cmdline_posix clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
+    info_msg "${BYon}process_cmdline clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
   fi
-  info_msg "done with process_command_line_posix"
+  info_msg "done with process_command_line"
   warn_msg "remaining arguments: [$*]"
 
   unset -v _pc_last _pc_arglist _pc_result _pc_adjust_verbosity _pc_operator
   return $pc_ret
 }
-# @usage process_cmdline_posix "$@"
+# @usage process_cmdline "$@"
 # @args $@: positional parameters from the command line
 # @vars verbosity, INTERACTIVE, _pc_result
-# @deps notice_msg, process_compound_arg_posix, shift
+# @deps notice_msg, process_compound_arg, shift
 # @rule parses short (-q, -v) and long (--noninteractive) options
 # @ret 0 on completion
 # @note uses _pc_result to track loop status and prevent arithmetic errors
 
-_get_entry_posix() # (POSIX) get human readable description for command sequence step number
+_get_entry() # (POSIX) get human readable description for command sequence step number
 { ge_ret=0; if ! isint "$1"; then error_msg "error: zero args; _get_desc requires $1 step number"; return 1; fi
   _ge_entry=$(sed -n "${1}p" "$cmd_seq_file") # extract the specific line corresponding to the current step counter
   _ge_desc="${_ge_entry#*${US}}"  # human readable description
@@ -3562,7 +3586,7 @@ _get_entry_posix() # (POSIX) get human readable description for command sequence
   unset -v _ge_entry _ge_desc _ge_raw_cmd _ge_clean_cmd
   return $ge_ret
 }
-# @usage _get_entry_posix <step_number> <format_type>
+# @usage _get_entry <step_number> <format_type>
 # @args $1 (int) the 1-indexed step number to retrieve from the command sequence
 # @args $2 (int) format type: 1=description, 2=cleaned command, 3=raw command
 # @vars cmd_seq_file (global) path to the temporary command sequence file
@@ -3583,7 +3607,7 @@ _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(las
     if ! isint "$_pas_val"  || [ "$_pas_val" -lt 1 ] || [ "$_pas_val" -ge "$num_cmds" ] ; then _pas_val=1; fi
   fi
 #  debug_msg "_pas_val: $_pas_val"
-  _pas_desc=$(_get_entry_posix "$_pas_val" 1)
+  _pas_desc=$(_get_entry "$_pas_val" 1)
 #  debug_msg "_pas_desc: $_pas_desc"
 
   _pas_msg="${BYon}Status: ${BWon}next step would be [ ${Boff}${Mon}${_pas_val}${BWon} ]"
@@ -3614,7 +3638,7 @@ _pc_action_resume() # (POSIX) process resume flag
   # resume at stored step
   export RESUME=$TRUE
   export starting_step="$_par_val"
-  _par_desc=$(_get_entry_posix "$starting_step" 1)
+  _par_desc=$(_get_entry "$starting_step" 1)
   _par_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
   _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BYon} )${Boff}"
   info_msg "${_par_msg}"
@@ -3639,9 +3663,9 @@ _pc_action_number() # (POSIX) process resume flag
       # also - the standard is to write the next number when the step is complete (so don't write just now)
   else
       error_msg "invalid starting_step [${starting_step}]"
-      usage_posix  # does not return here
+      usage  # does not return here
   fi
-  _pan_desc=$(_get_entry_posix "$starting_step" 1)
+  _pan_desc=$(_get_entry "$starting_step" 1)
   _pan_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
   _pan_msg="${_pan_msg} ( ${BGon}${_pan_desc}${BYon} )${Boff}"
   info_msg "${_pan_msg}"
@@ -3656,7 +3680,7 @@ _pc_action_number() # (POSIX) process resume flag
 
 _pc_action_verbosity() # (POSIX) increase or decrease verbosity using predefined macro
 { pav_ret=0
-  # _pc_adjust_verbosity is a dynamic macro defined at the top of process_cmdline_posix
+  # _pc_adjust_verbosity is a dynamic macro defined at the top of process_cmdline
   # adjust according to operator, if in range, else set-clamp (in case environment had it out of range)
   # as of ver 0.3.6, verbosity is aligned with RFC 5424 severity levels from 0: emerg to 7: debug
   debug_msg "in _pc_action_verbosity with _pc_operator: [$_pc_operator]"
@@ -3691,7 +3715,7 @@ _pc_action_quiet() # (POSIX) process QUIET flag
 }
 
 
-process_argument_posix() # (POSIX) process one argument $! (considering the next $2 a potential operand)
+process_argument() # (POSIX) process one argument $! (considering the next $2 a potential operand)
 { pa_ret=0
   info_msg "pa about to process [ $* ]"
   info_msg "1: [ $1 ], 2: [ $2 ]"
@@ -3703,7 +3727,7 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       pa_ret=$?
       ;;
     "-"[hH] | "--help"           )      # help
-      usage_posix
+      usage
       ;;
     "-"[rR] | "--resume"         )      # resume at stored step
       debug_msg "pa -[rR]): [running _pc_action_resume]"
@@ -3725,10 +3749,10 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
         _pc_action_number "$_pa_arg"  # this will include checking if it is in range
         pa_ret=$?
       else
-        # it may be a combination of numbers and letters - hand off to process_compound_arg_posix
-        # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg_posix expects that)
-        debug_msg "pa case -*[0-9]*): running [process_compound_arg_posix $1]"
-        process_compound_arg_posix "-${_pa_arg}"
+        # it may be a combination of numbers and letters - hand off to process_compound_arg
+        # (in case we started with --, dont pass $1, put a single '-' back on _pa_arg (b/c process_compound_arg expects that)
+        debug_msg "pa case -*[0-9]*): running [process_compound_arg $1]"
+        process_compound_arg "-${_pa_arg}"
         pa_ret=$?
       fi
       ;;
@@ -3764,7 +3788,7 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
 
     # note: unrecgnized args should fall through to this default
     *                            )
-      # run local arg module if it exists (must end with "* ) process_compound_arg_posix $1 ;;")
+      # run local arg module if it exists (must end with "* ) process_compound_arg $1 ;;")
       debug_msg "pa case *): w/ \$1: $1"
       # command -v locates a command returns 0 if found (built-in or in PATH) non-zero if not found
       if command -v handle_local_arg >/dev/null; then
@@ -3772,28 +3796,28 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
         handle_local_arg "$1" "$2"
         # handle_local_arg returns 0: success; 1: error; 6: consumed operand; 7: not found
         pa_ret=$?
-        # if not found, give process_compound_arg_posix a chance
+        # if not found, give process_compound_arg a chance
         [ "$pa_ret" -eq 7 ] && {
-          debug_msg "pa case *): [handle_local_arg did not find \$1; running process_compound_arg_posix $1]"
-          process_compound_arg_posix "$1"; pa_ret=$? ; }
+          debug_msg "pa case *): [handle_local_arg did not find \$1; running process_compound_arg $1]"
+          process_compound_arg "$1"; pa_ret=$? ; }
       else
         # it still may be a combination of single char args and numbers
-        debug_msg "pa case *): running [process_compound_arg_posix $1]"
-        process_compound_arg_posix "$1"
+        debug_msg "pa case *): running [process_compound_arg $1]"
+        process_compound_arg "$1"
         pa_ret=$?
       fi
       ;;
   esac
-  info_msg "done with process_argument_posix, returning exit status [$pa_ret]"
+  info_msg "done with process_argument, returning exit status [$pa_ret]"
 
   unset -v _pa_desc _pa_msg _pa_arg
   return $pa_ret
 }
-# @usage process_argument_posix <arg> [potential_operand]
+# @usage process_argument <arg> [potential_operand]
 # @args $1 (string) the flag or argument to process
 # @args $2 (string) the potential_operand following the flag
 # @vars status_file, starting_step, num_cmds, verbosity, INTERACTIVE, RESUME
-# @deps info_msg, info_msg, error_msg, _get_entry_posix, isint, process_compound_arg_posix
+# @deps info_msg, info_msg, error_msg, _get_entry, isint, process_compound_arg
 # @deps status_color, TrueFalse
 # @rule parses flags (-s, -r, -i, -n, -q, -v) and numeric resume points (-[0-9])
 # @note unsets _pa_ prefixed local variables before return
@@ -3801,13 +3825,13 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
 # @ret return 6 if success and processed an operand $2
 # @ret return 1 if error
 
-process_compound_arg_posix()    # process a compount argument
+process_compound_arg()    # process a compount argument
 { pca_ret=0
   info_msg "about to process compound [ $* ]"
   # must begin with a single dash | "${var%${var#?}}" = 1st char, or "left_most()" but save a function call
-  if [ ! "${1%${1#?}}" = "-" ]; then error_msg "${E_BAD_ARGS}"; usage_posix; error_msg "exiting process [$$]"; return 1; fi
-  # must not begin with two dashes (would have been picked in process_argument_posix) | "${var%${var#??}}" = 1st 2 chars
-  if [ "${1%${1#??}}" = "--" ]; then error_msg "${E_BAD_ARGS}"; usage_posix; error_msg "exiting process [$$]"; return 1; fi
+  if [ ! "${1%${1#?}}" = "-" ]; then error_msg "${E_BAD_ARGS}"; usage; error_msg "exiting process [$$]"; return 1; fi
+  # must not begin with two dashes (would have been picked in process_argument) | "${var%${var#??}}" = 1st 2 chars
+  if [ "${1%${1#??}}" = "--" ]; then error_msg "${E_BAD_ARGS}"; usage; error_msg "exiting process [$$]"; return 1; fi
   # strip leading dash(es)
   _pca_args="${1##-}"   # strip longest match to - from left
   # handle remaining characters in sequence --
@@ -3822,7 +3846,7 @@ process_compound_arg_posix()    # process a compount argument
         pca_ret=$?
         ;;
       [hH]* )      # help
-        usage_posix
+        usage
         ;;
       [rR]* )  # resume at stored step
         _pc_action_resume
@@ -3867,7 +3891,7 @@ process_compound_arg_posix()    # process a compount argument
         info_msg "${BYon}setting DEBUG: $(status_color ${DEBUG})$(TrueFalse ${DEBUG})${Boff}"
       ;;
       *   )    # note: unrecognized args should fall through to this default
-        # run local arg module if it exists (must end with "* ) error_msg "${E_BAD_ARGS}" && usage_posix ;;")
+        # run local arg module if it exists (must end with "* ) error_msg "${E_BAD_ARGS}" && usage ;;")
         debug_msg "_pca \*) w/ local_cmdline_compound_arguments: $local_cmdline_compound_arguments"
         debug_msg "_pca \*) w/ _pca_args: $_pca_args"
         if command -v handle_local_compound_arg >/dev/null; then
@@ -3876,39 +3900,39 @@ process_compound_arg_posix()    # process a compount argument
           pca_ret=$?   # 0: success; 6: 1: error/not found
         else
           error_msg "${E_BAD_ARGS}"
-          usage_posix
+          usage
         fi
         ;;
     esac
     #strip first char from _pca_args (i.e. "shift" one character)
     _pca_args="${_pca_args#?}"   # strip 1st char
   done
-  notice_msg "done with process_compount_arg_posix; returning status code [$pca_ret]"
-#  echo_msg "done with process_compount_arg_posix; returning status code [$pca_ret]" # echo_msg is unconditional
+  notice_msg "done with process_compount_arg; returning status code [$pca_ret]"
+#  echo_msg "done with process_compount_arg; returning status code [$pca_ret]" # echo_msg is unconditional
 
   unset -v _pca_msg _pca_args _pca_num
   return $pca_ret
 }
-# @usage process_compound_arg_posix "string"
+# @usage process_compound_arg "string"
 # @args $1: the compound argument string (e.g., "qv")
 # @vars verbosity, _pa_len, _pa_i, _pa_char
 # @deps info_msg, notice_msg
 # @rule iterates through each character of a compound argument to apply settings
 # @ret 0 on success
 
-run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $3=stop
+run_sequence() # (POSIX) run command sequence; $1=status_file, $2=start, $3=stop
 { rs_ret=0
   # guard 1 - minimum arguments check (status, start, stop, + at least 1 cmd)
-  [ $# -lt 3 ] && { error_msg "usage_posix: run_sequence_posix <status_file> <start> <stop>"; return 1; }
+  [ $# -lt 3 ] && { error_msg "usage: run_sequence <status_file> <start> <stop>"; return 1; }
   _rs_status_file="$1"           # assign the status file
   _rs_start="${2:-1}"            # guard 2 - start step (default to zero but ensure it is an integer in range)
-  ! isint "$_rs_start" && { error_msg "run_sequence_posix: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; }
+  ! isint "$_rs_start" && { error_msg "run_sequence: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; }
   if [ "$_rs_start" -lt 1 ] || [ "$_rs_start" -gt "$num_cmds" ]; then
-     error_msg "run_sequence_posix: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; fi
+     error_msg "run_sequence: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; fi
   _rs_stop="${3:-$num_cmds}" # guard 3 - stop step (default to num cmds but ensure it is an integer in range)
-  ! isint "$_rs_stop" && { error_msg "run_sequence_posix: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; }
+  ! isint "$_rs_stop" && { error_msg "run_sequence: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; }
   if [ "$_rs_stop" -lt 1 ] || [ "$_rs_stop" -gt "$num_cmds" ]; then
-    error_msg "run_sequence_posix: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; fi
+    error_msg "run_sequence: stop_step '$3' must be '' or an integer 1 - ${num_cmds}"; return 1; fi
   # initialize both starting step (command) and loop counter
   _rs_step="$_rs_start"   # points to the number of the actual command that is "up" next (gets wrapped to 1 after num_cmds)
   _rs_count="$_rs_start"  # points to current step + 1 (does NOT wrap at num_cmds; so loop can detect completion)
@@ -3975,7 +3999,7 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg _rs_result
   return $rs_ret
 }
-# @usage: run_sequence_posix <status_file> <start> <stop>
+# @usage: run_sequence <status_file> <start> <stop>
 # @args: $1 (string) path to sequence status file
 # @args: $2 (int) starting step (1-indexed)
 # @rule: $2 start must be '' or integer 1(default) - num_cmds
@@ -3985,7 +4009,7 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
 # @ret: 0 on success, 1 on abort, or bitmask of failed steps
 # @deps: isint, yns_prompt, separator, notice_msg, handle_result, strip_ansi, _translate_escapes
 
-linear_search_posix() # (POSIX) linear seart for needle $1 in haystack (global cmd_seq_file)
+linear_search() # (POSIX) linear seart for needle $1 in haystack (global cmd_seq_file)
  { linear_ret=0
   _ls_needle=$1
   # find line number where command (before US) matches needle
@@ -3995,7 +4019,7 @@ linear_search_posix() # (POSIX) linear seart for needle $1 in haystack (global c
   unset -v _ls_needle _ls_idx
   return $linear_ret
 }
-# @usage linear_search_posix <target_string> <file_path>
+# @usage linear_search <target_string> <file_path>
 # @args $1 (string) the command or key to search for
 # @args $2 (string) the path to the command sequence file (e.g., $cmd_seq_file)
 # @vars US (global) the Unit Separator used as a delimiter in the sequence file

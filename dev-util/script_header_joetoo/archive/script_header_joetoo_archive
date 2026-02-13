@@ -1749,3 +1749,85 @@ warn_msg_n()  # (POSIX) warning-level (severity 4) message without newline
 # @rule logs with timestamp when LOGGING is enabled
 # @note prefix uses severity-implied bold yellow; no explicit PREFIX_COLOR
 # @ex warn_msg_n "disk space low"
+
+
+countdown() # output text message (arg $2, optional), and count-down seconds (arg $1)
+{
+  # special note: use base#number notation with prefix 10# to ensure interpretation as base 10
+  # store current minutes and seconds
+  min=10#$(date +%M) ; sec=10#$(date +%S)
+  wait_time=10#60  #default = 1 minute
+  [[ ! -z $1 ]] && wait_time="10#${1}"
+  # if wait time is greater than 60 seconds, convert to minutes and seconds, else calculate it
+  if [[ "${wait_time}" -ge "60" ]] ; then
+    wait_min=$(( ${wait_time} / 60 ))  ;  wait_sec=$(( ${wait_time} % 60 ))
+  else
+    wait_min=10#0  ;  wait_sec=${wait_time}
+  fi
+  tgt_min="$(( ${min} + ${wait_min} ))"  ;  tgt_sec="$(( ${sec} + ${wait_sec} ))"
+  if [[ "${tgt_sec}" -ge "60" ]] ; then
+    tgt_min="$(( ${tgt_min} + 1 ))"  ; tgt_sec="$(( ${tgt_sec} % 60 ))"
+  fi
+  min="$(date +%M)"  ;  sec="$(date +%S)"
+  rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+  # default message is "Pausing, ", else get from arg $2
+  [[ ! -z $2 ]] && wait_msg="$2" || wait_msg="Pausing,"
+  while [[ "${rem}" -gt "0" ]] ; do
+    echo -en "\r${wait_msg} Time: "$(date +%H:%M:%S)
+    sleep 0.1
+    min="10#$(date +%M)"  ;  sec="10#$(date +%S)"
+    rem="$(( $(( $(( ${tgt_min} * 60 )) + ${tgt_sec} )) - $(( $(( ${min} * 60 )) + ${sec} )) ))"
+    echo -n "    $rem seconds left..."
+  done ; echo return 0
+}
+
+
+box_msg_bash() # (LINUX BASH) $1=msg, $2=width, $3=center, $4=color
+{
+    local _bm_msg="$1"
+    local _bm_tw=$(termwidth)
+    local _bm_target_w _bm_center
+    # defaults: width=tw/2, center=tw/2
+    [ "$2" -gt 0 ] 2>/dev/null && _bm_target_w=$2 || _bm_target_w=$(( _bm_tw / 2 ))
+    [ "$3" -gt 0 ] 2>/dev/null && _bm_center=$3   || _bm_center=$(( _bm_tw / 2 ))
+    local _bm_color_seq="${4:-$OFF}"
+    local _bm_lines=()   # array holding smart-wrapped lines of the message
+    local _bm_buffer=4   # safety margin to help prevent words from exploding out of the box
+                         # _bm_buffer must be an even number -ge 4 (integer divisible to split on each side)
+
+    # calculate the "right_margin" that smart_wrap_n should use to wrap at "_bm_wrap_at"
+    # if it uses 0 for left margin
+    local _bm_r_margin=$(( _bm_tw - _bm_target_w + _bm_buffer ))
+    # capture wrapped lines using smart_wrap_n as the engine
+#    readarray -t _bm_lines < <(smart_wrap_n 0 0 $(( _bm_tw - _bm_wrap_at)) "$_bm_msg")
+    readarray -t _bm_lines < <(smart_wrap_n 0 0 "$_bm_r_margin" "$_bm_msg")
+
+    _bm_l_margin=$(( _bm_center - (_bm_target_w / 2) ))
+    [ "$_bm_l_margin" -lt 0 ] && _bm_l_margin=0
+    _bm_h_line=$(full_repeat "$H_wall" $(( _bm_target_w  )) ) # -2 = corners +2 = pad
+    printf "%b" "$_bm_color_seq"
+
+    # top border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$UL_wall" "$_bm_h_line" "$UR_wall" "$SI"
+    # body
+    for _bm_line in "${_bm_lines[@]}"; do
+        CUF "$_bm_l_margin"
+        printf "%b%b%b " "$SO" "$V_wall" "$SI"   # left wall
+        printf "%b" "$_bm_line"                  # pre-wrapped text
+        # calculate trailing gap to keep right wall vertical
+        _bm_cur_len=$(get_msg_len "$_bm_line")
+        _bm_gap=$(( _bm_target_w - _bm_cur_len ))
+#        [ "$_bm_gap" -gt 0 ] && repeat " " "$_bm_gap"
+        # ignore the gap, use absolute ref from left
+#        printf '\r'; CUF $((_bm_tw - _bm_l_margin ))
+        printf '\r'; CUF $((_bm_l_margin + _bm_target_w ))
+        printf " %b%b%b\n" "$SO" "$V_wall" "$SI" # Right wall
+    done
+
+    # bottom border
+    CUF "$_bm_l_margin"
+    printf "%b%b%b%b%b\n" "$SO" "$LL_wall" "$_bm_h_line" "$LR_wall" "$SI"
+    printf "%b" "$OFF"
+
+}
