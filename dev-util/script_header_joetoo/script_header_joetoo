@@ -650,6 +650,10 @@ CPR() # (POSIX) [r|c|s] - Cursor Position Report
 # @note reliable on modern systems (Linux 2.6+ / BSD)
 # @cont to be 100% robust against high-latency fragmentation, dd read
 # @cont could be wrapped in a 'while' loop until 'R' is received
+# @warn while CPR should be reliable in real terminals, it will likely still fail
+# @cont in pipelines, cron, systemd units, non-interactive SSH commands,
+# @cont while read loops fed by here-strings, subshells without a TTY, or
+# @cont any context where /dev/tty is not available
 # @note see "stty --help" (fascinatingly arcane detail on tty driver)
 
 QCR() { CPR s; echo "$CPR_ROW"; }
@@ -1475,8 +1479,8 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
 { [ $# -lt 1 ] && return 1
   _iv_parmlist=""
   for _iv_item in "$@"; do case "$_iv_item" in
-      *verbosity*|*bool.VERBOSE*|*VERBOSE*) continue ;;
-      *) _iv_parmlist="$_iv_parmlist $_iv_item" ;;
+      *verbosity*|*bool.VERBOSE*|*VERBOSE*) continue ;;   # effectively remove these from the list, if user included them
+      *) _iv_parmlist="$_iv_parmlist $_iv_item" ;;        # thus NOT re-initializing these system-wide globals
   esac; done
   info_msg "initializing vars: $_iv_parmlist"
   for _iv_var_name in $_iv_parmlist
@@ -1487,26 +1491,26 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
         # initialize by type
         _iv_type="${_iv_var_name%.*}"   # strip off chars right of and .
         _iv_var="${_iv_var_name#*.}"    # strip off chars left of and .
-        d_do echo_msg " of _iv_type: [$_iv_type] ..." "$info"  # "conditionalize" echo_msg at info severity level
+        info_echo_msg " of _iv_type: [$_iv_type] ..."  # "conditionalize" echo_msg at info severity level
         case ${_iv_type} in
           [bB]*  )
             # (set $FALSE) boolean convention: parameter is "bool.${_iv_var}" where ${_iv_var} is e.g. "VERBOSE"
             info_msg_n "  (${_iv_type}) initializing ${_iv_var} FALSE ..."
-            eval "${_iv_var}=\"\$FALSE\"" ; d_do right_status $? "$info"    # demote right_status to info severity
+            eval "${_iv_var}=\"\$FALSE\"" ; info_right_status $?    # demote right_status to info severity
           ;;
           [yY]*  )
             # (set "no") yes/no convention: parameter is "yn.${_iv_var}" where ${_iv_var} is e.g. "EIX"
             info_msg_n "  (${_iv_type}) initializing ${_iv_var} (no) ..."
-            eval "${_iv_var}='no'" ; d_do right_status $? "$info"    # demote right_status to info severity
+            eval "${_iv_var}='no'" ; info_right_status $?    # demote right_status to info severity
           ;;
           [lL]*  )
             # (set "") lonstring convention: parameter is "lv.${_iv_var}" where ${_iv_var} is e.g. "CMDLINE"
             info_msg_n "  (${_iv_type}) initializing ${_iv_var} NULL ..."
-            eval "${_iv_var}=''" ; d_do right_status $? "$info"    # demote right_status to info severity
+            eval "${_iv_var}=''" ; info_right_status $?    # demote right_status to info severity
           ;;
           *      )
             # invalid variable _iv_type
-            eval "${_iv_var}=''" ; d_do right_status $? "$info"    # demote right_status to info severity
+            eval "${_iv_var}=''" ; info_right_status $?    # demote right_status to info severity
             unset -v _iv_item _iv_parmlist _iv_var_name _iv_type _iv_var
             return 2
           ;;
@@ -1515,17 +1519,17 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
       "BREAK" )  # elif [ "$_iv_var_name" = "BREAK" ] ; then
         # ignore BREAK
         _iv_type=""
-        d_do echo_msg " of _iv_type: [$_iv_type] ..." "$info"  # "conditionalize" echo_msg at info severity level
+        info_echo_msg " of _iv_type: [$_iv_type] ..."   # "conditionalize" echo_msg at info severity level
         info_msg_n "  ignoring BREAK ..."
-        d_do right_status 0 "$info"    # demote right_status to info severity
+        info_right_status 0 "$info"    # demote right_status to info severity
         ;;
       * )  # else
         # untyped - initialize null
         _iv_type=""
         _iv_var="$_iv_var_name"
-        d_do echo_msg " of _iv_type: [$_iv_type] ..." "$info"  # "conditionalize" echo_msg at info severity level
+        info_echo_msg " of _iv_type: [$_iv_type] ..."   # "conditionalize" echo_msg at info severity level
         info_msg_n "  (${_iv_type}) initializing ${_iv_var} NULL ..."
-        eval "${_iv_var}=''" ; d_do right_status $? "$info"
+        eval "${_iv_var}=''" ; info_right_status $? "$info"
         ;;
     esac  # _iv_var_name (fi)
   done
@@ -1575,13 +1579,10 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
             # |123              4  567  (_dv_maxlen already padded for two dots)
             # [disregard - should work quoted now] use with ${_dv_key} (unquoted) so smart_wrap_n can split and wrap words properly
             _dv_start_col=$(( _dv_maxlen + 7 )); _dv_indent="${_dv_start_col}"
-#            debug_msg "_dv_var: $_dv_var"
-#            debug_msg "_dv_maxlen: $_dv_maxlen"
-#            debug_msg "_dv_start_col: $_dv_start_col"
-#            debug_msg "_dv_indent: $_dv_indent"
             notice_msg_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
             smart_wrap_n "${_dv_start_col}" "${_dv_indent}" "" "${_dv_key}"
-            printf '%b\n' " ${BBon}]${Boff}"
+#            printf '%b\n' " ${BBon}]${Boff}"
+            echo_msg " ${BBon}]${Boff}"  # print trailing ] and newline while respecting messaging policies
             ;;
           *      )
             # invalid variable _dv_type
@@ -1590,7 +1591,7 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
             ;;
         esac
         ;;
-      BREAK) printf "\n" ;; # BREAK, obviously (ignore it)
+      BREAK) echo_msg "" ;; # BREAK, print newline while respecting messaging policies
       * ) # untyped
         _dv_type=""
         _dv_var="$_dv_var_name"
@@ -1616,7 +1617,7 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
 
 show_config() # (POSIX) show config with get_longest and display_vars
 { sc_ret=0; debug_msg "in show_config" ; separator "${PN}-${BUILD}" "(configuration)"
-  _longest=$(get_longest ${varlist}) ; display_vars ${_longest} ${varlist} ; sc_ret=$?
+  _longest=$(get_longest ${varlist}) ; [ ! "$QUIET" ] && display_vars ${_longest} ${varlist} ; sc_ret=$?
   unset -v _longest; return $sc_ret ; }
 # @usage show_config
 # @vars varlist (list of variables to display)
@@ -1736,7 +1737,9 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
   _FORCE=$((         ( mask >> 7 )  & 1 ))
   _SILENCE=$((       ( mask >> 8 )  & 1 ))
   _PREFIX=$((        ( mask >> 15 ) & 1 ))
-  # early exit if _SILENCE is set
+  # INTERACTIVE mode overrides SILENCE
+  [ "$INTERACTIVE" ] && _SILENCE=0
+  # otherwise early exit if _SILENCE is set
   [ "$_SILENCE" -eq 1 ] && exit 0
   # early exit if _LOG is requested but logFile is not writable
   [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ] && { error_msg  "Error: logFile is not writable"; return 1 ; }
@@ -1771,10 +1774,13 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
   if [ "$_PREFIX_COLOR" -eq 0 ]; then
     # no explicit color provided by caller; so derive it from severity
     case "$_SEVERITY" in
-      0|1|2|3) prefix_color="${BRon}" ;;   # emerg/alert/crit/err .. (red bold)
-      4)       prefix_color="${BYon}" ;;   # warning ............... (yellow bold)
-      5|6)     prefix_color="${Won}"  ;;   # notice/info ........... (white)
-      7)       prefix_color="${Con}"  ;;   # debug ................. (cyan)
+      0|1|2|3) prefix_color="${BRon}"  ;;   # emerg/alert/crit/err .. (red bold)
+      4)       prefix_color="${BYon}"  ;;   # warning ............... (yellow bold)
+#      5|6)     prefix_color="${Won}"   ;;   # notice/info ........... (white)
+      5)       prefix_color="${Gon}"   ;;   # notice ................ (green - joetoo std good to know, normal ops)
+      6)       prefix_color="${BGon}"  ;;   # info .................. (green bold - joetoo std need to know, normal ops)
+#      7)       prefix_color="${Con}"   ;;   # debug ................. (cyan)
+      7)       prefix_color="${BMon}"  ;;   # debug ................. (magenta bold - joetoo std debug)
     esac
   else
     # caller-specified prefix color
@@ -1883,7 +1889,7 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
 # @rule  PREFIX_COLOR=0 uses severity color; nonzero overrides; PREFIX_BOLD adds
 # @rule  SEVERITY (3 bits) controls prefix symbol, color, and verbosity behavior
 # @note  emit() runs in a subshell to isolate positional parameters and avoid
-# @cont  polluting caller scope; all local _flags are true booleans (1/0)
+# @cont  polluting caller scope; all local _FLAG vars are true booleans (1/0)
 # @note  log output is ANSI-stripped and escape-normalized; timestamps apply only
 # @cont  to log messages; stdout/stderr receive full ANSI-colored output
 # @note  callers must construct bitmask correctly; emit() does not validate it
@@ -1892,7 +1898,8 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
 emerg_msg()  # (POSIX) display emergency-level (severity 0) message $@ (like echo -e)
 { emerg_ret=0; _msg="$*"
   _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
-    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( emerg << SEVERITY_SHIFT ) ))
+    | ( RGB_M << PREFIX_COLOR_SHIFT ) | ( emerg << SEVERITY_SHIFT ) ))    # joetoo choice (bold magenta) for emerg
+#    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( emerg << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -1911,8 +1918,9 @@ emerg_msg()  # (POSIX) display emergency-level (severity 0) message $@ (like ech
 
 alert_msg()  # (POSIX) display alert-level (severity 1) message $@ (like echo -e)
 { alert_ret=0; _msg="$*"
-  _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
-    | ( RGB_M << PREFIX_COLOR_SHIFT ) | ( alert << SEVERITY_SHIFT ) ))
+#  _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
+  _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX
+    | ( RGB_M << PREFIX_COLOR_SHIFT ) | ( alert << SEVERITY_SHIFT ) ))   # joetoo choice (non-bold magenta) for alert
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -1932,7 +1940,7 @@ alert_msg()  # (POSIX) display alert-level (severity 1) message $@ (like echo -e
 crit_msg()  # (POSIX) display critical-level (severity 2) message $@ (like echo -e)
 { crit_ret=0; _msg="$*"
   _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
-    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( crit << SEVERITY_SHIFT ) ))
+    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( crit << SEVERITY_SHIFT ) ))    # joetoo choice (stick w red bold) for crit
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -1951,8 +1959,9 @@ crit_msg()  # (POSIX) display critical-level (severity 2) message $@ (like echo 
 
 error_msg ()  # (POSIX) display error-level (severity 3) message $@ (like echo -e)
 { error_ret=0; _msg="$*"
+#  _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
   _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
-    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( err << SEVERITY_SHIFT ) ))
+    | ( RGB_R << PREFIX_COLOR_SHIFT ) | ( err << SEVERITY_SHIFT ) ))    # joetoo choice (non-bold red) for error
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -1974,7 +1983,7 @@ error_msg ()  # (POSIX) display error-level (severity 3) message $@ (like echo -
 warn_msg()  # (POSIX) display warning-level (severity 4) message $@ (like echo -e)
 { warn_ret=0; _msg="$*"
   _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD
-    | ( RGB_Y << PREFIX_COLOR_SHIFT ) | ( warning << SEVERITY_SHIFT ) ))
+    | ( RGB_Y << PREFIX_COLOR_SHIFT ) | ( warning << SEVERITY_SHIFT ) ))    # joetoo choice (stick w yellow bold) for warn
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -1997,7 +2006,8 @@ warn_msg()  # (POSIX) display warning-level (severity 4) message $@ (like echo -
 notice_msg()  # (POSIX) display notice-level (severity 5) message $@ (like echo -e)
 { notice_ret=0; _msg="$*"
   _bitmask=$(( STDOUT | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
-    | ( RGB_W << PREFIX_COLOR_SHIFT ) | ( notice << SEVERITY_SHIFT ) ))
+    | ( RGB_G << PREFIX_COLOR_SHIFT ) | ( notice << SEVERITY_SHIFT ) ))    # joetoo choice (green bold) for notice
+#    | ( RGB_W << PREFIX_COLOR_SHIFT ) | ( notice << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -2018,8 +2028,9 @@ notice_msg()  # (POSIX) display notice-level (severity 5) message $@ (like echo 
 
 info_msg()  # (POSIX) display info-level (severity 6) message $@ (like echo -e)
 { info_ret=0; _msg="$*"
-  _bitmask=$(( STDOUT | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
-    | ( RGB_G << PREFIX_COLOR_SHIFT ) | ( info << SEVERITY_SHIFT ) ))
+#  _bitmask=$(( STDOUT | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
+  _bitmask=$(( STDOUT | NEWLINE | INTERPRET | PREFIX | CONDITIONAL
+    | ( RGB_G << PREFIX_COLOR_SHIFT ) | ( info << SEVERITY_SHIFT ) ))    # joetoo choice (green non-bold) for info
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -2041,7 +2052,7 @@ info_msg()  # (POSIX) display info-level (severity 6) message $@ (like echo -e)
 debug_msg()  # (POSIX) display debug-level (severity 7) message $@ (like echo -e)
 { debug_ret=0; _msg="$*"
   _bitmask=$(( STDERR | NEWLINE | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
-    | ( RGB_C << PREFIX_COLOR_SHIFT ) | ( debug << SEVERITY_SHIFT ) ))
+    | ( RGB_C << PREFIX_COLOR_SHIFT ) | ( debug << SEVERITY_SHIFT ) ))    # joetoo choice (stick w cyan bold) for debug
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ] && _bitmask=$(( _bitmask | SILENCE ))
@@ -2100,7 +2111,7 @@ notice_msg_n()  # (POSIX) notice-level (severity 5) message without newline
   _status_width=6; _buffer=4; _col=3; _indent=3           # "[ Ok ]" = 6 || " * " = 3
   _threshold=$(( _tw - _status_width - _buffer - _col ))  # prep to leave room for right_status
   [ "$_threshold" -lt 0 ] && _threshold=0                 # clamp to zero if negative
-  # no NEWLINE, no PREFIX_COLOR
+  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
   _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
     | ( notice << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
@@ -2132,7 +2143,7 @@ info_msg_n()  # (POSIX) info-level (severity 6) message without newline
   _status_width=6; _buffer=4; _col=3; _indent=3
   _threshold=$(( _tw - _status_width - _buffer - _col ))
   [ "$_threshold" -lt 0 ] && _threshold=0
-  # no NEWLINE, no PREFIX_COLOR
+  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
   _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
     | ( info << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
@@ -2164,7 +2175,7 @@ debug_msg_n()  # (POSIX) debug-level (severity 7) message without newline
   _status_width=6; _buffer=4; _col=3; _indent=3
   _threshold=$(( _tw - _status_width - _buffer - _col ))
   [ "$_threshold" -lt 0 ] && _threshold=0
-  # no NEWLINE, no PREFIX_COLOR, FORCE
+  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n), FORCE
   _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL | FORCE
     | ( debug << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
@@ -2208,9 +2219,16 @@ right_status()  # (POSIX) NOTICE-level right-margin status indicator
   isint "$_rs_tw" || _rs_tw=80
   _rs_move=$(( _rs_tw - 7 ))
   [ "$_rs_move" -lt 0 ] && _rs_move=0
-  # cursor movement
-  printf '%b' "\r"
-  CUF "$_rs_move" || { unset -v _rs_status _rs_msg _rs_plain _rs_tw _rs_move; return 1; }
+  # suppress right_status entirely in QUIET mode (unless INTERACTIVE overrides)
+  if [ "$QUIET" ] && [ ! "$INTERACTIVE" ]; then
+      unset -v _rs_status _rs_msg _rs_plain _rs_tw _rs_move
+      return 0
+  fi
+  # cursor movement, with conditionality
+  d_do '
+    printf "%b" "\r"
+    CUF "$_rs_move" || { unset -v _rs_status _rs_msg _rs_plain _rs_tw _rs_move; return 1; }
+  ' "$notice"
   # NOTICE severity (shifted), stdout, newline, conditional, interpret not needed for pre-cooked colors
   _bitmask=$(( STDOUT | NEWLINE | CONDITIONAL | (notice << SEVERITY_SHIFT) ))
   # apply policy bits (do not use TIMESTAMP in right_status when logging)
@@ -2220,7 +2238,7 @@ right_status()  # (POSIX) NOTICE-level right-margin status indicator
   # emit will send colored output to stdout (and a ansi/excape-cleaned version to the log if logging)
   emit "$_bitmask" "$_rs_msg"; rs_ret=$?
   unset -v _rs_status _rs_msg _rs_plain _rs_tw _rs_move _bitmask; return $rs_ret ; }
-# @usage right_status <status_code>
+# @usage right_status <status_code> || <fail-action>
 # @args $1 integer status code (0=Ok, nonzero=failure)
 # @vars LOGGING, DEBUG, QUIET, logFile
 # @deps emit termwidth CUF isint bitmask-constants
@@ -2234,8 +2252,6 @@ right_status()  # (POSIX) NOTICE-level right-margin status indicator
 # @ex notice_msg_n "creating file"; sudo ... >/dev/null 2>&1; right_status $?
 # @note right_status is a NOTICE-level UI primitive. Severity is not part of its
 # @cont identity; it is the "report-result" step of the announce/act/report
-# @cont idiom. When INFO or DEBUG behavior is desired, callers should
-# @cont demote via 'd_do right_status "$?" "$info"' (or "$debug")
 # @cont right_status a single canonical layout function.
 
 handle_result()  # (POSIX) NOTICE-level descriptive result + right_status
@@ -2254,7 +2270,7 @@ handle_result()  # (POSIX) NOTICE-level descriptive result + right_status
   # emit descriptive message exactly where notice_msg_n left the cursor and close line with right_status
   emit "$_bitmask" "$_msg" ; right_status "$exit_status"
   unset -v _ok_msg_in _err_msg_in _ok_msg _err_msg _msg _bitmask; return $exit_status ; }
-# @usage handle_result <status> <ok_msg> <err_msg>
+# @usage handle_result <status> <ok_msg> <err_msg> || <fail-action>
 # @args $1 exit status; $2 success text; $3 error text
 # @vars LOGGING DEBUG QUIET no_msg
 # @deps emit right_status bitmask-constants
@@ -2267,10 +2283,43 @@ handle_result()  # (POSIX) NOTICE-level descriptive result + right_status
 # @ex notice_msg_n "doing X"; run_cmd; handle_result "$?" "ok" "failed"
 # @note handle_result is a NOTICE-level UI primitive paired with right_status.
 # @cont It participates in the announce/act/report idiom and is intentionally
-# @cont severity-neutral. Demote via d_do handle_result "$?" "$info" (or "$debug")
-# @cont when lower-severity reporting is appropriate. No separate severity-
-# @cont specific handle_result functions are provided to avoid redundant API
-# @cont surface and preserve a single canonical primitive.
+# @cont severity-neutral
+
+info_right_status() # (POSIX) "demote" right_status() to INFO severity, and local verbosity++ if DEBUG
+{ irs_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=6 d_do right_status "$@" "$info"; irs_ret=$?
+  else
+    d_do right_status "$@" "$info"; irs_ret=$?
+  fi; return $irs_ret ; }
+# @usage info_right_status <status> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+info_handle_result() # (POSIX) "demote" handle_result() to INFO severity, and local verbosity++ if DEBUG
+{ ihr_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=6 d_do handle_result "$@" "$info"; ihr_ret=$?
+  else
+    d_do handle_result "$@" "$info"; ihr_ret=$?
+  fi; return $ihr_ret ; }
+# @usage info_handle_result <status> <ok_msg> <err_msg> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+info_echo_msg() # (POSIX) "conditionalize" echo_msg() at INFO severity, and local verbosity++ if DEBUG
+{ iem_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=6 d_do echo_msg "$@" "$info"; iem_ret=$?
+  else
+    d_do echo_msg "$@" "$info"; iem_ret=$?
+  fi; return $iem_ret ; }
+# @usage info_echo_msg <message>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
 
 echo_msg_n()  # (POSIX) raw echo with logging; modern replacement for log_echo_n
 { echo_msg_ret=0; _msg="$*"
@@ -2373,7 +2422,8 @@ yn_prompt() # (POSIX) set external variable $answer based on reponse to prompt $
 { yn_ret=0; _yn_ps="$*"; answer=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${answer:- }" : '[yYnN]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; printf " ${BGon}*${Boff} %s" "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
+RCP; notice_msg_n "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
+#RCP; printf " ${BGon}*${Boff} %s" "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
 unset -v _yn_ps ; return $yn_ret ; }
 # @usage prompt "question text"
 # @args $1 string: the question to ask the user
@@ -2389,7 +2439,8 @@ yns_prompt() # (POSIX) set external variable $answer based on reponse to prompt 
 { yns_ret=0 ; _yns_ps="$*"; response=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${response:- }" : '[yYnNsS]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; printf " ${BGon}*${Boff} %s" "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
+RCP; notice_msg_n "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
+#RCP; printf " ${BGon}*${Boff} %s" "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
 unset -v _yns_ps ; return $yns_ret ; }
 # @usage yns_prompt "question text"
 # @args $1 string: the question to ask the user
@@ -3107,8 +3158,8 @@ get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
 # /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
 # information is provided in the template config file to exemplify
 varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
-varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
 varlist="${varlist} num_cmds starting_step stopping_step BREAK"
+varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
 varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
 varlist="${varlist} bool.handle_local_usage_EXISTS"
 varlist="${varlist} app_customization_root local_cmdline_arg_handler"
@@ -3131,24 +3182,21 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   # tier 0 - prerequisites (note: can't log until logging is set up below
   # initialize package name for this script
   info_msg_n "assigning PN"
-  PN="${0##*/}"; _c_result=$?   # equivalent to PN=$(basename "$0") but w/o subshell
-  d_do handle_result $_c_result "$PN" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  PN="${0##*/}"   # equivalent to PN=$(basename "$0") but w/o subshell
+  info_handle_result $? "$PN" '' || _c_FLAGGED=$TRUE
 
   # identify and assign user name
   info_msg_n "assigning user"
-  user=$(whoami); _c_result=$?
-  d_do handle_result $_c_result "$user" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  user=$(whoami)
+  info_handle_result $? "$user" '' || _c_FLAGGED=$TRUE
 
   # assign and/or check logFile (may have been set by config
   # (do this after $user is assigned but before starting logging
   info_msg "draft logFile name: /var/log/${PN}.log"
   info_msg_n "assigninging logFile"
   if [ -z "$logFile" ]; then
-    logFile="/var/log/${PN}.log"; _c_result=$?
-    d_do handle_result $_c_result "now assigned: $logFile" "error assigning logFile" "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    logFile="/var/log/${PN}.log"
+    info_handle_result $? "now assigned: $logFile" "error assigning logFile" || _c_FLAGGED=$TRUE
   else
     d_do '
       printf '%b' " (${BYon}already assigned: ${Gon}$logFile${Boff})"
@@ -3168,18 +3216,16 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
       mv -f '$logFile' '${logFile}.1'
       touch '$logFile'
       chown '${user}:${user}' '$logFile'
-    " >/dev/null 2>&1; _c_result=$?
-    d_do handle_result $_c_result "rotated" "error rotating logFile" "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    " >/dev/null 2>&1
+    info_handle_result $? "rotated" "error rotating logFile" || _c_FLAGGED=$TRUE
   else
     # create it and set permissoins
     info_msg_n "creating logFile"
     sudo sh -c "
       touch '$logFile'
       chown '${user}:${user}' '$logFile'
-    " >/dev/null 2>&1; _c_result=$?
-    d_do handle_result $_c_result "created" "error rotating logFile" "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    " >/dev/null 2>&1
+    info_handle_result $? "created" "error rotating logFile" || _c_FLAGGED=$TRUE
   fi
 
   # NOTE: *** Initialize LOGGING, INTERACTIVE, and verbosity BEFORE sourcing config, so that
@@ -3187,57 +3233,49 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
 
   # initialize LOGGING - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default LOGGING"
-  export LOGGING="$TRUE"; _c_result=$?
-  d_do handle_result $_c_result "$(TrueFalse $LOGGING)" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  export LOGGING="$TRUE"
+  info_handle_result $? "$(TrueFalse $LOGGING)" '' || _c_FLAGGED=$TRUE
 
   # initialize QUIET - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default QUIET"
-  export QUIET=$FALSE; _c_result=$?
-  d_do handle_result $_c_result "$(TrueFalse $QUIET)" ''  "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  export QUIET=$FALSE
+  info_handle_result $? "$(TrueFalse $QUIET)" '' || _c_FLAGGED=$TRUE
 
   # initialize DEBUG - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default DEBUG"
-  export DEBUG=$FALSE; _c_result=$?
-  d_do handle_result $_c_result "$(TrueFalse $DEBUG)" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  export DEBUG=$FALSE
+  info_handle_result $? "$(TrueFalse $DEBUG)" '' || _c_FLAGGED=$TRUE
 
   # initialize INTERACTIVE - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default INTERACTIVE"
-  export INTERACTIVE=$TRUE; _c_result=$?
-  d_do handle_result $_c_result "$(TrueFalse $INTERACTIVE)" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  export INTERACTIVE=$TRUE
+  info_handle_result $? "$(TrueFalse $INTERACTIVE)" '' || _c_FLAGGED=$TRUE
 
   # set default verbosity if not set externally
   info_msg_n "maybe assigning verbosity"
   if [ -z "$verbosity" ] ; then
-    verbosity=5; _c_result=$?
-    d_do handle_result $_c_result "now set: $verbosity" '' "$info"
-    [ "$_c_result" -eq 0 ]  || _c_FLAGGED=$TRUE
+    verbosity=5
+    info_handle_result $? "now set: $verbosity" '' || _c_FLAGGED=$TRUE
   else
-    d_do handle_result $TRUE "already set: $verbosity" '' "$info"
+    info_handle_result 0 "already set: $verbosity" ''
   fi
 
   # tier 1 - global configuration
   # validate package config directory
   info_msg_n "assigning config_dir"
-  config_dir="/etc/${PN}"; _c_result=$?
-  d_do handle_result $_c_result "$config_dir" "error assigning config_dir" "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  config_dir="/etc/${PN}"
+  info_handle_result $? "$config_dir" "error assigning config_dir" || _c_FLAGGED=$TRUE
   validate_dir_posix "$config_dir"   # does its own announce/act/report-results
 
   # BUILD="string" should be located in config_dir
   info_msg_n "sourcing BUILD variable assignment"
-  . "${config_dir}/BUILD"; _c_result=$?
-  d_do handle_result $_c_result "$BUILD" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  . "${config_dir}/BUILD"
+  info_handle_result $? "$BUILD" '' || _c_FLAGGED=$TRUE
 
   # initialize RESUME - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default RESUME"
-  export RESUME=$FALSE; _c_result=$?
-  d_do handle_result $_c_result "$(TrueFalse $RESUME)" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  export RESUME=$FALSE
+  info_handle_result $? "$(TrueFalse $RESUME)" '' || _c_FLAGGED=$TRUE
 
   # if the package has a config file at /etc/$PN or in app_customization_root configure it here
   info_msg "looking for config file(s) in /etc/${PN}"
@@ -3247,9 +3285,8 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
     # accumulate found files in config_files, prepending a space only if it is not the first entry
     config_files="${config_files:+ }$_c_file"
     info_msg_n "sourcing $_c_file"
-    . "$_c_file"; _c_result=$?
-    d_do handle_result $_c_result "$_c_file" "" "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    . "$_c_file"
+    info_handle_result $? "$_c_file" "" || _c_FLAGGED=$TRUE
   done
   info_msg "config_files: [$config_files]"
 
@@ -3258,9 +3295,8 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   # this is normally /etc/${PN}
   # (user can override in .conf file(s) defined above - making it ! -z)
   info_msg_n "assigning app_customization_root variable"
-  [ -z "$app_customization_root" ] && app_customization_root="/etc/${PN}/"; _c_result=$?
-   d_do handle_result $_c_result "$app_customization_root" "error assigning app_customization_root" "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  [ -z "$app_customization_root" ] && app_customization_root="/etc/${PN}/"
+   info_handle_result $? "$app_customization_root" "error assigning app_customization_root" || _c_FLAGGED=$TRUE
   info_msg "validating app_customization_root [${Mon}$app_customization_root${Boff}]"
   validate_dir_posix "$app_customization_root"
 
@@ -3268,9 +3304,8 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   # this is NOT the app_customization_root, it is normally in the user's $HOME/.config/
   # (user can override in .conf file(s) defined above - making it ! -z)
   info_msg_n "assigning status_file variable"
-  [ -z "$status_file" ] && status_file="${HOME}/.config/${PN}.status"; _c_result=$?
-   d_do handle_result $_c_result "$status_file" '' "$info"
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+  [ -z "$status_file" ] && status_file="${HOME}/.config/${PN}.status"
+   info_handle_result $? "$status_file" '' || _c_FLAGGED=$TRUE
   validate_file_posix "$status_file"   # note this also validates the directory
 
   # tier 3 - application customization and extension
@@ -3280,13 +3315,12 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   info_msg_n "looking for *local.cmdline_arg_handler "
   local_cmdline_arg_handler=$(find "${app_customization_root%/}/" -name "*local.cmdline_arg_handler" | head -n 1 ); _c_result=$?
   _c_handler="${local_cmdline_arg_handler:-"none found"}"
-   d_do handle_result $_c_result "${_c_handler##*/}" "error" "$info"  # =${var##*/} is =$(basename $var) but w/o subshell and function call
-  [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+   # =${var##*/} is =$(basename $var) but w/o subshell and function call
+   info_handle_result $_c_result "${_c_handler##*/}" "error" || _c_FLAGGED=$TRUE
   if [ -f "$local_cmdline_arg_handler" ]; then
     info_msg_n "sourcing local_cmdline_arg_handler"
-    . "$local_cmdline_arg_handler"; _c_result=$?
-    d_do handle_result $_c_result "sourced" "error sourcing local_cmdline_arg_handler" "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    . "$local_cmdline_arg_handler"
+    info_handle_result $? "sourced" "error sourcing local_cmdline_arg_handler" || _c_FLAGGED=$TRUE
   fi
 
   # use POSIX method of indirect variable assignment to display the existence of local handlers
@@ -3308,8 +3342,13 @@ app_configure_posix() # (POSIX) initialize, set defaults, load config files, def
   if command -v initialize_command_sequence_posix >/dev/null 2>&1; then
     initialize_command_sequence_posix; _c_result=$?
     info_msg_n "command_sequence initialization status"
-    d_do handle_result $_c_result '' '' "$info"
-    [ "$_c_result" -eq 0 ] || _c_FLAGGED=$TRUE
+    info_handle_result $_c_result '' '' || _c_FLAGGED=$TRUE
+  fi
+
+  # final sanity checks
+  if [ "$INTERACTIVE" ] && [ "$verbosity" -lt "$notice" ]; then
+    verbosity="$notice"
+    info_msg "${BYon}process_cmdline_posix clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
   fi
 
   [ "$_c_FLAGGED" ] && c_ret=1
@@ -3386,18 +3425,18 @@ validate_dir_posix()  # validate or create a directory $1
     else
         # use sudo in case current user is not root
         d_do echo_n_msg "${BYon}" " (creating)" "${Boff}" "$info"  # conditionalize echo_n_msg
-        sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "; _vd_result=$?
-        d_do handle_result $_vd_result "created" "failed to create $_vd_dir_to_validate" "$info"
-        [ "$_vd_result" -eq 0 ] || { unset -v _vd_dir_to_validate; return 1 ; }
+        sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "
+        info_handle_result $? "created" "failed to create $_vd_dir_to_validate" || \
+          { unset -v _vd_dir_to_validate; return 1 ; }
     fi
     # set ownership either way, using sudo in case current user is not root
     # (note: chown -R to give all contents to user)
     info_msg_n "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
-    sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "; _vd_result=$?
-    d_do handle_result $_vd_result "ownership set" "failed to set ownership" "$info"
-    [ "$_vd_result" -eq 0 ] || { unset -v _vd_dir_to_validate; return 1 ; }
+    sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
+    info_handle_result $? "ownership set" "failed to set ownership" || \
+      { unset -v _vd_dir_to_validate; return 1 ; }
     [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
-    unset -v _vd_dir_to_validate _vd_result
+    unset -v _vd_dir_to_validate
     return $vd_ret
 }
 # @usage validate_dir_posix <path>
@@ -3423,7 +3462,7 @@ validate_file_posix()  # validate or create command sequence status file $1
     sudo sh -c "
       touch '${_vf_file_to_validate}' && chown '${user}:${user}' '${_vf_file_to_validate}'
     " >/dev/null 2>&1
-    d_do handle_result $? "file ready for owner" "failed to fix/set ownership of ${_vf_file_to_validate}" "$info" || return 1
+    info_handle_result $? "file ready for owner" "failed to fix/set ownership of ${_vf_file_to_validate}" || return 1
   fi
   # final validation
   [ -f "${_vf_file_to_validate}" ] ; vf_ret=$?
@@ -3488,6 +3527,10 @@ process_cmdline_posix() # (POSIX) process command line arguments
         ;;
     esac
   done
+  if [ "$INTERACTIVE" ] && [ "$verbosity" -lt "$notice" ]; then
+    verbosity="$notice"
+    info_msg "${BYon}process_cmdline_posix clamped verbosity to [${Mon}${verbosity}${Boff}] in INTERACTIVE mode"
+  fi
   info_msg "done with process_command_line_posix"
   warn_msg "remaining arguments: [$*]"
 
@@ -3545,7 +3588,7 @@ _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(las
 
   _pas_msg="${BYon}Status: ${BWon}next step would be [ ${Boff}${Mon}${_pas_val}${BWon} ]"
   _pas_msg="${_pas_msg} ( ${BGon}${_pas_desc}${BWon} )${Boff}"
-  notice_msg "${_pas_msg}"
+  info_msg "${_pas_msg}"
   unset -v _pas_val _pas_desc _pas_msg
   # that is it; we are done - do not return from here; use leave() [ more polite than die() ]
   # to exit/return depending on whether $- contains an "i" (interactive)
@@ -3553,7 +3596,7 @@ _pc_action_status() # (POSIX) emit status of run_sequenct (next step to run)(las
 }
 # @usage _pc_action_status
 # @vars status_file (global) path to the command sequence status file
-# @deps notice_msg
+# @deps info_msg
 # @rule reads the current step from the status file and calculates the previous step
 # @ret emits number of last completed step, returns 0 on completion
 
@@ -3574,13 +3617,13 @@ _pc_action_resume() # (POSIX) process resume flag
   _par_desc=$(_get_entry_posix "$starting_step" 1)
   _par_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
   _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BYon} )${Boff}"
-  notice_msg "${_par_msg}"
+  info_msg "${_par_msg}"
   unset -v _par_msg _par_desc
   return $par_ret
 }
 # @usage _pc_action_resume
 # @vars RESUME, status_file (global) path to the command sequence status file
-# @deps notice_msg
+# @deps info_msg
 # @rule reads the current step from the status file and calculates the previous step
 # @ret sets global starting_step, and returns 0 on completion
 
@@ -3601,13 +3644,13 @@ _pc_action_number() # (POSIX) process resume flag
   _pan_desc=$(_get_entry_posix "$starting_step" 1)
   _pan_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]"
   _pan_msg="${_pan_msg} ( ${BGon}${_pan_desc}${BYon} )${Boff}"
-  notice_msg "${_pan_msg}"
+  info_msg "${_pan_msg}"
   unset -v _pan_desc _pan_msg _pan_arg
   return $pan_ret
 }
 # @usage _pc_action_number
 # @vars RESUME, status_file (global) path to the command sequence status file
-# @deps notice_msg
+# @deps info_msg
 # @rule reads the current step from the status file and calculates the previous step
 # @ret sets global starting_step, and returns 0 on completion
 
@@ -3620,14 +3663,33 @@ _pc_action_verbosity() # (POSIX) increase or decrease verbosity using predefined
   debug_msg "_pc_adjust_verbosity=[$_pc_adjust_verbosity]"
   case "$_pc_operator" in
     "+" ) if [ "$verbosity" -lt 7 ]; then _pv_action="increased"; else _pv_action="clamped"; verbosity=7; fi ;;
-    "-" ) if [ "$verbosity" -gt 0 ]; then _pv_action="decreased"; else _pv_action="clamped"; verbosity=0; fi ;;
+    "-" )
+      if [ "$INTERACTIVE" ]; then
+        if [ "$verbosity" -gt "$notice" ]; then _pv_action="decreased"; else _pv_action="clamped"; verbosity="$notice"; fi
+      else
+        if [ "$verbosity" -gt 0 ]; then _pv_action="decreased"; else _pv_action="clamped"; verbosity=0; fi
+      fi
+      ;;
     *   ) error_msg "invalid operator [$_pc_operator]; verbosity unchanged: ${Boff}${Con}${verbosity}${Boff}"; pav_ret=1 ;;
   esac
   [ ! "$_pv_action" = "clamped" ] && { eval "$_pc_adjust_verbosity"; pav_ret=$? ; }
-  notice_msg "${BYon}verbosity ${_pv_action}: ${BBon}[${Boff}${Mon}${verbosity}${BBon}]${Boff}"
+  info_msg "${BYon}verbosity ${_pv_action}: ${BBon}[${Boff}${Mon}${verbosity}${BBon}]${Boff}"
   unset -v _pv_action
   return $pav_ret
 }
+
+_pc_action_quiet() # (POSIX) process QUIET flag
+{ paq_ret=0
+  if [ "$INTERACTIVE" ]; then        # INTERACTIVE overrides QUIET for cli framework
+    export QUIET=$FALSE;
+    warn_msg "${BYon}(INTERACTIVE override) set QUIET: $(status_color ${QUIET})$(TrueFalse ${QUIET})${Boff}"
+  else
+    export QUIET=$TRUE; paq_ret=$?
+    info_msg "${BYon}set QUIET: $(status_color ${QUIET})$(TrueFalse ${QUIET})${Boff}"
+  fi
+  return $paq_ret
+}
+
 
 process_argument_posix() # (POSIX) process one argument $! (considering the next $2 a potential operand)
 { pa_ret=0
@@ -3674,17 +3736,17 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       debug_msg "pa -[iI]): [running export INTERACTIVE=$TRUE]"
       export INTERACTIVE=$TRUE;
       pa_ret=$?
-      notice_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      info_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
       ;;
     "-"[nN] | "--noninteractive" )      # non-interactive
       export INTERACTIVE=$FALSE
       pa_ret=$?
-      notice_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+      info_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
       ;;
     "-"[lL] | "--logging" )             # logging
       export LOGGING="$TRUE"
       pa_ret=$?
-      notice_msg "${BYon}setting LOGGING: $(status_color ${LOGGING})$(TrueFalse ${LOGGING})${Boff}"
+      info_msg "${BYon}setting LOGGING: $(status_color ${LOGGING})$(TrueFalse ${LOGGING})${Boff}"
       ;;
     "-"[q] | "--quiet"          )       # decrease verbosity
       _pc_operator="-"; _pc_action_verbosity; pa_ret=$?
@@ -3693,12 +3755,11 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
       _pc_operator="+"; _pc_action_verbosity; pa_ret=$?
       ;;
     "-"[Q] | "--QUIET" | "--SILENCE" )  # set $QUIET
-      export QUIET=$TRUE; pa_ret=$?
-      notice_msg "${BYon}setting QUIET: $(status_color ${QUIET})$(TrueFalse ${QUIET})${Boff}"
+      _pc_action_quiet; pa_ret=$?
       ;;
     "-"[V] | "--VERBOSE" | "--DEBUG" )  # set DEBUG
       export DEBUG=$TRUE; pa_ret=$?
-      notice_msg "${BYon}setting DEBUG: $(status_color ${DEBUG})$(TrueFalse ${DEBUG})${Boff}"
+      info_msg "${BYon}setting DEBUG: $(status_color ${DEBUG})$(TrueFalse ${DEBUG})${Boff}"
       ;;
 
     # note: unrecgnized args should fall through to this default
@@ -3732,7 +3793,7 @@ process_argument_posix() # (POSIX) process one argument $! (considering the next
 # @args $1 (string) the flag or argument to process
 # @args $2 (string) the potential_operand following the flag
 # @vars status_file, starting_step, num_cmds, verbosity, INTERACTIVE, RESUME
-# @deps notice_msg, notice_msg, error_msg, _get_entry_posix, isint, process_compound_arg_posix
+# @deps info_msg, info_msg, error_msg, _get_entry_posix, isint, process_compound_arg_posix
 # @deps status_color, TrueFalse
 # @rule parses flags (-s, -r, -i, -n, -q, -v) and numeric resume points (-[0-9])
 # @note unsets _pa_ prefixed local variables before return
@@ -3780,17 +3841,17 @@ process_compound_arg_posix()    # process a compount argument
       [iI]* )  # interactive
         export INTERACTIVE=$TRUE
         pca_ret=$?
-        notice_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+        info_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
         ;;
       [nN]* )  # non-interactive
         export INTERACTIVE=$FALSE
         pca_ret=$?
-        notice_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
+        info_msg "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"
         ;;
       "-"[lL] | "--logging" )  # logging
         export LOGGING="$TRUE"
         pca_ret=$?
-        notice_msg "${BYon}setting LOGGING: $(status_color ${LOGGING})$(TrueFalse ${LOGGING})${Boff}"
+        info_msg "${BYon}setting LOGGING: $(status_color ${LOGGING})$(TrueFalse ${LOGGING})${Boff}"
         ;;
       [q]* )  # decrease verbosity
         _pc_operator="-"; _pc_action_verbosity; pca_ret=$?
@@ -3799,12 +3860,11 @@ process_compound_arg_posix()    # process a compount argument
         _pc_operator="+"; _pc_action_verbosity; pca_ret=$?
         ;;
       [Q]* )  # set $QUIET
-        export QUIET=$TRUE; pa_ret=$?
-        notice_msg "${BYon}setting QUIET: $(status_color ${QUIET})$(TrueFalse ${QUIET})${Boff}"
+        _pc_action_quiet; pa_ret=$?
         ;;
       [V]* )  # set DEBUG
         export DEBUG=$TRUE; pa_ret=$?
-        notice_msg "${BYon}setting DEBUG: $(status_color ${DEBUG})$(TrueFalse ${DEBUG})${Boff}"
+        info_msg "${BYon}setting DEBUG: $(status_color ${DEBUG})$(TrueFalse ${DEBUG})${Boff}"
       ;;
       *   )    # note: unrecognized args should fall through to this default
         # run local arg module if it exists (must end with "* ) error_msg "${E_BAD_ARGS}" && usage_posix ;;")
@@ -3832,7 +3892,7 @@ process_compound_arg_posix()    # process a compount argument
 # @usage process_compound_arg_posix "string"
 # @args $1: the compound argument string (e.g., "qv")
 # @vars verbosity, _pa_len, _pa_i, _pa_char
-# @deps notice_msg, notice_msg
+# @deps info_msg, notice_msg
 # @rule iterates through each character of a compound argument to apply settings
 # @ret 0 on success
 
@@ -3907,10 +3967,9 @@ run_sequence_posix() # (POSIX) run command sequence; $1=status_file, $2=start, $
     _rs_count=$(( _rs_count + 1 ))
     # store the pointer to the command that is actually "up" next (not the loop counter)
     info_msg_n "writing step (next up) to status_file =>"
-    printf '%s\n' "$_rs_step" > "$status_file"; _rs_result=$?
+    printf '%s\n' "$_rs_step" > "$status_file"
     # demote handle_result to info severity with d_do ... "$info"
-    d_do handle_result $_rs_result "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$info"
-    [ "$_rs_result" -eq 0 ]  || rs_ret=1
+    info_handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" || rs_ret=1
   done
   unset -v _rs_status_file _rs_step _rs_cmd _rs_result _rs_entry _rs_desc
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg _rs_result
@@ -4518,7 +4577,7 @@ _dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional ex
   # Add the find subshell
   _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header} "
   _dh_cmd="${_dh_cmd}${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\" "
-  # Close bracket and add right_status (note: noticd_msg will add a newline)
+  # Close bracket and add right_status (note: notice_msg will add a newline)
   _dh_cmd="${_dh_cmd}${_ctl_color}]${_Boff}${_op_color};${_Boff} "
   _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff} "
   _dh_cmd="${_dh_cmd}\"${_var_color}\${crit}${_Boff}\""
