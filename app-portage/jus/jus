@@ -4,18 +4,35 @@
 # Author: Joe Brendler 14 October 2020
 # see version_history in ebuild's filesdir
 
+# to do list:
+# (1) sort out getbinpkg override of per-package env (don't want gentoo-kernel binpkg for example)
+# (2) use header's process_cmdline - may need to figure out
+#     how to have some of the option flags override those
+#     in the baseline header - like -n below = nodist (no distcc)
+#     (maybe update header to use -N only and -I only, -r only)
+#     (replace GO_AHEAD with ! INTERACTIVE
+# (3) follow framework example for app_configure (initialize_vars)
+# (4) doesn't use run_sequence - has phase_seq arrays instead...
+
 source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_extended
 
 # source BUILD PVR
-PN=$(basename $0)
+PN=${0##*/}  # equivalent to =$(basename "$0") but w/o subshell and function call
 source /etc/${PN}/BUILD
 
 # if /usr/share/config/ doesn't exist, fix that
-[ ! -d /usr/share/config ] && mkdir -p /usr/share/config/ && message "created /usr/share/config/"
+notice_msg_n "looking for /usr/share/config"
+[ -d /usr/share/config ]; result=$?
+handle_result $result "found" "not found"
+if [ ! "$result" -eq 0 ]; then
+  notice_msg_n "making directory /usr/share/config/"
+  mkdir -p /usr/share/config/
+  handle_result $? "created" "" || die "failed to mkdir -p /usr/share/config/"
+fi
 
 # basic configuration variables and internals
-conf_varlist="CONF_DIR ELOG_DIR"
+conf_varlist="CONF_FILE ELOG_DIR"
 conf_varlist+=" PORTDIR PKGDIR DISTDIR PORT_LOGDIR"
 conf_varlist+=" STATUS_FILE yn.EIX yn.DISTCC"
 conf_varlist+=" worldfile bool.VERBOSE verbosity BUILD"
@@ -41,56 +58,52 @@ p6_varlist+=" yn.EMAINT_CHECK"
 source_config() {
   # source jus.conf in order to load user-configured settings (over-ride initilized defaults)
   if [[ -e /etc/jus/jus.conf ]] ; then
-    CONF_DIR="/etc/jus/jus.conf"
+    CONF_FILE="/etc/jus/jus.conf"
   elif [[ -e /usr/local/sbin/jus.conf ]] ; then
-    CONF_DIR="/usr/local/sbin/jus.conf"
+    CONF_FILE="/usr/local/sbin/jus.conf"
   elif [[ -e jus.conf ]] ; then
-    CONF_DIR="$(pwd)/jus.conf"
+    CONF_FILE="$(pwd)/jus.conf"
   else
-    E_message "Error: no jus.conf config file found"
-    exit 1
+    die "no jus.conf config file found"
   fi
-  d_message_n "Sourcing configuration file [ ${CONF_DIR} ] ..." 1
-  source ${CONF_DIR} ; d_right_status $? 1
+  notice_msg_n "Sourcing configuration file [ ${CONF_FILE} ] ..."
+  . "${CONF_FILE}" ; right_status $?
 }
 
 initialize_variables() {
-  VERBOSE=$TRUE
-  verbosity=3
   initialize_vars ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist}
 
   # restore VERBOSE and verbosity to defaults (initialization would clear them)
-  d_message_n "Restoring PN, BUILD, and verbosity ..." 1
-  PN=$(basename $0) && source /etc/${PN}/BUILD && \
-  VERBOSE=$TRUE && verbosity=3
-  d_right_status $? 1
+  notice_msg_n "assigning PN"
+  PN=${0##*/}; handle_result $? "$PN" ""
 
-  # PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
-  #d_message_n "Setting default PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR per make.conf ..." 1
-  #eval $( grep ^PORTDIR /etc/portage/make.conf ) && \
-  #eval $( grep ^PKGDIR /etc/portage/make.conf ) && \
-  #eval $( grep ^DISTDIR /etc/portage/make.conf ) && \
-  #eval $( grep ^PORT_LOGDIR /etc/portage/make.conf ) && \
-  # source make.conf b/c we can't do it this way for systems that set e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
-  d_message_n "sourcing make.conf to setting PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR ..." 1
-  source /etc/portage/make.conf ; d_right_status $? 1
+  notice_msg_n "sourcing BUILD"
+  . /etc/${PN}/BUILD; handle_result $? "$BUILD" ""
 
-  ELOG_DIR="${PORT_LOGDIR}/elog/"
-  d_right_status $? 1
+  notice_msg_n "assigning verbosity"
+  verbosity=5; handle_result $? "$verbosity" ""
+
+  # source make.conf b/c we can't grep for just parts for systems that set e.g.
+  #    PORTDIR="${ROOT}var/db/repos/gentoo"
+  notice_msg_n "sourcing make.conf to set PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR ..."
+  source /etc/portage/make.conf ; right_status $?
+
+  notice_msg_n "assigning ELOG_DIR"
+  ELOG_DIR="${PORT_LOGDIR}/elog/"; handle_result $? "$ELOG_DIR" ""
 
   # Set these to defaults, override later with config file
-  d_message_n "Setting default phase, new_phase(0)  ..." 1
-  phase=0 && new_phase=0 ; d_right_status $? 1
+  notice_msg_n "Setting default phase, new_phase(0) "
+  phase=0 && new_phase=0 ; right_status $?
 
-  d_message_n "Setting default NOBINFEATURES ..." 1
+  notice_msg_n "setting default NOBINFEATURES ..."
   # turn off getbinpkg userpriv and distcc --> override make.conf or package.env
   NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc"'
-  d_right_status $? 1
+  right_status $?
 
-  d_message_n "Setting default STATUS_FILE ..." 1
-  STATUS_FILE="/root/bin/jus-status" ; d_right_status $? 1
+  notice_msg_n "assigning STATUS_FILE"
+  STATUS_FILE="/root/bin/jus-status" ; handle_result $? "$STATUS_FILE" ""
 
-  d_message_n "Setting default yes/no variables ..." 1
+  notice_msg_n "setting default yes/no variables ..."
   EIX="yes" && DISTCC="yes" && SELINUX_RELABEL="no" && PERL_CLEANER="no" && \
   HASKELL_UPDATER="no" && REGEN_OVERLAY_METADATA="yes" && EIX_UPDATE="no" && \
   NEWUSE="yes" && CHANGEDUSE="no" && \
@@ -99,19 +112,19 @@ initialize_variables() {
   continue="y" && RESUME="no" && SYNC="no" && EXCLUDE="" && UPDATE_CHECK="no" && GO_AHEAD="no" && \
   KEEPGOING="yes" && USEPKG="no" && USEPKGONLY="no" && GETBINPKG="no" && GETBINPKGONLY="no" && \
   WITH_BDEPS_Y="yes"
-  d_right_status $? 1
+  right_status $?
 
-  d_message_n "Setting default sync data ..." 1
+  notice_msg_n "setting default sync data ..."
   SYNC_TS="${PORTDIR}/metadata/timestamp.chk" && SYNC_CMD="EIX_SYNC" && MAX_AGE=24
-  d_right_status $? 1
+  right_status $?
 
   # --- Define local variables -----------------------------------
-  d_message_n "Setting default world file ..." 1
-  worldfile="/var/lib/portage/world" ; d_right_status $? 1
+  notice_msg_n "assigning world file"
+  worldfile="/var/lib/portage/world" ; handle_result $? "$worldfile" ""
 
-  d_message_n "Setting defaults for non-displayed variables ..." 1
+  notice_msg_n "Setting defaults for non-displayed variables ..."
   KP_FOUND=$FALSE && continue="y" && new_phase=0 && updateables=""
-  d_right_status $? 1
+  right_status $?
 
   # Array of messages used to announce each phase
   phase_message=(
@@ -138,14 +151,18 @@ initialize_variables() {
 sanity_check()
 {
 # veryfy the sanity of the combination of arguments on the command line
-[ "$SYNC" == "yes" ] && [ "$RESUME" == "yes" ] && \
-   E_message "Nonsensical option combination: sync and resume" && \
-   useage && exit 1
+if [ "$SYNC" == "yes" ] && [ "$RESUME" == "yes" ]; then
+   error_msg "Nonsensical option combination: sync and resume"
+   useage
+   die "correct options and try again"
+fi
 
-[ "$SYNC" == "yes" ] && [ "$GO_AHEAD" == "yes" ] && \
-   E_message "Dangerous option combination: sync and go_ahead" && \
-   E_message "(you should never merge packages blindly, please check first)" && \
-   useage && exit 1
+if [ "$SYNC" == "yes" ] && [ "$GO_AHEAD" == "yes" ]; then
+   error_msg "Dangerous option combination: sync and go_ahead"
+   error_msg "(you should never merge packages blindly, please check first)"
+   useage
+   die "correct options and try again"
+fi
 
 # if both remote/local and local-only are set local-only should over-ride
 [ "$GETBINPKG" == "yes" ] && [ "$GETBINPKGONLY" == "yes" ] && GETBINPKG="no"
@@ -156,29 +173,29 @@ process_command_line()
 {
 # process command line arguments (for now only -x/--exclude option can have argument(s))
 last=""
-d_message "processing command line with argument(s): [ ${*} ]" 2
+notice_msg "processing command line with argument(s): [ ${*} ]"
 # shift each argument into position $1 and examine it
 #   process the argument or processit with its own arguments
 while [ ! -z "$1" ]
 do
-  d_message "arg1 = [ $1 ]" 3
+  info_msg "arg1 = [ $1 ]"
   # if arg begins with a single dash, process it alone
   if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ]
   then
-    d_message "processing [ $1 ] alone as single-dash argument" 3
+    info_msg "processing [ $1 ] alone as single-dash argument"
     process_argument $1
     shift
   # if arg begins with a double dash, process it alone if it is not --exclude
   elif [ "${1:0:2}" == "--" ] && [ "$1" != "--exclude" ]
   then
-    d_message "processing [ $1 ] alone as double-dash non-exclude argument" 3
+    info_msg "processing [ $1 ] alone as double-dash non-exclude argument"
     process_argument $1
     shift
   # if arg begins with a double dash, and it is --exclude,
   #   then process it with its own agruments (identified by no leading - or --)
   elif [ "${1:0:2}" == "--" ] && [ "$1" == "--exclude" ]
   then
-    d_message "processing [ $1 ] as --exclude, with own args:" 3
+    info_msg "processing [ $1 ] as --exclude, with own args:"
     tmp_cmd=$1
     tmp_args=""
     shift
@@ -186,21 +203,21 @@ do
     do
       if [ "${1:0:1}" != "-" ]
       then
-        d_message "adding [ $1 ] to tmp_args:" 3
+        info_msg "adding [ $1 ] to tmp_args:"
         # formulate this so as to preserve internal white space between multiple exclude atoms, but to not add extra whitespace
         [ -z "${tmp_args}" ] && tmp_args=${1} || tmp_args="${tmp_args} ${1}"
       else
-        d_message "non-argument [ $1 ], exiting" 2
-        exit
+        error_msg "non-argument [ $1 ], exiting"
+        return 1
       fi
       shift
     done
-    d_message "processing [ $tmp_cmd \"$tmp_args\" ]" 1
+    info_msg "processing [ $tmp_cmd \"$tmp_args\" ]"
     process_argument $tmp_cmd "$tmp_args"
   else
     # bogus argument
-    d_message "bogus argument [ $1 ]" 1
-    E_message "${E_BAD_ARGS}" && useage && exit 1
+    error_msg "bogus argument [ $1 ]"
+    error_msg "${E_BAD_ARGS}" && useage && exit 1
   fi
 done
 sanity_check
@@ -209,8 +226,8 @@ sanity_check
 process_argument()
 {
 EXCLUDE=""
-d_message "about to process argument(s): [ $* ]" 1
-d_message "1: [ $1 ], 2: [ $2 ]" 2
+info_msg "about to process argument(s): [ $* ]"
+info_msg "1: [ $1 ], 2: [ $2 ]"
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case "$1" in
     "-a" | "--glsa"          ) GLSA_CHECK="yes" ;;
@@ -227,7 +244,7 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-N" | "--newuse"        ) NEWUSE="yes" ;;
     "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
     "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
-    "-q" | "--quiet"         ) VERBOSE=$TRUE; [ ! $verbosity -le 0 ] && let "verbosity-=1" ; [ $verbosity -eq 0 ] && VERBOSE=$FALSE ;;
+    "-q" | "--quiet"         ) [ ! $verbosity -le 5 ] && let "verbosity-=1"  ;;
     "-r" | "--resume"        ) RESUME="yes" ;;
     "-[0-9]"                 ) RESUME="yes" ; let new_phase=${myargs:1:1};;
     "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
@@ -235,7 +252,7 @@ d_message "1: [ $1 ], 2: [ $2 ]" 2
     "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
     "-t" | "--rkhunter"      ) RKHUNTER="yes" ;;
     "-U" | "--changeduse"    ) CHANGEDUSE="yes" ;;
-    "-v" | "--verbose"       ) VERBOSE=$TRUE; [ ! $verbosity -ge 6 ] && let "verbosity+=1" ;;
+    "-v" | "--verbose"       ) [ ! $verbosity -ge 7 ] && let "verbosity+=1" ;;
     "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
     "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
     "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
@@ -256,16 +273,16 @@ esac
 process_compound_arg()
 {
 # must begin with a single dash
-[ ! "${1:0:1}" == "-" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+[ ! "${1:0:1}" == "-" ] && error_msg "${E_BAD_ARGS}" && useage && exit 1
 # must not begin with two dashes (would have been picked in process_argument)
-[ "${1:0:2}" == "--" ] && E_message "${E_BAD_ARGS}" && useage && exit 1
+[ "${1:0:2}" == "--" ] && error_msg "${E_BAD_ARGS}" && useage && exit 1
 # strip leading dash(es)
 myargs=${1##-}
 # handle remaining characters in sequence
 while [ -n "${myargs}" ]
 do
     #handle first char
-    d_message "handling compound arg [ ${myargs} ], char [ ${myargs:0:1} ]" 3
+    info_msg "handling compound arg [ ${myargs} ], char [ ${myargs:0:1} ]"
     case ${myargs:0:1} in
         "a") GLSA_CHECK="yes" ;;
         "c") UPDATE_CHECK="yes" ;;
@@ -281,7 +298,7 @@ do
         "N") NEWUSE="yes" ;;
         "p") PERL_CLEANER="yes" ;;
         "P") PYTHON_UPDATER="yes" ;;
-        "q") VERBOSE=$TRUE; [ ! $verbosity -le 0 ] && let "verbosity-=1" ; [ $verbosity -eq 0 ] && VERBOSE=$FALSE ;;
+        "q") [ ! $verbosity -le 5 ] && let "verbosity-=1" ;;
         "r") RESUME="yes" ;;
       [0-9]) RESUME="yes" ; let new_phase=${myargs:0:1};;
         "R") REGEN_OVERLAY_METADATA="yes" ;;
@@ -289,7 +306,7 @@ do
         "S") SELINUX_RELABEL="yes" ;;
         "t") RKHUNTER="yes" ;;
         "U") CHANGEDUSE="yes" ;;
-        "v") VERBOSE=$TRUE;  [ ! $verbosity -ge 6 ] && let "verbosity+=1" ;;
+        "v") [ ! $verbosity -ge 7 ] && let "verbosity+=1" ;;
         "w") WITH_BDEPS_Y="yes" ;;
         "X") X11_MODULE_REBUILD="yes" ;;
         "Y") GO_AHEAD="yes" ;;
@@ -302,7 +319,7 @@ do
              PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
              SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes" \
              X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
-        *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
+        *  ) error_msg "${E_BAD_ARGS}" && useage && exit 1
 esac
     #strip first char from myargs (i.e. "shift")
     myargs=${myargs:1}
@@ -311,94 +328,94 @@ done
 
 useage()
 {
-   echo -e $BGon"Useage: jus [option]"$Boff
-   echo -e " ${BWon}Command line options:${Boff}"
-   echo -e "   ${BYon}Options for all phases${Boff}"
-   echo -e "    "$BBon"[-s | --status]"$Boff"...........print next phase in update sequence"
-   echo -e "    "$BBon"[-r | --resume]"$Boff"...........resume update sequence at next phase"
-   echo -e "    "$BBon"[-[0-9]]"$Boff"..................resume update sequence at this phase"
-   echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
-   echo -e "    "$BBon"[-q | --quiet]"$Boff"............decrease verbosity"
-   echo -e "    "$BBon"[-h | --help]"$Boff".............print this message"
-   echo -e "   ${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
-   echo -e "    "$BBon"[-y | --sync]"$Boff".............force sync portage tree"
-   echo -e "    "$BBon"[-R | --regen]"$Boff"............regenerate portage tree metadata (including overlays) "
-   echo -e "   ${BYon}Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update-Check
-   echo -e "    "$BBon"[-c | --check]"$Boff"............check for and list updateable installed packages"
-   echo -e "   ${BYon}Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
-   echo -e "    "$BBon"[-d | --distcc]"$Boff"...........use distcc distributed compiling support"
-   echo -e "    "$BBon"[-n | --nodist]"$Boff"...........do not use distcc distributed compiling support"
-   echo -e "    "$BBon"[-N | --newuse]"$Boff"...........rebuild packages with added/changed USE"
-   echo -e "    "$BBon"[-g | --getbinpkg]"$Boff"........use local and remote binary packages and ebuilds"
-   echo -e "    "$BBon"[-G | --getbinpkgonly]"$Boff"....use local and remote binary packages only"
-   echo -e "    "$BBon"[-k | --usepkg]"$Boff"...........use local binary packages and ebuilds"
-   echo -e "    "$BBon"[-K | --usepkgonly]"$Boff".......use local binary packages only"
-   echo -e "    "$BBon"[-U | --changeduse]"$Boff".......rebuild packages with changed USE flags"
-   echo -e "    "$BBon"[-w | --WITH_BDEPS_Y]"$Boff".....emerge with build-time dependencies"
-   echo -e "    "$BBon"[-x | --exclude <atom>]"$Boff"...exclude <atom> from emerge"
-   echo -e "    "$BBon"[-Y | --go-ahead]"$Boff".........automatically continue to next phases"
-   echo -e "    "$BBon"[-Z | --keep-going]"$Boff".......on emerge failure, try to keep emerging other packages"
-   echo -en "   ${BYon}Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Config Files
-   echo -e " "$LBon"[future development]"$Boff
-   echo -en "   ${BYon}Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
-   echo -e " "$LBon"[future development]"$Boff
-   echo -en "   ${BYon}Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
-   echo -e " "$LBon"[future development]"$Boff
-   echo -e "   ${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final steps
-   echo -e "    "$BBon"[-a | --glsa]"$Boff".............run glsa-check -vp affected"
-   echo -e "    "$BBon"[-e | --eix]"$Boff"..............run eix-update"
-   echo -e "    "$BBon"[-m | --modules]"$Boff"..........run emerge @module-rebuild"
-   echo -e "    "$BBon"[-M | --emaint]"$Boff"...........run emaint --check all"
-   echo -e "    "$BBon"[-p | --perl_cleaner]"$Boff".....run perl-cleaner --all"
-   echo -e "    "$BBon"[-P | --python]"$Boff"...........run python-updater"
-   echo -e "    "$BBon"[-S | --selinux]"$Boff"..........redo selinux lablels"
-   echo -e "    "$BBon"[-t | --rkhunter]"$Boff".........run rkhunter --propupd"
-   echo -e "    "$BBon"[-X | --X11]"$Boff"..............run emerge @x11-module-rebuild"
-   echo -e "    "$BBon"[-H | --haskell]"$Boff"..........run haskell-updater"
-   echo
-   echo -e "  "$BYon"Notes: "$Boff
-   echo -e "  "$BYon" 1)"$Boff" --status and --resume both identify the next phase"
-   echo -e "    (which is the last successfully completed phase + 1)"
-   echo -e "  "$BYon" 2)"$Boff" --sync is set automatically if portage tree is older"
-   echo -e "    than MAX_AGE (set in jus.conf)"
-   echo -e "  "$BYon" 3)"$Boff" option(s) -[k|K|g|G] function as explained in gentoo binary package guide:"
-   echo -e "    https://wiki.gentoo.org/wiki/Binary_package_guide"
-   echo -e "  "$BYon" 4)"$Boff" option(s) -[d|n] are mutually exclusive opposites"
-   echo -e "    if both used, DISTCC will be reset yes/no by the right-most cmdline"
-   echo -e "  "$BYon" 5)"$Boff" option(s) -[N|U] are similar. Subsequent depclean may require NEWUSE, but"
-   echo -e "    CHANGEDUSE instead can avoid unnecessary rebuilds.  See these references for more info:"
-   echo -e "      https://forums.gentoo.org/viewtopic-p-8719502.html?sid=1e3d721ff79585b67bb9255a51c01f3f"
-   echo -e "      https://www.reddit.com/r/Gentoo/comments/16ua43e/changeduse_vs_newuse/"
-   echo -e "      https://wiki.gentoo.org/wiki/Gentoo_Cheat_Sheet"
-   echo -e "      https://wiki.gentoo.org/wiki/Emerge"
-   echo -e "      https://wiki.gentoo.org/wiki/Full_manpages/emerge"
-   echo
+   echo_e_msg "${BGon}Useage: jus [option]${Boff}"
+   echo_e_msg " ${BWon}Command line options:${Boff}"
+   echo_e_msg "   ${BYon}Options for all phases${Boff}"
+   echo_e_msg "    ${BBon}[-s | --status]${Boff}...........print next phase in update sequence"
+   echo_e_msg "    ${BBon}[-r | --resume]${Boff}...........resume update sequence at next phase"
+   echo_e_msg "    ${BBon}[-[0-9]]${Boff}..................resume update sequence at this phase"
+   echo_e_msg "    ${BBon}[-v | --verbose]${Boff}..........increase verbosity"
+   echo_e_msg "    ${BBon}[-q | --quiet]${Boff}............decrease verbosity"
+   echo_e_msg "    ${BBon}[-h | --help]${Boff}.............print this message"
+   echo_e_msg "   ${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
+   echo_e_msg "    ${BBon}[-y | --sync]${Boff}.............force sync portage tree"
+   echo_e_msg "    ${BBon}[-R | --regen]${Boff}............regenerate portage tree metadata (including overlays) "
+   echo_e_msg "   ${BYon}Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update-Check
+   echo_e_msg "    ${BBon}[-c | --check]${Boff}............check for and list updateable installed packages"
+   echo_e_msg "   ${BYon}Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
+   echo_e_msg "    ${BBon}[-d | --distcc]${Boff}...........use distcc distributed compiling support"
+   echo_e_msg "    ${BBon}[-n | --nodist]${Boff}...........do not use distcc distributed compiling support"
+   echo_e_msg "    ${BBon}[-N | --newuse]${Boff}...........rebuild packages with added/changed USE"
+   echo_e_msg "    ${BBon}[-g | --getbinpkg]${Boff}........use local and remote binary packages and ebuilds"
+   echo_e_msg "    ${BBon}[-G | --getbinpkgonly]${Boff}....use local and remote binary packages only"
+   echo_e_msg "    ${BBon}[-k | --usepkg]${Boff}...........use local binary packages and ebuilds"
+   echo_e_msg "    ${BBon}[-K | --usepkgonly]${Boff}.......use local binary packages only"
+   echo_e_msg "    ${BBon}[-U | --changeduse]${Boff}.......rebuild packages with changed USE flags"
+   echo_e_msg "    ${BBon}[-w | --WITH_BDEPS_Y]${Boff}.....emerge with build-time dependencies"
+   echo_e_msg "    ${BBon}[-x | --exclude <atom>]${Boff}...exclude <atom> from emerge"
+   echo_e_msg "    ${BBon}[-Y | --go-ahead]${Boff}.........automatically continue to next phases"
+   echo_e_msg "    ${BBon}[-Z | --keep-going]${Boff}.......on emerge failure, try to keep emerging other packages"
+   echo_e_msg_n "   ${BYon}Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Config Files
+   echo_e_msg " ${BCon}[future development]${Boff}"
+   echo_e_msg_n "   ${BYon}Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
+   echo_e_msg " ${BCon}[future development]${Boff}"
+   echo_e_msg_n "   ${BYon}Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
+   echo_e_msg " ${BCon}[future development]${Boff}"
+   echo_e_msg "   ${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final steps
+   echo_e_msg "    ${BBon}[-a | --glsa]${Boff}.............run glsa-check -vp affected"
+   echo_e_msg "    ${BBon}[-e | --eix]${Boff}..............run eix-update"
+   echo_e_msg "    ${BBon}[-m | --modules]${Boff}..........run emerge @module-rebuild"
+   echo_e_msg "    ${BBon}[-M | --emaint]${Boff}...........run emaint --check all"
+   echo_e_msg "    ${BBon}[-p | --perl_cleaner]${Boff}.....run perl-cleaner --all"
+   echo_e_msg "    ${BBon}[-P | --python]${Boff}...........run python-updater"
+   echo_e_msg "    ${BBon}[-S | --selinux]${Boff}..........redo selinux lablels"
+   echo_e_msg "    ${BBon}[-t | --rkhunter]${Boff}.........run rkhunter --propupd"
+   echo_e_msg "    ${BBon}[-X | --X11]${Boff}..............run emerge @x11-module-rebuild"
+   echo_e_msg "    ${BBon}[-H | --haskell]${Boff}..........run haskell-updater"
+   echo_msg ""
+   echo_e_msg "  ${BYon}Notes: ${Boff}"
+   echo_e_msg "  ${BYon} 1)${Boff} --status and --resume both identify the next phase"
+   echo_e_msg "    (which is the last successfully completed phase + 1)"
+   echo_e_msg "  ${BYon} 2)${Boff} --sync is set automatically if portage tree is older"
+   echo_e_msg "    than MAX_AGE (set in jus.conf)"
+   echo_e_msg "  ${BYon} 3)${Boff} option(s) -[k|K|g|G] function as explained in gentoo binary package guide:"
+   echo_e_msg "    https://wiki.gentoo.org/wiki/Binary_package_guide"
+   echo_e_msg "  ${BYon} 4)${Boff} option(s) -[d|n] are mutually exclusive opposites"
+   echo_e_msg "    if both used, DISTCC will be reset yes/no by the right-most cmdline"
+   echo_e_msg "  ${BYon} 5)${Boff} option(s) -[N|U] are similar. Subsequent depclean may require NEWUSE, but"
+   echo_e_msg "    CHANGEDUSE instead can avoid unnecessary rebuilds.  See these references for more info:"
+   echo_e_msg "      https://forums.gentoo.org/viewtopic-p-8719502.html?sid=1e3d721ff79585b67bb9255a51c01f3f"
+   echo_e_msg "      https://www.reddit.com/r/Gentoo/comments/16ua43e/changeduse_vs_newuse/"
+   echo_e_msg "      https://wiki.gentoo.org/wiki/Gentoo_Cheat_Sheet"
+   echo_e_msg "      https://wiki.gentoo.org/wiki/Emerge"
+   echo_e_msg "      https://wiki.gentoo.org/wiki/Full_manpages/emerge"
+   echo_msg ""
 }
 
 status()
 {
-    read phase < ${STATUS_FILE}
-    echo "Next phase: ${phase} -- ${phase_message[${phase}]}"
-    echo
+    read phase < "${STATUS_FILE}"
+    echo_msg "Next phase: ${phase} -- ${phase_message[${phase}]}"
+    echo_msg ""
 }
 
 display_config()
 {
-message "${BWon}Using configuration data below: ${Boff}"
-longest=$(get_longest ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist})
-echo -e ${BYon}"Global Congiguration${Boff}"
-display_vars ${longest} ${conf_varlist}
-echo -e ${BYon}"Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
-display_vars ${longest} ${p0_varlist}
-echo -e ${BYon}"Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update Check
-display_vars ${longest} ${p1_varlist}
-echo -e ${BYon}"Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
-display_vars ${longest} ${p2_varlist}
-echo -e ${BYon}"Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Configs
-echo -e ${BYon}"Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
-echo -e ${BYon}"Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
-echo -e ${BYon}"Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
-display_vars ${longest} ${p6_varlist}
+  notice_msg "${BWon}Using configuration data below: ${Boff}"
+  longest=$(get_longest ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist})
+  echo_e_msg "${BYon}Global Congiguration${Boff}"
+  display_vars ${longest} ${conf_varlist}
+  echo_e_msg "${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
+  display_vars ${longest} ${p0_varlist}
+  echo_e_msg "${BYon}Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update Check
+  display_vars ${longest} ${p1_varlist}
+  echo_e_msg "${BYon}Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
+  display_vars ${longest} ${p2_varlist}
+  echo_e_msg "${BYon}Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Configs
+  echo_e_msg "${BYon}Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
+  echo_e_msg "${BYon}Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
+  echo_e_msg "${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
+  display_vars ${longest} ${p6_varlist}
 }
 
 check_timestamp()
@@ -409,27 +426,27 @@ check_timestamp()
     MPH=60   # minutes per hour
     agehours=$(( $(( $(date -u +%s) - $(date -u -r $1 +%s))) / $SPM / $MPH ))
     #if it's old, set SYNC flag
-    message "Portage tree last sync'd $agehours hours ago"
+    notice_msg "Portage tree last sync'd $agehours hours ago"
     [ "$SYNC" == "yes" ] && \
-        message "option: sync set by command line" || \
-        message "option: sync not set by command line"
-    if [ $agehours -gt $MAX_AGE ]
+        notice_msg "option: sync set by command line" || \
+        notice_msg "option: sync not set by command line"
+    if [ "$agehours" -gt "$MAX_AGE" ]
     then
         if [ "$GO_AHEAD" == "yes" ]
         then
             # sanity-check: unwise to go-ahead immediately after sync
             #  without checking what will be merged
-            E_message "You selected option: go-ahead " && \
-            E_message "but you also set MAX_AGE: $MAX_AGE hours in jus.conf" && \
-            E_message "The latter would cause this program to sync and then auto-emerge non-interactively" && \
-            E_message "(you should never merge packages blindly, please check first)" && \
+            error_msg "You selected option: go-ahead " && \
+            error_msg "but you also set MAX_AGE: $MAX_AGE hours in jus.conf" && \
+            error_msg "The latter would cause this program to sync and then auto-emerge non-interactively" && \
+            error_msg "(you should never merge packages blindly, please check first)" && \
             useage && exit 1
         else
             SYNC="yes" && \
-            message "portage tree sync required by MAX_AGE ($MAX_AGE hours) set in jus.conf"
+            notice_msg "portage tree sync required by MAX_AGE ($MAX_AGE hours) set in jus.conf"
         fi
     else
-        message "portage tree sync not required by MAX_AGE ($MAX_AGE hours) set in jus.conf"
+        notice_msg "portage tree sync not required by MAX_AGE ($MAX_AGE hours) set in jus.conf"
     fi
 }
 
@@ -441,15 +458,15 @@ emerge_sync()
     if [ "$SYNC" == "yes" ]
     then
         fixpackages   # Perform package move updates for all packages
-        case ${SYNC_CMD} in
-            "WEBRSYNC" ) message "Running emerge-webrsync... " && emerge-webrsync ;;
-            "SYNC"     ) message "Running emerge --sync... " && emerge --sync ;;
-            "EIX_SYNC" ) message "Running eix-sync..." && eix-sync ;;
-            *          ) E_message "Error: invalid sync option [ $SYNC_CMD ]" ; return 1 ;;
+        case "${SYNC_CMD}" in
+            "WEBRSYNC" ) notice_msg "Running emerge-webrsync... " && emerge-webrsync ;;
+            "SYNC"     ) notice_msg "Running emerge --sync... " && emerge --sync ;;
+            "EIX_SYNC" ) notice_msg "Running eix-sync..." && eix-sync ;;
+            *          ) error_msg "Error: invalid sync option [ $SYNC_CMD ]" ; return 1 ;;
         esac
-        [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && message "Running emerge --regen ..." && emerge --regen
+        [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && notice_msg "Running emerge --regen ..." && emerge --regen
     else
-        message "Not running a sync for portage tree."
+        notice_msg "Not running a sync for portage tree."
     fi
     return 0
 }
@@ -458,7 +475,6 @@ update_check()
 {
   # Beginning with ver 6, just check for major upgrades in key packages
   # (linux-headers, glibc, binutils, libtool, gcc) and branch to full rebuild
-
 #    'sys-devel/libtool'
 
   key_packages=(
@@ -469,7 +485,7 @@ update_check()
     'dev-build/libtool'
     'sys-devel/gcc'
     )
-  KP_FOUND=${FALSE}
+  KP_FOUND="${FALSE}"
 
   # first populate the updateables list (note, calling script has already run emerge_sync()
   if [ "$EIX" == "yes" ]
@@ -477,39 +493,39 @@ update_check()
     if [[ "$SYNC_CMD" != "EIX_SYNC" ]]
     then
       ### make sure the index is current
-      d_message "${BMon}running eix-update to ensure index is up to date${Boff}" 2 ;
-      eix-update ;
+      notice_msg "${BMon}running eix-update to ensure index is up to date${Boff}"
+      eix-update
     else
-      d_message "${BMon}eix-update not needed -- eix-sync should have already done it -- continuing...${Boff}" 2 ;
+      notice_msg "${BMon}eix-update not needed -- eix-sync should have already done it -- continuing...${Boff}"
     fi
-    d_message "EIX=[$EIX]; assiging updateables with \"eix -u\"" 2 ;
-    updateables=($(eix -u#)) ;
+    info_msg "EIX=[$EIX]; assiging updateables with \"eix -u\""
+    updateables=($(eix -u#))
   else
-    d_message "EIX=[$EIX]; assigning updateables with \"emerge -puDN world | grep ...\" please wait..." 2 ;
-    updateables=($(for x in $(emerge -puDN world | grep '\[ebuild' | cut -c18- | cut -d' ' -f1); do qatom -F %{CATEGORY}/%{PN} $x; done)) ;
+    info_msg "EIX=[$EIX]; assigning updateables with \"emerge -puDN world | grep ...\" please wait..."
+    updateables=($(for x in $(emerge -puDN world | grep '\[ebuild' | cut -c18- | cut -d' ' -f1); do qatom -F %{CATEGORY}/%{PN} $x; done))
   fi
 
   # now determine if any key packages are in the updatables list
   updateablecount=${#updateables[@]}
-  message "${BWon}There are $updateablecount ${LBon}updateable installed${BWon} packages:${Boff}"
+  notice_msg "${BWon}There are $updateablecount ${LBon}updateable installed${BWon} packages:${Boff}"
   for ((i=0; i<${updateablecount}; i++))
   do
-    pkg_color=${BGon}
+    pkg_color="${BGon}"
     # determine if this is a key package using bs() tool in script_header_joetoo_extended
     # note: bs() is "noisy" so quiet it down here
-    if [ $verbosity -le 3 ] ; then
-      depth=0; ( VERBOSE=$FALSE verbosity=0 bs ${updateables[i]} 0 ${#key_packages[@]} ${key_packages[@]} )
+    if [ "$verbosity" -lt "$debug" ] && [ ! "$DEBUG" ]; then
+      # do it in a subshell to isolate verbosity setting VERBOSE is for bs legacy code
+      ( depth=0; VERBOSE="$FALSE" verbosity=0 bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}" )
     else
-      depth=0; bs ${updateables[i]} 0 ${#key_packages[@]} ${key_packages[@]}
+      depth=0; bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}"
     fi
-    d_message "$i ${updateables[i]} $result" 3
-    [[ ${result} -gt 0 ]] && KP_FOUND=${TRUE} && pkg_color=${BRon}
-    echo -e "   ${pkg_color}${updateables[i]}${Boff}"
-    [[ ${result} -gt 0 ]] && echo -n "       " && eix -uc ${updateables[i]}
+    if [[ "${result}" -gt 0 ]] ; then KP_FOUND="${TRUE}" ; pkg_color="${BRon}"; fi
+    echo_e_msg_n "   "; notice_msg "${i}: ${pkg_color}${updateables[i]}${Boff} result: [${Mon}$result${Boff}]"
+    if [[ "${result}" -gt 0 ]] ; then echo_msg_n "       " ; eix -uc "${updateables[i]}" ; fi
   done
-  if [[ ${KP_FOUND} ]]
+  if [[ "${KP_FOUND}" ]]
   then
-    echo
+    echo_msg ""
 
     update_message="${BRon}  **  ${BYon}There is a key package to update\n" \
     update_message+="  --> ${BRon}if this is a major version upgrade, ${BWon}exit ${BRon}and run a ${BWon}rebuild ${BRon}sequence ${BYon}(rus)${Boff}\n" \
@@ -518,8 +534,8 @@ update_check()
     update_message="${BGon}  **  ${BYon}There are no key pakages to update\n" \
     update_message+="  --> ${BGon}ok to continue update sequence${Boff}"
   fi
-  message "${update_message}"
-  d_message "done with update_check. returning with answer = [ $answer ]" 3
+  notice_msg "${update_message}"
+  notice_msg "done with update_check. returning with answer = [ $answer ]"
   return 0
 }
 
@@ -532,7 +548,7 @@ emerge_updates()
     MSG="emerging updates"
     if [ ! "${GO_AHEAD}" == "yes" ]
     then
-        OPTS1="a"${OPTS1}
+        OPTS1="a${OPTS1}"
         MSG+=" interactively"
     else
         MSG+=" non-interactively"
@@ -550,26 +566,30 @@ emerge_updates()
     OPTS2+=" --binpkg-respect-use=y --binpkg-changed-deps=y"
 
     # if verbose, use --verbose-conflicts
-    [ $verbosity -ge 3 ] && OPTS2+=" --verbose-conflicts"
+    [ "$verbosity" -ge "$notice" ] && OPTS2+=" --verbose-conflicts"
 
     # if we have an exclude, put it on the end of the command line
     [ ! -z "${EXCLUDE}" ] && OPTS2+=" --exclude ${EXCLUDE}"
 
-    message "${MSG}"
+    notice_msg "${MSG}"
     # turn on distcc feature, but don't override setting in make.conf or package.env
-    [[ "$DISTCC" == "yes" ]] && MyCMD='FEATURES="distcc ${FEATURES}" ' || MyCMD=""
+    if [[ "$DISTCC" == "yes" ]]; then
+        MyCMD='FEATURES="distcc ${FEATURES}" '
+    else
+        MyCMD=""
+    fi
     MyCMD+="emerge -${OPTS1} @world${OPTS2}" && \
-    message "${BWon}About to run - [ ${BRon}${MyCMD}${BWon} ]${Boff}" && \
-    eval ${MyCMD} || return 1
+    notice_msg "${BWon}About to run - [ ${BRon}${MyCMD}${BWon} ]${Boff}" && \
+    eval "${MyCMD}" || return 1
     return 0
 }
 
 show_news()
 {
     # display any news...
-    message "The following news has been generated:"
+    notice_msg "The following news has been generated:"
     eselect news read new
-    echo
+    echo_msg ""
 }
 
 maintain_config_files()
@@ -579,16 +599,16 @@ maintain_config_files()
     if $( [[ -z "$(find /etc/ -iname '*._cfg***')" ]] && \
        [[ -z "$(find /usr/share/config/ -iname '*._mrg***')" ]] )
     then
-        message "No config files need maintenance."
+        notice_msg "No config files need maintenance."
     else
         if [ ! "$GO_AHEAD" == "yes" ]     # note: use of the GO_AHEAD option will cause this phase to be skipped
         then
-            message "Launching dispatch-conf to maintain the following config files:"
-            echo $(find /etc/ -iname '*._cfg***')
+            notice_msg "Launching dispatch-conf to maintain the following config files:"
+            echo_msg $(find /etc/ -iname '*._cfg***')
             dispatch-conf
         fi  # not go_ahead
     fi  # find/not-find
-    echo
+    echo_msg ""
     return 0
 }
 
@@ -596,56 +616,105 @@ showelogs()
 {
     # run show-elogs script to apply important phases from emerge notes
     # if the optional go-ahead flag is set, skip this (remind user later)
-    message "Running show-elogs -l | less ..." && [ "$GO_AHEAD" == "no" ] && show-elogs -l | less && return 0 || return 1
+    notice_msg "Running show-elogs -l | less ..." && [ "$GO_AHEAD" == "no" ] && show-elogs -l | less && return 0 || return 1
 }
 
 handle_dependencies()
 {
-    echo && message "Running emerge -av --depclean ..." && emerge -av --depclean
-    echo && message "Running emerge @preserved-rebuild ..." && eval ${NOBINFEATURES} emerge @preserved-rebuild
-    echo && message "Running revdep-rebuild -p ..." && eval ${NOBINFEATURES} revdep-rebuild -p
+    notice_msg "\nRunning emerge -av --depclean ..." && emerge -av --depclean
+    notice_msg "\nRunning emerge @preserved-rebuild ..." && eval "${NOBINFEATURES} emerge @preserved-rebuild"
+    notice_msg "\nRunning revdep-rebuild -p ..." && eval "${NOBINFEATURES} revdep-rebuild -p"
     # recommend you run revdep-rebuild again if it had to
     #   emerge something to fix dependencies
     # TO DO: check if that is the case and ask this only if so
-    [ "$GO_AHEAD" == "no" ] && \
-    echo -en $BYon"would you like to run revdep-rebuild again, for action? (y/n) "$Boff && \
-    read rerun && echo || \
-    rerun="y"
-    case $rerun in
-        "y") eval ${NOBINFEATURES} revdep-rebuild ;;
+    if [ "$GO_AHEAD" == "no" ] ; then
+        echo_e_msg_n "${BYon}would you like to run revdep-rebuild again, for action? (y/n) ${Boff}"
+        read rerun && echo_msg ""
+    else
+        rerun="y"
+    fi
+    case "$rerun" in
+        "y") eval "${NOBINFEATURES} revdep-rebuild" ;;
         *) ;; # do nothing
     esac
-    echo && message "Double-checking configuration files now ..." && maintain_config_files
+    notice_msg "\nDouble-checking configuration files now ..."
+    maintain_config_files
     return 0
 }
 
 final_phases()
 {
     # as indicated by option flags, perform additional phases
-    [ "${EIX_UPDATE}" == "yes" ] && [ "${SYNC_CMD}" != "EIX_SYNC" ] && message "Running eix-update ..." && eix-update
-    [ "${PERL_CLEANER}" == "yes" ] && message "Running ${BGon}perl-cleaner --all${Boff} ..." && eval ${NOBINFEATURES} perl-cleaner --all
-    [ "${HASKELL_UPDATER}" == "yes" ] && message "Running ${BGon}haskell-updater${Boff} ..." && eval ${NOBINFEATURES} haskell-updater
-    [ "${PYTHON_UPDATER}" == "yes" ] && message "Running ${BGon}eselect python update${Boff} ..." && eselect python update && eselect python cleanup
-    [ "${MODULE_REBUILD}" == "yes" ] && message "Running ${BGon}emerge @module-rebuild${Boff} ..." && eval ${NOBINFEATURES} emerge @module-rebuild
-    [ "${X11_MODULE_REBUILD}" == "yes" ] && message "Running ${BGon}emerge @x11-module-rebuild${Boff} ..." && eval ${NOBINFEATURES} emerge @x11-module-rebuild
-    [ "${SELINUX_RELABEL}" == "yes" ] && message "Running ${BGon}rlpkg -a -r${Boff} ..." && rlpkg -a -r
-    [ "${RKHUNTER}" == "yes" ] && message "Running ${BGon}rkhunter --propupd${Boff} ..." && rkhunter --propupd
-    [ "${GLSA_CHECK}" == "yes" ] && message "Running ${BGon}glsa-check -vp affected${Boff} ..." && glsa-check -vp affected
-    [ "${EMAINT_CHECK}" == "yes" ] && message "Running ${BGon}emaint --check all${Boff} ..." && emaint --check all
+    if [ "${EIX_UPDATE}" == "yes" ] && [ "${SYNC_CMD}" != "EIX_SYNC" ] ; then
+        notice_msg "Running eix-update ..."
+        eix-update
+    fi
+
+    if [ "${PERL_CLEANER}" == "yes" ]; then
+        notice_msg "Running ${BGon}perl-cleaner --all${Boff} ..."
+        eval "${NOBINFEATURES} perl-cleaner --all"
+    fi
+
+    if [ "${HASKELL_UPDATER}" == "yes" ]; then
+        notice_msg "Running ${BGon}haskell-updater${Boff} ..."
+        eval "${NOBINFEATURES} haskell-updater"
+    fi
+
+    if [ "${PYTHON_UPDATER}" == "yes" ]; then
+        notice_msg "Running ${BGon}eselect python update${Boff} ..."
+        eselect python update
+        eselect python cleanup
+    fi
+
+    if [ "${MODULE_REBUILD}" == "yes" ]; then
+        notice_msg "Running ${BGon}emerge @module-rebuild${Boff} ..."
+        eval "${NOBINFEATURES} emerge @module-rebuild"
+    fi
+
+    if [ "${X11_MODULE_REBUILD}" == "yes" ]; then
+        notice_msg "Running ${BGon}emerge @x11-module-rebuild${Boff} ..."
+        eval "${NOBINFEATURES} emerge @x11-module-rebuild"
+    fi
+
+    if [ "${SELINUX_RELABEL}" == "yes" ]; then
+        notice_msg "Running ${BGon}rlpkg -a -r${Boff} ..."
+        rlpkg -a -r
+    fi
+
+    if [ "${RKHUNTER}" == "yes" ]; then
+        notice_msg "Running ${BGon}rkhunter --propupd${Boff} ..."
+        rkhunter --propupd
+    fi
+
+    if [ "${GLSA_CHECK}" == "yes" ]; then
+        notice_msg "Running ${BGon}glsa-check -vp affected${Boff} ..."
+        glsa-check -vp affected
+    fi
+
+    if [ "${EMAINT_CHECK}" == "yes" ]; then
+        notice_msg "Running ${BGon}emaint --check all${Boff} ..."
+        emaint --check all
+    fi
 
     # clean un-needed package and distribution files, run localepurge
-    [ -d "${PKGDIR}" ] && message "Running ${BGon}eclean-pkg${Boff} ..." && eclean-pkg
-    message "Running ${BGon}eclean-dist -d${Boff} ..." && eclean-dist -d
-    message "Running ${BGon}hash -r${Boff} for current shell ..." && hash -r
-    message "Running ${BGon}source /etc/profile${Boff} for current shell..." && source /etc/profile
+    if [ -d "${PKGDIR}" ]; then
+        notice_msg "Running ${BGon}eclean-pkg${Boff} ..."
+        eclean-pkg
+    fi
+    notice_msg "Running ${BGon}eclean-dist -d${Boff} ..."
+    eclean-dist -d
+    notice_msg "Running ${BGon}hash -r${Boff} for current shell ..."
+    hash -r
+    notice_msg "Running ${BGon}source /etc/profile${Boff} for current shell..."
+    . /etc/profile
     return 0
 }
 
 get_answer()        # set external variable $answer based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [yngYNG]: " && read answer;
+{ ps=$1; echo; echo; CUU; SCP; notice_msg_n "$ps [yngYNG]: " && read answer;
 while ! expr "${answer:0:1}" : [yngYNG] >/dev/null;  # answer not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [yngYNG]: " && read answer; done; }
+do RCP; echo_e_msg_n "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; notice_msg_n "$ps [yngYNG]: " && read answer; done; }
 
 # --- start main script ---------------------------------------------------------
 
@@ -674,25 +743,28 @@ display_config
 if [ "$RESUME" == "yes" ]
 then
   # assign current phase from command line or from saved status file
-  [ ${new_phase} -ne 0 ] && let phase=${new_phase} || read phase < ${STATUS_FILE}
+  if [ "${new_phase}" -ne 0 ]; then let phase="${new_phase}"; else read phase < "${STATUS_FILE}"; fi
 fi
-[[ "$GO_AHEAD" == "yes" ]] && answer="g" || answer=""
+
+if [[ "$GO_AHEAD" == "yes" ]] ; then answer="g"; else answer=""; fi
+
+# this is jus' mini run_sequence
 # proceed thru each phase, as allowed to continue, until complete
 for ((ph=phase; ph<${#phase_function_sequence[@]}; ph++))
 do
-  [[ ! $answer == [gG] ]] && answer="" && \
-    separator "($ph) ${phase_message[$ph]}" "$(hostname) jus-${BUILD} Now starting" && \
+  if [[ ! "$answer" == [gG] ]]; then
+    answer=""
+    separator "($ph) ${phase_message[$ph]}" "$(hostname) jus-${BUILD} Now starting"
     get_answer "Are you ready to execute ${BYon}(${ph}) ${phase_message[$ph]}${Boff}?"
-  if [[ $answer == [YyGg] ]]
-  then
-    [[ $answer == [gG] ]] && GO_AHEAD="yes"
-    message "About to run step [ $ph of ${#phase_function_sequence[@]} : ${phase_function_sequence[$ph]} ]"
-    eval ${phase_function_sequence[$ph]}; right_status $?
-    message "Completed: ($ph) ${phase_message[$ph]}"
-    echo $ph > ${STATUS_FILE}
+  elif [[ "$answer" == [YyGg] ]]; then
+    [[ "$answer" == [gG] ]] && GO_AHEAD="yes"
+    notice_msg "About to run step [ $ph of ${#phase_function_sequence[@]} : ${phase_function_sequence[$ph]} ]"
+    eval "${phase_function_sequence[$ph]}"; right_status $?
+    notice_msg "Completed: ($ph) ${phase_message[$ph]}"
+    printf '%s' "$ph" > "${STATUS_FILE}"
   else
-    message "${BRon}User aborted${Boff} at step ${BYon}($ph) ${phase_message[$ph]}${Boff}. Quitting..."
-    echo $ph > ${STATUS_FILE}
+    notice_msg "${BRon}User aborted${Boff} at step ${BYon}($ph) ${phase_message[$ph]}${Boff}. Quitting..."
+    printf '%s' "$ph" > "${STATUS_FILE}"
     exit
   fi
 done
@@ -701,26 +773,34 @@ done
 if [ "$GO_AHEAD" == "yes" ]
 then
     # remind user
-    message "You ran update sequence with option: go-ahead."
+    notice_msg "You ran update sequence with option: go-ahead."
 
     # check for new config files
     if [[ ! -z "$(find /etc/ -iname '*._cfg***')" ]] || \
        [[ ! -z "$(find /usr/share/config/ -iname '*._mrg***')" ]]
     then
-        E_message 'You have updated config files pending. You should run "dispatch-conf"'
-        E_message "found the following pending config file updates:"
+        error_msg 'You have updated config files pending. You should run "dispatch-conf"'
+        error_msg "found the following pending config file updates:"
         echo $(find /etc/ -iname '*._cfg***')
     fi # found new configs
 
-    # check for elogs
-    for x in $(ls $ELOG_DIR | cut -d":" -f 3 | cut -d"-" -f 1 | sort -nu); do : ; done && \
-    [ "$x" == "$(date -u +%Y%m%d)" ] && \
-    E_message 'jus produced new elogs.  You should run "show-elogs"'
+    # check for elogs generated today - start by identifying the most recent
+    find_cmd='find "$ELOG_DIR" -maxdepth 1 -type f '       # files in $ELOG_DIR, no subdirectories
+    find_cmd+='-printf "%T@ %p\n" | '                      # prepend timestamp
+    find_cmd+='sort -n | tail -n 1 | '                     # sort numeric, keep only the last (latest)
+    find_cmd+='cut -d" " -f2-'                             # drop the timestamp
+    x=$("$find_cmd")                                       # x is the full path name of the most recent file
+    x_date=$(stat "$x" | grep "Modify" | awk '{print $2}') # used stat to get the modification date
+    # if the lates file has a modification date of today, consider it new and recommend reviewing elogs
+    if [ "$x_date" == "$(date -u +%Y-%m-%d)" ] ; then
+        notice_msg 'jus produced new elogs.  You should run "show-elogs"'
+    fi  # new elogs?
+
 fi  # go_ahead
 
-echo && message "Don't forget rebuild modules if needed\n\temerge @[x11-]module-rebuild\n"
+echo && notice_msg "Don't forget rebuild modules if needed\n\temerge @[x11-]module-rebuild\n"
 
 /usr/bin/logger -p cron.notice "jus complete at $(my_short_date)."
 msg="Logged and done at: "$(date +"%T %Z, %d %B %Y.")
-message "$msg"
+notice_msg "$msg"
 exit 0
