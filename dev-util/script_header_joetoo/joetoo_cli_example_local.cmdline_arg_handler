@@ -1,92 +1,95 @@
 #!/bin/sh
-# user-script specific commandline argument module (to extend script_header_joetoo's process_cmdline capability)
+# this is a template for a local user-script specific commandline argument module
+# (to extend script_header_joetoo's process_cmdline capability)
 #
-# ** will be sourced by using script to make two functions available
-# set result=0 for success with no operand
-# set result=6 for success with operand
-# set result = 1  for error
+# ** will be sourced by using script to make these three functions available
+# Convention for cmdline arg handling:
+#   set result=0 for success with no operand
+#   set result=6 for success with operand
+#   set result=7 for file not found (to differentiate from error)
+#   set result = 1  for error
 
-handle_local_arg() {
-    # Expects $1=current arg, $2=potential operand
-    _hla_arg="$1"
-    _hla_operand="$2"
-    _hla_ret=1 # Default error/unhandled
-
+handle_local_arg() # (POSIX) local compound arg handler to extend cli in script_header_joetoo
+{   hla_ret=1; # Default error
+    _hla_arg="$1"; _hla_operand="$2"
     case "$_hla_arg" in
         "-"[eE] | "--example" )
-            export EXAMPLE="${TRUE}"
-            _hla_ret=$?
-            d_log_message "${BYon}set EXAMPLE = $(status_color ${EXAMPLE})$(TrueFalse ${EXAMPLE}) ${Boff}" 2
+            export EXAMPLE="${TRUE}"; hla_ret=$?
+            info_msg "${BYon}set EXAMPLE = $(status_color ${EXAMPLE})$(TrueFalse ${EXAMPLE}) ${Boff}"
             ;;
         "-"[dD] | "--defaults" )
-            export DEFAULTS="${TRUE}"
-            _hla_ret=$?
-            d_log_message "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}" 2
+            export DEFAULTS="${TRUE}"; hla_ret=$?
+            info_msg "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}"
             ;;
         "-"[oO] | "--output" )
             # myOperand is a global variable, assigned here
             # ($2 is "consumed" in the parent loop via the ret=6 flag causing parent to "shift" twice)
-            myOperand="$2"
-            log_message "assigned myOperand: $_hla_operand"
-            _hla_ret=6   # Signal to parent script to "shift 2"
-            d_log_message "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}" 2
+            myOperand="$2"; _hla_result=$?
+            case "$_hla_result" in
+                0 ) hlca_ret=6 ;;  # success; signal to parent script to "shift 2"
+                * ) error_msg "error assigning myOperand; exit status: [$_hla_result]"; hlca_ret=1 ;;
+            esac
+            notice_msg "assigned myOperand: $_hla_operand"
+            info_msg "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}"
             ;;
         * )
             # NOTICE: getting here does not mean error - it just means no single flag option matched,
             # but $1 could still be a compound argument (cluster of single-letter flags), so we have
             # to differentiate that (not found) status from "error", and fall back to the main script's logic
-            _hla_ret=7 # not found
+            hla_ret=7 # not found
             ;;
     esac
-    unset -v _hla_arg _hla_operand
-    return $_hla_ret
+    unset -v _hla_arg _hla_operand _hla_result
+    return $hlc_ret
 }
+# @usage handle_local_compound_arg (called from script_header_joetoo)
+# @args $1=current arg, $2=potential operand
+# @ret 0: successful action option for flag identified, 1: error
+# @ret 6: consumed an operand, 7: file not found
+# @note operates at INFO severity level
+# @note examines string for match to known flags (e.g. -r|--resume)
 
-
-handle_local_compound_arg() {
-    # This function expects the parent script to have already stripped the leading '-'
-    # We examine the *first character* of the remaining _pca_args string
-
+handle_local_compound_arg() # (POSIX) local compound arg handler to extend cli in script_header_joetoo
+{   hlca_ret=1 # Default error/unhandled
     _hlca_char="${_pca_args%${_pca_args#?}}" # Get the first character of _pca_args
-    _hlca_ret=1 # Default error/unhandled
-
     case "$_hlca_char" in
         [eE] )
-            export EXAMPLE="${TRUE}"
-            d_log_message "${BYon}set EXAMPLE = $(status_color ${EXAMPLE})$(TrueFalse ${EXAMPLE}) ${Boff}" 2
-            _hlca_ret=0
+            export EXAMPLE="${TRUE}"; hlca_ret=$?
+            info_msg "${BYon}set EXAMPLE = $(status_color ${EXAMPLE})$(TrueFalse ${EXAMPLE}) ${Boff}"
             ;;
         [dD] )
-            export DEFAULTS="${TRUE}"
-            d_log_message "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}" 2
-            _hlca_ret=0
+            export DEFAULTS="${TRUE}"; hlca_ret=$?
+            info_msg "${BYon}set DEFAULTS = $(status_color ${DEFAULTS})$(TrueFalse ${DEFAULTS}) ${Boff}"
             ;;
          *   )
             # NOTICE: getting here does not mean error - it just means no single flag option matched,
             # but $1 could still be a compound argument (cluster of single-letter flags), so we have
             # to differentiate that (not found) status from "error", and fall back to the main script's logic
-            _hla_ret=7 # not found
+            hlca_ret=7 # not found
             ;;
     esac
     unset -v _hlca_char
-    return $_hlca_ret
+    return $hlca_ret
 }
+# @usage handle_local_compound_arg (called from script_header_joetoo)
+# @ret 0: successful action option for flag identified, 1: error, 7: file not found
+# @rule this function expects the parent script to have already stripped the leading '-'
+# @note operates at INFO severity level
+# @note examines the *first character* of the remaining _pca_args string
 
-
-handle_local_usage() {
-  # user-script specific usage-module which should be built in the same format
-  # this file must contain legitimate bash assignments and commands
-  # it will be sourced by the script_header_joetoo_extended usage() function
-  # Note: options i, n, s, r, v, q are already used by the default cmdline processor
-  log_message "  -e | --example ............: example local option"
-  log_message "  -d | --defaults ...........: example local option"
-  log_message "  -o | --output <OPERAND>....: specify output text"
+handle_local_usage() # (POSIX) local usage module to extend cli in script_header_joetoo
+{ notice_msg "  -e | --example ............: example local option"
+  notice_msg "  -d | --defaults ...........: example local option"
+  notice_msg "  -o | --output <OPERAND>....: specify output text"
   echo
-  log_message "${BMon}Note:${Boff}"
-  log_message "${BYon}(1) --o output cannot be used as a single-letter options${Boff}"
-  log_message " (example -ivo <operand> will fail b/c of ${BRon}-ivo${Boff}"
-  log_message "${BWon}the word following -o|--output will be treated as its operand${Boff}"
-  log_message "${BRon} minimal usage: ${BGon} ${PN} ${BMon}-o ${LBon}<OPERAND>${Boff}"
-
-
+  notice_msg "${BMon}Note:${Boff}"
+  notice_msg "${BYon}(1) --o output cannot be used as a single-letter options${Boff}"
+  notice_msg " (example -ivo <operand> will fail b/c of ${BRon}-ivo${Boff}"
+  notice_msg "${BWon}the word following -o|--output will be treated as its operand${Boff}"
+  notice_msg "${BRon} minimal usage: ${BGon} ${PN} ${BMon}-o ${LBon}<OPERAND>${Boff}"
 }
+# @usage handle_local_usage  (called from usage() in script_header_joetoo)
+# @rule user-script specific usage-module which should be built in joetoo format
+# @rule this file must contain legitimate bash assignments and commands
+# @note operates at NOTICE severity level
+# @note options h, i, n, s, r, v, q V, Q are already used by the joetoo cmdline processor
