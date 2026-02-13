@@ -2,24 +2,26 @@
 # Standardized Joetoo Update Sequence (jus), implemented as interactive
 #   script with "resume" functionality
 # Author: Joe Brendler 14 October 2020
+#   20260212 - migrated to joetoo cli framework
 # see version_history in ebuild's filesdir
 
 # to do list:
 # (1) sort out getbinpkg override of per-package env (don't want gentoo-kernel binpkg for example)
-# (2) use header's process_cmdline - may need to figure out
-#     how to have some of the option flags override those
-#     in the baseline header - like -n below = nodist (no distcc)
-#     (maybe update header to use -N only and -I only, -r only)
-#     (replace GO_AHEAD with ! INTERACTIVE
-# (3) follow framework example for app_configure (initialize_vars)
-# (4) doesn't use run_sequence - has phase_seq arrays instead...
+# (2) doesn't use run_sequence - has phase_seq arrays instead...
 
-source /usr/sbin/script_header_joetoo
-source /usr/sbin/script_header_joetoo_extended
-
-# source BUILD PVR
-PN=${0##*/}  # equivalent to =$(basename "$0") but w/o subshell and function call
-source /etc/${PN}/BUILD
+script_header_installed_dir="/usr/sbin"
+header="${script_header_installed_dir%/}/script_header_joetoo"
+echo "header: $header"
+if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+header2="${script_header_installed_dir%/}/script_header_joetoo_extended"
+echo "header2: $header2"
+if [ -f "$header2" ]; then . "$header2"; else printf '%s' "failed to source header2; cannot continue"; exit 1; fi
+printf '%s' "Checking for header commands (toc, run_sequence) to confirm sourcing"
+if command -v toc >/dev/null 2>&1 && command -v run_sequence >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot continue"; exit 1; fi
+printf '%s' "Checking for headers commands (bs, isfloat_regex) to confirm sourcing"
+if command -v bs >/dev/null 2>&1 && command -v isfloat_regex >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header2 not sourced; cannot continue"; exit 1; fi
 
 # if /usr/share/config/ doesn't exist, fix that
 notice_msg_n "looking for /usr/share/config"
@@ -31,77 +33,121 @@ if [ ! "$result" -eq 0 ]; then
   handle_result $? "created" "" || die "failed to mkdir -p /usr/share/config/"
 fi
 
-# basic configuration variables and internals
-conf_varlist="CONF_FILE ELOG_DIR"
-conf_varlist+=" PORTDIR PKGDIR DISTDIR PORT_LOGDIR"
-conf_varlist+=" STATUS_FILE yn.EIX yn.DISTCC"
-conf_varlist+=" worldfile bool.VERBOSE verbosity BUILD"
-# phase 0
-p0_varlist="phase yn.RESUME lv.EXCLUDE"
-p0_varlist+=" yn.SYNC SYNC_TS SYNC_CMD MAX_AGE"
-p0_varlist+=" yn.REGEN_OVERLAY_METADATA"
-p0_varlist+=" lv.NOBINFEATURES"
-# phase 1
-p1_varlist="yn.UPDATE_CHECK"
-# phase 2
-p2_varlist="yn.USEPKG yn.USEPKGONLY yn.GETBINPKG yn.GETBINPKGONLY yn.WITH_BDEPS_Y"
-p2_varlist+=" yn.NEWUSE yn.CHANGEDUSE"
-p2_varlist+=" yn.GO_AHEAD yn.KEEPGOING lv.EXCLUDE"
-# phase 6
-p6_varlist="yn.EIX_UPDATE yn.HASKELL_UPDATER yn.MODULE_REBUILD"
-p6_varlist+=" yn.PERL_CLEANER yn.PYTHON_UPDATER yn.SELINUX_RELABEL yn.RKHUNTER"
-p6_varlist+=" yn.X11_MODULE_REBUILD yn.GLSA_CHECK"
-p6_varlist+=" yn.EMAINT_CHECK"
+#-----[ variables ]----------------------------------------------------
 
-# --- function blocks ------------------------------------------
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+# An example is provided in the joetoo_cli_example script and in the template joetoo_cli_example.conf
+#
+# BREAK tells display_vars to add a newline spacer in its output
+# $LOCALIZED exemplifies use of the joetoo pseudo-boolean data type for POSIX scripts
+# $EXAMPLE and $DEFAULTS are pseudo-booleans defined in joetoo_cli_example_local.cmdline_arg_handler
+# $INITIALIZED_ME and $SOURCED_ME exemplify use of the joetoo yn data type
+# Note how each is named and how these types are prefixed in the varlist, to inform initialize_vars
+# and display_vars how to handle them.
+# $longone is a long string defined in script_header_joetoo to test and illustrate smart wrapping
+# by the smart_wrap_n() function. its name is prefixed "lv." in this localized extension of varlist
+# to indicate (long variable), so display_vars will use smart_wrap_n() to display the content of
+# $longone (which is long-one btw, not long-gone)
+#
+# CAVEAT: varlist is instantiated when script_header_joetoo is sourced (above), so it IS safe to add
+# variable names to it in a "variables" section at the top of your main script, but note that
+# the standard joetoo cli script layout calls app_configure() after that --
+# so anything you add to varlist before app_configure will be over-written when app_configure
+# calls initialize_var. which sets all bool. to $FALSE, all yn. to "no" and all others to ""
+#
+# Bottom line: you can append variable names to varlist at the top of your script, but if you do, you
+# ALSO need to reassign them AFTER app_configure runs. Thus it is "easier" to just append
+# variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
+# initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
+#LOCALIZED="$FALSE"; INITIALIZED_ME="no"
+#varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+# all jus varlist extension is in jus.conf
 
-source_config() {
-  # source jus.conf in order to load user-configured settings (over-ride initilized defaults)
-  if [[ -e /etc/jus/jus.conf ]] ; then
-    CONF_FILE="/etc/jus/jus.conf"
-  elif [[ -e /usr/local/sbin/jus.conf ]] ; then
-    CONF_FILE="/usr/local/sbin/jus.conf"
-  elif [[ -e jus.conf ]] ; then
-    CONF_FILE="$(pwd)/jus.conf"
-  else
-    die "no jus.conf config file found"
-  fi
-  notice_msg_n "Sourcing configuration file [ ${CONF_FILE} ] ..."
-  . "${CONF_FILE}" ; right_status $?
+#-----[ functions ]----------------------------------------------------
+
+initialize_command_sequence() # (POSIX) initialize command sequence for joetoo cli framework
+{ ics_ret=0
+  _ics_FLAGGED="$FALSE"
+  info_msg_n "creating tempfile for command sequnce"
+  cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
+  info_handle_result $? "$cmd_seq_file" '' || _ics_FLAGGED="$TRUE"
+
+  info_msg_n "setting trap to remove tempfile on EXIT"
+  trap 'rm -f "$cmd_seq_file"' EXIT
+  info_handle_result $? "trap set" ''  || _ics_FLAGGED="$TRUE"
+
+  notice_msg_n "initializing command sequence"
+  num_cmds=0   # global variable holding the length of the sequence
+# heredoc needs to be on the left edge; no leading whitespace
+# initialize/clear the command sequence file
+while IFS= read -r _ics_entry; do
+      [ -z "$_ics_entry" ] && continue
+      # write directly to the file instead of using  ' set -- "$@" '
+      printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
+      num_cmds=$(( num_cmds + 1 ))
+done <<EOF
+emerge_sync${US}Sync
+update_check${US}Update-Check
+emerge_updates${US}Emerge Updates
+show_news; maintain_config_files${US}Review news and Maintain Config Files
+showelogs${US}Review elogs
+handle_dependencies${US}Handle Dependencies
+final_phases${US}Final steps
+EOF
+  handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED="$TRUE"
+
+  info_msg_n "initailizing starting_step"
+  starting_step=1
+  info_handle_result $? "$starting_step" '' || _ics_FLAGGED="$TRUE"
+
+  info_msg_n "initializing stopping step"
+  stopping_step="$num_cmds"
+  info_handle_result $? "$stopping_step" '' || _ics_FLAGGED="$TRUE"
+
+  [ "$_ics_FLAGGED" ] && ics_ret=1
+  export num_cmds
+  export cmd_seq_file
+  unset -v _ics_entry _ics_FLAGGED _ics_result
+  return $ics_ret
 }
+# @usage initialize_command_sequence || die "failed to initialize_command_sequence"
+# @vars sets global num_cmds, cmd_seq_file
+# @vars initializes global starting_step=1, stopping_step=$num_cmds
+# @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
+# @rule command sequency entry format 'command_string${US}description_string'
+# @cont where: command_string is POSIX executable
+# @cont and:   ${US} is teletype ero unit separator char \037 pre-cooked with printf
+# @cont and:   description_string is a human-readable description of the command
+# @ret 0 on success; 1 on failure
 
-initialize_variables() {
-  initialize_vars ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist}
-
-  # restore VERBOSE and verbosity to defaults (initialization would clear them)
-  notice_msg_n "assigning PN"
-  PN=${0##*/}; handle_result $? "$PN" ""
-
-  notice_msg_n "sourcing BUILD"
-  . /etc/${PN}/BUILD; handle_result $? "$BUILD" ""
-
-  notice_msg_n "assigning verbosity"
-  verbosity=5; handle_result $? "$verbosity" ""
-
+initialize_jus_variables()
+{ ijv_ret=0; _ijv_FLAGGED="$FALSE"
   # source make.conf b/c we can't grep for just parts for systems that set e.g.
   #    PORTDIR="${ROOT}var/db/repos/gentoo"
   notice_msg_n "sourcing make.conf to set PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR ..."
-  source /etc/portage/make.conf ; right_status $?
+  source /etc/portage/make.conf ; right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "assigning ELOG_DIR"
-  ELOG_DIR="${PORT_LOGDIR}/elog/"; handle_result $? "$ELOG_DIR" ""
+  ELOG_DIR="${PORT_LOGDIR}/elog/"
+  handle_result $? "$ELOG_DIR" "" || _ijv_FLAGGED="$TRUE"
 
   # Set these to defaults, override later with config file
-  notice_msg_n "Setting default phase, new_phase(0) "
-  phase=0 && new_phase=0 ; right_status $?
+  notice_msg_n "setting starting_step"
+  starting_step=1; right_status $? || _ijv_FLAGGED="$TRUE"
+
+  notice_msg_n "setting stopping_step"
+  stopping_step="$num_cmds"; right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "setting default NOBINFEATURES ..."
   # turn off getbinpkg userpriv and distcc --> override make.conf or package.env
   NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc"'
-  right_status $?
+  right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "assigning STATUS_FILE"
-  STATUS_FILE="/root/bin/jus-status" ; handle_result $? "$STATUS_FILE" ""
+  STATUS_FILE="/root/bin/jus-status"
+  handle_result $? "$STATUS_FILE" "" || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "setting default yes/no variables ..."
   EIX="yes" && DISTCC="yes" && SELINUX_RELABEL="no" && PERL_CLEANER="no" && \
@@ -112,53 +158,36 @@ initialize_variables() {
   continue="y" && RESUME="no" && SYNC="no" && EXCLUDE="" && UPDATE_CHECK="no" && GO_AHEAD="no" && \
   KEEPGOING="yes" && USEPKG="no" && USEPKGONLY="no" && GETBINPKG="no" && GETBINPKGONLY="no" && \
   WITH_BDEPS_Y="yes"
-  right_status $?
+  right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "setting default sync data ..."
   SYNC_TS="${PORTDIR}/metadata/timestamp.chk" && SYNC_CMD="EIX_SYNC" && MAX_AGE=24
-  right_status $?
+  right_status $? || _ijv_FLAGGED="$TRUE"
 
-  # --- Define local variables -----------------------------------
   notice_msg_n "assigning world file"
-  worldfile="/var/lib/portage/world" ; handle_result $? "$worldfile" ""
+  worldfile="/var/lib/portage/world"
+  handle_result $? "$worldfile" "" || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "Setting defaults for non-displayed variables ..."
-  KP_FOUND=$FALSE && continue="y" && new_phase=0 && updateables=""
-  right_status $?
+  KP_FOUND="$FALSE" && updateables=""
+  right_status $? || _ijv_FLAGGED="$TRUE"
 
-  # Array of messages used to announce each phase
-  phase_message=(
-  'Sync'
-  'Update-Check'
-  'Emerge Updates'
-  'Review news and Maintain Config Files'
-  'Review elogs'
-  'Handle Dependencies'
-  'Final steps'
-  )
-
-  phase_function_sequence=(
-  'emerge_sync'
-  'update_check'
-  'emerge_updates'
-  'show_news; maintain_config_files'
-  'showelogs'
-  'handle_dependencies'
-  'final_phases'
-  )
+  [ "$_ijv_FLAGGED" ] && ijv_ret=1
+  unset -v _ijv_FLAGGED
+  return $ijv_ret
 }
 
 sanity_check()
 {
 # veryfy the sanity of the combination of arguments on the command line
-if [ "$SYNC" == "yes" ] && [ "$RESUME" == "yes" ]; then
+if [ "$SYNC" == "yes" ] && [ "$RESUME" ]; then
    error_msg "Nonsensical option combination: sync and resume"
    useage
    die "correct options and try again"
 fi
 
-if [ "$SYNC" == "yes" ] && [ "$GO_AHEAD" == "yes" ]; then
-   error_msg "Dangerous option combination: sync and go_ahead"
+if [ "$SYNC" == "yes" ] && [ ! "$INTERACTIVE" ]; then
+   error_msg "Dangerous option combination: SYNC and not INTERACTIVE"
    error_msg "(you should never merge packages blindly, please check first)"
    useage
    die "correct options and try again"
@@ -169,254 +198,28 @@ fi
 [ "$USEPKG" == "yes" ] && [ "$USEPKGONLY" == "yes" ] && USEPKG="no"
 }
 
-process_command_line()
-{
-# process command line arguments (for now only -x/--exclude option can have argument(s))
-last=""
-notice_msg "processing command line with argument(s): [ ${*} ]"
-# shift each argument into position $1 and examine it
-#   process the argument or processit with its own arguments
-while [ ! -z "$1" ]
-do
-  info_msg "arg1 = [ $1 ]"
-  # if arg begins with a single dash, process it alone
-  if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ]
-  then
-    info_msg "processing [ $1 ] alone as single-dash argument"
-    process_argument $1
-    shift
-  # if arg begins with a double dash, process it alone if it is not --exclude
-  elif [ "${1:0:2}" == "--" ] && [ "$1" != "--exclude" ]
-  then
-    info_msg "processing [ $1 ] alone as double-dash non-exclude argument"
-    process_argument $1
-    shift
-  # if arg begins with a double dash, and it is --exclude,
-  #   then process it with its own agruments (identified by no leading - or --)
-  elif [ "${1:0:2}" == "--" ] && [ "$1" == "--exclude" ]
-  then
-    info_msg "processing [ $1 ] as --exclude, with own args:"
-    tmp_cmd=$1
-    tmp_args=""
-    shift
-    while [ ! -z "$1" ]
-    do
-      if [ "${1:0:1}" != "-" ]
-      then
-        info_msg "adding [ $1 ] to tmp_args:"
-        # formulate this so as to preserve internal white space between multiple exclude atoms, but to not add extra whitespace
-        [ -z "${tmp_args}" ] && tmp_args=${1} || tmp_args="${tmp_args} ${1}"
-      else
-        error_msg "non-argument [ $1 ], exiting"
-        return 1
-      fi
-      shift
-    done
-    info_msg "processing [ $tmp_cmd \"$tmp_args\" ]"
-    process_argument $tmp_cmd "$tmp_args"
-  else
-    # bogus argument
-    error_msg "bogus argument [ $1 ]"
-    error_msg "${E_BAD_ARGS}" && useage && exit 1
-  fi
-done
-sanity_check
-}
-
-process_argument()
-{
-EXCLUDE=""
-info_msg "about to process argument(s): [ $* ]"
-info_msg "1: [ $1 ], 2: [ $2 ]"
-# process command line argument (must be one of the following)
-[ ! -z "$1" ] && case "$1" in
-    "-a" | "--glsa"          ) GLSA_CHECK="yes" ;;
-    "-c" | "--check"         ) UPDATE_CHECK="yes" ;;
-    "-d" | "--distcc"        ) DISTCC="yes" ;;
-    "-e" | "--eix"           ) EIX_UPDATE="yes" ;;
-    "-g" | "--getbinpkg"     ) GETBINPKG="yes" ;;
-    "-G" | "--getbinpkgonly" ) GETBINPKGONLY="yes" ;;
-    "-k" | "--usepkg"        ) USEPKG="yes" ;;
-    "-K" | "--usepkgonly"    ) USEPKGONLY="yes" ;;
-    "-m" | "--modules"       ) MODULE_REBUILD="yes" ;;
-    "-M" | "--emaint"        ) EMAINT_CHECK="yes" ;;
-    "-n" | "--nodist"        ) DISTCC="no" ;;
-    "-N" | "--newuse"        ) NEWUSE="yes" ;;
-    "-p" | "--perl_cleaner"  ) PERL_CLEANER="yes" ;;
-    "-P" | "--python"        ) PYTHON_UPDATER="yes" ;;
-    "-q" | "--quiet"         ) [ ! $verbosity -le 5 ] && let "verbosity-=1"  ;;
-    "-r" | "--resume"        ) RESUME="yes" ;;
-    "-[0-9]"                 ) RESUME="yes" ; let new_phase=${myargs:1:1};;
-    "-R" | "--regen"         ) REGEN_OVERLAY_METADATA="yes" ;;
-    "-s" | "--status"        ) status ; exit 0 ;;
-    "-S" | "--selinux"       ) SELINUX_RELABEL="yes" ;;
-    "-t" | "--rkhunter"      ) RKHUNTER="yes" ;;
-    "-U" | "--changeduse"    ) CHANGEDUSE="yes" ;;
-    "-v" | "--verbose"       ) [ ! $verbosity -ge 7 ] && let "verbosity+=1" ;;
-    "-w" | "--with-bdeps=y"  ) WITH_BDEPS_Y="yes" ;;
-    "-x" | "--exclude"       ) EXCLUDE="${2}" ;;
-    "-X" | "--X11"           ) X11_MODULE_REBUILD="yes" ;;
-    "-y" | "--sync"          ) SYNC="yes" ;;
-    "-Y" | "--go-ahead"      ) GO_AHEAD="yes" ;;
-    "-Z" | "--keep-going"    ) KEEPGOING="yes" ;;
-    "-H" | "--haskell"       ) HASKELL_UPDATER="yes" ;;
-    "-h" | "--help"          ) useage ; exit 0 ;;
-    "-u" | "--update-all"    ) GLSA_CHECK="yes"; EIX_UPDATE="yes"; MODULE_REBUILD="yes"; \
-                               EMAINT_CHECK="yes"; PERL_CLEANER="yes"; \
-                               PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
-                               SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes"; \
-                               X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
-    *                        ) process_compound_arg $1 ;;
-esac
-}
-
-process_compound_arg()
-{
-# must begin with a single dash
-[ ! "${1:0:1}" == "-" ] && error_msg "${E_BAD_ARGS}" && useage && exit 1
-# must not begin with two dashes (would have been picked in process_argument)
-[ "${1:0:2}" == "--" ] && error_msg "${E_BAD_ARGS}" && useage && exit 1
-# strip leading dash(es)
-myargs=${1##-}
-# handle remaining characters in sequence
-while [ -n "${myargs}" ]
-do
-    #handle first char
-    info_msg "handling compound arg [ ${myargs} ], char [ ${myargs:0:1} ]"
-    case ${myargs:0:1} in
-        "a") GLSA_CHECK="yes" ;;
-        "c") UPDATE_CHECK="yes" ;;
-        "d") DISTCC="yes" ;;
-        "e") EIX_UPDATE="yes" ;;
-        "g") GETBINPKG="yes" ;;
-        "G") GETBINPKGONLY="yes" ;;
-        "k") USEPKG="yes" ;;
-        "K") USEPKGONLY="yes" ;;
-        "m") MODULE_REBUILD="yes" ;;
-        "M") EMAINT_CHECK="yes" ;;
-        "n") DISTCC="no" ;;
-        "N") NEWUSE="yes" ;;
-        "p") PERL_CLEANER="yes" ;;
-        "P") PYTHON_UPDATER="yes" ;;
-        "q") [ ! $verbosity -le 5 ] && let "verbosity-=1" ;;
-        "r") RESUME="yes" ;;
-      [0-9]) RESUME="yes" ; let new_phase=${myargs:0:1};;
-        "R") REGEN_OVERLAY_METADATA="yes" ;;
-        "s") status ; exit 0 ;;
-        "S") SELINUX_RELABEL="yes" ;;
-        "t") RKHUNTER="yes" ;;
-        "U") CHANGEDUSE="yes" ;;
-        "v") [ ! $verbosity -ge 7 ] && let "verbosity+=1" ;;
-        "w") WITH_BDEPS_Y="yes" ;;
-        "X") X11_MODULE_REBUILD="yes" ;;
-        "Y") GO_AHEAD="yes" ;;
-        "y") SYNC="yes" ;;
-        "Z") KEEPGOING="yes" ;;
-        "H") HASKELL_UPDATER="yes" ;;
-        "u") CHANGEDUSE="yes"; NEWUSE="yes"; \
-             GLSA_CHECK="yes"; EIX_UPDATE="yes"; MODULE_REBUILD="yes"; \
-             EMAINT_CHECK="yes"; PERL_CLEANER="yes"; \
-             PYTHON_UPDATER="yes"; REGEN_OVERLAY_METADATA="yes"; \
-             SELINUX_RELABEL="yes"; RKHUNTER="yes"; WITH_BDEPS_Y="yes" \
-             X11_MODULE_REBUILD="yes"; SYNC="yes"; HASKELL_UPDATER="yes" ;;
-        *  ) error_msg "${E_BAD_ARGS}" && useage && exit 1
-esac
-    #strip first char from myargs (i.e. "shift")
-    myargs=${myargs:1}
-done
-}
-
-useage()
-{
-   echo_e_msg "${BGon}Useage: jus [option]${Boff}"
-   echo_e_msg " ${BWon}Command line options:${Boff}"
-   echo_e_msg "   ${BYon}Options for all phases${Boff}"
-   echo_e_msg "    ${BBon}[-s | --status]${Boff}...........print next phase in update sequence"
-   echo_e_msg "    ${BBon}[-r | --resume]${Boff}...........resume update sequence at next phase"
-   echo_e_msg "    ${BBon}[-[0-9]]${Boff}..................resume update sequence at this phase"
-   echo_e_msg "    ${BBon}[-v | --verbose]${Boff}..........increase verbosity"
-   echo_e_msg "    ${BBon}[-q | --quiet]${Boff}............decrease verbosity"
-   echo_e_msg "    ${BBon}[-h | --help]${Boff}.............print this message"
-   echo_e_msg "   ${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
-   echo_e_msg "    ${BBon}[-y | --sync]${Boff}.............force sync portage tree"
-   echo_e_msg "    ${BBon}[-R | --regen]${Boff}............regenerate portage tree metadata (including overlays) "
-   echo_e_msg "   ${BYon}Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update-Check
-   echo_e_msg "    ${BBon}[-c | --check]${Boff}............check for and list updateable installed packages"
-   echo_e_msg "   ${BYon}Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
-   echo_e_msg "    ${BBon}[-d | --distcc]${Boff}...........use distcc distributed compiling support"
-   echo_e_msg "    ${BBon}[-n | --nodist]${Boff}...........do not use distcc distributed compiling support"
-   echo_e_msg "    ${BBon}[-N | --newuse]${Boff}...........rebuild packages with added/changed USE"
-   echo_e_msg "    ${BBon}[-g | --getbinpkg]${Boff}........use local and remote binary packages and ebuilds"
-   echo_e_msg "    ${BBon}[-G | --getbinpkgonly]${Boff}....use local and remote binary packages only"
-   echo_e_msg "    ${BBon}[-k | --usepkg]${Boff}...........use local binary packages and ebuilds"
-   echo_e_msg "    ${BBon}[-K | --usepkgonly]${Boff}.......use local binary packages only"
-   echo_e_msg "    ${BBon}[-U | --changeduse]${Boff}.......rebuild packages with changed USE flags"
-   echo_e_msg "    ${BBon}[-w | --WITH_BDEPS_Y]${Boff}.....emerge with build-time dependencies"
-   echo_e_msg "    ${BBon}[-x | --exclude <atom>]${Boff}...exclude <atom> from emerge"
-   echo_e_msg "    ${BBon}[-Y | --go-ahead]${Boff}.........automatically continue to next phases"
-   echo_e_msg "    ${BBon}[-Z | --keep-going]${Boff}.......on emerge failure, try to keep emerging other packages"
-   echo_e_msg_n "   ${BYon}Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Config Files
-   echo_e_msg " ${BCon}[future development]${Boff}"
-   echo_e_msg_n "   ${BYon}Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
-   echo_e_msg " ${BCon}[future development]${Boff}"
-   echo_e_msg_n "   ${BYon}Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
-   echo_e_msg " ${BCon}[future development]${Boff}"
-   echo_e_msg "   ${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final steps
-   echo_e_msg "    ${BBon}[-a | --glsa]${Boff}.............run glsa-check -vp affected"
-   echo_e_msg "    ${BBon}[-e | --eix]${Boff}..............run eix-update"
-   echo_e_msg "    ${BBon}[-m | --modules]${Boff}..........run emerge @module-rebuild"
-   echo_e_msg "    ${BBon}[-M | --emaint]${Boff}...........run emaint --check all"
-   echo_e_msg "    ${BBon}[-p | --perl_cleaner]${Boff}.....run perl-cleaner --all"
-   echo_e_msg "    ${BBon}[-P | --python]${Boff}...........run python-updater"
-   echo_e_msg "    ${BBon}[-S | --selinux]${Boff}..........redo selinux lablels"
-   echo_e_msg "    ${BBon}[-t | --rkhunter]${Boff}.........run rkhunter --propupd"
-   echo_e_msg "    ${BBon}[-X | --X11]${Boff}..............run emerge @x11-module-rebuild"
-   echo_e_msg "    ${BBon}[-H | --haskell]${Boff}..........run haskell-updater"
-   echo_msg ""
-   echo_e_msg "  ${BYon}Notes: ${Boff}"
-   echo_e_msg "  ${BYon} 1)${Boff} --status and --resume both identify the next phase"
-   echo_e_msg "    (which is the last successfully completed phase + 1)"
-   echo_e_msg "  ${BYon} 2)${Boff} --sync is set automatically if portage tree is older"
-   echo_e_msg "    than MAX_AGE (set in jus.conf)"
-   echo_e_msg "  ${BYon} 3)${Boff} option(s) -[k|K|g|G] function as explained in gentoo binary package guide:"
-   echo_e_msg "    https://wiki.gentoo.org/wiki/Binary_package_guide"
-   echo_e_msg "  ${BYon} 4)${Boff} option(s) -[d|n] are mutually exclusive opposites"
-   echo_e_msg "    if both used, DISTCC will be reset yes/no by the right-most cmdline"
-   echo_e_msg "  ${BYon} 5)${Boff} option(s) -[N|U] are similar. Subsequent depclean may require NEWUSE, but"
-   echo_e_msg "    CHANGEDUSE instead can avoid unnecessary rebuilds.  See these references for more info:"
-   echo_e_msg "      https://forums.gentoo.org/viewtopic-p-8719502.html?sid=1e3d721ff79585b67bb9255a51c01f3f"
-   echo_e_msg "      https://www.reddit.com/r/Gentoo/comments/16ua43e/changeduse_vs_newuse/"
-   echo_e_msg "      https://wiki.gentoo.org/wiki/Gentoo_Cheat_Sheet"
-   echo_e_msg "      https://wiki.gentoo.org/wiki/Emerge"
-   echo_e_msg "      https://wiki.gentoo.org/wiki/Full_manpages/emerge"
-   echo_msg ""
-}
-
-status()
-{
-    read phase < "${STATUS_FILE}"
-    echo_msg "Next phase: ${phase} -- ${phase_message[${phase}]}"
-    echo_msg ""
-}
-
 display_config()
 {
   notice_msg "${BWon}Using configuration data below: ${Boff}"
+  # display standard joetoo varlist
+  show_config
+  # now package jus config data, by phase
   longest=$(get_longest ${conf_varlist} ${p0_varlist} ${p1_varlist} ${p2_varlist} ${p6_varlist})
   echo_e_msg "${BYon}Global Congiguration${Boff}"
   display_vars ${longest} ${conf_varlist}
-  echo_e_msg "${BYon}Options for Phase 0 - ${phase_message[0]}${Boff}"   ## phase 0 - Sync
+  echo_e_msg "${BYon}Options for Phase 1 - ${phase_message[0]}${Boff}"   ## phase 1 - Sync
   display_vars ${longest} ${p0_varlist}
-  echo_e_msg "${BYon}Options for Phase 1 - ${phase_message[1]}${Boff}"   ## phase 1 - Update Check
+  echo_e_msg "${BYon}Options for Phase 2 - ${phase_message[1]}${Boff}"   ## phase 2 - Update Check
   display_vars ${longest} ${p1_varlist}
-  echo_e_msg "${BYon}Options for Phase 2 - ${phase_message[2]}${Boff}"   ## phase 2 - Emerge Updates
+  echo_e_msg "${BYon}Options for Phase 3 - ${phase_message[2]}${Boff}"   ## phase 3 - Emerge Updates
   display_vars ${longest} ${p2_varlist}
-  echo_e_msg "${BYon}Options for Phase 3 - ${phase_message[3]}${Boff}"   ## phase 3 - Review news and Maintain Configs
-  echo_e_msg "${BYon}Options for Phase 4 - ${phase_message[4]}${Boff}"   ## phase 4 - Review elogs
-  echo_e_msg "${BYon}Options for Phase 5 - ${phase_message[5]}${Boff}"   ## phase 5 - Handle Dependencies
-  echo_e_msg "${BYon}Options for Phase 6 - ${phase_message[6]}${Boff}"   ## phase 6 - Final Steps
+  echo_e_msg "${BYon}Options for Phase 4 - ${phase_message[3]}${Boff}"   ## phase 4 - Review news and Maintain Configs
+  echo_e_msg "${BYon}Options for Phase 5 - ${phase_message[4]}${Boff}"   ## phase 5 - Review elogs
+  echo_e_msg "${BYon}Options for Phase 6 - ${phase_message[5]}${Boff}"   ## phase 6 - Handle Dependencies
+  echo_e_msg "${BYon}Options for Phase 7 - ${phase_message[6]}${Boff}"   ## phase 7 - Final Steps
   display_vars ${longest} ${p6_varlist}
 }
+
 
 check_timestamp()
 {
@@ -449,6 +252,7 @@ check_timestamp()
         notice_msg "portage tree sync not required by MAX_AGE ($MAX_AGE hours) set in jus.conf"
     fi
 }
+
 
 emerge_sync()
 {
@@ -517,7 +321,10 @@ update_check()
       # do it in a subshell to isolate verbosity setting VERBOSE is for bs legacy code
       ( depth=0; VERBOSE="$FALSE" verbosity=0 bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}" )
     else
-      depth=0; bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}"
+echo "looking for bs"
+command -v bs
+ls -al /usr/sbin/script_header_joetoo_extended
+      ( depth=0; VERBOSE="$TRUE" verbosity=7 bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}" )
     fi
     if [[ "${result}" -gt 0 ]] ; then KP_FOUND="${TRUE}" ; pkg_color="${BRon}"; fi
     echo_e_msg_n "   "; notice_msg "${i}: ${pkg_color}${updateables[i]}${Boff} result: [${Mon}$result${Boff}]"
@@ -601,7 +408,7 @@ maintain_config_files()
     then
         notice_msg "No config files need maintenance."
     else
-        if [ ! "$GO_AHEAD" == "yes" ]     # note: use of the GO_AHEAD option will cause this phase to be skipped
+        if [ "$INTERACTIVE" ]     # note: use of the --noninteractive option will cause this phase to be skipped
         then
             notice_msg "Launching dispatch-conf to maintain the following config files:"
             echo_msg $(find /etc/ -iname '*._cfg***')
@@ -627,7 +434,7 @@ handle_dependencies()
     # recommend you run revdep-rebuild again if it had to
     #   emerge something to fix dependencies
     # TO DO: check if that is the case and ask this only if so
-    if [ "$GO_AHEAD" == "no" ] ; then
+    if [ "$INTERACTIVE" ] ; then
         echo_e_msg_n "${BYon}would you like to run revdep-rebuild again, for action? (y/n) ${Boff}"
         read rerun && echo_msg ""
     else
@@ -710,111 +517,74 @@ final_phases()
     return 0
 }
 
-get_answer()        # set external variable $answer based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; notice_msg_n "$ps [yngYNG]: " && read answer;
-while ! expr "${answer:0:1}" : [yngYNG] >/dev/null;  # answer not a regex match
-do RCP; echo_e_msg_n "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; notice_msg_n "$ps [yngYNG]: " && read answer; done; }
-
-
-yng_prompt () # set external variable $answer based on reponse to prompt $1
-{ yng_ret=0; _yng_ps="$*"; answer="";
-  echo_e_msg "\n";  # equiv printf '%b' "\n\n" (create two blank lines)
-  CUU; SCP;         # go back up one and save cursor position
-  while ! expr "${answer:- }" : '[yYnNgG]' > /dev/null; do
-    RCP; repeat ' ' $(termwidth);  # restore cursor position; blank the line
-    RCP; notice_msg_n "$_yng_ps [yngYNG]: " && read -r answer < /dev/tty;
-  done; yng_ret=$?;
-  unset -v _yng_ps; return $yng_ret ; }
-
-# --- start main script ---------------------------------------------------------
-
-checkroot
-
-# display script kick-off separator
-separator "${PN}-${BUILD}" $(hostname)
-
-# initialize and set default values
-initialize_variables
-
-# override default values with config file
-source_config
-
-# process command line to set and check sanity of option flags; override config file and defaults
-process_command_line $*
-
-# display config variables from jus.conf and option flags from command line
-separator "${PN}-${BUILD} (Configuration)" $(hostname)
-display_config
-
-# if calling for an update check, then sync if necessary and list updateables
-[ "$UPDATE_CHECK" == "yes" ] && emerge_sync && update_check && exit 0
-
-# if resuming, retrieve number of next phase to be performed from status file
-if [ "$RESUME" == "yes" ]
-then
-  # assign current phase from command line or from saved status file
-  if [ "${new_phase}" -ne 0 ]; then let phase="${new_phase}"; else read phase < "${STATUS_FILE}"; fi
-fi
-
-if [[ "$GO_AHEAD" == "yes" ]] ; then answer="g"; else answer=""; fi
-
-# this is jus' mini run_sequence
-# proceed thru each phase, as allowed to continue, until complete
-for ((ph=phase; ph<${#phase_function_sequence[@]}; ph++))
-do
-  if [[ ! "$answer" == [gG] ]]; then
-    answer=""
-    separator "($ph) ${phase_message[$ph]}" "$(hostname) jus-${BUILD} Now starting"
-#    get_answer "Are you ready to execute ${BYon}(${ph}) ${phase_message[$ph]}${Boff}?"
-    yng_prompt "Are you ready to execute ${BYon}(${ph}) ${phase_message[$ph]}${Boff}?"
-    debug_msg "answer: $answer"
-  fi
-  if [[ "$answer" == [YyGg] ]]; then
-    [[ "$answer" == [gG] ]] && GO_AHEAD="yes"
-    notice_msg "About to run step [ $ph of ${#phase_function_sequence[@]} : ${phase_function_sequence[$ph]} ]"
-    eval "${phase_function_sequence[$ph]}"; right_status $?
-    notice_msg "Completed: ($ph) ${phase_message[$ph]}"
-    printf '%s' "$ph" > "${STATUS_FILE}"
-  else
-    notice_msg "${BRon}User aborted${Boff} at step ${BYon}($ph) ${phase_message[$ph]}${Boff}. Quitting..."
-    printf '%s' "$ph" > "${STATUS_FILE}"
-    exit
-  fi
-done
-
-# if go-ahead flag was set, remind user and check for new configs and elogs
-if [ "$GO_AHEAD" == "yes" ]
-then
+wrapup_reminders()
+{ # if not INTERACTIVE, remind user and check for new configs and elogs
+  if [ ! "$INTERACTIVE" ]; then
     # remind user
-    notice_msg "You ran update sequence with option: go-ahead."
-
+    notice_msg "You ran update sequence with option flag: --noninteractive"
     # check for new config files
     if [[ ! -z "$(find /etc/ -iname '*._cfg***')" ]] || \
        [[ ! -z "$(find /usr/share/config/ -iname '*._mrg***')" ]]
     then
-        error_msg 'You have updated config files pending. You should run "dispatch-conf"'
-        error_msg "found the following pending config file updates:"
-        echo $(find /etc/ -iname '*._cfg***')
+        notice_msg 'You have updated config files pending. You should run "dispatch-conf"'
+        notice_msg "Found the following pending config file updates:"
+        find /etc/ -iname '*._cfg***' | sed 's|^|    |'
     fi # found new configs
-
     # check for elogs generated today - start by identifying the most recent
     find_cmd='find "$ELOG_DIR" -maxdepth 1 -type f '       # files in $ELOG_DIR, no subdirectories
     find_cmd+='-printf "%T@ %p\n" | '                      # prepend timestamp
     find_cmd+='sort -n | tail -n 1 | '                     # sort numeric, keep only the last (latest)
     find_cmd+='cut -d" " -f2-'                             # drop the timestamp
-    x=$("$find_cmd")                                       # x is the full path name of the most recent file
+    x=$(eval "$find_cmd")                                       # x is the full path name of the most recent file
     x_date=$(stat "$x" | grep "Modify" | awk '{print $2}') # used stat to get the modification date
+    y_date=$(date -u +%Y-%m-%d)                            # e.g. 2026-02-12
+    z_date=$(date -u +%Y%m%d)                              # e.g. 20260212
+
     # if the lates file has a modification date of today, consider it new and recommend reviewing elogs
-    if [ "$x_date" == "$(date -u +%Y-%m-%d)" ] ; then
-        notice_msg 'jus produced new elogs.  You should run "show-elogs"'
+    if [ "$x_date" == "$y_date" ] ; then
+        notice_msg "there are new elogs for today ($z_date).  Recommend you run \"echo $z_date | show-elogs | less\""
     fi  # new elogs?
+  fi  # go_ahead
+  echo && notice_msg "Don't forget rebuild modules if needed\n\temerge @[x11-]module-rebuild\n"
+}
+#-----[ main script ]----------------------------------------------------
 
-fi  # go_ahead
+app_configure || die "failed to app_configure"
 
-echo && notice_msg "Don't forget rebuild modules if needed\n\temerge @[x11-]module-rebuild\n"
+# re-assign varlist variables appended at the top of the script and thus
+# over-written by app_configure
+#info_msg_n "(re)assigning LOCALIZED"
+#LOCALIZED="$TRUE"
+#info_handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED"
+#info_msg_n "(re)assigning INITIALIZED_ME"
+#INITIALIZED_ME="yes"
+#info_handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
 
-/usr/bin/logger -p cron.notice "jus complete at $(my_short_date)."
-msg="Logged and done at: "$(date +"%T %Z, %d %B %Y.")
-notice_msg "$msg"
-exit 0
+info_msg_n "main script checking to verify handle_local_arg was loaded"
+command -v handle_local_arg >/dev/null 2>&1
+info_handle_result $?
+
+initialize_jus_variables || die "failed to initialize_jus_variables"
+
+#d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
+d_do display_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
+info_msg "(BEFORE process_cmdline)"
+
+process_cmdline "$@" || die "failed to process_cmdline"
+
+#show_config
+display_config
+info_msg "(AFTER process_cmdline)"
+
+debug_msg "status_file: $status_file"
+debug_msg "starting_step: $starting_step"
+debug_msg "stopping_step: $stopping_step"
+
+run_sequence "$status_file" "$starting_step" "$stopping_step"; result=$?
+notice_msg_n "$PN run_sequence complete. Results:"
+handle_result $result "" ""
+separator "$PN-$BUILD" "(wrap-up)"
+wrapup_reminders
+separator "$PN-$BUILD" "(Done)"
+
+exit $result
