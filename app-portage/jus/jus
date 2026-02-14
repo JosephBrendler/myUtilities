@@ -82,6 +82,11 @@ initialize_command_sequence() # (POSIX) initialize command sequence for joetoo c
   num_cmds=0   # global variable holding the length of the sequence
 # heredoc needs to be on the left edge; no leading whitespace
 # initialize/clear the command sequence file
+# format for each line of heredoc content is:
+#   command_string${US}description_string
+#   where: command_string is POSIX executable
+#   and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
+#   and:   description_string is a human-readable description of the command
 while IFS= read -r _ics_entry; do
       [ -z "$_ics_entry" ] && continue
       # write directly to the file instead of using  ' set -- "$@" '
@@ -118,19 +123,23 @@ EOF
 # @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
 # @rule command sequency entry format 'command_string${US}description_string'
 # @cont where: command_string is POSIX executable
-# @cont and:   ${US} is teletype ero unit separator char \037 pre-cooked with printf
+# @cont and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
 # @cont and:   description_string is a human-readable description of the command
 # @ret 0 on success; 1 on failure
 
 initialize_jus_variables()
 { ijv_ret=0; _ijv_FLAGGED="$FALSE"
-  # source make.conf b/c we can't grep for just parts for systems that set e.g.
-  #    PORTDIR="${ROOT}var/db/repos/gentoo"
-  notice_msg_n "sourcing make.conf to set PORTDIR, PKGDIR, DISTDIR, PORT_LOGDIR, ELOG_DIR ..."
-  source /etc/portage/make.conf ; right_status $? || _ijv_FLAGGED="$TRUE"
+  # source make.conf b/c we can't grep for just parts for systems that set
+  #    e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
+  for x in PORTDIR PKGDIR DISTDIR PORTAGE_LOGDIR; do
+    notice_msg_n "sourcing make.conf in a subshell to set $x"
+    eval "$x=$(source /etc/portage/make.conf; eval "printf '%s' \$$x")"
+    # use bash indirect expansion ${!x} to get the value of the variable named by $x
+    handle_result $? "${!x}" "" || _ijv_FLAGGED="$TRUE"
+  done
 
   notice_msg_n "assigning ELOG_DIR"
-  ELOG_DIR="${PORT_LOGDIR}/elog/"
+  ELOG_DIR="${PORTAGE_LOGDIR:-/var/log/portage}/elog/"
   handle_result $? "$ELOG_DIR" "" || _ijv_FLAGGED="$TRUE"
 
   # Set these to defaults, override later with config file
@@ -145,10 +154,6 @@ initialize_jus_variables()
   NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc"'
   right_status $? || _ijv_FLAGGED="$TRUE"
 
-  notice_msg_n "assigning STATUS_FILE"
-  STATUS_FILE="/root/bin/jus-status"
-  handle_result $? "$STATUS_FILE" "" || _ijv_FLAGGED="$TRUE"
-
   notice_msg_n "setting default yes/no variables ..."
   EIX="yes" && DISTCC="yes" && SELINUX_RELABEL="no" && PERL_CLEANER="no" && \
   HASKELL_UPDATER="no" && REGEN_OVERLAY_METADATA="yes" && EIX_UPDATE="no" && \
@@ -161,7 +166,8 @@ initialize_jus_variables()
   right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "setting default sync data ..."
-  SYNC_TS="${PORTDIR}/metadata/timestamp.chk" && SYNC_CMD="EIX_SYNC" && MAX_AGE=24
+  SYNC_TS="${PORTDIR:-var/db/repos/gentoo}/metadata/timestamp.chk" && \
+  SYNC_CMD="EIX_SYNC" && MAX_AGE=24
   right_status $? || _ijv_FLAGGED="$TRUE"
 
   notice_msg_n "assigning world file"
