@@ -3324,7 +3324,7 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   info_msg "looking for config file(s) in /etc/${PN}"
   config_files=""
   validate_dir "/etc/${PN}"
-  for _c_file in $(find "/etc/${PN}" -name "*.conf" -type f); do
+  for _c_file in $(find "/etc/${PN}" -maxdepth 1 -name "*.conf" -type f); do
     # accumulate found files in config_files, prepending a space only if it is not the first entry
     config_files="${config_files:+ }$_c_file"
     info_msg_n "sourcing $_c_file"
@@ -3550,6 +3550,7 @@ process_cmdline() # (POSIX) process command line arguments
         case "$_pc_result" in
           0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
           6 ) shift; pc_ret=0  ;;        # process_argument consumed an operand, so 'shift' extra
+          7 ) pc_ret="$_pc_result"; error_msg "pc: arg not found [$1]" usage ;;   # not found
           * ) error_msg "invalid result code from process_argument [$_pc_result]"; pc_ret=7 ;;    # invalid result code
         esac
         shift  # normal 'shift' to next argument
@@ -3562,13 +3563,14 @@ process_cmdline() # (POSIX) process command line arguments
         case "$_pc_result" in
           0|1 ) pc_ret="$_pc_result" ;;  # regular success/fail; pass it on
           6 ) shift; pc_ret=0  ;;        # process_argument consumed an operand, so 'shift' extra
+          7 ) pc_ret="$_pc_result"; error_msg "pc: arg not found [$1]" usage ;;   # not found
           * ) error_msg "invalid result code from process_argument [$_pc_result]"; pc_ret=7 ;;    # invalid result code
         esac
         shift  # normal 'shift' to next argument
         ;;
 
       * )      # invalid
-        info_msg "$1 does not start with - or --"
+        error_msg "pc: $1 does not start with - or --"
         usage  # usage will exit or return status 1
         ;;
     esac
@@ -3818,9 +3820,10 @@ process_argument() # (POSIX) process one argument $! (considering the next $2 a 
         # handle_local_arg returns 0: success; 1: error; 6: consumed operand; 7: not found
         pa_ret=$?
         # if not found, give process_compound_arg a chance
-        [ "$pa_ret" -eq 7 ] && {
+        if [ "$pa_ret" -eq 7 ]; then
           debug_msg "pa case *): [handle_local_arg did not find \$1; running process_compound_arg $1]"
-          process_compound_arg "$1"; pa_ret=$? ; }
+          process_compound_arg "$1"; pa_ret=$?
+        fi
       else
         # it still may be a combination of single char args and numbers
         debug_msg "pa case *): running [process_compound_arg $1]"
