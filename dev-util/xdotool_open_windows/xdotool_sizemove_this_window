@@ -25,7 +25,7 @@
 
 source /usr/sbin/script_header_joetoo
 
-PN=$(basename $0)
+PN=${0##*/}
 
 #=====[ user variable defaults (override in config_file) ]==============================
 
@@ -53,6 +53,7 @@ build_file=$"${config_dir%/}/BUILD"
 log_dir="/var/log"
 old_log_dir="/var/log/old_logs"
 logFile="${log_dir%/}/xdotool_open_windows.log"
+LOGGING="$TRUE"
 
 #-----[ Terminal Program ]--------------------------------------------------------------
 terminal_program="/usr/bin/konsole"       # default
@@ -67,10 +68,10 @@ timeout=10       # seconds to wait while trying to close a window or identify a 
 typeWait=2       # seconds to wait while trying to identify a newly opened window
 
 #-----[ Debug Verbosity ]---------------------------------------------------------------
-#VERBOSE=$FALSE
-VERBOSE=$TRUE
+#VERBOSE="$FALSE"
+VERBOSE="$TRUE"
 # set verbosity only if not already set (allow calling program to do so)
-[ -z $verbosity ] && verbosity=1
+[ -z "$verbosity" ] && verbosity=1
 
 #-----[ Session List ]------------------------------------------------------------------
 ssh_session_list=( \
@@ -90,8 +91,8 @@ no_msg=" \b"
 # get display geometry in pixels
 # Using 'xdpyinfo' b/c it is more stable/portable than 'xdotool getdisplaygeometry'
 SCREEN_DIMENSIONS=$(xdpyinfo | grep -oP 'dimensions:\s+\K\S+')
-SCREEN_WIDTH=$(echo $SCREEN_DIMENSIONS | cut -dx -f1)
-SCREEN_HEIGHT=$(echo $SCREEN_DIMENSIONS | cut -dx -f2)
+SCREEN_WIDTH=$(echo "$SCREEN_DIMENSIONS" | cut -dx -f1)
+SCREEN_HEIGHT=$(echo "$SCREEN_DIMENSIONS" | cut -dx -f2)
 
 varlist="PN BUILD config_dir lv.config_file old_log_dir log_dir lv.logFile"
 varlist+=" BREAK control_window LR X"
@@ -101,18 +102,18 @@ varlist+=" BREAK num_desktops sleepWait longWait typeWait timeout"
 varlist+=" bool.VERBOSE verbosity"
 
 # load custom configuration, if it exists
-d_message_n "sourcing config_file: ${config_file} ..." 1
-[[ -f ${config_file} ]] || die "${config_file} does not exist"
-source ${config_file} || die "failed to source ${config_file}"
+notice_msg_n "sourcing config_file: ${config_file} ..." 1
+[[ -f "${config_file}" ]] || die "${config_file} does not exist"
+source "${config_file}" || die "failed to source ${config_file}"
 right_status $?
 
-d_message_n "sourcing build_file: ${build_file} ..." 1
-[[ -f ${build_file} ]] || die "${build_file} does not exist"
-source ${build_file} || die "failed to source ${build_file}"
+notice_msg_n "sourcing build_file: ${build_file} ..." 1
+[[ -f "${build_file}" ]] || die "${build_file} does not exist"
+source "${build_file}" || die "failed to source ${build_file}"
 right_status $?
 
 # set these after sourcing config
-num_ssh_sessions=${#ssh_session_list[@]}
+num_ssh_sessions="${#ssh_session_list[@]}"
 xdotool_filter="grep 'xdotool_' | grep -v 'color=auto' | grep -v $!"
 ssh_filter="grep 'ssh' | grep -v 'ssh-agent' | grep -v 'sshd' | grep -v 'grep'"
 control_window=""
@@ -145,30 +146,32 @@ calculate_pixels() {
 
 set_terminal_window_dimensions() {
     # set terminal dimensions in pixels based on percents from config
-    d_log_message "in ${FUNCNAME[0]}" 5
-    ERROR=$FALSE
-    WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR=$TRUE
-    WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR=$TRUE
-    POS_X1=$(calculate_pixels "$X1" "$SCREEN_WIDTH") || ERROR=$TRUE
-    POS_Y1=$(calculate_pixels "$Y1" "$SCREEN_HEIGHT") || ERROR=$TRUE
-    POS_X2=$(calculate_pixels "$X2" "$SCREEN_WIDTH") || ERROR=$TRUE
-    [ ! $ERROR ] && return 0 || return 1
+    debug_msg "in ${FUNCNAME[0]}"
+    ERROR="$FALSE"
+    WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR="$TRUE"
+    WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR="$TRUE"
+    POS_X1=$(calculate_pixels "$X1" "$SCREEN_WIDTH") || ERROR="$TRUE"
+    POS_Y1=$(calculate_pixels "$Y1" "$SCREEN_HEIGHT") || ERROR="$TRUE"
+    POS_X2=$(calculate_pixels "$X2" "$SCREEN_WIDTH") || ERROR="$TRUE"
+    [ ! "$ERROR" ] && return 0 || return 1
 }
 
 usage() {
 separator "${PN}-${BUILD}" "(usage)"
-E_message "${BWon}Usage: mw l|L|r|R [<width>%] [<height>%]${Boff}"
-E_message "(assuming alias mw='xdotool_sizemove_this_window' has been assigned)"
-E_message "${BYon}you ${BMon}must${BYon} specify l|r${Boff} (left or right) --"
-E_message "  this terminal will be moved to that side of the screen."
-E_message "  (i.e. to X, Y coordinates configured in config_file:"
-E_message "   ${config_file})"
-E_message "${BYon}you ${BMon}may${BYon} also specify the width and height${Boff} for the moved terminal screen"
-E_message "  (width and/or height may be specified as pixels or as percent relative"
-E_message "   to pixel size of the current screen)"
+error_msg "${BWon}Usage: mw l|L|r|R [<width>%] [<height>%]${Boff}"
+error_msg "(assuming alias mw='xdotool_sizemove_this_window' has been assigned)"
+error_msg "${BYon}you ${BMon}must${BYon} specify l|r${Boff} (left or right) --"
+error_msg "  this terminal will be moved to that side of the screen."
+error_msg "  (i.e. to X, Y coordinates configured in config_file:"
+error_msg "   ${config_file})"
+error_msg "${BYon}you ${BMon}may${BYon} also specify the width and height${Boff} for the moved terminal screen"
+error_msg "  (width and/or height may be specified as pixels or as percent relative"
+error_msg "   to pixel size of the current screen)"
+# get the name of the output interface for the primary monitor
 primary_monitor=$(xrandr | grep 'primary' | awk '{print $1}')
+# get monitor resolution by looking for both * (current active mode) and + (preferred (native) mode)
 resolution=$(xrandr | grep '\*+' | awk '{print $1}')
-E_message "${BWon}current resolution of primary monitory (${Bon}${primary_monitor}${BWon}): ${BGon}${resolution}${Boff}"
+error_msg "${BWon}current resolution of primary monitory (${Bon}${primary_monitor}${BWon}): ${BGon}${resolution}${Boff}"
 echo
 exit 1
 }
@@ -181,70 +184,70 @@ process_cmdline() {
     # $2 [width]
     # $3 [height]
     cmdline="$@"
-    d_log_message "\$#: [$#]" 3
-    d_log_message "processing command line: ${cmdline}" 3
+    notice_msg "\$#: [$#]"
+    notice_msg "processing command line: ${cmdline}"
     idx=0
     while [ $# -gt 0 ] ; do
         let "idx+=1"
-        d_log_message "processing arg $idx [$1]" 1
-        case $idx in
+        notice_msg "processing arg $idx [$1]"
+        case "$idx" in
             1) LR="$1";;
             2) width="$1";;
             3) height="$1";;
-            *) log_E_message "Error in command line argument $idx [$1]"; usage;;
+            *) error_msg "Error in command line argument $idx [$1]"; usage;;
         esac
         shift
     done
-    d_log_message "done processing command line" 3
+    notice_msg "done processing command line"
     return 0
 }
 
 setup_LR_X() {
-    case $LR in
+    case "$LR" in
         [lL]) X="${X1}";;
         [rR]) X="${X2}";;
-        *   ) log_E_message "Error in variable LR [$LR]" 1; usage;;
+        *   ) error_msg "Error in variable LR [$LR]"; usage;;
     esac
     return 0
 }
 
 sizemove_window() {
-    d_log_message_n "moving window [${control_window}] to position [$X $Y1] ..." 1
-    xdotool windowmove ${control_window} $X $Y1
-    log_handle_result "$?" "moved" "window move failed!" || return 1
-    d_log_message_n "resizing window [${control_window}] to size [$width $height] ..." 1
-    xdotool windowsize ${control_window} $width $height
-    log_handle_result "$?" "resized" "window resize failed!" || return 1
+    notice_msg_n "moving window [${control_window}] to position [$X $Y1] ..."
+    xdotool windowmove "${control_window}" "$X" "$Y1"
+    handle_result "$?" "moved" "window move failed!" || return 1
+    notice_msg_n "resizing window [${control_window}] to size [$width $height] ..."
+    xdotool windowsize "${control_window}" "$width" "$height"
+    handle_result "$?" "resized" "window resize failed!" || return 1
     return 0
 }
 
 #------[ main script ]-----------------------------------------------
-d_message "now in main script" 3
-d_message_n "checking not root ..." 1
+debug_msg "now in main script"
+notice_msg_n "checking not root ..."
 checknotroot && right_status $? || die "failed checknotroot"
 validate_logfile || die "failed to validate logfile"
 
-log_separator "$(hostname)" "${PN}-${BUILD}"
-d_log_message "starting script" 1
+separator "$(hostname)" "${PN}-${BUILD}"
+notice_msg "starting script"
 
 # identify the control window (used to activate this program)
-d_log_message_n "Getting ID of current (control) window" 1
+notice_msg_n "Getting ID of current (control) window"
 control_window=$(xdotool getactivewindow)
-log_handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
+handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
 
 # identify the current desktop and log_message "starting script"
 current_desktop=$(xdotool get_desktop_for_window "${control_window}")
-d_log_message "current_desktop: ${current_desktop}" 1
+notice_msg "current_desktop: ${current_desktop}"
 num_desktops=$(xdotool get_num_desktops)
-d_log_message "num_desktops: $num_desktops" 1
+notice_msg "num_desktops: $num_desktops"
 
 # run sequence
 process_cmdline $@ || die "failed to process_cmdline"
 set_terminal_window_dimensions || die "failed to set_terminal_window_dimensions"
 setup_LR_X || die "failed to setup_LR_X"
-debug_do log_show_config 1 || die "failed to log_show_config"
+show_config || die "failed to log_show_config"
 sizemove_window || die "failed to sizemove_window"
 
-d_log_message "${BGon}Done${Boff}" 1
+notice_msg "${BGon}Done${Boff}"
 
-#d_message "${BMon}Debug Marker${Boff}" 3 ; exit 1
+#debug_msg "${BMon}Debug Marker${Boff}" ; exit 1
