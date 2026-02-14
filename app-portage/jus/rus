@@ -1,0 +1,445 @@
+#!/bin/bash
+# rus - rebuild update sequence - to rebuild system as required when a key package major update occurs
+#  0.0.7 - adds pick_binutils() function, -s option
+#  0.0.8 - stop/start cloudsync packages/rsyncd before/after
+#  0.0.10 - follow gentoo replacement of sys-devel/libtool with dev-build/libtool
+
+# To Do - assumes cronie; generalize for other cron systems
+
+# see https://forums.gentoo.org/viewtopic-t-1118276-start-0.html
+# see https://wiki.gentoo.org/wiki/Upgrading_GCC#Quick_guide_to_GCC_upgrades
+# see https://wiki.gentoo.org/wiki/Project:Toolchain
+#
+# updates ([headers], glibc, binutils, libtool)
+# ( below from wiki gcc-upgrade)
+# rebuild gcc
+# source /etc/profile
+# gcc-config
+# rebuild libtool, binutils
+# binutils-config
+# source /etc/profile
+# rebuild glibc
+# locale-gen
+# source /etc/profile
+# mount /boot
+# emerge @world (rebuild whole tree)
+# source /etc/profile
+# etc-update
+# perl-cleaner --all
+# emerge --sync
+# emerge -auDN @world (update only)
+# revdep-rebuild
+# emerge --depclean --deep
+# other emerge clean-up/maintenance as needed (eclean emaint et al).
+# (end wiki suggestions)
+# reboot
+# rebuild kernel
+# rebuild boot loader w/ rebuilt kernel (grub filo etc)
+
+script_header_installed_dir="/usr/sbin"
+header="${script_header_installed_dir%/}/script_header_joetoo"
+echo "header: $header"
+
+if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+printf '%s' "Checking for header commands to confirm sourcing"
+if command -v toc >/dev/null 2>&1 && command -v run_sequence >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot continue"; exit 1; fi
+
+#-----[ variables ]----------------------------------------------------
+
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+# An example is provided in the joetoo_cli_example script and in the template joetoo_cli_example.conf
+#
+# BREAK tells display_vars to add a newline spacer in its output
+# $LOCALIZED exemplifies use of the joetoo pseudo-boolean data type for POSIX scripts
+# $EXAMPLE and $DEFAULTS are pseudo-booleans defined in joetoo_cli_example_local.cmdline_arg_handler
+# $INITIALIZED_ME and $SOURCED_ME exemplify use of the joetoo yn data type
+# Note how each is named and how these types are prefixed in the varlist, to inform initialize_vars
+# and display_vars how to handle them.
+# $longone is a long string defined in script_header_joetoo to test and illustrate smart wrapping
+# by the smart_wrap_n() function. its name is prefixed "lv." in this localized extension of varlist
+# to indicate (long variable), so display_vars will use smart_wrap_n() to display the content of
+# $longone (which is long-one btw, not long-gone)
+#
+# CAVEAT: varlist is instantiated when script_header_joetoo is sourced (above), so it IS safe to add
+# variable names to it in a "variables" section at the top of your main script, but note that
+# the standard joetoo cli script layout calls app_configure() after that --
+# so anything you add to varlist before app_configure will be over-written when app_configure
+# calls initialize_var. which sets all bool. to $FALSE, all yn. to "no" and all others to ""
+#
+# Bottom line: you can append variable names to varlist at the top of your script, but if you do, you
+# ALSO need to reassign them AFTER app_configure runs. Thus it is "easier" to just append
+# variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
+# initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
+#LOCALIZED=$FALSE; INITIALIZED_ME="no"
+#varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+
+# rus configuration - these variables will be re-assigned after initialization
+# logFile
+logFile=/var/log/rus.log
+# confit_dir - files resident here and ending .conf (like THIS one) are sourced to override defaults
+#config_dir="/etc/${PN}"
+config_dir=/etc/jus/rus
+# interactive (supervised mode)
+#INTERACTIVE=$FALSE
+export INTERACTIVE=$TRUE
+# app_customization_root - normally also /etc/${PN} - local extensions of the cli framework go here
+#  local_cmdline_arguments will be set to the first file found in app_customization_root
+#     matching [[:alnum:]]*_local.cmdline_arguments = local extensions of the cli allowed argument framework
+#     (e.g. --example --create --destroy --board --target)
+app_customization_root=/etc/jus/rus
+# status_file - holds an integer representing the NEXT step after the last successfully completed step
+#   RESUME action is to read this file and set starting_step equal to this value (if it is in range)
+#status_file="${HOME}/.config/${PN}.status"
+status_file="${HOME}/.config/rus.status"
+
+PN=${0##*/}  # equivalent to =$(basename "$0") but w/o subshell and function call
+
+#-----[ functions ]----------------------------------------------------
+
+initialize_command_sequence() # (POSIX) initialize command sequence for joetoo cli framework
+{ ics_ret=0
+  _ics_FLAGGED=$FALSE
+  info_msg_n "creating tempfile for command sequnce"
+  cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
+  info_handle_result $? "$cmd_seq_file" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "setting trap to remove tempfile on EXIT"
+  trap 'rm -f "$cmd_seq_file"' EXIT
+  info_handle_result $? "trap set" ''  || _ics_FLAGGED=$TRUE
+
+  notice_msg_n "initializing command sequence"
+  num_cmds=0   # global variable holding the length of the sequence
+# heredoc needs to be on the left edge; no leading whitespace
+# initialize/clear the command sequence file
+while IFS= read -r _ics_entry; do
+      [ -z "$_ics_entry" ] && continue
+      # write directly to the file instead of using  ' set -- "$@" '
+      printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
+      num_cmds=$(( num_cmds + 1 ))
+done <<EOF
+pkgsync stop${US}Stop syncing packages with other nodes
+remove_pkgdir${US}Remove PKGDIR
+rebuild_toolchain${US}Rebuild toolchain
+pick_gcc${US}Select gcc
+pick_binutils${US}Select binutils
+rebuild_toolchain_with_new_tools${US}Rebuild toolchain with new gcc, binutils
+rebuild_system${US}Rebuild system set with new toolchain
+rebuild_world${US}Rebuild world set with new toolchain
+pkgsync start${US}Re-start syncing packages with other nodes
+${US}Already Done
+EOF
+  handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initailizing starting_step"
+  starting_step=1
+  info_handle_result $? "$starting_step" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initializing stopping step"
+  stopping_step="$num_cmds"
+  info_handle_result $? "$stopping_step" '' || _ics_FLAGGED=$TRUE
+
+  [ "$_ics_FLAGGED" ] && ics_ret=1
+  export num_cmds
+  export cmd_seq_file
+  unset -v _ics_entry _ics_FLAGGED _ics_result
+  return $ics_ret
+}
+# @usage initialize_command_sequence || die "failed to initialize_command_sequence"
+# @vars sets global num_cmds, cmd_seq_file
+# @vars initializes global starting_step=1, stopping_step=$num_cmds
+# @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
+# @rule command sequency entry format 'command_string${US}description_string'
+# @cont where: command_string is POSIX executable
+# @cont and:   ${US} is teletype ero unit separator char \037 pre-cooked with printf
+# @cont and:   description_string is a human-readable description of the command
+# @ret 0 on success; 1 on failure
+
+initialize_rus_variables()
+{ irv_ret=0; _irv_FLAGGED="$FALSE"
+
+  info_msg "assigning logFile"
+  logFile=/var/log/rus.log
+  info_handle_result $? "$logFile" "" || _irv_FLAGGED="$TRUE"
+
+  # WARNING, if config_dir is other than /etc/${PN} and if config_cir is in varlist,
+  # it will get initialized (erased) when app_configure runs initialize_vars
+  # and then looks for configs in /etc/${PN}/ - so the script header won't be
+  # able to find the config file. We will have to load it  right here,
+  # in a function that runs after app_configure but before show_config and
+  # process_cmdline - we will define the config file, assign defaults and
+  # then source the config file so it can override our defaults
+  info_msg_n "assigning config_dir"
+  config_dir=/etc/jus/rus
+  info_handle_result $? "$config_dir" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning INTERACTIVE"
+  export INTERACTIVE=$TRUE
+  info_handle_result $? "$(TrueFalse $INTERACTIVE)" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning LOGGING"
+  export LOGGING=$TRUE
+  info_handle_result $? "$(TrueFalse $LOGGING)" "" || _irv_FLAGGED="$TRUE"
+
+  # initialize RESUME - can be overridden by sourced config below (and cmdline)
+  info_msg_n "assigning default RESUME"
+  export RESUME=$FALSE
+  info_handle_result $? "$(TrueFalse $RESUME)" '' || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning app_customization_root"
+  app_customization_root=/etc/jus/rus
+  info_handle_result $? "$app_customization_root" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning status_file"
+  status_file="${HOME}/.config/rus.status"
+  info_handle_result $? "$status_file" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning key_packages1"
+  key_packages1=(
+    'sys-libs/glibc'
+    'sys-devel/binutils'
+    'dev-build/libtool'
+    'sys-devel/gcc'
+  )
+  info_right_status $? || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning key_packages2"
+  key_packages2=(
+    'sys-kernel/linux-headers'
+    'sys-devel/gcc-config'
+  )
+  info_right_status $? || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "setting DISTCC = \$FALSE"
+  DISTCC=$FALSE
+  info_right_status $? || _irv_FLAGGED="$TRUE"
+
+    # default setting - my be over-ridden by command line option (n vs d)
+  info_msg_n "assigning default rus_features"
+  rus_features=" -distcc -getbinpkg"
+  info_handle_result $? "$rus_features" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "assigning default rus_makeopts"
+  rus_makeopts="-j$(nproc)"
+  info_handle_result $? "$rus_makeopts" "" || _irv_FLAGGED="$TRUE"
+
+  info_msg_n "sourcing make.conf in a subshell, to assign PKGDIR"
+  PKGDIR=$( . /etc/portage/make.conf; echo $PKGDIR )
+  info_handle_result $? "$PKGDIR" "" || _irv_FLAGGED="$TRUE"
+
+  validate_dir "$config_dir"   # does its own announce/act/report-results
+
+  # tier 1 - global configuration (for config_dir other than /etc/${PN})
+  # validate package config directory
+  # config_dir was assigned above (see comment about config_dir other than /etc/${PN}
+  validate_dir "$config_dir"   # does its own announce/act/report-results
+
+  # BUILD="string" should be located in config_dir (which is other than /etc/${PN})
+  info_msg_n "sourcing BUILD variable assignment"
+  . "${config_dir}/BUILD"
+  info_handle_result $? "$BUILD" '' || _irv_FLAGGED="$TRUE"
+
+  # if the package has a config source it here (for config_dir other than /etc/${PN})
+  info_msg "looking for config file(s) in /etc/${PN}"
+  config_files=""
+  validate_dir "$config_dir"
+  for _c_file in $(find "$config_dir" -name "*.conf" -type f); do
+    # accumulate found files in config_files, prepending a space only if it is not the first entry
+    config_files="${config_files:+ }$_c_file"
+    info_msg_n "sourcing $_c_file"
+    . "$_c_file"
+    info_handle_result $? "$_c_file" "" || _irv_FLAGGED="$TRUE"
+  done
+  info_msg "config_files: [$config_files]"
+
+  # tier 3 - application customization and extension  (for config_dir other than /etc/${PN})
+  # this should reside in app_customization_root directory
+  # contains handle_local_arg(), handle_local_compound_arg(), and handle_local_usage
+  # find (validates) *_local.cmdline_arguments; assign first match
+  info_msg_n "looking for *local.cmdline_arg_handler "
+  local_cmdline_arg_handler=$(find "${app_customization_root%/}/" -name "*local.cmdline_arg_handler" | head -n 1 )
+  _c_result=$?
+  _c_handler="${local_cmdline_arg_handler:-"none found"}"
+   # =${var##*/} is =$(basename $var) but w/o subshell and function call
+   info_handle_result $_c_result "${_c_handler##*/}" "error" || _c_FLAGGED=$TRUE
+  if [ -f "$local_cmdline_arg_handler" ]; then
+    info_msg_n "sourcing local_cmdline_arg_handler"
+    . "$local_cmdline_arg_handler"
+    info_handle_result $? "sourced" "error sourcing local_cmdline_arg_handler" || _c_FLAGGED=$TRUE
+  fi
+
+  # use POSIX method of indirect variable assignment to display the existence of local handlers
+  for x in handle_local_arg handle_local_compound_arg handle_local_usage; do
+    info_msg_n "setting variable to display whether $x EXISTS"
+    _c_extester="${x}_EXISTS"
+    command -v "$x" >/dev/null 2>/dev/null ; _c_result=$?
+    if [ "$_c_result" -eq 0 ] ; then eval "${_c_extester}=$TRUE"; else eval "${_c_extester}=$FALSE"; fi
+    d_do '
+      printf " (%b%s%b)" "$(eval status_color \$$_c_extester)" "$(eval TrueFalse \$$_c_extester)" "${Boff}" "$info"
+      right_status "$_c_result"
+    ' "$info"
+  done
+
+
+  answer=""   # response to prompt
+
+  [ "$_irv_FLAGGED" ] && irv_ret=1
+  unset -v _irv_FLAGGED
+  return $irv_ret
+}
+
+rebuild_world()
+{
+  rewo_ret=0
+  _rewo_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
+  _rewo_cmd="${_rewo_cmd} emerge -avbke1 world --keep-going"
+  eval "${_rewo_cmd}"; rewo_ret=$?
+  unset -v _rewo_cmd
+  return $rewo_ret
+}
+
+rebuild_system()
+{ resys_ret=0
+  _resys_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
+  _resys_cmd="${_resys_cmd} emerge -avbke1 system --keep-going"
+  eval "${_resys_cmd}"
+  unset -v _resys_cmd
+  return $resys_ret
+}
+
+rebuild_toolchain_with_new_tools()
+{ rtwnt_ret=0
+  _rtwnt_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
+  _rtwnt_cmd="${_rtwnt_cmd} emerge -avb1 ${key_packages1[@]} --keep-going"
+  eval "${_rtwnt_cmd}" ; rtwnt_ret=$?
+  unset -v _rtwnt_cmd=
+  return $rtwnt_ret
+}
+
+rebuild_toolchain()
+{ rt_ret=0;
+  _rt_prefix="MAKEOPTS=\"${rus_makeopts}\" FEATURES=\"${FEATURES} ${rus_features}\""
+  _rt_suffix="${key_packages1[@]} ${key_packages2[@]} --keep-going"
+  _rt_cmd="${_rt_prefix} emerge -av1 ${_rt_suffix}"
+  eval "${_rt_cmd}" ; rt_ret=$?
+  unset -v _rt_prefix _rt_suffix
+  return $rt_ret
+}
+
+remove_pkgdir() # safely remove contents for binary package direcory PKGDIR
+{ rp_ret=0
+  [ ! -d "${PKGDIR}" ] && { error_msg "PKGDIR [${PKGDIR}] is not a valid directory"; return 1 ; }
+  warn_msg "${BYon}Warning: abount to remove all contents from PKGDIR [$PKGDIR]"
+  confirm_continue_or_exit
+  rm -rfv "${PKGDIR}" || { error_msg "failed to rm -rfv ${PKGDIR}"; return 1 ; }
+  return $rp_ret
+}
+
+set_makeopts()
+{ sm_ret=0; _sm_jobs=${1:-1}  # set default -j1
+    rus_makeopts="-j $_sm_jobs"
+}
+
+set_distcc() {
+  # returns the status of last cmd executed (this one)
+  case $1 in
+    $FALSE ) rus_features=" -distcc -getbinpkg" ;;
+    $TRUE  ) rus_features=" distcc -getbinpkg" ;;
+    *     ) error_msg "Internal error - invalid parameter sent to set_distcc [$1]"; exit 1 ;;
+  esac
+}
+
+get_number()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo_msg; echo_msg; CUU; SCP; notice_msg_n "$ps [0-9]: " && read answer;
+#while ! expr "${answer:0:1}" : [0-9] >/dev/null;  # answer not a regex match
+while ! expr "${answer:0:1}" : \[0-9\] >/dev/null;  # answer not a regex match
+do RCP; echo_e_msg_n "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; notice_msg_n "$ps [0-9]: " && read answer; done; }
+
+get_answer()        # set external variable $answer based on reponse to prompt $1
+{ ps=$1; echo_msg; echo_msg; CUU; SCP; notice_msg_n "$ps [yngYNG]: " && read answer;
+while ! expr "${answer:0:1}" : \[yngYNG\] >/dev/null;  # answer not a regex match
+do RCP; echo_e_msg_n "$(repeat ' ' $(termwidth))";  ## blank the line
+RCP; notice_msg_n "$ps [yngYNG]: " && read answer; done; }
+
+pick_gcc()          # pick the appropriate gcc
+{ gcc-config -l; get_number "Select gcc profile from list above";
+notice_msg "setting gcc-config $answer" && gcc-config ${answer};
+notice_msg "sourcing /etc/profile" && source /etc/profile; }
+
+pick_binutils()          # pick the appropriate gcc
+{ binutils-config -l; get_number "Select binutils profile from list above";
+notice_msg "setting binutils-config $answer" && binutils-config ${answer};
+notice_msg "sourcing /etc/profile" && source /etc/profile; }
+
+pkgsync()            # stop/start syncing packages
+{
+action="$1"
+echo_msg; notice_msg "action: ${action}"
+cslinelist=($(grep -n cloudsync /etc/crontab | cut -d':' -f1))
+if [[ "${action}" == "stop" ]]
+then
+  notice_msg "commenting out cloudsync cron job in crontab";
+  for ((i=0; i<${#cslinelist[@]}; i++))
+  do
+    notice_msg "maybe comment line: ${cslinelist[i]}"
+    sed -i "${cslinelist[i]} s|^.|#&|" /etc/crontab;
+  done;
+  notice_msg "stopping rsyncd"
+  /etc/init.d/rsyncd stop
+  notice_msg "restarting cronie"
+  /etc/init.d/cronie restart
+elif [[ "${action}" == "start" ]]
+then
+  notice_msg "un-commenting cloudsync cron job in crontab"
+  # if it is not already commented, then comment it
+  for ((i=0; i<${#cslinelist[@]}; i++))
+  do
+    notice_msg "maybe uncomment line: ${cslinelist[i]}"
+    sed -i "${cslinelist[i]} s|^#||" /etc/crontab
+  done
+  notice_msg "restarting rsyncd"
+  /etc/init.d/rsyncd restart
+  notice_msg "restarting cronie"
+  /etc/init.d/cronie restart
+else
+  error_msg "Invalid action passed to pkgsync; exiting"
+  exit
+fi
+notice_msg "done pkgsync ${action}"
+}
+
+#-----[ main script ]----------------------------------------------------
+
+# must be root
+checkroot
+separator "$PN" "(starting)"
+app_configure || die "failed to app_configure"
+
+# re-assign varlist variables appended at the top of the script and thus
+# over-written by app_configure
+#info_msg_n "(re)assigning LOCALIZED"
+#LOCALIZED=$TRUE
+#info_handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED"
+#info_msg_n "(re)assigning INITIALIZED_ME"
+#INITIALIZED_ME="yes"
+#info_handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
+
+initialize_rus_variables || die "failed to initialize_rus_variables"
+
+d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
+info_msg "(BEFORE process_cmdline)"
+
+process_cmdline "$@" || die "failed to process_cmdline"
+
+show_config
+info_msg "(AFTER process_cmdline)"
+
+run_sequence "$status_file" "$starting_step" "$stopping_step"
+result=$?
+separator "$PN-$BUILD" "(Done)"
+notice_msg_n "$PN complete. Results:"
+handle_result $result "exemplary success" "exemplary failure"
+exit $result
