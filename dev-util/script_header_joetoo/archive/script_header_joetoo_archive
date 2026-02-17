@@ -1831,3 +1831,37 @@ box_msg_bash() # (LINUX BASH) $1=msg, $2=width, $3=center, $4=color
     printf "%b" "$OFF"
 
 }
+---------------------------------------
+this is an old initramfs function to try to get console working right
+
+maybe_redirect_output() # if /dev/console is writable, deliberately redirect output there
+{
+  # (1) /dev/console is created by mksources ( mknod -m 600 console c 5 1 ), and even if not,
+  # then now that /dev is populated by mini_udev, the device node should exist [ -c test ].
+  # However - that doesn't guarantee that the kernel will have loaded drivers capable of using it
+  # (serial/VGA for example), so we need to check the devices "writability" [ -w test ], to be sure
+  # implement a bounded wait here, incase it hasn't happened "yet"
+  # note: -w implies -c so don't need to check both
+  mro_ret=0
+  _mro_init_shortwait="0.1"
+  _mro_init_console_retry=0; _mro_init_max_retry=30    # max wait 3 seconds total
+  while [ ! -w /dev/console ] && [ "$_mro_init_console_retry" -lt "$_mro_init_max_retry" ]; do
+    sleep "$_mro_init_shortwait"
+    mro_ret=1
+    _mro_init_console_retry=$((_mro_init_console_retry + 1))
+  done
+  if [ -w /dev/console ]; then
+    exec > /dev/console 2>&1
+    # Subsequent messages now appear on the actual boot console 
+    notice_msg "Standard and Error output redirected to /dev/console"
+    mro_ret=0
+  else
+    # if -c passes but -w fails, the node exists but the device is not ready for output 
+    warn_msg "Warning: /dev/console exists but is not writable. Redirection skipped." >&2
+    mro_ret=1
+  fi
+  unset -v _mro_init_console_retry _mro_init_shortwait _mro_init_max_retry
+  return $mro_ret
+}
+
+
