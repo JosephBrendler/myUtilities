@@ -15,14 +15,14 @@ source /usr/sbin/script_header_joetoo
 #-----[ functions ]------------------------------------------
 
 usage() {
-  E_message "usage: ckinitramfs [-][v|q]"
-  message   "  v - increase verbosity"
-  message   "  q - decrease verbosity"
+  error_msg "usage: ckinitramfs [-][v|q]"
+  notice_msg   "  v - increase verbosity"
+  notice_msg   "  q - decrease verbosity"
   exit 1
 }
 
 configure() {
-  message "configuring ..."
+  notice_msg "configuring ..."
   SOURCES_DIR="/usr/src/initramfs"
   MAKE_DIR="/usr/src/mkinitramfs"
 
@@ -31,19 +31,19 @@ configure() {
   # it is NOT found in development directory
   BUILD="$(cat ${MAKE_DIR%/}/PKG_PVR)"
   PN=$(basename "$0")
-  d_message "MAKE_DIR: $MAKE_DIR" 5
-  d_message "BUILD: $BUILD" 5
-  d_message "PN: $PN" 5
+  debug_msg "MAKE_DIR: $MAKE_DIR"
+  debug_msg "BUILD: $BUILD"
+  debug_msg "PN: $PN"
   # source the list of executables used by the init script (from init_structure)
   executables=()
-  message_n "sourcing ${MAKE_DIR%/}/init_structure ..."
+  notice_msg_n "sourcing ${MAKE_DIR%/}/init_structure ..."
   source "${MAKE_DIR%/}/init_structure"; right_status $?
   # source header for load_ list_ dump_executables
-  message_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
+  notice_msg_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
   source "${MAKE_DIR%/}/common_bash_functions_header"; right_status $?
 
   # source header for display_config, echo_long_string
-  message_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
+  notice_msg_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
   source "${MAKE_DIR%/}/common_ash_functions_header"; right_status $?
   load_executables
 
@@ -53,10 +53,10 @@ configure() {
   elif [[ -e "/etc/mkinitramfs/mkinitramfs.conf" ]] ; then
     config_file="/etc/mkinitramfs/mkinitramfs.conf"
   else
-    E_message "${BRon}Error: no mkinitramfs.conf found"
+    error_msg "${BRon}Error: no mkinitramfs.conf found"
     exit
   fi
-  message_n "sourcing config file ${config_file} ..."
+  notice_msg_n "sourcing config file ${config_file} ..."
   source "${config_file}"; right_status $?
 
   # convert executables array into string variable we can display
@@ -64,20 +64,22 @@ configure() {
   varlist="SOURCES_DIR MAKE_DIR verbosity lv.cki_executables"
 }
 
-process_cmdline() {
-  d_message "processsing commandline ..." 1
+process_cmdline() {  # tiny alternative to using the whole cli in script_header_joetoo
+  notice_msg "processsing commandline ..."
+  # this is a macro for use by external helper _pc_action_verbosity (in script_header_joetoo)
+  _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))";
   if [ $# -gt 1 ] ; then
-    E_message "invalid arguments: $@"
+    error_msg "invalid arguments: $@"
     usage
   elif [ $# -eq 1 ] ; then
     arg="$1"
     # allow one compunt arg (e.g. -vvv or vq-qvvv)
     while [ ${#arg} -gt 0 ] ; do
       case "$arg" in
-        "-"* ) echo "ignoring \"-\"";;
-        "v"* ) [ $verbosity -lt 6 ] && let "verbosity++" ; echo "increasing verbosity to $verbosity";;
-        "q"* ) [ $verbosity -gt 0 ] && let "verbosity--" ; echo "decreasing verbosity to $verbosity";;
-         *  ) E_message "invalid argument [ $arg ]"; usage;;
+        "-"* ) echo_msg "ignoring \"-\"";;
+        "v"* ) _pc_operator="+"; _pc_action_verbosity ;;
+        "q"* ) _pc_operator="-"; _pc_action_verbosity ;;
+         *  ) error_msg "invalid argument [ $arg ]"; usage;;
       esac
       arg="${arg:1}"   # drop first char (left shift)
     done
@@ -86,43 +88,41 @@ process_cmdline() {
 
 check_executables() {
   local _ce_w _ce_x _ce_y _ce_z _ce_find=()
-  message "checking initramfs executables ..."
+  notice_msg "checking initramfs executables ..."
   # compare current system executables (identified by the which command) with those installed in intramfs
   for _ce_w in "${executables[@]}"
   do
     # this will evaluate null (false) for files; and non-null (true) for links
-#    if [[ $(file $_ce_w | grep symbolic) ]] ; then
     if [[ -L  $_ce_w ]] ; then
       # this is a link; skip it
-      d_message "$_ce_w is a symbolic link; skipping ..." 3
+      info_msg "$_ce_w is a symbolic link; skipping ..."
       continue
     else
-      d_message "$_ce_w is a file; checking ..." 3
-      d_message "_ce_w: $_ce_w" 4
+      info_msg "$_ce_w is a file; checking ..."
+      notice_msg "_ce_w: $_ce_w"
       _ce_x="$(basename $_ce_w)"
-      d_message "  _ce_x = basename _ce_w: $_ce_x" 4
+      debug_msg "  _ce_x = basename _ce_w: $_ce_x"
       # find the one running on the host system
       _ce_y="$(which $_ce_w)"
-      d_message "  _ce_y = which _ce_w: $_ce_y" 4
-#      d_do '_ce_ysize=$(ls -al $_ce_y | awk "{print $5}"); message "  _ce_y size: $_ce_ysize"' 5
-      d_do '_ce_ysize=$(stat -c %s "$_ce_y"); message "  _ce_y size: $_ce_ysize"' 5
+      debug_msg "  _ce_y = which _ce_w: $_ce_y"
+      [ ! "$QUIET"] && d_do 'verbosity=7 _ce_ysize=$(stat -c %s "$_ce_y");  verbosigy=7 debug_msg "  _ce_y size: $_ce_ysize"' "$debug"
       # find the one in a *bin folder in initramfs
       # some, e.g. fsck might be links on initramfs - skip those
       readarray -d '' _ce_find < <(find ${SOURCES_DIR%/}/ -wholename '*bin*'  -and -name "$_ce_x" -print0)
       if [[ ${#_ce_find[@]} -eq 0 ]]; then
-        E_message "Component: ${LBon}$_ce_x ${BRon}NOT FOUND in initramfs"
+        error_msg "Component: ${LBon}$_ce_x ${BRon}NOT FOUND in initramfs"
         continue
       fi
       for _ce_z in "${_ce_find[@]}"; do  # this loop is just debugging output
         if [[ -L  $_ce_z ]] ; then
-          d_message "$_ce_z is a symbolic link in initramfs; skipping ..." 3
+          info_msg "$_ce_z is a symbolic link in initramfs; skipping ..."
           continue
         else
-          d_message "  _ce_z = find ${SOURCES_DIR%/}/ -type f -name $_ce_x | grep bin: $_ce_z" 4
-          d_do '_ce_zsize=$(stat -c %s "$_ce_z"); message "  _ce_z size: $_ce_zsize"' 5
+          debug_msg "  _ce_z = find ${SOURCES_DIR%/}/ -type f -name $_ce_x | grep bin: $_ce_z"
+          [ ! "$QUIET"] && d_do 'verbosity=7 _ce_zsize=$(stat -c %s "$_ce_z"); verbosity=7 debug_msg "  _ce_z size: $_ce_zsize"' "$debug"
           #--- this is the main output of this program ---
-          d_message "  abount to run cmp" 4
-          message_n "Component: ${LBon}$_ce_x"
+          debug_msg "  abount to run cmp"
+          notice_msg_n "Component: ${LBon}$_ce_x"
           cmp --silent $_ce_z $_ce_y
           handle_result $? "has not changed" "${BRon}has changed --> ${BMon}Rebuild your initramfs${Boff}"
         fi

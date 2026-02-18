@@ -11,7 +11,7 @@
 #   script is run, because the latter generates the BUILD file in ${SOURCES_DIR} that
 #   will be sourced here to instantiate the BUILD variable
 source GLOBALS
-# subsititure below for testing only
+### ***** subsititure below for testing only ***** ---
 #source GLOBALS.scratch_test
 
 # source my usual functions and formatting "shortcuts" (must be run from the MAKE_DIR)
@@ -21,13 +21,13 @@ source "${SOURCES_DIR}/BUILD"
 # set verbosity if it was not set externally
 [ -z "$verbosity" ] && verbosity=1
 
-d_message "make_image.sh Debug - dump config" 4
-d_message "BUILD: [ ${BUILD} ]" 4
-d_message "MAKE_DIR: [ ${MAKE_DIR} ]" 4
-d_message "SOURCES_DIR: [ ${SOURCES_DIR} ]" 4
+debug_msg "make_image.sh Debug - dump config"
+debug_msg "BUILD: [ ${BUILD} ]"
+debug_msg "MAKE_DIR: [ ${MAKE_DIR} ]"
+debug_msg "SOURCES_DIR: [ ${SOURCES_DIR} ]"
 
 img_ROOT="/"
-# subsititure below for testing only
+### ***** subsititure below for testing only ***** ---
 #img_ROOT="${MAKE_DIR%/}/scratch/"
 
 make_initramfs()
@@ -35,7 +35,8 @@ make_initramfs()
   # @note packs SOURCES_DIR into a compressed CPIO archive in /boot
 
   # if target file already exists, archive it to *.old
-  [ -f "${img_ROOT%/}/boot/initramfs-${BUILD}" ] && cp -v "${img_ROOT%/}/boot/initramfs-${BUILD}" "${img_ROOT%/}/boot/initramfs-${BUILD}.old"
+  [ -f "${img_ROOT%/}/boot/initramfs-${BUILD}" ] && \
+    cp -v "${img_ROOT%/}/boot/initramfs-${BUILD}" "${img_ROOT%/}/boot/initramfs-${BUILD}.old"
 
   find . -print0 | cpio --null -ov --format=newc | gzip -9 > "${img_ROOT%/}/boot/initramfs-${BUILD}"
 }
@@ -48,12 +49,12 @@ separator "Make initramfs Image"  "makeinitramfs-$BUILD"
 checkroot; checkboot;
 old_pwd="$PWD"
 if [ -d "${SOURCES_DIR}" ]; then
-    message_n "moving to SOURCES_DIR: [${SOURCES_DIR}]"
+    notice_msg_n "moving to SOURCES_DIR: [${SOURCES_DIR}]"
     cd "${SOURCES_DIR}"
     handle_result $? || die "failed to cd ${SOURCES_DIR}"
-    make_initramfs
+    make_initramfs    # call the function above
 else
     die "SOURCES_DIR [${SOURCES_DIR}] does not exist"
 fi
 cd "${old_pwd}"
-d_message "all done" 1
+notice_msg "all done"

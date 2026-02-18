@@ -5,15 +5,22 @@ checkroot
 checkboot
 
 #-----[ variables ]---------------------------------------------------------------
-keydev="/dev/sda1"
-root_vg="vg_rock5bplus6401"
-luks_partition_device="/dev/sdb2"
+keydev="/dev/disk/by-label/KEY"    # this is the partition we need/guard for (should protect both the .img and sda1)
 
-current_kernel="/boot/vmlinuz-6.12.63-gentoo-dist-hardened-joetoo"
+keydev_disk="qemu_usbkey.img"      # keydev image file for testing
+
+root_vg="vg_rock5bplus6401"        # this is the test usb|nvme stick
+
+luks_partition_device="/dev/sdb2"  # this is how gmki91 identifies the usb|nvme stick
+luks_disk="/dev/sdb"               # this is what I will try to pass to qemu so a parittion comes out on top of it
+
+#current_kernel="/boot/vmlinuz-6.12.63-gentoo-dist-hardened-joetoo"
+current_kernel="/boot/vmlinuz-6.12.68-gentoo-dist-hardened-joetoo"
 #initramfs_img="boot/initramfs-6.12.63-202602010135"
 initramfs_img="boot/initramfs.latest"
 
-q_verbosity=2
+#q_verbosity="$info"
+q_verbosity="$debug"
 
 #-----[ functions ]---------------------------------------------------------------
 
@@ -35,8 +42,8 @@ is_luks_safe() {
 #-----[ main script ]------------------------------------------------------------
 
 if is_keydev_safe && is_vg_safe && is_luks_safe; then
-  message "guardrails satisfied, starting qemu-system-x86_64 ..."
-  message "${BYon}use ${BRon}CTRL-a x ${BYon}to get back to the terminal${Boff}"
+  notice_msg "guardrails satisfied, starting qemu-system-x86_64 ..."
+  notice_msg "${BYon}use ${BRon}CTRL-a x ${BYon}to get back to the terminal${Boff}"
   echo
   sh_countdown 2
   # use qemu-system-x86_64 to emulate the boot environment for initramfs testing
@@ -49,9 +56,9 @@ if is_keydev_safe && is_vg_safe && is_luks_safe; then
     -kernel "${current_kernel}"
     -initrd "${initramfs_img}"
     -append "console=ttyS0 root=/dev/mapper/${root_vg}-root verbosity=${q_verbosity}"
-    -drive "file=${luks_partition_device},format=raw,if=ide,cache=none"
+    -drive "file=${luks_disk},format=raw,if=ide,cache=none"
     -device "usb-ehci,id=usb"
-    -drive "file=${keydev},format=raw,if=none,id=usbkey,readonly=on"
+    -drive "file=${keydev_disk},format=raw,if=none,id=usbkey,readonly=on"
     -device "usb-storage,bus=usb.0,drive=usbkey"
     -nographic
 )
@@ -61,5 +68,5 @@ if is_keydev_safe && is_vg_safe && is_luks_safe; then
   "${qemu_cmd[@]}" | tee boot/qemu_boot.log
   stty sane  # restore terminal state to sane defaults in case command crashed
 else
-  E_message "error: ensure /dev/sda1 and vg_rock5bplus6401 are not in use"
+  error_msg "error: ensure /dev/sda1 and vg_rock5bplus6401 are not in use"
 fi

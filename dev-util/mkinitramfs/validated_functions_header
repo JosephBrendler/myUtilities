@@ -16,87 +16,20 @@ assign_volume() {
     _av_prefix="${_av_volume_name%_volume}"     # e.g. assign root, from root_volume (POSIX strip from end)
     eval "_av_volume=\"\$${_av_volume_name}\""
     if [ -z "${_av_volume}" ] ; then
-        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
-        d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
+        info_msg "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
+        info_msg_n "${_av_prefix} _av_volume_name not assigned, scanning ..."
         _av_volume="/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
 ### substitute for testing only (ver 10.0+ changed from deselecting gmki91 to SELECTING test device)
-#        d_message "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep ${_av_prefix} | awk '{print $2"-"$1}')" 3
-#        d_message_n "${_av_prefix} _av_volume_name not assigned, scanning ..." 1
+#        info_msg "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep ${_av_prefix} | awk '{print $2"-"$1}')"
+#        info_msg_n "${_av_prefix} _av_volume_name not assigned, scanning ..."
 #        _av_volume="/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep $_av_prefix | awk '{print $2"-"$1}')"
         eval "${_av_prefix}_volume=$_av_volume"
         ret=$?
-        d_handle_result $ret "$_av_volume" "failed to assign _av_volume" 1
+        info_handle_result $ret "$_av_volume" "failed to assign _av_volume"
     else
-        message "No action. ${_av_prefix} volume already assigned [$_av_volume]"
+        info_msg "No action. ${_av_prefix} volume already assigned [$_av_volume]"
     fi
     unset -v _av_prefix _av_volume_name _av_volume
-    return $ret
-}
-
-unlock_devices() {
-    ret=0
-    # for version 4.x+, this is a complete re-write of the unlocking procedure.
-    # The unlock method has already been determined, and the script will now "scan" for LUKS
-    # devices and automatically use the selected method (key vs prompt) to unlock all of them
-    # for version 10.0+, get_luks_edev_name is in script_header_joetoo and uses global $luks_partition_device
-    [ -z "$1" ] && die "error: no arg; unlock_device requires \$1 unlock_method"
-    _ud_method=$1;
-    luks_partition_device="";
-
-    # securely read the passphrase with POSIX ask_pass function if needed
-    if [ "$_ud_method" = "prompt" ]; then _ud_pass=$(ask_pass "Enter LUKS passphrase: "); fi
-
-### substitute for testing only (ver 10.0+ changed from deselecting gmki91 to SELECTING test device)
-#      for luks_partition_device in $(blkid | grep -i luks | grep 'UUID="b3c2b95f-1477-4433-b653-310e03dbffc2"' |cut -d':' -f1 )
-    for luks_partition_device in $(blkid | grep -i luks | cut -d':' -f1)
-    do
-        d_message "calling get_luks_edev_name \"$luks_partition_device\"" 3
-        d_message "edev: $edev" 3
-        # use get_luks_edev_name in script_header_joetoo to id each luks_partition_device /dev/sdxn with corresponding name edxn
-        get_luks_edev_name "$luks_partition_device"
-        case "$_ud_method" in
-            "prompt")
-                # this is no longer a f-ing "indented" heredoc '-' tells it to ignore leading TABs (not spaces)
-                # so the next two lines MUS begin with tabs
-                message "About to run cryptsetup luksOpen ${luks_partition_device} ${edev} with passphrase provided ..."
-#		cryptsetup luksOpen "${luks_partition_device}" "${edev}" <<-EOF
-cryptsetup luksOpen "${luks_partition_device}" "${edev}" <<EOF
-$_ud_pass
-EOF
-                _ud_result=$?
-                handle_result "$_ud_result" "Unlocked ${luks_partition_device} ${edev} with passphrase provided" "mycmd failed. Dropping to a shell ..."
-                if [ ! "$_ud_result" -eq 0 ]; then
-                    ret=1
-                    d_do sh_countdown $(( $init_wait * 5 )) 4
-                    [ ! "${init_lock_down}" ] && rescue_shell
-                fi;
-                ;;
-            "key")
-                # passdevice already mounted,
-                # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
-                # unmount the passdevice when we are done with it
-                _ud_keyfile="${init_passdevice_mount_point%/}/${init_keyfile}"
-                message "About to execute command [ cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${luks_partition_device} ${edev} ]"
-                cryptsetup -d $(echo "${_ud_keyfile}") -S 1 luksOpen "${luks_partition_device}" "${edev}"
-                _ud_result=$?
-                handle_result "$_ud_result"
-                if [ "$_ud_result" -eq 0 ]; then
-                    message "Unlocked ${luks_partition_device} ${edev} with key found at $(echo ${init_passdevice_mount_point}${init_keyfile})"
-                else  # cryptsetup luksOpen with key failed
-                    ret=1
-                    _ud_msg="${BRon}Error: Could not unlock ${BYon}${luks_partition_device} ${edev}"
-                    _ud_msg="${_ud_msg} ${BRon}with key found at ${BMon}${_ud_keyfile}${Boff}"
-                    E_message "${_ud_msg}"
-                    if [ ! "${init_lock_down}" ]; then
-                        E_message "${BRon}Dropping to a shell${Boff}"
-                        sh_countdown $(( $init_wait * 5 ))
-                        rescue_shell
-                    fi
-                fi
-                ;;
-        esac
-    done
-    unset -v _ud_method _ud_pass _ud_keyfile
     return $ret
 }
 
@@ -109,7 +42,7 @@ display_logical_volumes() {
     vgs || ret=1
     separator "${PN}-${BUILD}" "(available logical volumes)"
     lvs || ret=1
-    d_do sh_countdown $init_wait 4
+    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown '$init_wait' "$debug"
     return $ret
 }
 
@@ -119,30 +52,30 @@ mount_new_root_and_prepare_to_switch_root() {
     # previous version re-scanned here, but that now occurs after unlock
     # note: script_header_joetoo v0.2.0+ changed arg sequence for color()
     # color() - $1: FG code (30-37, 39); $2: Bold (0/1); $3: BG code (40-47, 49
-    d_message "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${root_fs} on $root_volume${Boff}" 1
+    info_msg "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${root_fs} on $root_volume${Boff}"
     fsck -t "${root_fs}" -p "$root_volume" 2>/dev/null
     result=$?
-    handle_result $result '' "failed with exit code [$result]"
+    info_handle_result $result '' "failed with exit code [$result]"
     [ $result -ge 4 ] && die "fsck failure ($result); cannot continue"
-    d_message "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${usr_fs} on $usr_volume${Boff}" 1
+    info_msg "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${usr_fs} on $usr_volume${Boff}"
     fsck -t "${usr_fs}" -p "$usr_volume" 2>/dev/null
     result=$?
-    handle_result $result '' "failed with exit code [$result]"
+    info_handle_result $result '' "failed with exit code [$result]"
     [ $result -ge 4 ] && die "fsck failure ($result); cannot continue"
     # give more time to read display if debugging
-    d_do sh_countdown $init_wait 4
-    d_do 'tree -d' 5
+    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown '$init_wait' "$debug"
+    [ ! "$QUIET" ] && d_do verbosity=7 'tree -d' "$debug"
     # mount root - drop to shell if not locked down
-    d_message_n "Mounting new root volume ..." 1
+    info_msg_n "Mounting new root volume ..."
     mount -r -t "${root_fs}" "${root_volume}" /newroot 2>/dev/null ; _mnr_result=$?
-    d_handle_result "$_mnr_result" '' "failed to mount root volume" 1
+    info_handle_result "$_mnr_result" '' "failed to mount root volume"
     if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
         ret=1
         rescue_shell "Failed to mount root volume"
     fi
-    d_message_n "Mounting new usr volume ..." 1
+    info_msg_n "Mounting new usr volume ..."
     mount -t "${usr_fs}" -o defaults,noatime "$usr_volume" /newroot/usr ; _mnr_result=$?
-    d_handle_result "$_mnr_result" '' "failed to mount usr volume" 1
+    info_handle_result "$_mnr_result" '' "failed to mount usr volume"
     if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
         ret=1
         rescue_shell "Failed to mount usr volume"
@@ -153,18 +86,18 @@ mount_new_root_and_prepare_to_switch_root() {
 
     # clean up in preparation to actually switch root - with retry if needed
     for _mnr_fs in /dev/pts /dev /sys /proc; do
-        d_message_n "umount ${_mnr_fs} ..." 1
+        info_msg_n "umount ${_mnr_fs} ..."
         # Try standard unmount
         umount "${_mnr_fs}"
         _mnr_result=$?
         # if standard umount fails, try a "lazy" unmount (-l)
         # This is often necessary if a process has a lingering handle
         if [ $_mnr_result -ne 0 ]; then
-            d_message " (retrying lazy umount...)" 2
+            info_msg " (retrying lazy umount...)"
             umount -l "${_mnr_fs}"
             _mnr_result=$?
         fi
-        d_handle_result "$_mnr_result" '' "Critical error: Could not unmount ${_mnr_fs}" 1
+        info_handle_result "$_mnr_result" '' "Critical error: Could not unmount ${_mnr_fs}"
 
         # fatal exit -- if it's still mounted, switch_root WILL fail.
         if [ $_mnr_result -ne 0 ]; then
@@ -177,7 +110,7 @@ mount_new_root_and_prepare_to_switch_root() {
     done
 
     # give more time to read display if debugging
-    d_do sh_countdown $init_wait 4
+    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown "$init_wait" "$debug"
     unset -v _mnr_result _mnr_fs
     return $ret
 }
@@ -194,12 +127,12 @@ validate_volume_and_assign_fs() {
     #   (2) begins with a numeral are invalid variable names in a POSIX shell
     case "$_vva_volume_name" in
         *[![:alnum:]_]* | [0-9]*)
-            E_message "volume_name [$_vva_volume_name] is not a valid POSIX variable name"
+            error_msg "volume_name [$_vva_volume_name] is not a valid POSIX variable name"
             unset -v _vva_volume_name ; return 1 ;;
     esac
     # POSIX indirect variable assignment
     eval "_vva_volume=\"\$${_vva_volume_name}\""
-    message "validating volume ${_vva_volume_name} [${_vva_volume}]"
+    info_msg "validating volume ${_vva_volume_name} [${_vva_volume}]"
 
     # caution - an unassigned volume_name (null $my_volume) will evaluate true for [ -b ${my_volume} ]
     if [ -b "${_vva_volume}" ]; then
@@ -208,16 +141,16 @@ validate_volume_and_assign_fs() {
         # e.g. if _vva_volume_name = root_volume then _vva_fs_name = root_fs
         _vva_fs_name=$( printf '%s' "$_vva_volume_name" | sed 's|volume|fs|')
         # get only the filesystem type and assign it directly to a variable
-        d_message_n "looking up fs type for ${_vva_volume}" 3
+        info_msg_n "looking up fs type for ${_vva_volume}"
         # capture raw blkid output (since BusyBox -o value may fail)
         _vva_raw_info=$(blkid "${_vva_volume}")
         # use awk to find the field starting with TYPE= and strip the quotes
         _vva_fs_type=$(printf '%s' "$_vva_raw_info" | awk -F'TYPE="' '{print $2}' | awk -F'"' '{print $1}')
-        d_handle_result $? "$_vva_fs_type" "failed" 3
+        info_handle_result $? "$_vva_fs_type" "failed"
         # now assign the type to the fs name e.g. root_fs=ext4
-        d_message_n "performing indirect assignment ${_vva_fs_name}=\"${_vva_fs_type}\"" 3
+        info_msg_n "performing indirect assignment ${_vva_fs_name}=\"${_vva_fs_type}\""
         eval "${_vva_fs_name}=\"${_vva_fs_type}\""
-        d_handle_result $? '' '' 3
+        info_handle_result $? '' ''
     else
         _vva_EXISTS=$FALSE
         printf '%s' " (${BRon}not a blockdev${Boff})"
@@ -225,13 +158,13 @@ validate_volume_and_assign_fs() {
     fi
     # keep this check/message outside the if-then-else above, so it can return clean status on the same line
     if [ $_vva_EXISTS ];    then
-        d_message "    ${BGon}Valid device${Boff} [${_vva_volume}] type [${TYPE}] ${BGon}Exists${Boff}" 3
+        info_msg "    ${BGon}Valid device${Boff} [${_vva_volume}] type [${TYPE}] ${BGon}Exists${Boff}"
     else
-        E_message "    ${BRon}invalid device [${_vva_volume}]${Boff}"
+        error_msg "    ${BRon}invalid device [${_vva_volume}]${Boff}"
         _vva_volcase="$(printf '%s' ${_vva_volume_name} | sed 's|_volume||')"
         case "${_vva_volcase}" in
-            "root"|"usr" ) d_message "     -- will scan for ${_vva_volcase} volume later, in unlocked volumes" 3 ;;
-            * ) d_message "    -- invalid case [$_vva_volcase]" ;;
+            "root"|"usr" ) info_msg "     -- will scan for ${_vva_volcase} volume later, in unlocked volumes" ;;
+            * ) info_msg "    -- invalid case [$_vva_volcase]" ;;
         esac
     fi
     unset -v _vva_volume_name _vva_fs_name _vva_volume _vva_fs_type _vva_answer _vva_EXISTS
@@ -241,7 +174,7 @@ validate_volume_and_assign_fs() {
 
 process_cmdline() {
   ret=0
-  echo "processing cmdline ..."
+  notice_msg "Processing cmdline ..."
   _pc_line_out=""
   set -- ${CMDLINE}
   while [ $# -gt 0 ]; do
@@ -255,19 +188,19 @@ process_cmdline() {
     case "$_pc_var" in
       "verbosity" )
         export "${_pc_entry}" || die "failed to export verbosity"
-        message "cmdline override: [${_pc_entry}]]"
+        info_msg "cmdline override: [${_pc_entry}]]"
       ;;
       "root" )
         export root_volume="${_pc_val}" || die "failed to export root_volume"
-        message "cmdline override: [root_volume=${_pc_val}]"
+        info_msg "cmdline override: [root_volume=${_pc_val}]"
         _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
       "usr" )
         export usr_volume="${_pc_val}" || die "failed to export usr_volume"
-        message "cmdline override: [usr_volume=${_pc_val}]"
+        info_msg "cmdline override: [usr_volume=${_pc_val}]"
       ;;
       * )
-        d_message "cmdline entry [${_pc_entry}] ignored by initramfs" 2
+        info_msg "cmdline entry [${_pc_entry}] ignored by initramfs"
         _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
     esac
@@ -275,97 +208,10 @@ process_cmdline() {
   done
   # reset the CMDLINE without the initramfs-peculiar entries
   export CMDLINE="${_pc_line_out}"
+  # if not dead from a die command above, then success
+  notice_msg_n "Done processing cmdline; result:"
+  handle_result 0 "exported \$CMDLINE" ""
   unset -v _pc_line_out _pc_entry _pc_var _pc_val
   return $ret
-}
-
-select_keying_device() {
-    # go through the list of devices presented as argv -- select the first one that
-    #   has a valid type, actually exists, mounts successfully, and contains a key,
-    #   else fail upon exhaustion of the list
-    # If select_keying_device successfully validates a keying device and keyfile,
-    #   it effectively transitions the system from a "searching" state
-    #   to an "authorized" state for LUKS decryption
-    # assign global unlock_method
-    #
-    ret=0
-    _skd_HAS_KEY=$FALSE
-    # set the input string (list of candidate keying devices) so we can loop thru them safely
-    set -- "$@"
-    _skd_candidate_key_device=""
-
-    # careful: this loop runs for every candidate in the list - it can take a long time with several second delays in each pass
-    _skd_count=1
-    while [ $# -gt 0 ]; do
-        _skd_candidate_key_device="$1"
-        # use get_luks_keyfile to find and mount the device if possible
-        # it returns 0: success; 1: invalid; 2: mount failed; 3: has key failed
-        # it reads global crypt_keydev_mountpoint and exports keyfile
-
-        message_n "assigning crypt_keydev_mountpoint = $init_passdevice_mount_point"
-        crypt_keydev_mountpoint="$init_passdevice_mount_point"
-        handle_result $? "assigned" "failed" || die "failed to assign crypt_keydev_mountpoint = \$init_passdevice_mount_point"
-
-        message "calling get_luks_keyfile ${_skd_candidate_key_device}"
-        get_luks_keyfile "${_skd_candidate_key_device}"
-        _skd_result=$?
-        handle_result $_skd_result "" "failed with exit code [$_skd_result]"
-        # check for the actual keyfile
-        if [ $_skd_result -eq 0 ]; then
-          _skd_HAS_KEY=$TRUE
-          break # done - we have what we came for
-        else
-          # un-mount if it got mounted
-          if [ "$_skd_result" -eq 3 ]; then
-            message_n "un-mounting candidate that did not have keyfile"
-            umount "${crypt_keydev_mountpoint}" >/dev/null 2>&1
-            handle_result $? "un-mounted" "failed" || die "failed to umount ${crypt_keydev_mountpoint}"
-            shift  # go to next candidate device in list
-          fi  # mounted but no key
-        fi  # get_luks_keyfile result
-    done
-    # to leave the loop above, we either --
-    #    (a) found a valid extant device, mounted it and confirmed it contains a key (_skd_HAS_KEY is now "true"), or
-    #    (b) exhausted the init_passdevice_list of devices authorized to be used and found none of them
-    #        on this system (in which case _skd_HAS_KEY is still "false")
-    if [ $_skd_HAS_KEY ]; then
-        unlock_method="key"
-        message "Keystore: [$keyfile] exists - using automatic keying method..."
-        ret=0
-    else
-        unlock_method="prompt"
-        E_message "${BRon}Keystore: [$keyfile] does not exist - reverting to prompt method...${Boff}"
-        ret=1
-    fi
-    unset -v _skd_HAS_KEY _skd_candidate_key_device _skd_result
-    return $ret
-}
-
-get_keyfile_and_unlock_method() {
-    ret=0
-    separator "${PN}-${BUILD}" "(get keyfile and unlock method)"
-    d_message_n "Checking if keyfile was specified ..." 2
-    if [ ! -z "$init_keyfile" ]; then _sku_KF=$TRUE; else _sku_KF=$FALSE; fi
-    [ $_sku_KF ] ; handle_result "$?" "yes" "no"
-
-    d_message_n "Checking if passdevice list was specified ..." 2
-    if [ ! -z "${init_passdevice_list}" ]; then _sku_PDL=$TRUE; else _sku_PDL=$FALSE; fi
-    [ $_sku_PDL ] ; handle_result "$?" "yes" "no"
-
-    if { [ $_sku_KF ] && [ $_sku_PDL ] ; }  ; then
-        # pause to give mdev a chance to recognize devices
-        message "Waiting ${init_mdev_wait} more seconds, per init.conf, to give mdev a chance to recognize hardware..."
-        sh_countdown $init_mdev_wait
-        # this function is the meat of this
-        select_keying_device ${init_passdevice_list}
-        # note that if this succeded, it will have set unlock_method="key"
-        # and it will have assigned the global config variable "init_passdevice"
-    else
-        unlock_method="prompt"
-    fi
-    d_message "${BWon}Result: ${LBon}keyfile = ${Mon}[ $keyfile ]${Boff}" 2
-    d_message "${BWon}Result: ${LBon}unlock_method = ${Mon}[ $unlock_method ]${Boff}" 2
-    unset -v _sku_KF _sku_PDL
-    return $ret
 }
 

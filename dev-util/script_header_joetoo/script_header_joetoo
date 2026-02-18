@@ -3307,7 +3307,19 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
   # handle all cases as valid until examined further below
   debug_handle_result 0 "${Boff}${Mon}${_glk_crypt_keydev_type}" ""
 
-  # if _glk_crypt_keydev is not mounted, try to mount it
+  # check if there actually is such a device in the system
+  case "$_glk_crypt_keydev_type" in
+    "devicename" ) [ -b "$_glk_crypt_keydev" ] ; _glk_result=$? ;;
+    "UUID"       ) blkid | grep -q "UUID=\"$_glk_crypt_keydev\"" ; _glk_result=$? ;;
+    "LABEL"      ) blkid | grep -q "LABEL=\"$_glk_crypt_keydev\""; _glk_result=$? ;;
+  esac
+  if [ "$_glk_result" -eq 0 ]; then
+    debug_msg "crypt_keydev [$_glk_crypt_keydev] is of type [$_glk_crypt_keydev_type] and exists"
+  else
+    debug_msg "crypt_keydev [$_glk_crypt_keydev] is of type [$_glk_crypt_keydev_type] but there is no such device"
+    return 2
+  fi
+  # if we got here, it does exist in the system, so if _glk_crypt_keydev is not mounted, try to mount it
   # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
   # check /proc/mounts directly as the source of truth
   debug_msg_n "checking if ${_glk_crypt_keydev} is mounted"
@@ -3320,12 +3332,6 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
       "devicename" ) mount "${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
       "UUID"       ) mount UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
       "LABEL"      ) mount LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      * )
-        debug_echo_msg " (${BRon}failed${Boff})"
-        error_msg "invalid _glk_crypt_keydev"
-        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
-        return 1  # invalid type
-        ;;
     esac
     case "$_glk_result" in
       0 ) debug_handle_result 0 "mounted" "" ;;
@@ -3336,12 +3342,12 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
     esac
     if [ ! "$_glk_result" -eq 0 ]; then
         unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
-        return 2    # mount failure
+        return 3    # mount failure
     fi  # mount failure
   fi  # mounted ?
   debug_msg_n "looking for keyfile"
   [ -f "${_glk_mnt_fixed}/crypt/dat" ]
-  debug_handle_result $? "found" "not found" || return 3    # has key check failure
+  debug_handle_result $? "found" "not found" || return 4    # has key check failure
   # set keyfile pathname
   export keyfile="${_glk_mnt_fixed}/crypt/dat"
   unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
@@ -3391,19 +3397,29 @@ _maybe_select_keying_device() {
         _mskd_result=$?
         debug_msg_n "Done with _get_luks_keyfile; result:"
         debug_handle_result $_mskd_result "keyfile: $keyfile" "failed with exit code [$_mskd_result]"
+        d_do '
+          case "$_mskd_result" in
+            0 ) debug_msg "(debug) exit code [$_mskd_result] means \"success\"" ;;
+            1 ) debug_msg "(debug) exit code [$_mskd_result] means \"no device identified in call\"" ;;
+            2 ) debug_msg "(debug) exit code [$_mskd_result] means \"device does not exist in the system\"" ;;
+            3 ) debug_msg "(debug) exit code [$_mskd_result] means \"device exists, but mount failed\"" ;;
+            4 ) debug_msg "(debug) exit code [$_mskd_result] means \"device exists, mounted, but did not have key\"" ;;
+            * ) debug_msg "(debug) exit code [$_mskd_result] means \"invalid exit code\"" ;;
+          esac
+        ' "$debug"
         # check for the actual keyfile
         if [ $_mskd_result -eq 0 ]; then
           _mskd_HAS_KEY=$TRUE
           break # done - we have what we came for
         else
-          # un-mount if it got mounted
-          if [ "$_mskd_result" -eq 3 ]; then
+          # un-mount if it got mounted but did not have the key
+          if [ "$_mskd_result" -eq 4 ]; then
             debug_msg_n "un-mounting candidate that did not have keyfile"
             umount "${crypt_keydev_mountpoint}" >/dev/null 2>&1
             debug_handle_result $? "un-mounted" "failed" || die "failed to umount ${crypt_keydev_mountpoint}"
-            shift  # go to next candidate device in list
           fi  # mounted but no key
         fi  # get_luks_keyfile result
+        shift  # go to next candidate device in list
     done
     # to leave the loop above, we either --
     #    (a) found a valid extant device, mounted it and confirmed it contains a key (_mskd_HAS_KEY is now "true"), or
@@ -3477,8 +3493,10 @@ unlock_luks_devices()
     [ $# -eq 0 ] && \
         { error_msg "unlock_luks_devices requires a non-emply device list"; return 1; }
 
+    debug_msg "(debug) in unlock_luks_devices with \$2: [$@]"
+
     # determine unlock_method
-    notice_msg "Determining unlock method"    
+    notice_msg "Determining unlock method"
     _get_unlock_method
     notice_msg_n "Done determining unlock method:"
     handle_result $? "method: $unlock_method" ""
@@ -3494,6 +3512,8 @@ unlock_luks_devices()
     while [ $# -gt 0 ]; do
         _ulds_device="$1"
         notice_msg "Unlocking device: $_ulds_device"
+        debug_msg "(debug) unlock_method: $unlock_method"
+        debug_msg "(debug) _ulds_device: $_ulds_device"
         _unlock_device "$unlock_method" "$_ulds_device" ; _ulds_result=$?
         notice_msg_n "Done unlocking device; result:"
         handle_result $_ulds_result "" ""
