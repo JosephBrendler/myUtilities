@@ -31,36 +31,41 @@
 #
 # see also https://www.raspberrypi.com/documentation/computers/linux_kernel.html
 #
+# 20260218 - ported to new joetoo cli framework
 
 #---[ execute setup and initialization, as required ]-------------------------
 source /usr/sbin/script_header_joetoo
 
 # source make.conf b/c we can't use e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
-d_message_n "sourcing make.conf to setting PORTDIR, PKGDIR, DISTDIR ..." 1
-source /etc/portage/make.conf ; d_right_status $? 1
+notice_msg_n "sourcing make.conf to setting PORTDIR, PKGDIR, DISTDIR ..."
+source /etc/portage/make.conf ; right_status $?
 
-# default configuration 
+# default configuration
 # (config at /etc/${PN}.conf will overwrite/override this, and cmdline will override that )
-VERBOSE=$TRUE
-verbosity=1
+[ -z "$verbosity" ] && verbosity=5
 
-d_message_n "assigning PN = $(basename $0)" 1
-PN=$(basename $0) || die "failed to assign PN"
-d_right_status $TRUE 1
+notice_msg_n "assigning PN"
+PN="${0##*/}"
+handle_result $? "$PN" "" || die "failed to assing PN"
 
 # identify CONF_DIR (normally /etc/${PN}/${PN}.conf)
-[[ -e /etc/${PN}/${PN}.conf ]] && CONF_DIR="/etc/${PN}" || die "CONF_DIR [/etc/${PN}/${PN}.conf] does not exist"
+notice_msg_n "looking for ${PN}.conf in /etc/${PN}"
+[[ -e "/etc/${PN}/${PN}.conf" ]] && CONF_DIR="/etc/${PN}"
+handle_result $? "CONF_DIR: $CONF_DIR" "" || die "CONF_DIR [/etc/${PN}/${PN}.conf] does not exist"
 
 # source BUILD and BPN, then source script_header_joetoo_extended
 # ( so the latter can get local.usage, local.cmdline_arguments, etc. which it locates at /etc/${BPN}/ )
-d_message_n "sourcing BUILD and BPN" 1
-source ${CONF_DIR%/}/BPN || die "failed to source BPN"
-source ${CONF_DIR%/}/BUILD || die "failed to source BUILD"
-debug_do 'echo -e -n " (BUILD: $BUILD ; BPN: $BPN)"' 1
-d_right_status $TRUE 1
-d_message_n "sourcing /usr/sbin/script_header_joetoo_extended" 1
-source /usr/sbin/script_header_joetoo_extended || die "failed to source /usr/sbin/script_header_joetoo_extended"
-d_right_status $TRUE 1
+notice_msg_n "sourcing BUILD"
+source "${CONF_DIR%/}/BUILD"
+handle_result $? "$BUILD" "" || die "failed to source BUILD"
+
+notice_msg_n "sourcing BPN"
+source "${CONF_DIR%/}/BPN"
+handle_result $? "$BPN" "" || die "failed to source BPN"
+
+notice_msg_n "sourcing /usr/sbin/script_header_joetoo_extended"
+source /usr/sbin/script_header_joetoo_extended
+handle_result $? "" "" || die "failed to source /usr/sbin/script_header_joetoo_extended"
 
 #-----[ edit this section to set default values ]------------------------------------
 # ( override later with .conf and/or command line )
@@ -82,24 +87,27 @@ sshkey_ecdsa="/home/${user}/.ssh/id_ecdsa"
 sshkey_ed25519="/home/${user}/.ssh/id_ed25519"
 package_category_dir="/home/${user}/joetoo/sys-kernel"
 github_ebuild_repo_credentials="/home/${user}/joetoo/.git/.credentials"
-host_dir=${build_root%/}/"domU_kernel_images"
-INTERACTIVE=${FALSE}
-RESUME=${FALSE}
+host_dir="${build_root%/}/domU_kernel_images"
+INTERACTIVE="$FALSE"
+RESUME="$FALSE"
 answer=""
 newanswer=""
 SSH_AUTH_SOCK="/home/${user}/.ssh/ssh-agent.sock"
 joetoo_kernel_webserver="raspi56403.brendler"
 
 #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
-message_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
-source ${CONF_DIR%/}/${PN}.conf || die "failed to source ${CONF_DIR%/}/${PN}.conf"
-right_status $TRUE
+
+notice_msg_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
+source "${CONF_DIR%/}/${PN}.conf"
+handle_result $? "" "" || die "failed to source ${CONF_DIR%/}/${PN}.conf"
 
 #  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
-message "${BMon}About to source ${BGon}setnodistpath${Boff} ..."
-source /usr/bin/setnodistpath || die "failed to source /usr/bin/setnodistpath"
-echo -e "   ${BMon}(readable) PATH includes: ${BWon}${PATH}${Boff}" | sed 's|:|\ :\ |g'
-echo
+notice_msg_n "$sourcing ${BGon}setnodistpath${Boff} ..."
+source /usr/bin/setnodistpath
+handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
+
+notice_msg_n "   ${BMon}(readable) PATH includes:"
+echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
 
 # identify local variables by section, to make it easier to display configuration
 # do this after sourcing config so some variables can be optionally excluded from varlist
@@ -141,19 +149,19 @@ boot_dir="${distrib_dir%/}/boot"
 module_dir="<TBD>"  # to be set after make modules_install
 
 # create the build directory structure if it does not exist (-p makes parents)
-[[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown ${user}:${user} "${build_root}"
-[[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown ${user}:${user} "${config_dir}"
-[[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown ${user}:${user} "${build_dir}"
-[[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown ${user}:${user} "${model_dir}"
+[[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown "${user}":"${user}" "${build_root}"
+[[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown "${user}":"${user}" "${config_dir}"
+[[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown "${user}":"${user}" "${build_dir}"
+[[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown "${user}":"${user}" "${model_dir}"
 
 # create the staging directory structure if it does not exist
-[[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown ${user}:${user} "${distrib_dir}"
-[[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown ${user}:${user} "${lib_dir}"
-[[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown ${user}:${user} "${boot_dir}"
+[[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown "${user}":"${user}" "${distrib_dir}"
+[[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown "${user}":"${user}" "${lib_dir}"
+[[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown "${user}":"${user}" "${boot_dir}"
 [[ "${model}" == "domU" ]] && \
-[[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown ${user}:${user} "${host_dir}"
+[[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown "${user}":"${user}" "${host_dir}"
 
-# set up the parts of the make command 
+# set up the parts of the make command
 # NOTE: this does not set the environment variables directly, it creates a string that will do so when evaluated as (part of) a command
 make_prefix="MAKEOPTS="
 make_prefix+="\"${makeopts}\" "
@@ -178,14 +186,14 @@ manual_prefix="${make_prefix} ${make_where} ${make_arch}"
 make_me="${make_model}"
 
 # get and set kernel version number and image name
-old_dir=$PWD
+old_dir="$PWD"
 # if this is the first-run for this model, sources_dir won't exist, so assign a placeholder for kernelversion
 # after assigning/displaying config, sanity_check() will provide README-instructions
 # instead of running command_sequence
 if [[ ! -e "${sources_dir}" ]] ; then
     version_number="<TBD>"
 else
-    message "Old pwd: ${old_dir}" && cd ${sources_dir%/} && message "Now working in $PWD"
+    notice_msg "Old pwd: ${old_dir}" && cd "${sources_dir%/}" && notice_msg "Now working in $PWD"
     version_number=$(eval ${make_me} -s kernelversion)
     # domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
     #   but for domU, I don't want the "-gentoo" part, so strip it
@@ -195,7 +203,7 @@ if [ "${model}" == "domU" ] ; then
     version_number="${version_number/-gentoo/}"
 fi
 # build the kernel_image_name
-d_message "version_number: ${version_number}" 3
+info_msg "version_number: ${version_number}"
 kernel_image_name="${kernel_basename}-${version_number}"
 
 # build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
@@ -204,7 +212,7 @@ ebuild_dir="${package_category_dir%/}/${kernel_basename}"
 publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
 publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
 
-d_message "done setup and auto-configure" 3
+notice_msg "done setup and auto-configure"
 
 # 20240724 - removed 'publish_ebuild' from sequence; now using consolidated linux-joetoo-kernelimage.${PV}.ebuild
 #            (found that the consolidated ebuild doesn't work until ALL of the candidate kernels are actually built)
@@ -212,103 +220,112 @@ d_message "done setup and auto-configure" 3
 # 20250507 - dropped dom0 build (use gentoo-kernel w savedconfig instead)
 # 20250920 - started rewrite to use script_header_joetoo_extended run_sequence and cmdline processing
 # 20250928 - started migration of joetoo-kernels from github to joetoo_kernel_webserver
-command_sequence=(
-'backup_config'
-'make_mrproper'
-'cp -v ${config_dir%/}/.config.bak ${model_config}'
-'warn_oldconfig'
-'eval ${make_me} oldconfig'
-'eval ${make_me} prepare'
-'eval ${make_me} menuconfig'
-'save_new_config'
-'eval ${make_me}'
-'clean_distrib_dirs'
-'install_kernel'
-'install_modules'
-'install_dtbs'
-'make_tarball'
-'publish_tarball'
-'publish_ebuild'
-)
-
-msg1_sequence=(
-'back-up config'
-'clean with make mrproper'
-'restore backup .config file'
-'warn about oldconfig'
-'do eval ${make_me} oldconfig'
-'do eval ${make_me} prepare'
-'do eval ${make_me} menuconfig'
-'save new config'
-'do eval ${make_me}'
-'clean output directories'
-'install the kernel in package'
-'install modules in package'
-'install dtbs in package'
-'make package tarball'
-'publish package tarball'
-'publish package ebuild'
-)
-
-msg2_sequence=(
-'backing-up config'
-'cleaning with make mrproper'
-'restoring backup .config file'
-'warning about oldconfig'
-'doing eval ${make_me} oldconfig'
-'doing eval ${make_me} prepare'
-'doing eval ${make_me} menuconfig'
-'saving new config'
-'doing eval ${make_me}'
-'cleaning output directories'
-'installing the kernel in package'
-'installing modules in package'
-'installing dtbs in package'
-'making package tarball'
-'publishing package tarball'
-'publishing package ebuild'
-)
-d_message "done setting command sequence" 3
-
-# set default starting and stopping step (override w cmdline)
-starting_step=0
-stopping_step=$(( ${#command_sequence[@]} -1 ))
+# 20260218 - converted to new joetoo cli and messaging framework
 
 #-----[ functions ]--------------------------------------------------
 
+initialize_command_sequence() # (POSIX) initialize command sequence for joetoo cli framework
+{ ics_ret=0
+  _ics_FLAGGED=$FALSE
+  info_msg_n "creating tempfile for command sequnce"
+  cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
+  info_handle_result $? "$cmd_seq_file" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "setting trap to remove tempfile on EXIT"
+  trap 'rm -f "$cmd_seq_file"' EXIT
+  info_handle_result $? "trap set" ''  || _ics_FLAGGED=$TRUE
+
+  notice_msg_n "initializing command sequence"
+  num_cmds=0   # global variable holding the length of the sequence
+# heredoc needs to be on the left edge; no leading whitespace
+# initialize/clear the command sequence file
+# format for each line of heredoc content is:
+#   command_string${US}description_string
+#   where: command_string is POSIX executable
+#   and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
+#   and:   description_string is a human-readable description of the command
+while IFS= read -r _ics_entry; do
+      [ -z "$_ics_entry" ] && continue
+      # write directly to the file instead of using  ' set -- "$@" '
+      printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
+      num_cmds=$(( num_cmds + 1 ))
+done <<EOF
+backup_config${US}back-up config
+make_mrproper${US}clean with make mrproper
+cp -v ${config_dir%/}/.config.bak ${model_config}${US}restore backup .config file
+warn_oldconfig${US}warn about oldconfig
+eval ${make_me} oldconfig${US}do eval ${make_me} oldconfig
+eval ${make_me} prepare${US}do eval ${make_me} prepare
+eval ${make_me} menuconfig${US}do eval ${make_me} menuconfig
+save_new_config${US}save new config
+eval ${make_me}${US}do eval ${make_me}
+clean_distrib_dirs${US}clean output directories
+install_kernel${US}install the kernel in package
+install_modules${US}install modules in package
+install_dtbs${US}install dtbs in package
+make_tarball${US}make package tarball
+publish_tarball${US}publish package tarball
+publish_ebuild${US}publish package ebuild
+EOF
+  handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initailizing starting_step"
+  starting_step=1
+  info_handle_result $? "$starting_step" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initializing stopping step"
+  stopping_step="$num_cmds"
+  info_handle_result $? "$stopping_step" '' || _ics_FLAGGED=$TRUE
+
+  [ "$_ics_FLAGGED" ] && ics_ret=1
+  export num_cmds
+  export cmd_seq_file
+  unset -v _ics_entry _ics_FLAGGED _ics_result
+  return $ics_ret
+}
+# @usage initialize_command_sequence || die "failed to initialize_command_sequence"
+# @vars sets global num_cmds, cmd_seq_file
+# @vars initializes global starting_step=1, stopping_step=$num_cmds
+# @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
+# @rule command sequency entry format 'command_string${US}description_string'
+# @cont where: command_string is POSIX executable
+# @cont and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
+# @cont and:   description_string is a human-readable description of the command
+# @ret 0 on success; 1 on failure
+
 cache_commit_signing_key() {
-    sudo -u ${user} echo "test" > /home/${user}/cachetest && \
-    sudo -u ${user} gpg --clearsign /home/${user}/cachetest && \
-    sudo -u ${user} rm /home/${user}/cachetest.asc; result=$?
+    sudo -u "${user}" echo "test" > "/home/${user}/cachetest" && \
+    sudo -u "${user}" gpg --clearsign "/home/${user}/cachetest" && \
+    sudo -u "${user}" rm "/home/${user}/cachetest.asc"; result=$?
     return $result
 }
 
 warn_oldconfig() {
-  message "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
-  message "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
-  message "  ${BMon}in the next step, hit <CTRL>-C to end this program${Boff}"
-  message "  ${LBon}then copy/paste the ${Gon}make_me=${LBon} assignment above,${Boff}"
-  message "  ${LBon}cd sources_dir${Boff}"
-  message "  ${LBon}[ ${Yon}note: sources_dir = ${sources_dir} ${LBon}]${Boff}"
-  message "  ${LBon}run ${BBon}${sources_dir%/}/ # ${Gon}eval \${make_me} olddefconfig${Boff}"
-  message "  ${BYon}and then restart this program with e.g. ${Gon}${PN} -r${Boff}"
+  notice_msg "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
+  notice_msg "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
+  notice_msg "  ${BMon}in the next step, hit <CTRL>-C to end this program${Boff}"
+  notice_msg "  ${LBon}then copy/paste the ${Gon}make_me=${LBon} assignment above,${Boff}"
+  notice_msg "  ${LBon}cd sources_dir${Boff}"
+  notice_msg "  ${LBon}[ ${Yon}note: sources_dir = ${sources_dir} ${LBon}]${Boff}"
+  notice_msg "  ${LBon}run ${BBon}${sources_dir%/}/ # ${Gon}eval \${make_me} olddefconfig${Boff}"
+  notice_msg "  ${BYon}and then restart this program with e.g. ${Gon}${PN} -r${Boff}"
   echo
   response=""
   msg="${BYon}Do you want run ${Gon}eval \${make_me} olddefconfig ${BYon} now? ${Boff}\n"
   msg+="${BWon}   (Y: yes, run it; N: no, abort; S: skip, to next step) ${Boff}"
-  new_prompt "${msg}"
-  d_message "response: $response" 5
+  yns_prompt "${msg}"
+  debug_msg "response: $response"
   case ${response:0:1} in
     [yY] ) eval ${make_me} olddefconfig ; result=$?;
       if [ $result -eq 0 ] ; then
-        d_message "make olddefconfig succeeded" 1
+        notice_msg "make olddefconfig succeeded"
       else
-        E_message "make olddefconfig failed"
+        error_msg "make olddefconfig failed"
         return 1
       fi
       ;;
-    [sS] ) d_message "skipping as instructed" 2 ; return 0 ;;
-    [nN] ) E_message "negative answer; aborting" ; return 1 ;;
+    [sS] ) notice_msg "skipping as instructed" ; return 0 ;;
+    [nN] ) error_msg "negative answer; aborting" ; return 1 ;;
     *    ) die "invalid newanser (should never happen)" ;;
   esac
   return 0
@@ -316,24 +333,28 @@ warn_oldconfig() {
 
 make_mrproper() {
     # clean up both the sources and build directories
-    message "Now working in $PWD (should be sources directory)"
+    notice_msg "Now working in $PWD (should be sources directory)"
     clean_make_me="MAKEOPTS=\"${makeopts}\" FEATURES=\"${features}\" "
     clean_make_me+="make ARCH=${arch} CROSS_COMPILE=${cross_compile} "
-    d_message "Cleaning sources directory [ ${sources_dir} ] ..." 1
-    eval ${clean_make_me} mrproper || die "failed to clean_make_me mrproper"
-    d_message "Cleaning ${model} build directory [ ${model_dir} ] ..." 1
-    eval ${make_me} mrproper || die "failed to make_me mrproper"
-    d_message "*Completely* cleaning ${model} build directory ..." 1
+    notice_msg "Cleaning sources directory [ ${sources_dir} ] ..."
+    eval ${clean_make_me} mrproper
+    notice_msg_n "clean_make_me mrproper complete; result:"
+    handle_result $? "" "" || die "failed to clean_make_me mrproper"
+
+    notice_msg "Cleaning ${model} build directory [ ${model_dir} ] ..."
+    eval "${make_me} mrproper" ; result=$?
+    notice_msg_n "make_me mrproper complete; result:"
+    handle_result $? "" "" || die "failed to make_me mrproper"
+
+    notice_msg "*Completely* cleaning ${model} build directory ..."
     # CAUTION: this will destroy your system if model_dir%/ is unassigned
     if [ ! -z "${model_dir%/}" ] ; then
         answer=""
-        message "${BYon}Caution: About to remove ${model_dir%/} filestructure with ${BRon}rm -r -f ${model_dir%/}/* ${model_dir%/}/.*${Boff} "
-        prompt "${BWon}(Y: Ok to continue ; N: No, abort)"
-        if [[ "${answer}" == [yY] ]] ; then
-            rm -r -f ${model_dir%/}/* ${model_dir%/}/.* || die "failed while trying to delete ${model_dir%/} filestructure"
-        else
-            die "aborting, as instructed"
-        fi
+        notice_msg "${BYon}Caution: About to remove model_dir [${model_dir%/}] filestructure with ${BRon}rm -r -f ${model_dir%/}/* ${model_dir%/}/.*${Boff} "
+        confirm_continue_or_exit
+        notice_msg_n "removing model_dir contents"
+        rm -r -f "${model_dir%/}/*" "${model_dir%/}/.*"
+        handle_result $? "" "" || die "failed while trying to delete ${model_dir%/} filestructure"
     else
         die "model_dir [${model_dir%/}] appears to be null; not running rm command; exiting"
     fi
@@ -341,21 +362,21 @@ make_mrproper() {
 }
 
 backup_config() {
-  if [[ -f ${model_config} ]]
+  if [[ -f "${model_config}" ]]
   then
-    cp -v ${model_config} ${config_dir%/}/.config.bak
+    cp -v "${model_config}" "${config_dir%/}/.config.bak"
   else
     msg="Config file [ ${model_config} ] not found.\n"
     msg+="${BYon} Please put a .config file in model build directory [ ${model_dir} ],\n"
     msg+=" or manually run an appropriate \"make xxx_defconfig\" command in model build directory${Boff}"
-    E_message "$msg"
+    error_msg "$msg"
     exit
   fi
   return 0
 }
 
 save_new_config() {
-  cp -v ${model_config} ${config_dir%/}/.config.${model}-${version_number} && return 0 || return 1
+  cp -v "${model_config}" "${config_dir%/}/.config.${model}-${version_number}" && return 0 || return 1
 }
 
 # leaving this here for reference, but it is depracated, since I now
@@ -368,26 +389,26 @@ make_dtbs() {
 
 clean_distrib_dirs()
 {
-    message "${LBon}Cleaning the distribution staging directory...${Boff}"
-    for x in $lib_dir $boot_dir
+    notice_msg "${LBon}Cleaning the distribution staging directory...${Boff}"
+    for x in "$lib_dir" "$boot_dir"
     do
-        [[ -d $x ]] && find ${x%/}/ -mindepth 1 -iname '*' -delete
-        [ ! -d $x ] && mkdir -p $x
+        [[ -d "$x" ]] && find "${x%/}/" -mindepth 1 -iname '*' -delete
+        [ ! -d "$x" ] && mkdir -p "$x"
     done
-    message "${LBon}Cleaning the tarball and ebuild publishing directory...${Boff}"
-    find ${distrib_dir} -iname '*.tar.bz2' -delete
-    find ${build_dir} -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
-    message "${BYon}Contents of ${distrib_dir} --"
-    message "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
-    tree -a -L 2 ${distrib_dir%/}/
+    notice_msg "${LBon}Cleaning the tarball and ebuild publishing directory...${Boff}"
+    find "${distrib_dir}" -iname '*.tar.bz2' -delete
+    find "${build_dir}" -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
+    notice_msg "${BYon}Contents of ${distrib_dir} --"
+    notice_msg "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
+    tree -a -L 2 "${distrib_dir%/}/"
     return 0
 }
 
 install_kernel()
 {
     # stage kernel
-    cd ${sources_dir} && message "Now working in $PWD"
-    message "${LBon}Installing the kernel ...${Boff}"
+    cd "${sources_dir}" && notice_msg "Now working in $PWD"
+    notice_msg "${LBon}Installing the kernel ...${Boff}"
     # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
     if [[ "${model}" == "domU" ]] ; then
         eval "INSTALL_PATH=${host_dir} ${make_me} install"
@@ -399,8 +420,8 @@ install_kernel()
         #   also copy the proper image manually to the proper deployed kernel name
         #   as specified in the confg file
         echo -e -n "${BMon}"
-        cp -av ${model_dir%/}/arch/${arch}/boot/${image} \
-             ${boot_dir%/}/${kernel}-${version_number} | sed 's|^|    |'
+        cp -av "${model_dir%/}/arch/${arch}/boot/${image}" \
+             "${boot_dir%/}/${kernel}-${version_number}" | sed 's|^|    |'
         echo -e -n "${Boff}"
         # for extra assurance, copy all kernels found here, named as built
         # ${image} specified in config file should be one of --
@@ -410,20 +431,20 @@ install_kernel()
         #  "bzImage" (Big zImage) allows decompression into high memory for larger kernels
         #  (see docs to determine which is needed)
         k_out_dir="${model_dir%/}/arch/${arch}/boot/"
-        d_message "k_out_dir: $k_out_dir" 5
-        message "${LBon}Also staging other kernel image formats ...${Boff}"
+        debug_msg "k_out_dir: $k_out_dir"
+        notice_msg "${LBon}Also staging other kernel image formats ...${Boff}"
         k_name_list="Image zImage Image.gz bzImage vmlinuz vmlinux"
-        for k_name in ${k_name_list} ; do
-            d_message "looking for k_name: [${k_name}] in k_out_dir: [${k_out_dir%}]" 4
+        for k_name in "${k_name_list}" ; do
+            notice_msg "looking for k_name: [${k_name}] in k_out_dir: [${k_out_dir%}]"
             # if there is one of these, copy it
-            d_message "${BYon}----- will examine each line in the following -----${Boff}" 4
-            debug_do 'echo -e -n "${BMon}"; find ${k_out_dir%} -name "${k_name}"; echo -e -n "${Boff}"' 4
-            d_message "${BYon}------- will examine each line in the above -------${Boff}" 4
-            for file in $(find ${k_out_dir%} -name "${k_name}") ; do
-                d_message "${BWon}copying file [$file]${Boff}" 5
-                echo -e -n "${BMon}"
-                cp -av ${file} ${boot_dir%/}/ | sed 's|^|    |'
-                echo -e -n "${Boff}"
+            notice_msg "${BYon}----- will examine each line in the following -----${Boff}"
+            debug_msg_n "${BMon}"; d_do find "${k_out_dir%}" -name "${k_name}" "$debug"; debug_echo "${Boff}"
+            notice_msg "${BYon}------- will examine each line in the above -------${Boff}"
+            for file in $(find "${k_out_dir%}" -name "${k_name}") ; do
+                debug_msg "${BWon}copying file [$file]${Boff}"
+#                echo -e -n "${BMon}"
+                cp -av "${file}" "${boot_dir%/}/" | sed 's|^|    |'
+#                echo -e -n "${Boff}"
             done
         done
     fi
@@ -433,55 +454,55 @@ install_kernel()
 install_modules()
 {
   # stage modules
-  cd ${sources_dir} && message "Now working in $PWD"
-  message "${LBon}Installing modules ...${Boff}"
+  cd "${sources_dir}" && notice_msg "Now working in $PWD"
+  notice_msg "${LBon}Installing modules ...${Boff}"
   # stage modules for tarball
   eval "${make_me} INSTALL_MOD_PATH=${distrib_dir} modules_install"
 
   # identify the new module directory
-  message_n "re-setting module_dir"
-  module_dir=$( basename $( find ${lib_dir%/}/modules/  -maxdepth 1  -iname ${version_number}*  -type d ) ) || \
+  notice_msg_n "re-setting module_dir"
+  module_dir=$( basename $( find "${lib_dir%/}/modules/" -maxdepth 1  -iname "${version_number}*"  -type d ) ) || \
       die "failed to assign module_dir"
-  echo -e -n " (${module_dir})"
-  right_status $TRUE
+#  echo -e -n " (${module_dir})"
+  right_status 0
 
   # fix the build and source symlinks
-  message "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
-  cd ${lib_dir%/}/modules/${module_dir} && message "Now working in $PWD"
+  notice_msg "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
+  cd "${lib_dir%/}/modules/${module_dir}" && notice_msg "Now working in $PWD"
   rm -v build 2>/dev/null
   ln -snfv /usr/src/linux build
-  message "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/source symlink...${Boff}"
+  notice_msg "${LBon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/source symlink...${Boff}"
   rm -v source 2>/dev/null
   ln -snfv /usr/src/linux source
-  cd $old_dir && message "Now working in $PWD"
+  cd "$old_dir" && notice_msg "Now working in $PWD"
   return 0
 }
 
 install_dtbs()
 {
     # note - dtb_folder and overlay_folder are relative to build/${model}/arch/${ARCH}/boot/dts/
-    cd ${sources_dir} && message "Now working in $PWD"
-    message "${LBon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
-    mkdir -p ${boot_dir%/}/dts/${dtb_folder}
+    cd "${sources_dir}" && notice_msg "Now working in $PWD"
+    notice_msg "${LBon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
+    mkdir -p "${boot_dir%/}/dts/${dtb_folder}"
     eval "${make_me} INSTALL_DTBS_PATH=${boot_dir%/}/dts/${dtb_folder%/}/ dtbs_install"
 
-    message "In case of error in dtbs_install, will try to manually copy ..."
+    notice_msg "In case of error in dtbs_install, will try to manually copy ..."
     # manually install dtb files from dtb_folder (omit subdirectories like "overlays")
-    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${dtb_folder%/}/ -maxdepth 1 -mindepth 1 -type f -iname '*.dtb' -or -iname 'README*')
-    do cp -av ${file} ${boot_dir%/}/dts/${dtb_folder%/}/ ; done
+    for file in $(find "${model_dir%/}/arch/${arch}/boot/dts/${dtb_folder%/}/" -maxdepth 1 -mindepth 1 -type f -iname '*.dtb' -or -iname 'README*')
+    do cp -av "${file}" "${boot_dir%/}/dts/${dtb_folder%/}/" ; done
     # manually install dtbo files from overlay_folder (omit .tmp, .cmd files, and omit subdirectories for now)
-    mkdir -p ${boot_dir%/}/dts/${overlay_folder%/}/
-    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/ -maxdepth 1 -mindepth 1 -type f -iname '*.dtb*' -and -not -iname '\.*')
-    do cp -av ${file} ${boot_dir%/}/dts/${overlay_folder%/}/ ; done
+    mkdir -p "${boot_dir%/}/dts/${overlay_folder%/}/"
+    for file in $(find "${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/" -maxdepth 1 -mindepth 1 -type f -iname '*.dtb*' -and -not -iname '\.*')
+    do cp -av "${file}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; done
     # copy the overlay_folder's README file(s) if it/they exist(s)
-    for file in $(find ${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/ -maxdepth 1 -type f -iname 'README*')
-    do cp -av ${file} ${boot_dir%/}/dts/${overlay_folder%/}/ ; done
+    for file in $(find "${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/" -maxdepth 1 -type f -iname 'README*')
+    do cp -av "${file}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; done
     # copy the one dtb file we need up to boot
-    message "${LBon}Staging the dtb file for tarball ...${Boff}"
-    cp -av ${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb ${boot_dir%/}/
+    notice_msg "${LBon}Staging the dtb file for tarball ...${Boff}"
+    cp -av "${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb" "${boot_dir%/}/"
 
     # for extra assurance, copy the entire dts folder...
-#    message "${LBon}Also staging the entire dts folder for tarball (just in case) ...${Boff}"
+#    notice_msg "${LBon}Also staging the entire dts folder for tarball (just in case) ...${Boff}"
 #    mkdir -p ${boot_dir%/}/entire_source_dts
 #    cp -av ${model_dir%/}/arch/${arch}/boot/dts ${boot_dir%/}/entire_source_dts/
 #    return 0
@@ -489,35 +510,38 @@ install_dtbs()
 
 make_tarball()
 {
-    message "${BGon}Entering $distrib_dir${Boff}"
-    cd $distrib_dir
-    d_message "pwd: $(pwd)" 2
+    local result
+    notice_msg "${BGon}Entering $distrib_dir${Boff}"
+    cd "$distrib_dir"
+    notice_msg "pwd: $(pwd)"
 
     # (re)identify the new module directory (in case we are resuming)
-    message_n "(re)setting module_dir"
-    module_dir=$( basename $( find ${lib_dir%/}/modules/  -maxdepth 1  -iname ${version_number}*  -type d ) ) || \
-        die "failed to assign module_dir"
-    echo -e -n " (${module_dir})"
-    right_status $TRUE
+    notice_msg_n "(re)setting module_dir"
+    module_dir=$( basename $( find "${lib_dir%/}/modules/"  -maxdepth 1  -iname "${version_number}*"  -type d ) )
+    handle_result $?0  "${module_dir}" "" || die "failed to assign module_dir"
 
     # create staged tar archive
-    message "${LBon}Creating the tar archive ...${Boff}"
+    notice_msg "${LBon}Creating the tar archive ...${Boff}"
 
     # create tarball from staged contents; don't include kernel sources
     tar_command="tar "
     tar_command+="  --exclude lib/modules/${module_dir%/}/source/"
     tar_command+="  --exclude lib/modules/${module_dir%/}/build/"
     tar_command+="  -cvjf ${kernel_image_name}.tar.bz2 ./boot ./lib"
-    d_message "tar_command: [${tar_command}]" 5
-    eval $tar_command && \
-    message "${BYon}Complete.  Your tarball is located in the ${LBon}${distrib_dir}${BYon} directory${Boff}" || \
-    E_message "${BRon}Something went wrong -- refer to output above${Boff}"
+    debug_msg "tar_command: [${tar_command}]"
+    eval "$tar_command"; result=$?
+    handle_result "$result" "Complete" ""
+    if [ "$result" -eq 0 ]; then
+      notice_msg "Your tarball is located in the ${LBon}${distrib_dir}${BYon} directory${Boff}"
+    else
+      error_msg "${BRon}Something went wrong -- refer to output above${Boff}"
+    fi
     # create a sha512sum hash for the tarball
-    message_n "computing and saving sha512sum for tarball ..."
-    sha512sum ${kernel_image_name}.tar.bz2 > ${kernel_image_name}.tar.bz2.sha512sum
+    notice_msg_n "computing and saving sha512sum for tarball ..."
+    sha512sum "${kernel_image_name}.tar.bz2" > "${kernel_image_name}.tar.bz2.sha512sum"
     right_status $?
 
-    cd $old_dir && message "Now working in $PWD"
+    cd "$old_dir" && notice_msg "Now working in $PWD"
     return 0
 }
 
@@ -527,7 +551,7 @@ publish_tarball() {
     # will use scp to transfer (as ${user}) these files to ${user}'s home directory
     # on raspi56403.brendler, and we will rely on a cron job on raspi56403.brendler
     # to move these files up to the web server
-    d_message "joetoo_kernel_webserver: $joetoo_kernel_webserver" 3
+    info_msg "joetoo_kernel_webserver: $joetoo_kernel_webserver"
     publish_tarball_command_sequence=()
 
     # set SSH_AUTH_SOCK env var to a fixed value and test whether ${SSH_AUTH_SOCK} is valid
@@ -546,10 +570,10 @@ publish_tarball() {
         'echo' )
 
     # change ownership for upload
-    message_n 'changing ownership of tarball for upload ...'
-    chown -R ${user}:${user} ${distrib_dir%/}/${kernel_image_name}.tar.bz2 ; right_status $?
-    message_n 'changing ownership of sha512sum for upload ...'
-    chown -R ${user}:${user} ${distrib_dir%/}/${kernel_image_name}.tar.bz2.sha512sum ; right_status $?
+    notice_msg_n 'changing ownership of tarball for upload ...'
+    chown -R "${user}":"${user}" "${distrib_dir%/}/${kernel_image_name}.tar.bz2" ; right_status $?
+    notice_msg_n 'changing ownership of sha512sum for upload ...'
+    chown -R "${user}":"${user}" "${distrib_dir%/}/${kernel_image_name}.tar.bz2.sha512sum" ; right_status $?
 
     # now actually copy the tarball to the webserver with scp
     publish_tarball_command_sequence+=( \
@@ -560,29 +584,28 @@ publish_tarball() {
         )
 
     # now output the publish_tarball_command_sequence arrat into a file (script)
-    echo; message "Building publish_tarball_cmd_file [ ${publish_tarball_cmd_file} ]..."
+    echo; notice_msg "Building publish_tarball_cmd_file [ ${publish_tarball_cmd_file} ]..."
     # actually build the publish_tarball_cmd_file from the publish_tarball_command_sequence
     # first command uses single ">", to initialize the file; then others use ">>"
-    echo ${publish_tarball_command_sequence[0]} > ${publish_tarball_cmd_file}
-    for ((i=1; i<${#publish_tarball_command_sequence[@]}; i++))
-    do
-        message_n "adding line $i: [ "
-        echo -n ${publish_tarball_command_sequence[$i]}
+    echo "${publish_tarball_command_sequence[0]}" > "${publish_tarball_cmd_file}"
+    for ((i=1; i<${#publish_tarball_command_sequence[@]}; i++)); do
+        notice_msg_n "adding line $i: [ "
+        echo -n "${publish_tarball_command_sequence[$i]}"
         echo -n " ] ..."
-        echo ${publish_tarball_command_sequence[$i]} >> ${publish_tarball_cmd_file}
+        echo "${publish_tarball_command_sequence[$i]}" >> "${publish_tarball_cmd_file}"
         right_status $?
     done
 
-    message "leaving $(pwd)" &&  cd ${old_dir} && message "Now working in $(pwd)"
+    notice_msg "leaving $(pwd)" &&  cd "${old_dir}" && notice_msg "Now working in $(pwd)"
     separator "${FUNCNAME[0]}" "(script contents)"
-    cat ${publish_tarball_cmd_file} | sed 's|^|    |'
-    message_n "setting permissions on ${publish_tarball_cmd_file} ... "
-    chown ${user}:${user} ${publish_tarball_cmd_file} && \
-    chmod +x ${publish_tarball_cmd_file} ; right_status $?
+    cat "${publish_tarball_cmd_file}" | sed 's|^|    |'
+    notice_msg_n "setting permissions on ${publish_tarball_cmd_file} ... "
+    chown "${user}":"${user}" "${publish_tarball_cmd_file}" && \
+    chmod +x "${publish_tarball_cmd_file}" ; right_status $?
 
     # now actually execute the publication by running the publication command file
     separator "${FUNCNAME[0]}" "(executing script)"
-    sudo -u ${user} ${publish_tarball_cmd_file}
+    sudo -u "${user}" "${publish_tarball_cmd_file}"
 
     result=$? ; return $result
 }
@@ -610,124 +633,124 @@ publish_ebuild() {
     # verify the tarball upload before building ebuild b/c ebuild will need to download it to create its manifest
     # the tarball publication procees uploads a sha512sum after the tarball, so don't try to create ebuild until that is available
     URL="https://${joetoo_kernel_webserver}/joetoo-kernels/${kernel_image_name}.tar.bz2.sha512sum"
-    message_n "checking for uploaded sha512sum to verify tarball upload to webserver is complete"
+    notice_msg_n "checking for uploaded sha512sum to verify tarball upload to webserver is complete"
 #    wget ${URL} >/dev/null 2>&1; right_status $?
     interations=0
     interval=2
     interation_limit=500   # [to do] get more deliberate about this choice
-    while ! curl --output /dev/null --silent --head --fail "$URL" && [ $interations -lt $interation_limit ] ; do
-        sleep $interval
+    while ! curl --output /dev/null --silent --head --fail "$URL" && [ "$interations" -lt "$interation_limit" ] ; do
+        sleep "$interval"
         let interations+=1
     done
-    if [ $interations -ge $interation_limit ] ; then
-        E_message "cannot publish ebuild; tarball upload appears incomplete"
+    if [ "$interations" -ge "$interation_limit" ] ; then
+        error_msg "cannot publish ebuild; tarball upload appears incomplete"
         return 1
     else
         echo -e -n " (${BGon}found${Boff})"
-        right_status $TRUE
+        right_status 0
     fi
 
     # if the ebuild_dir does not exist, create it
     if [[ ! -d "${ebuild_dir}" ]] ; then
         mkdir -pv -m 755 "${ebuild_dir}"
-        chown -R ${user}:${user} "${ebuild_dir}"
+        chown -R "${user}":"${user}" "${ebuild_dir}"
         publish_ebuild_command_sequence+=("git add ./")
     else
-        d_message "${ebuild_dir} already exists; not creating." 3
+        info_msg "${ebuild_dir} already exists; not creating."
     fi
 
     # move to the ebuild dir
-    message "pwd: $(pwd)" && cd ${ebuild_dir} && message "Now working in $$(pwd)"
+    notice_msg "pwd: $(pwd)" && cd "${ebuild_dir}" && notice_msg "Now working in $$(pwd)"
 
-    NEW_TEMPLATE=$FALSE
+    NEW_TEMPLATE="$FALSE"
     new_template="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
     old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
     # if the ebuild dir does not contain a template ebuild, then populate it
-    if [[ ! -f $old_template ]] ; then
+    if [[ ! -f "$old_template" ]] ; then
         # populate ebuild template if needed
-        if [[ -f $new_template ]] ; then
-            message_n "published ebuild template does not exist; creating one ..."
-            cp $new_template $old_template ; right_status $?
-            chown -R ${user}:${user} "${ebuild_dir%/}/"
+        if [[ -f "$new_template" ]] ; then
+            notice_msg_n "published ebuild template does not exist; creating one ..."
+            cp "$new_template" "$old_template" ; right_status $?
+            chown -R "${user}":"${user}" "${ebuild_dir%/}/"
             publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
-            NEW_TEMPLATE=$TRUE
+            NEW_TEMPLATE="$TRUE"
         else
-	    E_message "${BRon}Error: ${Boff} $new_template does not exist" 3
+	    error_msg "${BRon}Error: ${Boff} $new_template does not exist"
         fi
     else
-        d_message "$old_template already exists; not creating." 3
+        info_msg "$old_template already exists; not creating."
     fi
 
     # if the ebuild dir contains a template that has changed, then replace it (shouldn't run if above just did)
-    if [[ $(diff $new_template $old_template) ]] ; then
-        message_n "ebuild template has been updated; replacing old one ..."
-        cp $new_template $old_template ; right_status $?
-        chown -R ${user}:${user} "${ebuild_dir%/}/"
+    if [[ $(diff "$new_template" "$old_template") ]] ; then
+        notice_msg_n "ebuild template has been updated; replacing old one ..."
+        cp "$new_template" "$old_template" ; right_status $?
+        chown -R "${user}":"${user}" "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
-        NEW_TEMPLATE=$TRUE
+        NEW_TEMPLATE="$TRUE"
     fi
 
-    NEW_METADATA=$FALSE
+    NEW_METADATA="$FALSE"
     new_metadata="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
     old_metadata="${ebuild_dir%/}/metadata.xml"
     # if the ebuild dir does not contain a metadata file, then populate it
-    message "CONF_DIR: ${CONF_DIR}"
-    if [[ ! -f $old_metadata ]] ; then
+    notice_msg "CONF_DIR: ${CONF_DIR}"
+    if [[ ! -f "$old_metadata" ]] ; then
         # populate metadata.xml if needed
-        if [[ -f $new_metadata ]] ; then
-            cp  $new_metadata $old_metadata
-            chown -R ${user}:${user} "${ebuild_dir%/}/"
+        if [[ -f "$new_metadata" ]] ; then
+            cp "$new_metadata" "$old_metadata"
+            chown -R "${user}":"${user}" "${ebuild_dir%/}/"
             publish_ebuild_command_sequence+=("git add /metadata.xml")
-            NEW_METADATA=$TRUE
+            NEW_METADATA="$TRUE"
         else
-	    E_message "${BRon}Error: ${Boff} $new_metadata does not exist" 3
+	    error_msg "${BRon}Error: ${Boff} $new_metadata does not exist"
         fi
     else
-        d_message "$old_metadata already exists; not creating." 3
+        info_msg "$old_metadata already exists; not creating."
     fi
     # if the ebuild dir contains a metadata file that has changed, then replace it (shouldn't run if above just did)
-    if [[ $(diff $new_metadata $old_metadata) ]] ; then
-        message_n "ebuild metadata has been updated; replacing old one ..."
-        cp $new_metadata $old_metadata ; right_status $?
-        chown -R ${user}:${user} "${ebuild_dir%/}/"
+    if [[ $(diff "$new_metadata" "$old_metadata") ]] ; then
+        notice_msg_n "ebuild metadata has been updated; replacing old one ..."
+        cp "$new_metadata" "$old_metadata" ; right_status $?
+        chown -R "${user}":"${user}" "${ebuild_dir%/}/"
         publish_ebuild_command_sequence+=("git add ${ebuild_dir%/}/metadata.xml")
-        NEW_METADATA=$TRUE
+        NEW_METADATA="$TRUE"
     fi
 
     ## don't bother with finding latest version ; just use template
     # enumerate existign ebuilds and determine the most recent "old version" of the ebuild
 #    ebuild_list=()
-#    message_n "enumerating existing ebuilds for $kernel_basename ..."
+#    notice_msg_n "enumerating existing ebuilds for $kernel_basename ..."
 #    for x in $(find ${ebuild_dir} -type f -iname "linux-*" | sort)
 #    do
 #      ebuild_list+=("${x}")
 #    done ; right_status $?
     # the ebuild dir will contain at least the 0.0.0 template (populated above during first run of this script for this model)
-#    message_n "finding most recent existing ebuild version ..."
+#    notice_msg_n "finding most recent existing ebuild version ..."
 #    old_version=$(echo ${ebuild_list[$((${#ebuild_list[@]}-1))]} | sed "s|${ebuild_dir%/}/${kernel_basename}-||" | sed 's|.ebuild||')
     old_version="0.0.0"
     right_status $?
-    message "old version: ${old_version}"
+    notice_msg "old version: ${old_version}"
 
     # determine the new version number and kernel image name
     # ebuild naming syntax forbids the "-gentoo" in the image name, and domU using gentoo-sources will be named that way, so fix it
-    message_n "determining new version number and kernel image name ..."
+    notice_msg_n "determining new version number and kernel image name ..."
     new_version="$(echo ${version_number} | sed 's/-gentoo//')" && \
     version_number="${new_version}" && \
     new_kernel_image_name="$(echo ${kernel_image_name} | sed 's/-gentoo//')" && \
     kernel_image_name="${new_kernel_image_name}"
     right_status $?
-    message "new version: ${version_number}"
+    notice_msg "new version: ${version_number}"
 
     # create the new ebuild file
-    message "ebuild_dir: ${ebuild_dir}"
-    message "kernel_basename: ${kernel_basename}"
-    message "old ebuild full pathname: ${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild"
-    message "new ebuild full pathname: ${ebuild_dir%/}/${kernel_image_name}.ebuild"
-    cp ${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild ${ebuild_dir%/}/${kernel_image_name}.ebuild
-    chown -R ${user}:${user} ${ebuild_dir%/}/
+    notice_msg "ebuild_dir: ${ebuild_dir}"
+    notice_msg "kernel_basename: ${kernel_basename}"
+    notice_msg "old ebuild full pathname: ${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild"
+    notice_msg "new ebuild full pathname: ${ebuild_dir%/}/${kernel_image_name}.ebuild"
+    cp "${ebuild_dir%/}/${kernel_basename}-${old_version}.ebuild" "${ebuild_dir%/}/${kernel_image_name}.ebuild"
+    chown -R "${user}":"${user}" "${ebuild_dir%/}/"
     # remove the old Manifest file
-    rm ${ebuild_dir%/}/Manifest 2>/dev/null
+    rm "${ebuild_dir%/}/Manifest" 2>/dev/null
 
     # build the git command sequence
     publish_ebuild_command_sequence+=( \
@@ -737,7 +760,7 @@ publish_ebuild() {
         "git add ../../metadata/md5-cache/sys-kernel/${kernel_image_name}" \
         "git add ${kernel_image_name}.ebuild")
     # if we created new template file above, then add the new hash file, too
-    [[ $NEW_TEMPLATE ]] && publish_ebuild_command_sequence+=( \
+    [[ "$NEW_TEMPLATE" ]] && publish_ebuild_command_sequence+=( \
          "git add ../../metadata/md5-cache/sys-kernel/${kernel_basename}-${old_version}")
 #    [[ $NEW_METADATA ]] && publish_ebuild_command_sequence+=( \
 #         "git add ../../metadata/md5-cache/sys-kernel/metadata.xml")
@@ -750,33 +773,33 @@ publish_ebuild() {
 
     # actually build the publish_ebuild_cmd_file from the publish_ebuild_command_sequence
     # first command uses single ">", to initialize the file; then others use ">>"
-    echo ${publish_ebuild_command_sequence[0]} > ${publish_ebuild_cmd_file}
+    echo "${publish_ebuild_command_sequence[0]}" > "${publish_ebuild_cmd_file}"
     for ((i=1; i<${#publish_ebuild_command_sequence[@]}; i++))
     do
-        message_n "adding line $i: [ "
-        echo -n ${publish_ebuild_command_sequence[$i]}
+        notice_msg_n "adding line $i: [ "
+        echo -n "${publish_ebuild_command_sequence[$i]}"
         echo -n " ] ..."
-        echo ${publish_ebuild_command_sequence[$i]} >> ${publish_ebuild_cmd_file}
+        echo "${publish_ebuild_command_sequence[$i]}" >> "${publish_ebuild_cmd_file}"
         right_status $?
     done
 
-#    message_n "loading ssh key if needed ..."
+#    notice_msg_n "loading ssh key if needed ..."
 #    [[ -z $(ssh-add -l | grep -v "no identities") ]] && ssh-add ${gitsshkey} ; right_status $?
 
-    cd ${old_dir} && message "Now working in $PWD"
+    cd "${old_dir}" && notice_msg "Now working in $PWD"
     separator "contents of ${publish_ebuild_cmd_file}... " $(hostname)
-    cat ${publish_ebuild_cmd_file}
+    cat "${publish_ebuild_cmd_file}"
     echo
-    message_n "setting permissions on ${publish_ebuild_cmd_file}... "
-    chown ${user}:${user} ${publish_ebuild_cmd_file} && \
-    chmod +x ${publish_ebuild_cmd_file} ; right_status $?
+    notice_msg_n "setting permissions on ${publish_ebuild_cmd_file}... "
+    chown "${user}":"${user}" "${publish_ebuild_cmd_file}" && \
+    chmod +x "${publish_ebuild_cmd_file}" ; right_status $?
 
     # wait until here to do this; make it fresh for use
     cache_commit_signing_key || die "failed to cache commit signing key"
 
     # now actually execute the publication by running the publication command file
     separator "now executing commands in ${publish_ebuild_cmd_file}... " $(hostname)
-    sudo -u ${user} ${publish_ebuild_cmd_file}
+    sudo -u "${user}" "${publish_ebuild_cmd_file}"
 
     result=$? ; return $result
 }
@@ -786,7 +809,7 @@ display_config()
 {
     longest=$(get_longest ${varlist})
 
-    message "${BMon}Current Configuration:${Boff}"
+    notice_msg "${BMon}Current Configuration:${Boff}"
     display_vars ${longest} "CONF_DIR"
     echo
     separator "From Config File and/or command line" $(hostname)
@@ -802,24 +825,24 @@ display_config()
     cplongest=$(get_longest ${copypaste_parmlist})
     display_vars ${cplongest} ${copypaste_parmlist}
     echo
-    message "${Mon}If building manually${Boff} --"
-    message "  ${Mon}first${Boff} cd ${sources_dir}"
-    message "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
-    message "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
+    notice_msg "${Mon}If building manually${Boff} --"
+    notice_msg "  ${Mon}first${Boff} cd ${sources_dir}"
+    notice_msg "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
+    notice_msg "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
     echo
-    message "  ${Gon}make_me='${make_me}'${Boff}"
+    notice_msg "  ${Gon}make_me='${make_me}'${Boff}"
     echo
-    message "${Mon}then use e.g.${Boff} --"
+    notice_msg "${Mon}then use e.g.${Boff} --"
     msg1='eval ${manual_prefix}'
     msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
-    message "${Gon}${msg1} ${msg2}${Boff}"
-    message "or"
+    notice_msg "${Gon}${msg1} ${msg2}${Boff}"
+    notice_msg "or"
     msg2="make menuconfig${Boff}"
-    message "${Gon}${msg1} ${msg2}${Boff}"
+    notice_msg "${Gon}${msg1} ${msg2}${Boff}"
     echo
     msg1='eval ${make_me} olddefconfig'
-    message "or"
-    message "${Gon}${msg1}${Boff}"
+    notice_msg "or"
+    notice_msg "${Gon}${msg1}${Boff}"
     echo
     return 0
 }
@@ -830,21 +853,25 @@ make_sources_message() {
     # echo lines beginning with one "#" in light blue
     # ehco other lines in bright white
     #
-    d_message "running make_sources_message() ..." 3
-    d_message "CONF_DIR: ${CONF_DIR}" 3
-    d_message_n "README-instructions file" 3
-    [ -f ${CONF_DIR%/}/README-instructions ] && d_message "found" 3 || dE_message "not found!" 3
+    info_msg "running make_sources_message() ..."
+    info_msg "CONF_DIR: ${CONF_DIR}"
+    info_msg_n "README-instructions file"
+    if [ -f "${CONF_DIR%/}/README-instructions" ]; then
+      info_handle_result 0 "found" ""
+    else
+      info_handle_result 1 "" "not found"
+    fi
     while read line
     do
-      d_message "considering line: $line" 5
+      debug_msg "considering line: $line"
       if [ "${line:0:1}" == "#" ] ; then
         if [ "${line:1:1}" != "#" ] ; then    # do not print those lines starting "##" at all
-            echo -e ${LBon}${line}${Boff}    # emphasize in light blue the comment lines beginning "#"
+            debug_msg "${LBon}${line}${Boff}"    # emphasize in light blue the comment lines beginning "#"
         fi
       else
-        echo -e ${BWon}${line}${Boff}        # emphasize in bright white only the lines that do not begin with "#"
+        debug_msg "${BWon}${line}${Boff}"        # emphasize in bright white only the lines that do not begin with "#"
       fi
-    done < ${CONF_DIR%/}/README-instructions
+    done < "${CONF_DIR%/}/README-instructions"
 
     result=$? ; return $result
 }
@@ -856,11 +883,11 @@ sanity_check() {
     ### posible future additional sanity checks like this...
     #BOGUSTEST=${FALSE}
     #[[ ! $INTERACTIVE ]] && [[ $RESUME ]] && [[ $BOGUSTEST ]] \
-    #   E_message "Dangerous option combination: noninteractive and resume" && \
+    #   error_msg "Dangerous option combination: noninteractive and resume" && \
     #   usage && exit 1
 
-    d_message "running sanity_check() ..." 3
-    d_message "sources_dir: ${sources_dir}" 3
+    info_msg "running sanity_check() ..."
+    info_msg "sources_dir: ${sources_dir}"
     answer=""
     if [[ $starting_step -eq 0 ]]
     then
@@ -868,20 +895,20 @@ sanity_check() {
         if [[ ! -e "${sources_dir}" ]]
         then
             separator "${PN}" "Manual Prerequisites"
-            E_message "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
+            error_msg "${BRon}sources_dir [ ${sources_dir} ] does not exist${Boff}"
             make_sources_message
             exit
         else
             # confirm the current configuration before executing main script
             prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${LBon}Continue? ${Boff}?"
-            [[ ! $answer == [Yy] ]] && return 1
+            [[ ! "$answer" == [Yy] ]] && return 1
         fi
     else
         # resume operation at some step other than 0
         do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}${command_sequence[${starting_step}]}${BMon} ]--${Boff}\n"
         do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
         prompt "${do_first_prompt}\n${LBon} Continue? ${Boff}?"
-        [[ ! $answer == [yY] ]] && return 1
+        [[ ! "$answer" == [yY] ]] && return 1
     fi
     return 0
 }
@@ -889,9 +916,11 @@ sanity_check() {
 #-----[ main script ]------------------------------------------------
 checkroot
 separator "${PN}-${BUILD}" $(hostname)
-starting_step=0
 
-validate_status_file ${status_file} || die "failed to validate_status_file"
+app_configure || die "failed to app_configure"
+
+d_do display_config "$debug"  # show config prior to processing cmdline only at info/debug verbosity
+debug_msg "(BEFORE process_cmdline)"
 
 process_cmdline "${@}" || die "failed to process command line"
 
@@ -899,11 +928,11 @@ display_config || die "failed display_config"
 
 sanity_check || die "failed sanity_check"
 
-run_sequence ${status_file} || die "failed run_sequence"
+run_sequence "${status_file}" || die "failed run_sequence"
 
 final_msg="${BMon}Components, including kernel image [ ${image} ], modules, overlays, "
 final_msg+="and dtb files, as appropriate for model [ ${model} ], successfully staged in "
 final_msg+="${build_dir%/}/${model} and published in ${kernel_image_name}.ebuild${Boff}"
-message "${final_msg}"
+notice_msg "${final_msg}"
 
-#message "${BMon}Debug Marker${Boff}"  ; exit
+#debug_msg "${BMon}Debug Marker${Boff}"  ; exit
