@@ -55,19 +55,19 @@ notice_msg_n "assigning PN"
 PN="${0##*/}"
 handle_result $? "$PN" "" || die "failed to assing PN"
 
-# identify CONF_DIR (normally /etc/${PN}/${PN}.conf)
+# identify config_dir (normally /etc/${PN}/${PN}.conf)
 notice_msg_n "looking for ${PN}.conf in /etc/${PN}"
-[[ -e "/etc/${PN}/${PN}.conf" ]] && CONF_DIR="/etc/${PN}"
-handle_result $? "CONF_DIR: $CONF_DIR" "" || die "CONF_DIR [/etc/${PN}/${PN}.conf] does not exist"
+[[ -e "/etc/${PN}/${PN}.conf" ]] && config_dir="/etc/${PN}"
+handle_result $? "config_dir: $config_dir" "" || die "config_dir [/etc/${PN}/${PN}.conf] does not exist"
 
 # source BUILD and BPN, then source script_header_joetoo_extended
 # ( so the latter can get local.usage, local.cmdline_arguments, etc. which it locates at /etc/${BPN}/ )
 notice_msg_n "sourcing BUILD"
-source "${CONF_DIR%/}/BUILD"
+source "${config_dir%/}/BUILD"
 handle_result $? "$BUILD" "" || die "failed to source BUILD"
 
 notice_msg_n "sourcing BPN"
-source "${CONF_DIR%/}/BPN"
+source "${config_dir%/}/BPN"
 handle_result $? "$BPN" "" || die "failed to source BPN"
 
 notice_msg_n "sourcing /usr/sbin/script_header_joetoo_extended"
@@ -104,9 +104,9 @@ joetoo_kernel_webserver="raspi56403.brendler"
 
 #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
 
-notice_msg_n "sourcing ${CONF_DIR%/}/${PN}.conf ..."
-source "${CONF_DIR%/}/${PN}.conf"
-handle_result $? "" "" || die "failed to source ${CONF_DIR%/}/${PN}.conf"
+notice_msg_n "sourcing ${config_dir%/}/${PN}.conf ..."
+source "${config_dir%/}/${PN}.conf"
+handle_result $? "" "" || die "failed to source ${config_dir%/}/${PN}.conf"
 
 #  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
 notice_msg_n "$sourcing ${BGon}setnodistpath${Boff} ..."
@@ -116,10 +116,18 @@ handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
 notice_msg_n "   ${BMon}(readable) PATH includes:"
 echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
 
+# NOTE: these are set by script_header_joetoo and populated by app_configure
+# so YOU don't have to do it here
+#varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
+#varlist="${varlist} num_cmds starting_step stopping_step BREAK"
+#varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
+#varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
+#varlist="${varlist} bool.handle_local_usage_EXISTS"
+#varlist="${varlist} app_customization_root local_cmdline_arg_handler"
+
 # identify local variables by section, to make it easier to display configuration
 # do this after sourcing config so some variables can be optionally excluded from varlist
-config_parmlist="PN BPN bool.INTERACTIVE bool.RESUME starting_step stopping_step bool.VERBOSE"
-config_parmlist+=" verbosity CONF_DIR user"
+config_parmlist="BPN user"
 config_parmlist+=" model arch cross_compile makeopts features"
 config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
 
@@ -135,7 +143,7 @@ output_parmlist+=" lv.publish_ebuild_cmd_file"
 output_parmlist+=" joetoo_kernel_webserver"
 copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
 
-varlist="${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
+varlist="${varlist} ${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
 
 # append "/" to dtb_folder and overlay_folder if missing and not null
 #( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
@@ -158,6 +166,9 @@ kernelupdate_configure()
 { # 20260218 - this function created to defer this initialization untill after app_configure() has run
   # so that it will properly set variables and not immediately erase them
   local kc_ret=0
+
+#-----[ re-do base config in case app_configure 
+
 
 sources_dir="${build_root%/}/linux"
 config_dir="${build_root%/}/kernelconfigs"
@@ -679,7 +690,7 @@ publish_ebuild() {
     notice_msg "pwd: $(pwd)" && cd "${ebuild_dir}" && notice_msg "Now working in $$(pwd)"
 
     NEW_TEMPLATE="$FALSE"
-    new_template="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
+    new_template="${config_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
     old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
     # if the ebuild dir does not contain a template ebuild, then populate it
     if [[ ! -f "$old_template" ]] ; then
@@ -707,10 +718,10 @@ publish_ebuild() {
     fi
 
     NEW_METADATA="$FALSE"
-    new_metadata="${CONF_DIR%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
+    new_metadata="${config_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
     old_metadata="${ebuild_dir%/}/metadata.xml"
     # if the ebuild dir does not contain a metadata file, then populate it
-    notice_msg "CONF_DIR: ${CONF_DIR}"
+    notice_msg "config_dir: ${config_dir}"
     if [[ ! -f "$old_metadata" ]] ; then
         # populate metadata.xml if needed
         if [[ -f "$new_metadata" ]] ; then
@@ -826,7 +837,7 @@ display_config()
     longest=$(get_longest ${varlist})
 
     notice_msg "${BMon}Current Configuration:${Boff}"
-    display_vars ${longest} "CONF_DIR"
+    display_vars ${longest} "config_dir"
     echo
     separator "From Config File and/or command line" $(hostname)
     display_vars ${longest} ${config_parmlist}
@@ -864,15 +875,15 @@ display_config()
 }
 
 make_sources_message() {
-    # pull text from ${CONF_DIR%/}/README-instructions
+    # pull text from ${config_dir%/}/README-instructions
     # ignore lines beginning with two #s (i.e. "##")
     # echo lines beginning with one "#" in light blue
     # ehco other lines in bright white
     #
     info_msg "running make_sources_message() ..."
-    info_msg "CONF_DIR: ${CONF_DIR}"
+    info_msg "config_dir: ${config_dir}"
     info_msg_n "README-instructions file"
-    if [ -f "${CONF_DIR%/}/README-instructions" ]; then
+    if [ -f "${config_dir%/}/README-instructions" ]; then
       info_handle_result 0 "found" ""
     else
       info_handle_result 1 "" "not found"
@@ -887,7 +898,7 @@ make_sources_message() {
       else
         debug_msg "${BWon}${line}${Boff}"        # emphasize in bright white only the lines that do not begin with "#"
       fi
-    done < "${CONF_DIR%/}/README-instructions"
+    done < "${config_dir%/}/README-instructions"
 
     result=$? ; return $result
 }
