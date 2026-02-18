@@ -1865,3 +1865,130 @@ maybe_redirect_output() # if /dev/console is writable, deliberately redirect out
 }
 
 
+
+get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
+{ # Note: crypt_keydev_mountpoint must be globally defined by the calling script
+  [ $# -lt 1 ] && { error_msg "please specify crypt_keydev as arg \$1"; return 1 ; }
+  _glk_crypt_keydev="$1"
+  # ensure trailing slashes are removed for a clean grep match
+  _glk_mnt_fixed="${crypt_keydev_mountpoint%/}"
+  # determine keydev type
+  # if it starts with "/" it is a device name
+  # if it contains "-" it may be a UUID
+  # if it does not, it may be a LABEL   
+  notice_msg_n "examining _glk_crypt_keydev [ ${_glk_crypt_keydev} ] ..."
+  # determine keydev type (POSIX case is faster than grep)
+  case "${_glk_crypt_keydev}" in
+    /*)   _glk_crypt_keydev_type="devicename" ;;
+    *-*)  _glk_crypt_keydev_type="UUID" ;;
+    *)    _glk_crypt_keydev_type="LABEL" ;;
+  esac
+  printf '%b' " (${Mon}${_glk_crypt_keydev_type}${Boff})"; right_status 0
+  # if _glk_crypt_keydev is not mounted, try to mount it
+  # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
+  # check /proc/mounts directly as the source of truth
+  notice_msg_n "checking if ${_glk_crypt_keydev} is mounted"
+  if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
+    handle_result 0 "mounted" ""
+  else
+    handle_result 1 "" "not mounted"    
+    notice_msg_n "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
+    case "$_glk_crypt_keydev_type" in   
+      "devicename" ) mount "${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      "UUID"       ) mount UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      "LABEL"      ) mount LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      * )
+        printf '%b' " (${BRon}failed${Boff}) ..."
+        right_status 1
+        error_msg "invalid _glk_crypt_keydev"
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+        return 1  # invalid type
+        ;;
+    esac
+    case "$_glk_result" in
+      0 ) handle_result 0 "mounted" "" ;;
+      1 ) handle_result 1 "" "mount failure (device missing, wrong FS, permission, etc)" ;;
+      2 ) handle_result 2 "" "mount usage/syntax error" ;;
+      32 ) handle_result 32 "" "filesystem helper error (only for helper-based FS types)" ;;
+      * ) handle_result 99 "" "mount failure of unknown type" ;;
+    esac
+    if [ ! "$_glk_result" -eq 0 ]; then 
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+        return 2    # mount failure
+    fi  # mount failure
+  fi  # mounted ?
+  notice_msg_n "looking for keyfile"  
+  [ -f "${_glk_mnt_fixed}/crypt/dat" ]  
+  handle_result $? "found" "not found" || return 3    # has key check failure
+  # set keyfile pathname
+  export keyfile="${_glk_mnt_fixed}/crypt/dat"
+  unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+  return 0
+}
+# @usage get_luks_keyfile <key_device>  
+# @args $1: the device containing the key (dev path, UUID, or LABEL)
+# @vars crypt_keydev_mountpoint (required global), keyfile (exported)
+# @deps mount grep right_status notice_msg_n die
+# @rule identifies device type (dev/UUID/LABEL) using POSIX case patterns
+# @rule verifies mount status via /proc/mounts with space-padding to prevent false matches
+# @ret 0: success; 1: invalid type; 2: mount fail; 3: has key fail
+# @note Note: crypt_keydev_mountpoint must be globally defined by the calling script
+# @note exports the $keyfile variable for use by cryptsetup or other LUKS tools
+
+get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
+{ # Note: luks_partition_device must be globally defined
+  [ -z "${luks_partition_device}" ] && die "luks_partition_device not defined"
+  # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
+  _glen_bn="${luks_partition_device##*/}" # equivalent to $(basename ${luks_partition_device})
+  info_msg_n "determining edev name ..."
+  case ${_glen_bn} in
+      "sd"* ) # scsi device (sda2 -> eda2)
+        # strip s w/ parameter expansion, and replace w/ e
+        _glen_myedev="e${_glen_bn#s}"
+        ;;
+      "nv"* ) # nvme device (nvme0n1p2 -> ev012)
+        # strip 'nvme'w/ parameter expansion, then delete the n and the p w/ printf | tr
+        _glen_tmp="${_glen_bn#nvme}"
+        _glen_myedev="ev$(printf '%s' "$_glen_tmp" | tr -d 'np')"
+        ;;
+      "mm"* ) # mmc device (mmcblk0p2 -> em02)
+         # strip 'mmcblk'w/ parameter expansion, then delete the p w/ printf | tr
+        _glen_tmp="${_glen_bn#mmcblk}"
+        _glen_myedev="em$(printf '%s' "$_glen_tmp" | tr -d 'p')"
+        ;;
+      *    ) # tbd (newline; error die)
+        echo_msg; error_msg "" ; die "bad luks device name [${_glen_bn}]"
+        ;;
+    esac
+    _glen_result=$?
+    info_echo_msg_n " (${Con}${_glen_myedev}${Boff})" ; right_status 0
+    export edev=${_glen_myedev}
+    unset -v _glen_bn _glen_myedev _glen_tmp _glen_result
+    return 0
+}
+# @usage get_luks_edev_name
+# @vars luks_partition_device (required global), edev (exported)
+# @deps notice_msg_n echo_msg echo_msg_n right_status tr
+# @rule maps physical devices to 'e' prefixed names: sd* -> ed*, nvme* -> ev*, mmcblk* -> em*
+# @rule uses parameter expansion and tr to sanitize device strings for LUKS mapper
+# @ret 0 on success; calls die on unrecognized device patterns
+# @note Note: luks_partition_device must be globally defined
+# @note example: nvme0n1p2 -> ev012; sda2 -> eda2; mmcblk0p2 -> em02
+
+# @note =====[ Section 8: Command Sequence Framework ]================================================================
+
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+## note: all varlist variables (including logFile and verbosity) get anulled by initialize_vars,
+# so they must be explicitly reassigned (as app_configure does for this set).
+# the easiest way to ensure custom additions to varlist are properly initialized and then reassigned
+# prior to main script use is to place the extending definitions in .conf file in the
+# /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
+# information is provided in the template config file to exemplify
+varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
+varlist="${varlist} num_cmds starting_step stopping_step BREAK"
+varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
+varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
+varlist="${varlist} bool.handle_local_usage_EXISTS"
+varlist="${varlist} app_customization_root local_cmdline_arg_handler"

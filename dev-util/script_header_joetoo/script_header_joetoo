@@ -1632,9 +1632,10 @@ show_config() # (POSIX) show config with get_longest and display_vars
 # @deps notice_msg separator get_longest display_vars
 # @rule automatically calculates column width via get_longest
 
-# @note =====[ Section 6: Logging/Messaging, & UI ]==================================================================
+# @note =====[ Section 6: Logging/Messaging & UI/Layout Framework ]==================================================================
 
-# @note -----[ Section 6.a.: Consolidated Logging/Messaging Protocol ]--------------------------------------------------
+# @note -----[ Section 6.a.: Logging/Messaging Engine/Protocol ]--------------------------------------------------------------
+
 # @note Messaging/Logging = semantic meaning + severity + destination
 # @note joetoo consolidated logging/messaging protocol uses a bitmask
 # @cont to enable calling functions to provide all relevant information
@@ -3158,81 +3159,20 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
 # @deps linux kernel (/proc/$pid/status and /proc/$pid/io)
 # @deps sys-apps/coreutils (dd, date, sleep, grep, awk, bc)
 
-get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
-{ # Note: crypt_keydev_mountpoint must be globally defined by the calling script
-  [ $# -lt 1 ] && { error_msg "please specify crypt_keydev as arg \$1"; return 1 ; }
-  _glk_crypt_keydev="$1"
-  # ensure trailing slashes are removed for a clean grep match
-  _glk_mnt_fixed="${crypt_keydev_mountpoint%/}"
-  # determine keydev type
-  # if it starts with "/" it is a device name
-  # if it contains "-" it may be a UUID
-  # if it does not, it may be a LABEL
-  notice_msg_n "examining _glk_crypt_keydev [ ${_glk_crypt_keydev} ] ..."
-  # determine keydev type (POSIX case is faster than grep)
-  case "${_glk_crypt_keydev}" in
-    /*)   _glk_crypt_keydev_type="devicename" ;;
-    *-*)  _glk_crypt_keydev_type="UUID" ;;
-    *)    _glk_crypt_keydev_type="LABEL" ;;
-  esac
-  printf '%b' " (${Mon}${_glk_crypt_keydev_type}${Boff})"; right_status 0
-  # if _glk_crypt_keydev is not mounted, try to mount it
-  # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
-  # check /proc/mounts directly as the source of truth
-  notice_msg_n "checking if ${_glk_crypt_keydev} is mounted"
-  if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
-    handle_result 0 "mounted" ""
-  else
-    handle_result 1 "" "not mounted"
-    notice_msg_n "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
-    case "$_glk_crypt_keydev_type" in
-      "devicename" ) mount "${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      "UUID"       ) mount UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      "LABEL"      ) mount LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      * )
-        printf '%b' " (${BRon}failed${Boff}) ..."
-        right_status 1
-        error_msg "invalid _glk_crypt_keydev"
-        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
-        return 1  # invalid type
-        ;;
-    esac
-    case "$_glk_result" in
-      0 ) handle_result 0 "mounted" "" ;;
-      1 ) handle_result 1 "" "mount failure (device missing, wrong FS, permission, etc)" ;;
-      2 ) handle_result 2 "" "mount usage/syntax error" ;;
-      32 ) handle_result 32 "" "filesystem helper error (only for helper-based FS types)" ;;
-      * ) handle_result 99 "" "mount failure of unknown type" ;;
-    esac
-    if [ ! "$_glk_result" -eq 0 ]; then
-        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
-        return 2    # mount failure
-    fi  # mount failure
-  fi  # mounted ?
-  notice_msg_n "looking for keyfile"
-  [ -f "${_glk_mnt_fixed}/crypt/dat" ]
-  handle_result $? "found" "not found" || return 3    # has key check failure
-  # set keyfile pathname
-  export keyfile="${_glk_mnt_fixed}/crypt/dat"
-  unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
-  return 0
-}
-# @usage get_luks_keyfile <key_device>
-# @args $1: the device containing the key (dev path, UUID, or LABEL)
-# @vars crypt_keydev_mountpoint (required global), keyfile (exported)
-# @deps mount grep right_status notice_msg_n die
-# @rule identifies device type (dev/UUID/LABEL) using POSIX case patterns
-# @rule verifies mount status via /proc/mounts with space-padding to prevent false matches
-# @ret 0: success; 1: invalid type; 2: mount fail; 3: has key fail
-# @note Note: crypt_keydev_mountpoint must be globally defined by the calling script
-# @note exports the $keyfile variable for use by cryptsetup or other LUKS tools
 
-get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
-{ # Note: luks_partition_device must be globally defined
-  [ -z "${luks_partition_device}" ] && die "luks_partition_device not defined"
+#!/bin/sh
+PN="${0##*/}"
+
+_get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
+{ glen_ret=0; _glen_dev_name="$1"
+  [ -z "$_glen_dev_name" ] && { error_msg "error: no arg; _get_luks_edev_name requires \$1 device"; return 1; }
+  # reject device if the right-most character of the device name is not an iteger (i.e. not a partition)
+  if ! isint "${_glen_dev_name##"${_glen_dev_name%?}"}"; then
+    die "rejecting device [$_glen_dev_name] which does not appear to be a partition"
+  fi
   # ( e.g. sda2->eda2 nvme0n1p2->ev012 mmcblk0p2->em02 )
-  _glen_bn="${luks_partition_device##*/}" # equivalent to $(basename ${luks_partition_device})
-  info_msg_n "determining edev name ..."
+  _glen_bn="${_glen_dev_name##*/}" # equivalent to $(basename ${_glen_dev_name})
+  debug_msg_n "Determining edev name ..."
   case ${_glen_bn} in
       "sd"* ) # scsi device (sda2 -> eda2)
         # strip s w/ parameter expansion, and replace w/ e
@@ -3253,37 +3193,327 @@ get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
         ;;
     esac
     _glen_result=$?
-    info_echo_msg_n " (${Con}${_glen_myedev}${Boff})" ; right_status 0
+    debug_handle_result $_glen_result "edev: ${_glen_myedev}" ""
     export edev=${_glen_myedev}
-    unset -v _glen_bn _glen_myedev _glen_tmp _glen_result
-    return 0
+
+    unset -v _glen_bn _glen_myedev _glen_tmp _glen_result _glen_dev_name
+    return $glen_ret
 }
-# @usage get_luks_edev_name
-# @vars luks_partition_device (required global), edev (exported)
+# @usage _get_luks_edev_name <device>
+# @ret 0 on success; calls die on unrecognized device patterns
+# @vars _glen_dev_name (required global) edev (exported)
 # @deps notice_msg_n echo_msg echo_msg_n right_status tr
 # @rule maps physical devices to 'e' prefixed names: sd* -> ed*, nvme* -> ev*, mmcblk* -> em*
 # @rule uses parameter expansion and tr to sanitize device strings for LUKS mapper
-# @ret 0 on success; calls die on unrecognized device patterns
-# @note Note: luks_partition_device must be globally defined
+# @note Note: _glen_dev_name must be globally defined
 # @note example: nvme0n1p2 -> ev012; sda2 -> eda2; mmcblk0p2 -> em02
+# @note operates at DEBUG severity
 
-# @note =====[ Section 8: Command Sequence Framework ]================================================================
+_unlock_device() {
+    ud_ret=0
+    # for version 4.x+, this is a complete re-write of the unlocking procedure.
+    # The unlock method has already been determined, and the script now calls _unlock_device
+    # to unlock one device, employing _get_luks_edev_name() as a helper
+    [ -z "$1" ] && die "error: no arg; unlock_device requires \$1 unlock_method"
+    [ -z "$2" ] && die "error: no arg; unlock_device requires \$2 device"
+    _ud_method=$1; _ud_device="$2"
 
-# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
-# the basic set of varlist variables is defined in script_header_joetoo and can be extended
-# either in the using script or in its .conf files.
-## note: all varlist variables (including logFile and verbosity) get anulled by initialize_vars,
-# so they must be explicitly reassigned (as app_configure does for this set).
-# the easiest way to ensure custom additions to varlist are properly initialized and then reassigned
-# prior to main script use is to place the extending definitions in .conf file in the
-# /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
-# information is provided in the template config file to exemplify
-varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
-varlist="${varlist} num_cmds starting_step stopping_step BREAK"
-varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
-varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
-varlist="${varlist} bool.handle_local_usage_EXISTS"
-varlist="${varlist} app_customization_root local_cmdline_arg_handler"
+    info_msg "calling _get_luks_edev_name \"$_ud_device\""
+    # use _get_luks_edev_name in script_header_joetoo to id each _ud_device /dev/sdxn with corresponding name edxn
+    _get_luks_edev_name "$_ud_device"
+    info_msg_n "Done with _get_luks_edev_name; result:"
+    info_handle_result $? "edev: $edev" "failed to determine edev name for device [$_ud_device]"
+    [ -z "$edev" ] && die "error: _get_luks_edev_name did not return a value for device [$_ud_device]"
+
+    case "$_ud_method" in
+        "prompt")
+            info_msg "About to run cryptsetup luksOpen ${_ud_device} ${edev} with passphrase provided ..."
+#           this is no longer a f-ing "indented" heredoc '-' in <<-EOF tells it to ignore leading TABs (not spaces)
+#           cryptsetup luksOpen "${_ud_device}" "${_ud_edev}" <<-EOF  # can only be indented with tab characters
+cryptsetup luksOpen "${_ud_device}" "${edev}" <<EOF
+$_ulds_pass
+EOF
+            _ud_result=$?
+            info_handle_result "$_ud_result" "Unlocked ${_ud_device} ${edev} with passphrase provided" "mycmd failed. Dropping to a shell ..."
+            if [ ! "$_ud_result" -eq 0 ]; then
+                ud_ret=1
+                [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown $(( crypt_wait * 5 )) "$debug"
+                [ ! "${init_lock_down}" ] && rescue_shell
+            fi;
+            ;;
+        "key")
+            # passdevice already mounted,
+            # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
+            # unmount the passdevice when we are done with it
+            _ud_keyfile="${crypt_keydev_mountpoint%/}/${crypt_keyfile#/}"  # ensure exactly one slash between mount point and keyfile
+            info_msg "About to run cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${_ud_device} ${edev} "
+            cryptsetup -d "${_ud_keyfile}" -S 1 luksOpen "${_ud_device}" "${edev}"
+            _ud_result=$?
+            info_msg_n "unlock result:"
+            info_handle_result $_ud_result "" ""
+            if [ "$_ud_result" -eq 0 ]; then
+                info_msg "Unlocked ${_ud_device} ${edev} with key found at ${crypt_keydev_mountpoint}${crypt_keyfile}"
+            else  # cryptsetup luksOpen with key failed
+                ud_ret=1
+                _ud_msg="${BRon}Error: Could not unlock ${BYon}${_ud_device} ${edev}"
+                _ud_msg="${_ud_msg} ${BRon}with key found at ${BMon}${_ud_keyfile}${Boff}"
+                error_msg "${_ud_msg}"
+                if [ ! "${init_lock_down}" ]; then
+                    error_msg "${BRon}Dropping to a shell${Boff}"
+                    sh_countdown $(( crypt_wait * 5 ))
+                    rescue_shell
+                fi
+            fi
+            ;;
+    esac
+
+    unset -v _ud_method _ud_pass _ud_keyfile _ud_result _ud_msg _ud_device _ud_edev
+    return $ud_ret
+}
+# @usage _unlock_device <method> <device>
+# @ret 0 on success; 1 on failure; may call rescue_shell on fatal errors
+# @vars _ud_method _ud_device edev _ud_keyfile _ud_result ud_ret
+# @deps _get_luks_edev_name info_msg info_msg_n info_handle_result
+# @cont error_msg die cryptsetup sh_countdown rescue_shell
+# @rule determines edev via _get_luks_edev_name before unlocking
+# @rule supports two unlock methods: "prompt" (heredoc passphrase)
+# @cont and "key" (keyfile via -d and slot via -S)
+# @rule heredoc for passphrase must not be indented with spaces
+# @rule on failure, may delay via sh_countdown and drop to rescue_shell
+# @cont unless init_lock_down is set
+# @note requires crypt_keydev_mountpoint and crypt_keyfile for key mode
+# @note exports no globals except edev (via helper); cleans up locals
+# @note prints INFO/ERROR messages using messaging-layer wrappers
+# @note operates at INFO severity except for fatal die() paths
+
+_get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
+{ glk_ret=0
+  # Note: crypt_keydev_mountpoint must be globally defined by the calling script
+  [ $# -lt 1 ] && { error_msg "please specify crypt_keydev as arg \$1"; return 1 ; }
+  _glk_crypt_keydev="$1"
+  # ensure trailing slashes are removed for a clean grep match
+  _glk_mnt_fixed="${crypt_keydev_mountpoint%/}"
+  # determine keydev type
+  # if it starts with "/" it is a device name
+  # if it contains "-" it may be a UUID
+  # if it does not, it may be a LABEL
+  debug_msg_n "examining _glk_crypt_keydev [ ${_glk_crypt_keydev} ] ..."
+  # determine keydev type (POSIX case is faster than grep)
+  case "${_glk_crypt_keydev}" in
+    /*)   _glk_crypt_keydev_type="devicename" ;;
+    *-*)  _glk_crypt_keydev_type="UUID" ;;
+    *)    _glk_crypt_keydev_type="LABEL" ;;
+  esac
+  # handle all cases as valid until examined further below
+  debug_handle_result 0 "${Boff}${Mon}${_glk_crypt_keydev_type}" ""
+
+  # if _glk_crypt_keydev is not mounted, try to mount it
+  # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
+  # check /proc/mounts directly as the source of truth
+  debug_msg_n "checking if ${_glk_crypt_keydev} is mounted"
+  if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
+    debug_handle_result 0 "mounted" ""
+  else
+    debug_echo_msg " (${BYon}not mounted${Boff})"
+    debug_msg_n "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
+    case "$_glk_crypt_keydev_type" in
+      "devicename" ) mount "${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      "UUID"       ) mount UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      "LABEL"      ) mount LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+      * )
+        debug_echo_msg " (${BRon}failed${Boff})"
+        error_msg "invalid _glk_crypt_keydev"
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+        return 1  # invalid type
+        ;;
+    esac
+    case "$_glk_result" in
+      0 ) debug_handle_result 0 "mounted" "" ;;
+      1 ) debug_handle_result 1 "" "mount failure (device missing, wrong FS, permission, etc)" ;;
+      2 ) debug_handle_result 2 "" "mount usage/syntax error" ;;
+      32 ) debug_handle_result 32 "" "filesystem helper error (only for helper-based FS types)" ;;
+      * ) debug_handle_result 99 "" "mount failure of unknown type" ;;
+    esac
+    if [ ! "$_glk_result" -eq 0 ]; then
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+        return 2    # mount failure
+    fi  # mount failure
+  fi  # mounted ?
+  debug_msg_n "looking for keyfile"
+  [ -f "${_glk_mnt_fixed}/crypt/dat" ]
+  debug_handle_result $? "found" "not found" || return 3    # has key check failure
+  # set keyfile pathname
+  export keyfile="${_glk_mnt_fixed}/crypt/dat"
+  unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+  return $glk_ret
+}
+# @usage _get_luks_keyfile <key_device>
+# @args $1: the device containing the key (dev path, UUID, or LABEL)
+# @vars crypt_keydev_mountpoint (required global), keyfile (exported)
+# @deps mount grep right_status notice_msg_n die
+# @rule identifies device type (dev/UUID/LABEL) using POSIX case patterns
+# @rule verifies mount status via /proc/mounts with space-padding to prevent false matches
+# @ret 0: success; 1: invalid type; 2: mount fail; 3: has key fail
+# @note Note: crypt_keydev_mountpoint must be globally defined by the calling script
+# @note exports the $keyfile variable for use by cryptsetup or other LUKS tools
+# @note operates at debug severity
+
+_maybe_select_keying_device() {
+    # go through the list of devices presented as argv -- select the first one that
+    #   has a valid type, actually exists, mounts successfully, and contains a key,
+    #   else fail upon exhaustion of the list
+    # If select_keying_device successfully validates a keying device and keyfile,
+    #   it effectively transitions the system from a "searching" state
+    #   to an "authorized" state for LUKS decryption
+    # assign global unlock_method
+    #
+    mskd_ret=0
+    _mskd_HAS_KEY=$FALSE
+    # set the input string (list of candidate keying devices) so we can loop thru them safely
+    # shellcheck disable=SC2048
+    # shellcheck disable=SC2086
+    # Note: we want word splitting here to loop through the list of single-word devices,
+    #   so we disable the SC2048/SC2086 warnings about this
+    set -- $*
+    _mskd_candidate_key_device=""
+
+    # careful: this loop runs for every candidate in the list - it can take a long time with several second delays in each pass
+    _mskd_count=1
+    while [ $# -gt 0 ]; do
+        _mskd_candidate_key_device="$1"
+        # use get_luks_keyfile to find and mount the device if possible
+        # it returns 0: success; 1: invalid; 2: mount failed; 3: has key failed
+        # it reads global crypt_keydev_mountpoint and exports keyfile
+
+        debug_msg "Calling _get_luks_keyfile ${_mskd_candidate_key_device}"
+        # call get_luks_keyfile to examine this device
+        _get_luks_keyfile "${_mskd_candidate_key_device}"
+        _mskd_result=$?
+        debug_msg_n "Done with _get_luks_keyfile; result:"
+        debug_handle_result $_mskd_result "keyfile: $keyfile" "failed with exit code [$_mskd_result]"
+        # check for the actual keyfile
+        if [ $_mskd_result -eq 0 ]; then
+          _mskd_HAS_KEY=$TRUE
+          break # done - we have what we came for
+        else
+          # un-mount if it got mounted
+          if [ "$_mskd_result" -eq 3 ]; then
+            debug_msg_n "un-mounting candidate that did not have keyfile"
+            umount "${crypt_keydev_mountpoint}" >/dev/null 2>&1
+            debug_handle_result $? "un-mounted" "failed" || die "failed to umount ${crypt_keydev_mountpoint}"
+            shift  # go to next candidate device in list
+          fi  # mounted but no key
+        fi  # get_luks_keyfile result
+    done
+    # to leave the loop above, we either --
+    #    (a) found a valid extant device, mounted it and confirmed it contains a key (_mskd_HAS_KEY is now "true"), or
+    #    (b) exhausted the crypt_keydev_list of devices authorized to be used and found none of them
+    #        on this system (in which case _mskd_HAS_KEY is still "false")
+    if [ "$_mskd_HAS_KEY" ]; then
+        debug_msg "Keystore: [$keyfile] exists"
+        mskd_ret=0
+    else
+        error_msg "${BRon}Keystore: [$keyfile] does not exist${Boff}"
+        mskd_ret=1
+    fi
+    unset -v _mskd_HAS_KEY _mskd_candidate_key_device _mskd_result
+    return $mskd_ret
+}
+# @usage _maybe_select_keying_device <candidate-device-list>
+# @args <candidate-device-list> - list of candiate devices to examine
+# @rules goes through the list of devices presented as argv -- selects the first one that
+# @cont has a valid type, actually exists, mounts successfully, and contains a key,
+# @cont else fails upon exhaustion of the list
+# @note if _maybe_select_keying_device successfully validates a keying device and keyfile,
+# @cont it effectively transitions the system from a "searching" state
+# @cont to an "authorized" state for LUKS decryption
+# @note operates at debug severity
+
+_get_unlock_method()
+{   gum_ret=0
+    info_msg_n "Checking if crypt_keydev_list was specified ..."
+    if [ ! -z "$crypt_keydev_list" ]; then _gum_PDL=$TRUE; else _gum_PDL=$FALSE; fi
+    [ "$_gum_PDL" ] ; info_handle_result "$?" "yes" "no" || \
+        { export unlock_method="prompt"; return 0; }
+
+    info_msg_n "Checking if crypt_keydev_mountpoint was specified ..."
+    if [ ! -z "$crypt_keydev_mountpoint" ]; then _gum_PDMP=$TRUE; else _gum_PDMP=$FALSE; fi
+    [ "$_gum_PDMP" ] ; info_handle_result "$?" "yes" "no" || \
+        { export unlock_method="prompt"; return 0; }
+
+    info_msg_n "Checking if crypt_keyfile was specified ..."
+    if [ ! -z "$crypt_keyfile" ]; then _gum_KF=$TRUE; else _gum_KF=$FALSE; fi
+    [ "$_gum_KF" ] ; info_handle_result "$?" "yes" "no" || \
+        { export unlock_method="prompt"; return 0; }
+
+    # if all tree are specified, call _maybe_select_keying_device with the global crypt_keydev_list as arg
+    info_msg "Calling _maybe_select_keying_device"
+    _maybe_select_keying_device "$crypt_keydev_list" ; _gum_result=$?
+    # if a valid keying device was identified and assigned, then assign unlock_method=key
+    # otherwise assign unlock_method=prompt
+    info_msg_n "Done with _maybe_select_keying_device; result:"
+    info_handle_result $_gum_result "keyfile: $keyfile" "no valid keyfile found"
+    if [ "$_gum_result" -eq 0 ] && [ ! -z "$keyfile" ] ; then
+        export unlock_method="key"
+    else
+        export unlock_method="prompt"
+    fi
+
+    unset -v _gum_PDL _gum_PDMP _gum_KF
+    return $gum_ret
+}
+# @usage _get_unlock_method
+# @args none
+# ret emit set global unlock_method; return 0: success; 1: error
+# @vars crypt_keydev_list crypt_keydev_mountpoint crypt_keyfile
+# @rule if any of the global vars above is null use prompt method
+# @rule if no candidate in crypt_keydev_list that actaully has a key, use prompt method
+# @note operates at INFO severity
+
+unlock_luks_devices()
+{   ulds_ret=0; _ulds_device=""
+    separator "${PN}-${BUILD}" "(unlock_luks_devices)"
+    # guard: reject empty device list
+    [ $# -eq 0 ] && \
+        { error_msg "unlock_luks_devices requires a non-emply device list"; return 1; }
+
+    # determine unlock_method
+    notice_msg "Determining unlock method"    
+    _get_unlock_method
+    notice_msg_n "Done determining unlock method:"
+    handle_result $? "method: $unlock_method" ""
+
+    # if unlock_method is prompt, then prompt for passphrase so it can be used for all unlocks
+    # securely read the passphrase with POSIX ask_pass function if needed
+    if [ "$unlock_method" = "prompt" ]; then
+        _ulds_pass=$(ask_pass "Enter LUKS passphrase: ")
+        export _ulds_pass
+    fi
+
+    # call _unlock_device for each device in the list (passed as argv to this function)
+    while [ $# -gt 0 ]; do
+        _ulds_device="$1"
+        notice_msg "Unlocking device: $_ulds_device"
+        _unlock_device "$unlock_method" "$_ulds_device" ; _ulds_result=$?
+        notice_msg_n "Done unlocking device; result:"
+        handle_result $_ulds_result "" ""
+        shift 1
+    done
+
+    # if unlock_method is prompt, then erase the exported value, now that we are done with it
+    if [ "$unlock_method" = "prompt" ]; then export _ulds_pass=""; fi
+
+    unset -v _ulds_device_list _ulds_device _ulds_result
+    return $ulds_ret
+}
+# @usage unlock_luks_devices <device_list>
+# @args <device_list> - list of device(s) to unlock
+# @vars crypt_keydev_list crypt_keydev_mountpoint crypt_keyfile
+# @rule if global var above is null use prompt method
+# @rule if no candidate in crypt_keydev_list that actaully has a key, use prompt method
+# @note operates at NOTICE severity
+
+# @note =====[ Section 8: Command Line Interface Framework ]==================================================================
 
 app_configure() # (POSIX) initialize, set defaults, load config files, define cmd sequence
 {
