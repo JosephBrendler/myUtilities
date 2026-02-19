@@ -3618,20 +3618,20 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   # NOTE: *** Initialize LOGGING, INTERACTIVE, and verbosity BEFORE sourcing config, so that
   # the config file can override these defaults ***
 
+  # set QUIET to default $FALSE only if unset; - can be overridden by sourced config below (and cmdline)
+  info_msg_n "assigning QUIET if unset; result:"
+  : "${QUIET:=$FALSE}";   export QUIET
+  info_handle_result $? "$(TrueFalse $QUIET)" '' || _c_FLAGGED=$TRUE
+
+  # set DEBUG to default $FALSE only if unset; - can be overridden by sourced config below (and cmdline)
+  info_msg_n "assigning DEBUG if unset; result"
+  : "${DEBUG:=$FALSE}";   export DEBUG
+  info_handle_result $? "$(TrueFalse $DEBUG)" '' || _c_FLAGGED=$TRUE
+
   # initialize LOGGING - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default LOGGING"
   export LOGGING="$TRUE"
   info_handle_result $? "$(TrueFalse $LOGGING)" '' || _c_FLAGGED=$TRUE
-
-  # initialize QUIET - can be overridden by sourced config below (and cmdline)
-  info_msg_n "assigning default QUIET"
-  export QUIET=$FALSE
-  info_handle_result $? "$(TrueFalse $QUIET)" '' || _c_FLAGGED=$TRUE
-
-  # initialize DEBUG - can be overridden by sourced config below (and cmdline)
-  info_msg_n "assigning default DEBUG"
-  export DEBUG=$FALSE
-  info_handle_result $? "$(TrueFalse $DEBUG)" '' || _c_FLAGGED=$TRUE
 
   # initialize INTERACTIVE - can be overridden by sourced config below (and cmdline)
   info_msg_n "assigning default INTERACTIVE"
@@ -3671,18 +3671,24 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   # match config files or links in the directory only (no subdirectories)
 
   # Start with the base directory
-  find_cmd="/etc/${PN}"                             # search target
-  find_cmd="$find_cmd -maxdepth 1"                  # top level only (no subdirectories)
-  find_cmd="$find_cmd -mindepth 1"                  # exclude the dir itself
-  find_cmd="$find_cmd \("                           # start type group
-  find_cmd="$find_cmd -type f"                      # look for files
-  find_cmd="$find_cmd -o"                           # OR
-  find_cmd="$find_cmd -type l"                      # look for symlinks
-  find_cmd="$find_cmd \)"                           # end type group
-  find_cmd="$find_cmd -name '*.conf'"               # matching *.conf
+  _c_find_args="/etc/${PN}"                             # search target
+  _c_find_args="$_c_find_args -maxdepth 1"                  # top level only (no subdirectories)
+  _c_find_args="$_c_find_args -mindepth 1"                  # exclude the dir itself
+  _c_find_args="$_c_find_args '('"                           # start type group
+  _c_find_args="$_c_find_args -type f"                      # look for files
+  _c_find_args="$_c_find_args -o"                           # OR
+  _c_find_args="$_c_find_args -type l"                      # look for symlinks
+  _c_find_args="$_c_find_args ')'"                           # end type group
+  _c_find_args="$_c_find_args -name '*.conf'"               # matching *.conf
   # this find command produces output that is <newline>-delimited lines
 
-  # read output of find with a while loop (Do NOT quote $find_cmd here so it splits into arguments)
+#  d_do '
+#    debug_msg "about to run ${Gon}find $_c_find_args${Boff}"
+#    debug_msg "(these are the find results that should get sourced) --"
+#    eval "find $_c_find_args"
+#  ' "$debug"
+
+  # read output of find with a while loop (Do NOT quote $_c_find_args here so it splits into arguments)
   # IFS= means do NOT separate the output line into words (guards against file names with whitespace)
   # also - read with heredoc technique rather than pipe to while because | creates a subshell and the
   # config_files list and any variables set by sourcing _c_file would lost when the subshell exits
@@ -3704,7 +3710,7 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
       warn_msg "skipping unreadable or broken symlink [$_c_file]"
     fi
   done <<EOF
-$(find $find_cmd)
+$(eval "find $_c_find_args")
 EOF
   info_msg "config_files: [$config_files]"
 
@@ -3773,7 +3779,7 @@ EOF
   fi
 
   [ "$_c_FLAGGED" ] && c_ret=1
-  unset -v _c_FLAGGED _c_file _c_result _c_handler _c_file_clean
+  unset -v _c_FLAGGED _c_file _c_result _c_handler _c_find_args
   return $c_ret
 }
 # @usage app_configure
