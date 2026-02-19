@@ -3664,17 +3664,48 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   export RESUME=$FALSE
   info_handle_result $? "$(TrueFalse $RESUME)" '' || _c_FLAGGED=$TRUE
 
-  # if the package has a config file at /etc/$PN or in app_customization_root configure it here
+  # if the package has a config file at /etc/$PN configure it here
   info_msg "looking for config file(s) in /etc/${PN}"
   config_files=""
   validate_dir "/etc/${PN}"
-  for _c_file in $(find "/etc/${PN}" -maxdepth 1 -name "*.conf" -type f); do
-    # accumulate found files in config_files, prepending a space only if it is not the first entry
-    config_files="${config_files:+ }$_c_file"
-    info_msg_n "sourcing $_c_file"
-    . "$_c_file"
-    info_handle_result $? "$_c_file" "" || _c_FLAGGED=$TRUE
-  done
+  # match config files or links in the directory only (no subdirectories)
+
+  # Start with the base directory
+  find_cmd="/etc/${PN}"                             # search target
+  find_cmd="$find_cmd -maxdepth 1"                  # top level only (no subdirectories)
+  find_cmd="$find_cmd -mindepth 1"                  # exclude the dir itself
+  find_cmd="$find_cmd \("                           # start type group
+  find_cmd="$find_cmd -type f"                      # look for files
+  find_cmd="$find_cmd -o"                           # OR
+  find_cmd="$find_cmd -type l"                      # look for symlinks
+  find_cmd="$find_cmd \)"                           # end type group
+  find_cmd="$find_cmd -name '*.conf'"               # matching *.conf
+  # this find command produces output that is <newline>-delimited lines
+
+  # read output of find with a while loop (Do NOT quote $find_cmd here so it splits into arguments)
+  # IFS= means do NOT separate the output line into words (guards against file names with whitespace)
+  # also - read with heredoc technique rather than pipe to while because | creates a subshell and the
+  # config_files list and any variables set by sourcing _c_file would lost when the subshell exits
+  while IFS= read -r _c_file; do
+    [ -z "$_c_file" ] && continue   # just ignore any blank lines in output
+    # if _c_file is a symlink, make sure it is readable
+    if [ -r "$_c_file" ]; then
+      # recursion-check the list of config files to avoid sourcing it again (in case it tries to source itself)
+      case " $config_files " in *" $_c_file "*)
+          warn_msg "Recursion detected! Skipping already-sourced file: $_c_file"
+          continue ;;  # go on to the next item in the while loop
+      esac
+      # accumulate found files in config_files, prepending a space only if it is not the first entry
+      config_files="${config_files:+ }$_c_file"
+      info_msg_n "sourcing $_c_file"
+      . "$_c_file"
+      info_handle_result $? "$_c_file" "" || _c_FLAGGED=$TRUE
+    else
+      warn_msg "skipping unreadable or broken symlink [$_c_file]"
+    fi
+  done <<EOF
+$(find $find_cmd)
+EOF
   info_msg "config_files: [$config_files]"
 
   # tier 2 - application configuration
@@ -3742,7 +3773,7 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   fi
 
   [ "$_c_FLAGGED" ] && c_ret=1
-  unset -v _c_FLAGGED _c_file _c_result _c_handler
+  unset -v _c_FLAGGED _c_file _c_result _c_handler _c_file_clean
   return $c_ret
 }
 # @usage app_configure
