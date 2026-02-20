@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# 20260219 - this s a redo of kernelupdate using the new joetoo cli and messaging framework
+# 20260219 - this s a complete rewrite of kernelupdate, using the new joetoo cli and messaging framework
 
 script_header_installed_dir="/usr/sbin"
 #script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
@@ -42,8 +42,78 @@ handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot contin
 # ALSO need to reassign them AFTER app_configure runs. Thus it is "easier" to just append
 # variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
 # initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
-LOCALIZED=$FALSE; INITIALIZED_ME="no"
-varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+#LOCALIZED=$FALSE; INITIALIZED_ME="no"
+#varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+
+#-----[ edit this section to set default values ]------------------------------------
+# ( .conf loaded by script_header_joetoo's app_configure() will override these )
+# ( _user can also overriede on command line )
+_user="joe"                                           ### this is going to be an issue
+                                                       # the program must be run by root
+                                                       # joetoo cli now assigns "_user" by looking at
+                                                       # who is logged in and running the app
+                                                       # so I will have to refactor what kernelupdate is doing
+                                                       # i.e. knowing what _user ssh keys to use for github
+makeopts=" -j9 -l5"
+features=" -userpriv -distcc"
+arch="arm"
+cross_compile="armv7a-unknown-linux-gnueabihf-"
+model="rk3288-tinker-s"
+image="zImage"
+kernel="kernel7.img"
+dtb_folder="rockchip"
+overlay_folder="rockchip/overlay"
+build_root="/home/${_user}/My_${model}_project"
+#my_devel_dir="/home/${_user}/myUtilities/sys-kernel"
+#my_devel_dir_credentials="/home/${_user}/myUtilities/.git/.credentials"
+sshkey_rsa="/home/${_user}/.ssh/id_rsa"
+sshkey_ecdsa="/home/${_user}/.ssh/id_ecdsa"
+sshkey_ed25519="/home/${_user}/.ssh/id_ed25519"
+package_category_dir="/home/${_user}/joetoo/sys-kernel"
+github_ebuild_repo_credentials="/home/${_user}/joetoo/.git/.credentials"
+host_dir="${build_root%/}/domU_kernel_images"
+INTERACTIVE="$FALSE"
+RESUME="$FALSE"
+answer=""
+SSH_AUTH_SOCK="/home/${_user}/.ssh/ssh-agent.sock"
+joetoo_kernel_webserver="raspi56403.brendler"
+
+# NOTE: these are set by script_header_joetoo and populated by app_configure
+# so YOU don't have to do it here
+#varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
+#varlist="${varlist} num_cmds starting_step stopping_step BREAK"
+#varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
+#varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
+#varlist="${varlist} bool.handle_local_usage_EXISTS"
+#varlist="${varlist} app_customization_root local_cmdline_arg_handler"
+
+# identify local variables by section, to make it easier to display configuration
+# do this after sourcing config so some variables can be optionally excluded from varlist
+# NOTE: user is who is running the program (root) whereas _user is who are we running it for
+#   (i.e. whose ssh keys are we going to use, whose /home/ directory, etc (for me, that is joe)
+config_parmlist="_user"
+config_parmlist+=" model arch cross_compile makeopts features"
+config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
+
+auto_parmlist="lv.model_dir lv.KBUILD_OUTPUT lv.KERNEL_DIR lv.model_config lv.package_category_dir"
+auto_parmlist+=" lv.github_ebuild_repo_credentials SSH_AUTH_SOCK lv.ebuild_dir lv.status_file"
+[[ "${model:0:3}" !=  "dom" ]] && auto_parmlist+=" lv.host_dir"
+auto_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
+auto_parmlist+=" kernel_basename lv.kernel_image_name"
+
+output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
+output_parmlist+=" lv.publish_tarball_cmd_file"
+output_parmlist+=" lv.publish_ebuild_cmd_file"
+output_parmlist+=" joetoo_kernel_webserver"
+copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
+
+header_varlist="$varlist"
+varlist="${header_varlist} ${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
+
+# append "/" to dtb_folder and overlay_folder if missing and not null
+#( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
+#( [[ ${#overlay_folder} -gt 0 ]] && [[ ! "${overlay_folder: -1}" == "/" ]] ) && overlay_folder+="/"
+# don't need these, since I adopted ${xxx_dir%/}/ instead
 
 #-----[ functions ]----------------------------------------------------
 
@@ -73,11 +143,22 @@ while IFS= read -r _ics_entry; do
       printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
       num_cmds=$(( num_cmds + 1 ))
 done <<EOF
-printf '%s\n' "this is line 1"${US}print example line number one
-printf '%s\n' "this is line 2"${US}print example line number two
-printf '\n'${US}print a newline
-printf '%s\n' "this is line 3 (after a blank line)"${US}print line number 3
-test_function "${BGon}hello${Boff}"${US}run test_function
+backup_config${US}back-up config
+make_mrproper${US}clean with make mrproper
+cp -v ${config_dir%/}/.config.bak ${model_config}${US}restore backup .config file
+warn_oldconfig${US}warn about oldconfig
+eval ${make_me} oldconfig${US}do eval ${make_me} oldconfig
+eval ${make_me} prepare${US}do eval ${make_me} prepare
+eval ${make_me} menuconfig${US}do eval ${make_me} menuconfig
+save_new_config${US}save new config
+eval ${make_me}${US}do eval ${make_me}
+clean_distrib_dirs${US}clean output directories
+install_kernel${US}install the kernel in package
+install_modules${US}install modules in package
+install_dtbs${US}install dtbs in package
+make_tarball${US}make package tarball
+publish_tarball${US}publish package tarball
+publish_ebuild${US}publish package ebuild
 EOF
   handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
 
@@ -105,33 +186,190 @@ EOF
 # @cont and:   description_string is a human-readable description of the command
 # @ret 0 on success; 1 on failure
 
- #-----[ for testing only ]------------------------------------------------
-test_function() {
-  test_ret=0; _tf_in="$1"
-  printf '%b\n' "this was printed by the test function: $_tf_in" || test_ret=1
-  unset -v _tf_in
-  return $test_ret
+
+kernelupdate_configure()
+{ # 20260218 - this function created to defer this initialization untill after app_configure() has run
+  # so that it will properly set variables and not immediately erase them
+  local kc_ret=0
+
+#-----[ re-do base config in case app_configure 
+#-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
+
+
+# source make.conf b/c we can't use e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
+notice_msg_n "sourcing make.conf to set PORTDIR"
+PORTDIR=$(source /etc/portage/make.conf; echo $PORTDIR)
+handle_result $? "$PORTDIR" ""
+notice_msg_n "sourcing make.conf to set PKGDIR"
+PKGDIR=$(source /etc/portage/make.conf; echo $PKGDIR)
+handle_result $? "$PKGDIR" ""
+notice_msg_n "sourcing make.conf to set DISTDIR"
+DISTDIR=$(source /etc/portage/make.conf; echo $DISTDIR)
+handle_result $? "$DISTDIR" ""
+
+#  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
+notice_msg_n "sourcing ${BGon}setnodistpath${Boff} ..."
+source /usr/bin/setnodistpath
+handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
+
+notice_msg_n "   ${BMon}(readable) PATH includes:"
+echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
+
+_user=joe
+build_root="/home/${_user}/My_${model}_project"
+sshkey_rsa="/home/${_user}/.ssh/id_rsa"
+sshkey_ecdsa="/home/${_user}/.ssh/id_ecdsa"
+sshkey_ed25519="/home/${_user}/.ssh/id_ed25519"
+package_category_dir="/home/${_user}/joetoo/sys-kernel"
+github_ebuild_repo_credentials="/home/${_user}/joetoo/.git/.credentials"
+host_dir="${build_root%/}/domU_kernel_images"
+SSH_AUTH_SOCK="/home/${_user}/.ssh/ssh-agent.sock"
+joetoo_kernel_webserver="raspi56403.brendler"
+
+sources_dir="${build_root%/}/linux"
+config_dir="${build_root%/}/kernelconfigs"
+build_dir="${build_root%/}/build"
+status_file="${build_dir%/}/status"
+model_dir="${build_dir%/}/${model}"
+model_config="${model_dir%/}/.config"
+kernel_basename="linux-${model}_joetoo_kernelimage"
+distrib_dir="${model_dir%/}/tmp/distrib"
+lib_dir="${distrib_dir%/}/lib"
+boot_dir="${distrib_dir%/}/boot"
+module_dir="<TBD>"  # to be set after make modules_install
+
+# create the build directory structure if it does not exist (-p makes parents)
+[[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown "${_user}":"${_user}" "${build_root}"
+[[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown "${_user}":"${_user}" "${config_dir}"
+[[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown "${_user}":"${_user}" "${build_dir}"
+[[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown "${_user}":"${_user}" "${model_dir}"
+
+# create the staging directory structure if it does not exist
+[[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown "${_user}":"${_user}" "${distrib_dir}"
+[[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown "${_user}":"${_user}" "${lib_dir}"
+[[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown "${_user}":"${_user}" "${boot_dir}"
+[[ "${model}" == "domU" ]] && \
+[[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown "${_user}":"${_user}" "${host_dir}"
+
+# set up the parts of the make command
+# NOTE: this does not set the environment variables directly, it creates a string that will do so when evaluated as (part of) a command
+make_prefix="MAKEOPTS="
+make_prefix+="\"${makeopts}\" "
+make_prefix+=" FEATURES="
+make_prefix+="\"${features}\""
+make_prefix+=" KERNEL_DIR=\"${sources_dir}\""
+
+make_arch="ARCH=${arch} CROSS_COMPILE=${cross_compile}"
+make_where="KBUILD_OUTPUT=${model_dir%/}/"
+## drop this ; cd to sources_dir (may confuse where to find .config)
+#make_src="-C ${sources_dir}"
+
+# set up the cross-building make command for sbcs or domU
+#make_model+="make KBUILD_OUTPUT=${model_dir%/}/ ARCH=${arch} CROSS_COMPILE=${cross_compile} "
+#make_model="${make_prefix} ${make_where} ${make_arch} make ${make_src}"
+make_model="${make_prefix} ${make_where} ${make_arch} make"
+
+# set up the host build command for manual use, assuming already in ${sources_dir}
+manual_prefix="${make_prefix} ${make_where} ${make_arch}"
+
+# used to pick one of (make_model or make0) above based on model selection
+make_me="${make_model}"
+
+# get and set kernel version number and image name
+old_dir="$PWD"
+# if this is the first-run for this model, sources_dir won't exist, so assign a placeholder for kernelversion
+# after assigning/displaying config, sanity_check() will provide README-instructions
+# instead of running command_sequence
+if [[ ! -e "${sources_dir}" ]] ; then
+    version_number="<TBD>"
+else
+    notice_msg "Old pwd: ${old_dir}" && cd "${sources_dir%/}" && notice_msg "Now working in $PWD"
+    version_number=$(eval ${make_me} -s kernelversion)
+    # domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
+    #   but for domU, I don't want the "-gentoo" part, so strip it
+fi
+# if this build is for a domU, then fix the version number
+if [ "${model}" == "domU" ] ; then
+    version_number="${version_number/-gentoo/}"
+fi
+# build the kernel_image_name
+info_msg "version_number: ${version_number}"
+kernel_image_name="${kernel_basename}-${version_number}"
+
+# build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
+#devel_dir="${my_devel_dir%/}"
+ebuild_dir="${package_category_dir%/}/${kernel_basename}"
+publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
+publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
+
+notice_msg "done setup and auto-configure"
+
+  return $kc_ret
 }
-# @usage test_function <message>
+
+
+display_config()
+{
+    longest=$(get_longest ${varlist})
+
+
+    notice_msg "${BMon}Current Configuration:${Boff}"
+    display_vars ${longest} "config_dir"
+    separator "$(hostname) $PN-$BUILD" "(joetoo header configuration)"
+    display_vars ${longest} ${header_varlist}
+    echo
+    separator "$(hostname) $PN-$BUILD" "(from .conf and/or command line)"
+    display_vars ${longest} ${config_parmlist}
+    echo
+    separator "$(hostname) $PN-$BUILD" "(Auto-configured)"
+    display_vars ${longest} ${auto_parmlist}
+    echo
+    separator "$(hostname) $PN-$BUILD" "(output information)"
+    display_vars ${longest} ${output_parmlist}
+    echo
+    separator "$(hostname) $PN-$BUILD" "(copy/paste information)"
+    cplongest=$(get_longest ${copypaste_parmlist})
+    display_vars ${cplongest} ${copypaste_parmlist}
+    echo
+    separator "$(hostname) $PN-$BUILD" "(manual build tips)"
+    notice_msg "${Mon}If building manually${Boff} --"
+    notice_msg "  ${Mon}first${Boff} cd ${sources_dir}"
+    notice_msg "  ${Mon}then${Boff} copy/paste the make_me or manual_prefix variable assignment --"
+    notice_msg "  ${Gon}manual_prefix='${manual_prefix}'${Boff}"
+    echo
+    notice_msg "  ${Gon}make_me='${make_me}'${Boff}"
+    echo
+    notice_msg "${Mon}then use e.g.${Boff} --"
+    msg1='eval ${manual_prefix}'
+    msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
+    notice_msg "${Gon}${msg1} ${msg2}${Boff}"
+    notice_msg "or"
+    msg2="make menuconfig${Boff}"
+    notice_msg "${Gon}${msg1} ${msg2}${Boff}"
+    echo
+    msg1='eval ${make_me} olddefconfig'
+    notice_msg "or"
+    notice_msg "${Gon}${msg1}${Boff}"
+    echo
+    return 0
+}
+
+
+
 #-----[ main script ]----------------------------------------------------
 
 app_configure || die "failed to app_configure"
 
 # re-assign varlist variables appended at the top of the script and thus
 # over-written by app_configure
-info_msg_n "(re)assigning LOCALIZED"
-LOCALIZED=$TRUE
-info_handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED"
-info_msg_n "(re)assigning INITIALIZED_ME"
-INITIALIZED_ME="yes"
-info_handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
+kernelupdate_configure || die "failed to kernelupdate_configure"
 
-d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
-info_msg "(BEFORE process_cmdline)"
+d_do display_config "$debug"  # show config prior to processing cmdline only at info/debug verbosity
+debug_msg "(BEFORE process_cmdline)"
 
 process_cmdline "$@" || die "failed to process_cmdline"
 
-show_config
+display_config
 info_msg "(AFTER process_cmdline)"
 
 run_sequence "$status_file" "$starting_step" "$stopping_step"
