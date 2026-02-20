@@ -1228,9 +1228,9 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
   [ "$_sw_collision_limit" -lt 0 ] && _sw_collision_limit=0   # clamp to zero incase negative
   # if r_margin is deep enough to cover the status zone, no special wrap is needed
   if [ "$_sw_r_margin" -ge $(( _sw_status_width + _sw_buffer )) ]; then
-    _sw_force_status_wrap=$FALSE
+    _sw_FORCE_STATUS_WRAP=$FALSE
   else
-    _sw_force_status_wrap=$TRUE
+    _sw_FORCE_STATUS_WRAP=$TRUE
   fi
 
   _sw_line_len="$_sw_current_col" # initialize with starting position
@@ -1238,9 +1238,9 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
   _sw_FIRST_WORD=$TRUE  # don't wrap for first word
 
   while [ $# -gt 0 ]; do
-    if [ $# -eq 1 ]; then _sw_last_word=$TRUE; else _sw_last_word=$FALSE; fi
+    if [ $# -eq 1 ]; then _sw_LAST_WORD=$TRUE; else _sw_LAST_WORD=$FALSE; fi
     # use collision limit ONLY for last word; otherwise use the requested r_margin
-    if [ "$_sw_last_word" ]; then
+    if [ "$_sw_LAST_WORD" ]; then
       _sw_boundary=$_sw_collision_limit
     else
       _sw_boundary=$(( _sw_tw - _sw_r_margin ))
@@ -1251,7 +1251,7 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
     [ "$_sw_FIRST_WORD" ] || _sw_space_left=$(( _sw_space_left - 1 ))
     # if there is enough room for all of it, be done
     if [ "$_sw_remaining_len" -le "$_sw_space_left" ]; then
-      [ "$_sw_FIRST_WORD" ] || printf " "
+      [ ! "$_sw_FIRST_WORD" ] && printf " "
       printf "%b" "$*"
       break # done
     fi
@@ -1269,16 +1269,32 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
     # if this word fits, print it, else wrap
     if [ "$_sw_needed" -le "$_sw_boundary" ]; then
       # it fits; print it (no longer 1st word if it was before)
-      [ "$_sw_FIRST_WORD" ] || printf " "
+      [ ! "$_sw_FIRST_WORD" ] && printf " "
       printf "%b" "$_sw_x_peak"
       _sw_line_len=$_sw_needed  # keep track of what has been rendered
       _sw_FIRST_WORD=$FALSE
     else
       # it won't fit - so wrap (incl logic for final word if margin is thin)
-      if [ $_sw_last_word ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
+      if [ "$_sw_LAST_WORD" ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
         # last word; thin margin (avoid collision with status zone); wouldn't wrap otherwise, so force it
         # wrap, advance to l_margin, print word
         printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
+      elif [ "$_sw_FIRST_WORD" ]; then
+        # since the word that wont fit is the first word, then we are already
+        #   at the left margin and we have to hard-force it in order to avoid an infinite loop
+        # also, to avoid hard-wrappling to the left edge of the screen, I'm going to slice
+        # the word, print the part that will fit, and push the remainder back into the stack
+        # of words to be printed. The space I'm working with is that between left and right margins
+        _sw_slice_len=$(( (_sw_tw - _sw_r_margin ) - _sw_l_margin -1 ))
+        # use printf with format string '%.*s' (. [precision] for string is lenght) * means take arg1
+        _sw_slice=$(printf '%.*s' "$_sw_slice_len" "$_sw_x_peak")
+        _sw_remainder="${_sw_x_peak#"${_sw_slice}"}"
+        shift                                          # remove the big word from the stack
+        printf '%b' "$_sw_slice"                       # print the slice
+        set -- "$_sw_remainder" "$@"                   # push the remainder back onto the stack
+        printf '\n%b' "$(repeat ' ' "$_sw_l_margin")"  #indent to left margin
+        _sw_line_len=$_sw_l_margin                     # reset how much has been rendered
+        continue                                       # skip the shift to get the next word
       else
         # wrap, advance to l_margin (don't print word; just set first word ** )
         printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
@@ -1296,7 +1312,7 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
   swr_ret=$?
 
   # clean up variables to maintain "local" scope in sourced environments
-  unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD
+  unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD _sw_LAST_WORD
   unset -v _sw_l_margin _sw_line_len _sw_status_width _sw_total_tail_len
   unset -v _sw_trace _sw_tw _sw_x _sw_x_len _sw_x_peak _sw_x_peak_len
   return $swr_ret
@@ -1583,9 +1599,9 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
           [lL]*  )
             eval "_dv_key=\$${_dv_var}"
             # | * longestvarname ..: [
-            # |123              4  567  (_dv_maxlen already padded for two dots)
+            # |123              4  5678  (_dv_maxlen already padded for two dots)
             # [disregard - should work quoted now] use with ${_dv_key} (unquoted) so smart_wrap_n can split and wrap words properly
-            _dv_start_col=$(( _dv_maxlen + 7 )); _dv_indent="${_dv_start_col}"
+            _dv_start_col=$(( _dv_maxlen + 8 )); _dv_indent="${_dv_start_col}"
             notice_msg_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
             smart_wrap_n "${_dv_start_col}" "${_dv_indent}" "" "${_dv_key}"
 #            printf '%b\n' " ${BBon}]${Boff}"
