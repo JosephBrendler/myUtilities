@@ -1235,7 +1235,12 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
 
   _sw_line_len="$_sw_current_col" # initialize with starting position
   # smartly consider whether to print each word or wrap it to the _sw_l_margin
-  _sw_FIRST_WORD=$TRUE  # don't wrap for first word
+  _sw_FIRST_WORD=$TRUE       # first word on a line. dont normally wrap, but may need to slice if it wont fit
+  _sw_VERY_FIRST_WORD=$TRUE  # very first word in the stack, dont normally wrap, but may need to slice if it wont fit
+                             # but since start col of first line may not be the same as left margin, check that
+                             # before deciding to slice the word
+  # (if one word fits between margins, we can print all of it, else we have to slice this much of it)
+  _sw_slice_len=$(( (_sw_tw - _sw_r_margin ) - _sw_l_margin -1 ))
 
   while [ $# -gt 0 ]; do
     if [ $# -eq 1 ]; then _sw_LAST_WORD=$TRUE; else _sw_LAST_WORD=$FALSE; fi
@@ -1256,7 +1261,7 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
       break # done
     fi
 
-    # not room for all of it, so step off a word
+    # not room for all of it, so step off a word at a time
     # (step logic - measure only the next word)
     _sw_x_peak="$1"
     _sw_x_peak_len=$(get_msg_len "$_sw_x_peak")
@@ -1268,23 +1273,27 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
 
     # if this word fits, print it, else wrap
     if [ "$_sw_needed" -le "$_sw_boundary" ]; then
-      # it fits; print it (no longer 1st word if it was before)
+      # it fits; print it (no longer 1st word if it was before, reset that after shift, before loop done)
       [ ! "$_sw_FIRST_WORD" ] && printf " "
       printf "%b" "$_sw_x_peak"
       _sw_line_len=$_sw_needed  # keep track of what has been rendered
-      _sw_FIRST_WORD=$FALSE
     else
       # it won't fit - so wrap (incl logic for final word if margin is thin)
-      if [ "$_sw_LAST_WORD" ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
-        # last word; thin margin (avoid collision with status zone); wouldn't wrap otherwise, so force it
-        # wrap, advance to l_margin, print word
-        printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
+      if [ "$_sw_VERY_FIRST_WORD" ] && [ ! "_sw_current_col" -eq "$_sw_l_margin" ]; then
+          # this is the very first word in the stack and the margin is not the same as the startig column
+          # so wrap, advance to margin, and try again as a regular first word on a full line in next loop
+          printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
+          _sw_line_len=$_sw_l_margin
+          _sw_FIRST_WORD=$TRUE
+          _sw_VERY_FIRST_WORD=$FALSE
+          continue #  (i.e. don't shift)(** evaluate the same word as FIRST_WORD, on the new line)
       elif [ "$_sw_FIRST_WORD" ]; then
-        # since the word that wont fit is the first word, then we are already
-        #   at the left margin and we have to hard-force it in order to avoid an infinite loop
-        # also, to avoid hard-wrappling to the left edge of the screen, I'm going to slice
+        # first word on the line, so we are already at the left margin
+        # and b/c it wont fit, we have to forc-print it in order to avoid an infinite loop;
+        # also, to avoid hard-wrapping to the left edge of the screen, I'm going to slice
         # the word, print the part that will fit, and push the remainder back into the stack
-        # of words to be printed. The space I'm working with is that between left and right margins
+        # of words to be printed.
+        # the space I'm working with is that between left and right margins
         _sw_slice_len=$(( (_sw_tw - _sw_r_margin ) - _sw_l_margin -1 ))
         # use printf with format string '%.*s' (. [precision] for string is lenght) * means take arg1
         _sw_slice=$(printf '%.*s' "$_sw_slice_len" "$_sw_x_peak")
@@ -1294,9 +1303,30 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
         set -- "$_sw_remainder" "$@"                   # push the remainder back onto the stack
         printf '\n%b' "$(repeat ' ' "$_sw_l_margin")"  #indent to left margin
         _sw_line_len=$_sw_l_margin                     # reset how much has been rendered
+        _sw_VERY_FIRST_WORD=$FALSE
         continue                                       # skip the shift to get the next word
+      elif [ "$_sw_LAST_WORD" ] && [ "$_sw_FORCE_STATUS_WRAP" ] && [ "$_sw_needed" -le "$_sw_tw" ]; then
+        # last word in the stack; thin margin; not enough room (avoid collision with status zone);
+        # (wouldn't need wrap otherwise, so force it - wrap, advance to l_margin, print word
+        if [ "${#_sw_x_peak}" -le "$_sw_slice_len" ]; then
+          # it will fit between margins - print it
+          printf "\n%b%b" "$(repeat ' ' "$_sw_l_margin")" "$_sw_x_peak"
+        else
+          # it won't fit between margins - slice it and put remainder back in the stack of words for next loop
+          _sw_slice=$(printf '%.*s' "$_sw_slice_len" "$_sw_x_peak")
+          _sw_remainder="${_sw_x_peak#"${_sw_slice}"}"
+          shift                                          # remove the big word from the stack
+          printf '%b' "$_sw_slice"                       # print the slice
+          set -- "$_sw_remainder" "$@"                   # push the remainder back onto the stack
+          printf '\n%b' "$(repeat ' ' "$_sw_l_margin")"  #indent to left margin
+          _sw_line_len=$_sw_l_margin                     # reset how much has been rendered
+          _sw_VERY_FIRST_WORD=$FALSE
+          continue                                       # skip the shift to get the next word
+        fi
       else
-        # wrap, advance to l_margin (don't print word; just set first word ** )
+        # the word that won't fit is neither the last word in the stack nor the first on the line,
+        # so wrap, advance to l_margin (don't print word; just set first word **
+        # (i.e. let next loop handle it as first word)
         printf "\n%b" "$(repeat ' ' "$_sw_l_margin")"
         _sw_line_len=$_sw_l_margin
         _sw_FIRST_WORD=$TRUE
@@ -1308,11 +1338,14 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
     _sw_remaining_len=$(( _sw_remaining_len - _sw_x_peak_len ))
     [ $# -gt 1 ] && _sw_remaining_len=$(( _sw_remaining_len - 1 ))
     shift
+    _sw_FIRST_WORD=$FALSE
+    _sw_VERY_FIRST_WORD=$FALSE
   done
   swr_ret=$?
 
   # clean up variables to maintain "local" scope in sourced environments
-  unset -v _sw_buffer _sw_collision_limit _sw_current_col _sw_FIRST_WORD _sw_LAST_WORD
+  unset -v _sw_buffer _sw_collision_limit _sw_current_col
+  unset -v _sw_FIRST_WORD _sw_VERY_FIRST_WORD _sw_LAST_WORD
   unset -v _sw_l_margin _sw_line_len _sw_status_width _sw_total_tail_len
   unset -v _sw_trace _sw_tw _sw_x _sw_x_len _sw_x_peak _sw_x_peak_len
   return $swr_ret
@@ -1526,7 +1559,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
             info_msg_n "  (${_iv_type}) initializing ${_iv_var} (no) ..."
             eval "${_iv_var}='no'" ; info_right_status $?    # demote right_status to info severity
           ;;
-          [lL]*  )
+          [lLrR]*  )
             # (set "") lonstring convention: parameter is "lv.${_iv_var}" where ${_iv_var} is e.g. "CMDLINE"
             info_msg_n "  (${_iv_type}) initializing ${_iv_var} NULL ..."
             eval "${_iv_var}=''" ; info_right_status $?    # demote right_status to info severity
@@ -1563,7 +1596,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
 # @args $@ list of variables to initialize, optionally prefixed by type (e.g., bool.VAR)
 # @ret 0: success; 1: fail (no args); 2: fail (invalid type)
 # @deps info_msg info_msg_n right_status
-# @rule type prefixes: bool (set $FALSE), yn (set 'no'), lv (set '')
+# @rule type prefixes: bool (set $FALSE), yn (set 'no'), lv/rlv (set '')
 # @rule handles untyped variables by initializing them to NULL ('')
 # @note uses eval for dynamic variable assignment; handles case-insensitive type prefixes
 # @note skips 'verbosity' to prevent accidental reset of script state
@@ -1588,23 +1621,30 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
     case "$_dv_var_name" in
       *.* )  # display by type
         case ${_dv_type} in
-          [bB]*  )
+          [bB]*  )    # bool (bool.)
             eval "_dv_key=\$${_dv_var}"
             notice_msg "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ $(status_color ${_dv_key})$(TrueFalse ${_dv_key}) ${BBon}]${Boff}"
             ;;
-          [yY]*  )
+          [yY]*  )    # yes/no (yn.)
             eval "_dv_key=\$${_dv_var}"
             notice_msg "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ $(status_color ${_dv_key})${_dv_key} ${BBon}]${Boff}"
             ;;
-          [lL]*  )
+          [lL]*  )    # long variable (lv.) - wrap to full indent
             eval "_dv_key=\$${_dv_var}"
             # | * longestvarname ..: [
             # |123              4  5678  (_dv_maxlen already padded for two dots)
-            # [disregard - should work quoted now] use with ${_dv_key} (unquoted) so smart_wrap_n can split and wrap words properly
             _dv_start_col=$(( _dv_maxlen + 8 )); _dv_indent="${_dv_start_col}"
             notice_msg_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
             smart_wrap_n "${_dv_start_col}" "${_dv_indent}" "" "${_dv_key}"
-#            printf '%b\n' " ${BBon}]${Boff}"
+            echo_msg " ${BBon}]${Boff}"  # print trailing ] and newline while respecting messaging policies
+            ;;
+          [rR]*  )    # REALLY long variable (rlv.)  - wrap to prefix-only (3 char) indent
+            eval "_dv_key=\$${_dv_var}"
+            # | * longestvarname ..: [
+            # |123              4  5678  (_dv_maxlen already padded for two dots)
+            _dv_start_col=$(( _dv_maxlen + 8 )); _dv_indent=3
+            notice_msg_n "${BCon}${_dv_var}${_dv_pad}: ${BBon}[ ${Boff}"
+            smart_wrap_n "${_dv_start_col}" "${_dv_indent}" "" "${_dv_key}"
             echo_msg " ${BBon}]${Boff}"  # print trailing ] and newline while respecting messaging policies
             ;;
           *      )
@@ -1635,7 +1675,8 @@ display_vars() # (POSIX) show vals for vars in $@; incl bool/lv/; $1=longest
 # @deps _translate_escapes, strip_ansi
 # @rule type bool: renders [ True/False ] based on global logic
 # @rule type yn: renders [ yes/no ] as raw strings
-# @rule type lv: renders [ value ] with word-wrap (smart_wrap_n) for long strings
+# @rule type lv: renders [ value ] with word-wrap (smart_wrap_n) to variable indent for long strings
+# @rule type rlv: renders [ value ] with word-wrap (smart_wrap_n) to prefix-only (3 char) for REALLY long strings
 # @note uses eval for dynamic symbol resolution; ensures layout-aware padding via repeat
 
 show_config() # (POSIX) show config with get_longest and display_vars
@@ -2161,7 +2202,7 @@ notice_msg_n()  # (POSIX) notice-level (severity 5) message without newline
 # @vars LOGGING, DEBUG, QUIET (pseudo-booleans controlling policy)
 # @ret emitted: notice-level prefix + message (no newline)
 # @ret status: exit status of emit()
-# @deps emit(), smart_wrap_n(), get_msg_len(), termwidth()
+# @deps emit, smart_wrap_n, get_msg_len, termwidth
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
 # @rule logs with timestamp when LOGGING is enabled
 # @note prefix uses severity-implied white; no explicit PREFIX_COLOR
@@ -2195,7 +2236,7 @@ info_msg_n()  # (POSIX) info-level (severity 6) message without newline
 # @vars LOGGING, DEBUG, QUIET (pseudo-booleans controlling policy)
 # @ret emitted: info-level prefix + message (no newline)
 # @ret status: exit status of emit()
-# @deps emit(), smart_wrap_n(), get_msg_len(), termwidth()
+# @deps emit, smart_wrap_n, get_msg_len, termwidth
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
 # @rule logs with timestamp when LOGGING is enabled
 # @note prefix uses severity-implied white; no explicit PREFIX_COLOR
@@ -2229,7 +2270,7 @@ debug_msg_n()  # (POSIX) debug-level (severity 7) message without newline
 # @vars LOGGING, QUIET (pseudo-booleans controlling policy)
 # @ret emitted: debug-level prefix + message (no newline)
 # @ret status: exit status of emit()
-# @deps emit(), smart_wrap_n(), get_msg_len(), termwidth()
+# @deps emit, smart_wrap_n, get_msg_len, termwidth
 # @rule conditional but always FORCE-enabled; visible when explicitly invoked
 # @rule logs with timestamp when LOGGING is enabled
 # @note prefix uses severity-implied cyan; no explicit PREFIX_COLOR
