@@ -182,125 +182,133 @@ EOF
 # @cont and:   description_string is a human-readable description of the command
 # @ret 0 on success; 1 on failure
 
-run_make_me()
-{
-  "${make_me[@]}" "$@"
-}
-# @usage run_make_me <make_target>
-# @ex run_make_me; run_make_me modules_install install
-
 kernelupdate_configure()
 { # 20260218 - this function created to defer this initialization of global-scope variables
   # untill after app_configure() has run, so that it will properly set variables and not immediately erase them
-  local kc_ret=0
+  local kc_ret=0 _old_dir=$PWD
 
-#-----[ re-do base config in case app_configure 
-#-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
+  #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
 
+  # source make.conf b/c we can't use e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
+  notice_msg_n "sourcing make.conf to set PORTDIR"
+  PORTDIR=$(source /etc/portage/make.conf; echo $PORTDIR)
+  handle_result $? "$PORTDIR" ""
+  notice_msg_n "sourcing make.conf to set PKGDIR"
+  PKGDIR=$(source /etc/portage/make.conf; echo $PKGDIR)
+  handle_result $? "$PKGDIR" ""
+  notice_msg_n "sourcing make.conf to set DISTDIR"
+  DISTDIR=$(source /etc/portage/make.conf; echo $DISTDIR)
+  handle_result $? "$DISTDIR" ""
 
-# source make.conf b/c we can't use e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
-notice_msg_n "sourcing make.conf to set PORTDIR"
-PORTDIR=$(source /etc/portage/make.conf; echo $PORTDIR)
-handle_result $? "$PORTDIR" ""
-notice_msg_n "sourcing make.conf to set PKGDIR"
-PKGDIR=$(source /etc/portage/make.conf; echo $PKGDIR)
-handle_result $? "$PKGDIR" ""
-notice_msg_n "sourcing make.conf to set DISTDIR"
-DISTDIR=$(source /etc/portage/make.conf; echo $DISTDIR)
-handle_result $? "$DISTDIR" ""
+  #  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
+  notice_msg_n "sourcing ${BGon}setnodistpath${Boff} ..."
+  source /usr/bin/setnodistpath
+  handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
 
-#  source joetoo's custom setnodistpath tool, to drop distcc and ccache from PATH
-notice_msg_n "sourcing ${BGon}setnodistpath${Boff} ..."
-source /usr/bin/setnodistpath
-handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
+  notice_msg_n "   ${BMon}(readable) PATH includes:"
+  echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
 
-notice_msg_n "   ${BMon}(readable) PATH includes:"
-echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
+  _user=joe
+  build_root="/home/${_user}/My_${model}_project"
+  sshkey_rsa="/home/${_user}/.ssh/id_rsa"
+  sshkey_ecdsa="/home/${_user}/.ssh/id_ecdsa"
+  sshkey_ed25519="/home/${_user}/.ssh/id_ed25519"
+  package_category_dir="/home/${_user}/joetoo/sys-kernel"
+  github_ebuild_repo_credentials="/home/${_user}/joetoo/.git/.credentials"
+  host_dir="${build_root%/}/domU_kernel_images"
+  SSH_AUTH_SOCK="/home/${_user}/.ssh/ssh-agent.sock"
+  joetoo_kernel_webserver="raspi56403.brendler"
 
-_user=joe
-build_root="/home/${_user}/My_${model}_project"
-sshkey_rsa="/home/${_user}/.ssh/id_rsa"
-sshkey_ecdsa="/home/${_user}/.ssh/id_ecdsa"
-sshkey_ed25519="/home/${_user}/.ssh/id_ed25519"
-package_category_dir="/home/${_user}/joetoo/sys-kernel"
-github_ebuild_repo_credentials="/home/${_user}/joetoo/.git/.credentials"
-host_dir="${build_root%/}/domU_kernel_images"
-SSH_AUTH_SOCK="/home/${_user}/.ssh/ssh-agent.sock"
-joetoo_kernel_webserver="raspi56403.brendler"
+  # set in config file, pasted here just for reference
+  #build_root="/home/${_user}/My_${model}_project"
 
-sources_dir="${build_root%/}/linux"
-config_dir="${build_root%/}/kernelconfigs"
-build_dir="${build_root%/}/build"
-status_file="${build_dir%/}/status"
-model_dir="${build_dir%/}/${model}"
-model_config="${model_dir%/}/.config"
-kernel_basename="linux-${model}_joetoo_kernelimage"
-distrib_dir="${model_dir%/}/tmp/distrib"
-lib_dir="${distrib_dir%/}/lib"
-boot_dir="${distrib_dir%/}/boot"
-module_dir="<TBD>"  # to be set after make modules_install
+  sources_dir="${build_root%/}/linux"
+  config_dir="${build_root%/}/kernelconfigs"
+  build_dir="${build_root%/}/build"
+  status_file="${build_dir%/}/status"
+  model_dir="${build_dir%/}/${model}"
+  model_config="${model_dir%/}/.config"
+  kernel_basename="linux-${model}_joetoo_kernelimage"
+  distrib_dir="${model_dir%/}/tmp/distrib"
+  lib_dir="${distrib_dir%/}/lib"
+  boot_dir="${distrib_dir%/}/boot"
+  module_dir="<TBD>"  # to be set after make modules_install
 
-# create the build directory structure if it does not exist (-p makes parents)
-[[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown "${_user}":"${_user}" "${build_root}"
-[[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown "${_user}":"${_user}" "${config_dir}"
-[[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown "${_user}":"${_user}" "${build_dir}"
-[[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown "${_user}":"${_user}" "${model_dir}"
+  # create the build directory structure if it does not exist (-p makes parents)
+  [[ ! -d "${build_root}" ]]  && mkdir -pv -m 755 "${build_root}"  && chown "${_user}":"${_user}" "${build_root}"
+  [[ ! -d "${config_dir}" ]]  && mkdir -pv -m 755 "${config_dir}"  && chown "${_user}":"${_user}" "${config_dir}"
+  [[ ! -d "${build_dir}" ]]   && mkdir -pv -m 755 "${build_dir}"   && chown "${_user}":"${_user}" "${build_dir}"
+  [[ ! -d "${model_dir}" ]]   && mkdir -pv -m 755 "${model_dir}"   && chown "${_user}":"${_user}" "${model_dir}"
 
-# create the staging directory structure if it does not exist
-[[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown "${_user}":"${_user}" "${distrib_dir}"
-[[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown "${_user}":"${_user}" "${lib_dir}"
-[[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown "${_user}":"${_user}" "${boot_dir}"
-[[ "${model}" == "domU" ]] && \
-[[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown "${_user}":"${_user}" "${host_dir}"
+  # create the staging directory structure if it does not exist
+  [[ ! -d "${distrib_dir}" ]] && mkdir -pv -m 755 "${distrib_dir}" && chown "${_user}":"${_user}" "${distrib_dir}"
+  [[ ! -d "${lib_dir}" ]]     && mkdir -pv -m 755 "${lib_dir}"     && chown "${_user}":"${_user}" "${lib_dir}"
+  [[ ! -d "${boot_dir}" ]]    && mkdir -pv -m 755 "${boot_dir}"    && chown "${_user}":"${_user}" "${boot_dir}"
+  [[ "${model}" == "domU" ]] && \
+  [[ ! -d "${host_dir}" ]]    && mkdir -pv -m 755 "${host_dir}"    && chown "${_user}":"${_user}" "${host_dir}"
 
-# set up the parts of the make command
-# NOTE: this does not set the environment variables directly, it creates an array of strings
-# that will do so when executed as (part of) a command
-make_args=(
-  MAKEOPTS="${makeopts}"
-  FEATURES="${features}"
-  KERNEL_DIR="${sources_dir}"
-  KBUILD_OUTPUT="${model_dir%/}/"
-  ARCH="${arch}"
-  CROSS_COMPILE="${cross_compile}"
-)
+  # set up the parts of the make command
+  # NOTE: this does not set the environment variables directly, it creates an array of strings
+  # that will do so when executed as (part of) a command
+  make_args=(
+    MAKEOPTS="${makeopts}"
+    FEATURES="${features}"
+    KERNEL_DIR="${sources_dir}"
+    KBUILD_OUTPUT="${model_dir%/}/"
+    ARCH="${arch}"
+    CROSS_COMPILE="${cross_compile}"
+  )
 
-make_me=(make "${make_args[@]}")
+  make_me=(make "${make_args[@]}")
 
-# NOTE: now use this like --
-# "${make_me[@]}" mrproper
-# INSTALL_PATH="${boot_dir}" "${make_me[@]}" install
-# INSTALL_MOD_PATH="${distrib_dir}" "${make_me[@]}" modules_install
-# (kernel modules are always installed into a subfolder named lib/modules/)
+  # NOTE: now use this like --
+  # "${make_me[@]}" mrproper
+  # INSTALL_PATH="${boot_dir}" "${make_me[@]}" install
+  # INSTALL_MOD_PATH="${distrib_dir}" "${make_me[@]}" modules_install
+  # (kernel modules are always installed into a subfolder named lib/modules/)
 
-# get and set kernel version number and image name
-old_dir="$PWD"
-# if this is the first-run for this model, sources_dir won't exist, so assign a placeholder for kernelversion
-# after assigning/displaying config, sanity_check() will provide README-instructions
-# instead of running command_sequence
-if [[ ! -e "${sources_dir}" ]] ; then
-    version_number="<TBD>"
-else
-    notice_msg "Old pwd: ${old_dir}" && cd "${sources_dir%/}" && notice_msg "Now working in $PWD"
-    version_number=$("${make_me[@]}" -s kernelversion)
-    # domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
-    #   but for domU, I don't want the "-gentoo" part, so strip it
-fi
-# if this build is for a domU, then fix the version number
-if [ "${model}" == "domU" ] ; then
-    version_number="${version_number/-gentoo/}"
-fi
-# build the kernel_image_name
-info_msg "version_number: ${version_number}"
-kernel_image_name="${kernel_basename}-${version_number}"
+  # if this is the first-run for this model, sources_dir won't exist, so assign a placeholder for kernelversion
+  # after assigning/displaying config, sanity_check() will provide README-instructions
+  # instead of running command_sequence
+  if [[ ! -e "${sources_dir}" ]] ; then
+      version_number="<TBD>"
+  else
+      notice_msg "Old pwd: $PWD - moving to sources_dir"
+      cd "${sources_dir%/}" ; handle_result $? "PWD" "" || die "failed to cd sources_dir for kernelversion"
+      notice_msg "gettig kernel version"
+      version_number=$("${make_me[@]}" -s kernelversion)
+      handle_result $? "$version_number" "" || die "failed to get kernelversion"
+      # domU using gentoo-sources, will get version line "X.Y.Z-gentoo"
+      #   but for domU, I don't want the "-gentoo" part, so strip it
+  fi
+  # if this build is for a domU, then fix the version number
+  if [ "${model}" == "domU" ] ; then
+      notice_msg "cleaning version_number for domU"
+      version_number="${version_number/-gentoo/}"
+      handle_result $? "$version_number" "" || die "failed to clean version_number for domU"
+  fi
+  # build the kernel_image_name
+  debug_msg_n "assigning kernel_image_name"
+  kernel_image_name="${kernel_basename}-${version_number}"
+  debug_handle_result $? "$kernel_image_name" "" || die "failed to assign kernel_image_name"
 
-# build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
-#devel_dir="${my_devel_dir%/}"
-ebuild_dir="${package_category_dir%/}/${kernel_basename}"
-publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
-publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
+  # build pathnames for publish_tarball_cmd_file and publish_ebuild_cmd_file
+  #devel_dir="${my_devel_dir%/}"
+  debug_msg_n "assigning ebuild_dir"
+  ebuild_dir="${package_category_dir%/}/${kernel_basename}"
+  debug_handle_result $? "$ebuild_dir" "" || die "failed to assign ebuild_dir"
 
-notice_msg "done setup and auto-configure"
+  debug_msg_n "assigning publish_tarball_cmd_file"
+  publish_tarball_cmd_file="${build_dir%/}/publish_tarball_${kernel_image_name}"
+  debug_handle_result $? "$publish_tarball_cmd_file" "" || die "failed to assign publish_tarball_cmd_file"
+
+  debug_msg_n "assigning publish_ebuild_cmd_file"
+  publish_ebuild_cmd_file="${build_dir%/}/publish_ebuild_${kernel_image_name}"
+  debug_handle_result $? "$publish_ebuild_cmd_file" "" || die "failed to assign publish_ebuild_cmd_file"
+
+  notice_msg "returning to _old_dir"
+  cd "$_old_dir"; handle_result $? "$PWD" "" || die "fained to cd $_old_dir"
+  notice_msg "done setup and auto-configure"
 
   return $kc_ret
 }
@@ -356,6 +364,19 @@ display_config()
     return 0
 }
 
+run_make_me()
+{
+  local _old_dir=$PWD _result=0
+  notice_msg_n "moving to sources_dir"
+  cd "$sources_dir"; handle_result $? "$PWD" "" || die "failed to cd sources_dir for run_make_me"
+  "${make_me[@]}" "$@" ; _result=$?
+  notice_msg_n "returning to _old_dir"
+  cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for run_make_me"
+  return $_result
+}
+# @usage run_make_me <make_target>
+# @ex run_make_me; run_make_me modules_install install
+
 cache_commit_signing_key() {
     local _result
     sudo -u "${_user}" echo "test" > "/home/${_user}/cachetest" && \
@@ -365,7 +386,7 @@ cache_commit_signing_key() {
 }
 
 warn_oldconfig() {
-  local _result
+  local _old_dir="$PWD" _result=0
   notice_msg "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
   notice_msg "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
   notice_msg "  ${BMon}in the next step, hit <CTRL>-C to end this program${Boff}"
@@ -380,39 +401,57 @@ warn_oldconfig() {
   msg+="${BWon}   (Y: yes, run it; N: no, abort; S: skip, to next step) ${Boff}"
   yns_prompt "${msg}"
   debug_msg "response: $response"
-  case ${response:0:1} in
-    [yY] ) eval ${make_me} olddefconfig ; _result=$?;
-           handle_result $_result "\"\${make_me[@]}\" olddefconfig succeeded" "\"\${make_me[@]}\" olddefconfig failed" || return 1 ;;
-    [sS] ) notice_msg "skipping as instructed" ; return 0 ;;
-    [nN] ) error_msg "negative answer; aborting" ; return 1 ;;
-    *    ) die "invalid newanser (should never happen)" ;;
+  case "$response" in
+    [yY]* )
+        notice_msg_n "moving to sources_dir"
+        cd "$sources_dir"; handle_result $? "$PWD" "" || die "failed to cd sources_dir for warn_oldconfig"
+        notice_msg "running \"\${make_me[@]}\" olddefconfig"
+        "${make_me[@]}"  olddefconfig ; _result=$?
+        notice_msg_n "done running \"\${make_me[@]}\" olddefconfig; result:"
+        handle_result $_result "" "" || return 1
+        notice_msg_n "returning to _old_dir"
+        cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for warn_oldconfig"
+        ;;
+    [sS]* ) notice_msg "skipping as instructed" ; return 0 ;;
+    [nN]* ) error_msg "negative answer; aborting" ; return 1 ;;
+    *    ) die "invalid response (should never happen)" ;;
   esac
-  return 0
+  return $_result
 }
 
 make_mrproper() {
-    local _msg _clean_make_args=() _clean_make_me=() _result
+    local _msg _clean_make_args=() _clean_make_me=() _result _old_dir=$PWD
     # clean up both the sources and build directories
+    # set in config file, pasted here just for reference
+    #build_root="/home/${_user}/My_${model}_project"
+    # set in kernelupdate_configure(), pasted here just for reference
+    #sources_dir="${build_root%/}/linux"
+    #config_dir="${build_root%/}/kernelconfigs"
+    #build_dir="${build_root%/}/build"
+    #status_file="${build_dir%/}/status"
+    #model_dir="${build_dir%/}/${model}"
+    #model_config="${model_dir%/}/.config"
+
     notice_msg "Now working in $PWD (should be sources directory)"
 
     _clean_make_args=(
-        MAKEOPTS="${makeopts}"
-        FEATURES="${features}"
         ARCH="${arch}"
         CROSS_COMPILE="${cross_compile}"
     )
-
     _clean_make_me=(make "${_clean_make_args[@]}")
+
+    notice_msg_n "moving to sources_dir"
+    cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd $sources_dir for make_mrproper"
 
     notice_msg "Cleaning sources directory tree [ ${sources_dir} ] ..."
     "${_clean_make_me[@]}" mrproper ; _result=$?
     notice_msg_n "_clean_make_me mrproper complete; result:"
-    handle_result $_result "" "" || die "failed to _clean_make_me mrproper"
+    handle_result $_result "" "" || die "failed to clean sources tree with _clean_make_me mrproper"
 
     notice_msg "Cleaning ${model} build directory tree [ ${model_dir} ] ..."
     "${make_me[@]}" mrproper ; _result=$?
     notice_msg_n "make_me mrproper complete; result:"
-    handle_result $_result "" "" || die "failed to make_me mrproper"
+    handle_result $_result "" "" || die "failed to clean build tree with make_me mrproper"
 
     notice_msg "*Completely* cleaning ${model} build directory ..."
     # CAUTION: this will destroy your system if model_dir%/ is unassigned
@@ -428,10 +467,14 @@ make_mrproper() {
 #        rm -r -f "${model_dir%/}/"* "${model_dir%/}/".* ; _result=$?
         rm -r -f "${model_dir%/}/"* "${model_dir%/}/".[!.]* ; _result=$?
         notice_msg_n "removal complete; result:"
-        handle_result $_result "" "" || die "failed while trying to delete ${model_dir%/} filestructure"
+        handle_result $_result "" "" || die "failed to delete build tree filestructure"
     else
         die "model_dir [${model_dir%/}] appears to be null; not running rm command; exiting"
     fi
+
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for make_mrproper"
+
     return 0
 }
 
@@ -456,7 +499,7 @@ backup_config() {
 restore_backup_config() {
   local _result
   info_msg "restoring backup .config file"
-  cp -v ${config_dir%/}/.config.bak ${model_config} ; _result=$?
+  cp -v "${config_dir%/}/.config.bak" "${model_config}" ; _result=$?
   info_msg_n "done restoring backup .config file; result:"
   info_handle_result $_result "" ""  || return 1
   return $_result
@@ -475,12 +518,18 @@ save_new_config() {
 # build all targets (kernel images, modules, and dtbs) with # "${make_me[@]}"
 make_dtbs() {
     # make dtbs for this model SBC, if this is not a domU build
-    [ ! "${model:0:3}" == "dom" ] && "${make_me[@]}" dtbs
+    notice_msg_n "moving to sources_dir"
+    cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for make_dtbs"
+    local _old_dir="$PWD" _result=0
+    [[ ! "${model}" == dom* ]] && "${make_me[@]}" dtbs
     result=$? ; return $result
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for make_dtbs"
+
 }
 
 clean_distrib_dirs()
-{
+{   local _result=0
     notice_msg "${BCon}Cleaning the distribution staging directory...${Boff}"
     for x in "$lib_dir" "$boot_dir"
     do
@@ -488,19 +537,25 @@ clean_distrib_dirs()
         [ ! -d "$x" ] && mkdir -p "$x"
     done
     notice_msg "${BCon}Cleaning the tarball and ebuild publishing directory...${Boff}"
-    find "${distrib_dir}" -iname '*.tar.bz2' -delete
+    find "${distrib_dir}" -iname '*.tar.bz2' -delete && \
     find "${build_dir}" -mindepth 1 -maxdepth 1 -iname 'publish*' -delete
+    _result=$?
+    notice_msg_n "Done cleaning; result:"
+    handle_result $_result "" "" || return 1
     notice_msg "${BYon}Contents of ${distrib_dir} --"
     notice_msg "${BWon} --[ Should contain only empty boot and lib dirs ]-- ${Boff}"
     tree -a -L 2 "${distrib_dir%/}/"
-    return 0
+    return $_result
 }
 
 install_kernel()
 {
-    local _k_out_dir _k_name_list _file _find_args _result=0 _ik_FLAGGED="$FALSE"
+    local _k_out_dir _k_name_list _file _find_args _ik_FLAGGED="$FALSE"
+    local _old_dir="$PWD" _result=0
     # stage kernel
-    cd "${sources_dir}" && notice_msg "Now working in $PWD"
+    notice_msg_n "moving to sources_dir"
+    cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for install_kernel"
+
     notice_msg "${BCon}Installing the kernel ...${Boff}"
     # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
     if [[ "${model}" == "domU" ]] ; then
@@ -557,6 +612,10 @@ install_kernel()
             info_handle_result $_result "" "" || _ik_FLAGGED="$TRUE"
         done
     fi
+
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for install_kernel"
+
     [ "$_ik_FLAGGED" ] && error_msg "exiting ${FUNCNAME[0]} with error, exit status [$_result]"
     return $_result
 }
@@ -564,9 +623,10 @@ install_kernel()
 
 install_modules()
 {
-  local _result _module_paths=() _module_path_clean
+  local _result=0 _old_dir="$PWD" _module_paths=() _module_path_clean
   # stage modules
-  cd "${sources_dir}" && notice_msg "Now working in $PWD"
+  notice_msg_n "moving to sources_dir"
+  cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for install_modules"
   notice_msg "${BCon}Installing modules ...${Boff}"
   # stage modules for tarball
   INSTALL_MOD_PATH="${distrib_dir}" "${make_me[@]}" modules_install; _result=$?
@@ -582,9 +642,12 @@ install_modules()
 
   # extract the name from the path
   case "${#_module_paths[@]}" in
-    0 ) right_status 1; error_msg "No module directory found for version ${version_number}"; return 1 ;;
+    0 ) right_status 1;
+        error_msg "No module directory found for version ${version_number}";
+        return 1 ;;
     1 ) right_status 0 ;;
-    * ) right_status 0; warn_msg "Multiple module directories found! Using the first: ${_module_paths[0]}" ;;
+    * ) right_status 0;
+        warn_msg "Multiple module directories found! Using the first: ${_module_paths[0]}" ;;
   esac
 
   notice_msg_n "re-setting module_dir"
@@ -603,16 +666,17 @@ install_modules()
   notice_msg_n "Done fixing source symlink; result:"
   handle_result $_result "" ""
 
-
-  cd "$old_dir" && notice_msg "Now working in $PWD"
+  notice_msg_n "returning to _old_dir"
+  cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for install_modules"
   return 0
 }
 
 install_dtbs()
 {
-    local _result _find_cmd=() _files=()
+    local _result=0 _old_dir="$PWD" _find_cmd=() _files=()
     # note - dtb_folder and overlay_folder are relative to build/${model}/arch/${ARCH}/boot/dts/
-    cd "${sources_dir}" && notice_msg "Now working in $PWD"
+    notice_msg_n "moving to sources_dir"
+    cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for install_dtbs"
     notice_msg "${BCon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
     mkdir -p "${boot_dir%/}/dts/${dtb_folder}"
     INSTALL_DTBS_PATH="${boot_dir%/}/dts/${dtb_folder%/}/" "${make_me[@]}" dtbs_install ; _result=$?
@@ -667,20 +731,41 @@ install_dtbs()
 #    notice_msg "${BCon}Also staging the entire dts folder for tarball (just in case) ...${Boff}"
 #    mkdir -p ${boot_dir%/}/entire_source_dts
 #    cp -av ${model_dir%/}/arch/${arch}/boot/dts ${boot_dir%/}/entire_source_dts/
-#    return 0
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for install_dtbs"
+
+    return 0
 }
 
 make_tarball()
 {
-    local _result _tar_args
-    notice_msg "${BGon}Entering $distrib_dir${Boff}"
-    cd "$distrib_dir"
-    notice_msg "pwd: $(pwd)"
+    local _result=0 _old_dir="$PWD" _tar_args
+    notice_msg_n "moving to distrib_dir"
+    cd "$distrib_dir" ; handle_result $? "$PWD" "" || \
+        die "failed to cd distrib_dir [$distrib_dir] for make_tarball"
 
     # (re)identify the new module directory (in case we are resuming)
-    notice_msg_n "(re)setting module_dir"
-    module_dir=$( basename $( find "${lib_dir%/}/modules/"  -maxdepth 1  -iname "${version_number}*"  -type d ) )
-    handle_result $?  "${module_dir}" "" || die "failed to assign module_dir"
+    # identify the new module directory, by capturing module directories into an array
+    #   using globbing; the (/) at the end ensures we only match directories
+    notice_msg_n "looking for new module_dir"
+    shopt -s nullglob
+    _module_paths=( "${lib_dir%/}/modules/${version_number}"*/ )
+    shopt -u nullglob
+
+    # extract the name from the path
+    case "${#_module_paths[@]}" in
+      0 ) right_status 1;
+          error_msg "No module directory found for version ${version_number}";
+          return 1 ;;
+      1 ) right_status 0 ;;
+      * ) right_status 0;
+          warn_msg "Multiple module directories found! Using the first: ${_module_paths[0]}" ;;
+    esac
+
+    notice_msg_n "re-setting module_dir"
+    _module_path_clean="${_module_paths[0]%/}"
+    module_dir="${_module_path_clean##*/}"
+    handle_result $? "${module_dir}" "" || die "failed to assign module_dir"
 
     # create staged tar archive
     notice_msg "${BCon}Creating the tar archive ...${Boff}"
@@ -706,12 +791,14 @@ make_tarball()
     sha512sum "${kernel_image_name}.tar.bz2" > "${kernel_image_name}.tar.bz2.sha512sum"
     right_status $?
 
-    cd "$old_dir" && notice_msg "Now working in $PWD"
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for make_tarball"
     return 0
 }
 
 publish_tarball() {
     local _publish_tarball_command_sequence _result
+    local _result=0 _old_dir="$PWD"
     # Migrating joetoo-kernels from github to raspi56403.brendler as of 28 Sep 2025
     # So this script no longer needs to publish to github.  Instead it will
     # will use scp to transfer (as ${user}) these files to ${user}'s home directory
@@ -762,13 +849,15 @@ publish_tarball() {
     chown "${_user}":"${_user}" "${publish_tarball_cmd_file}" && \
     chmod +x "${publish_tarball_cmd_file}" ; right_status $?
 
-    notice_msg "leaving $(pwd)" &&  cd "${old_dir}" && notice_msg "Now working in $(pwd)"
     separator "${FUNCNAME[0]}" "(script contents)"
     sed 's|^|   |' "${publish_tarball_cmd_file}"
 
     # now actually execute the publication by running the publication command file
     separator "${FUNCNAME[0]}" "(executing script)"
     sudo -u "${_user}" "${publish_tarball_cmd_file}"
+
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for publish_tarball"
 
     _result=$? ; return $_result
 }
@@ -779,7 +868,7 @@ publish_ebuild() {
     #   (so I'm going back to an ebuild for the kernel for each model)
     # note: trap has the script delete itself after it runs
 
-    local _publish_ebuild_command_sequence=() _result
+    local _publish_ebuild_command_sequence=() _result=0 _old_dir="$PWD"
     local _NEW_TEMPLATE="$FALSE"
     local _new_template  _old_template
     local _interations=0 _interval=2 _interation_limit=500 # [to do] get more deliberate about this choice
@@ -797,6 +886,7 @@ publish_ebuild() {
         "ssh-add -l"
         "source \"${github_ebuild_repo_credentials}\""
         "echo"
+        "_old_dir=\"$PWD\""
         "cd \"${ebuild_dir%/}/\""
         "echo \"new PWD: \${PWD}\""
         "git pull"
@@ -955,6 +1045,9 @@ publish_ebuild() {
     separator "now executing commands in ${publish_ebuild_cmd_file}... " $(hostname)
     sudo -u "${_user}" "${publish_ebuild_cmd_file}"
 
+    notice_msg_n "returning to _old_dir"
+    cd "$old_dir" ; handle_result $? "$PWD" "" || die "failed to cd _old_dir for publish_ebuild"
+
     _result=$? ; return $_result
 }
 
@@ -987,6 +1080,8 @@ make_sources_message() {
 }
 
 sanity_check() {
+    local _result=0
+    local _do_first_prompt
     # veryfy the sanity of the combination of arguments on the command line
     ### this is carried over from jus example, but it is not used here (yet)
 
@@ -996,7 +1091,6 @@ sanity_check() {
     #   error_msg "Dangerous option combination: noninteractive and resume" && \
     #   usage && exit 1
 
-    local _do_first_prompt
     info_msg "running sanity_check() ..."
     info_msg "sources_dir: ${sources_dir}"
     if [[ $starting_step -eq 0 ]]
@@ -1012,14 +1106,15 @@ sanity_check() {
             # confirm the current configuration before executing main script
             answer=""
             yn_prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${BCon}Continue? ${Boff}?"
-            [[ ! "$answer" == [Yy] ]] && return 1
+            [[ ! "$answer" == [Yy]* ]] && return 1
         fi
     else
         # resume operation at some step other than 0
-        _do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ] --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}\n"
+        _do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ]"
+        _do_first_prompt+=" --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}\n"
         _do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
         prompt "${_do_first_prompt}\n${BCon} Continue? ${Boff}?"
-        [[ ! "$answer" == [yY] ]] && return 1
+        [[ ! "$answer" == [yY]* ]] && return 1
     fi
     return 0
 }
