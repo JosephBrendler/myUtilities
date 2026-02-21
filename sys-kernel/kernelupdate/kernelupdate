@@ -91,17 +91,17 @@ config_parmlist="_user"
 config_parmlist+=" model arch cross_compile makeopts features"
 config_parmlist+=" image kernel lv.dtb_folder lv.overlay_folder lv.build_root"
 
-auto_parmlist="lv.model_dir lv.KBUILD_OUTPUT lv.KERNEL_DIR lv.model_config lv.package_category_dir"
-auto_parmlist+=" lv.github_ebuild_repo_credentials SSH_AUTH_SOCK lv.ebuild_dir lv.status_file"
-[[ "${model:0:3}" !=  "dom" ]] && auto_parmlist+=" lv.host_dir"
+auto_parmlist="rlv.model_dir rlv.KBUILD_OUTPUT rlv.KERNEL_DIR rlv.model_config lv.package_category_dir"
+auto_parmlist+=" lv.github_ebuild_repo_credentials SSH_AUTH_SOCK rlv.ebuild_dir rlv.status_file"
+[[ "${model:0:3}" !=  "dom" ]] && auto_parmlist+=" rlv.host_dir"
 auto_parmlist+=" BREAK sources_dir version_number lv.build_root lv.config_dir lv.build_dir"
 auto_parmlist+=" kernel_basename lv.kernel_image_name"
 
-output_parmlist="lv.distrib_dir lv.boot_dir lv.module_dir lv.lib_dir lv.host_dir"
-output_parmlist+=" lv.publish_tarball_cmd_file"
-output_parmlist+=" lv.publish_ebuild_cmd_file"
+output_parmlist="rlv.distrib_dir rlv.boot_dir rlv.module_dir rlv.lib_dir"
+output_parmlist+=" rlv.publish_tarball_cmd_file"
+output_parmlist+=" rlv.publish_ebuild_cmd_file"
 output_parmlist+=" joetoo_kernel_webserver"
-copypaste_parmlist="lv.make_model lv.manual_prefix lv.make_me"
+copypaste_parmlist="rlv.make_args_str rlv.make_me_str rlv.km_alias"
 
 header_varlist="$varlist"
 varlist="${header_varlist} ${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
@@ -185,7 +185,7 @@ EOF
 kernelupdate_configure()
 { # 20260218 - this function created to defer this initialization of global-scope variables
   # untill after app_configure() has run, so that it will properly set variables and not immediately erase them
-  local kc_ret=0 _old_dir=$PWD
+  local kc_ret=0 _old_dir=$PWD _msg=""
 
   #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
 
@@ -205,8 +205,9 @@ kernelupdate_configure()
   source /usr/bin/setnodistpath
   handle_result $? "" "" || die "failed to source /usr/bin/setnodistpath"
 
-  notice_msg_n "   ${BMon}(readable) PATH includes:"
-  echo_msg "${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
+  _msg="${BMon}(readable) PATH includes: "
+  _msg+="${BWon}$(printf '%s' $PATH | tr ':' ' ')${Boff}"
+  info_msg_n "$_msg" ; info_echo_msg  # _msg_n to wrap; _echo_msg to add newline
 
   _user=joe
   build_root="/home/${_user}/My_${model}_project"
@@ -258,8 +259,16 @@ kernelupdate_configure()
     ARCH="${arch}"
     CROSS_COMPILE="${cross_compile}"
   )
-
+  # note the alternative format make_me=("${make_args[@]}" make) is also valid but would use the args
+  # as environment variables that could be overridden by the Makefile.  this (below) is more reliable
   make_me=(make "${make_args[@]}")
+  # Note: %q tells printf to quote each argument in a format that can be reused as shell input
+  make_args_str=$(printf "%q " "${make_args[@]}")
+  make_me_str=$(printf "%q " "${make_me[@]}")
+
+  km_alias="alias km='"         # set up alias with single quote opening
+  km_alias+="${make_me_str% }"  # append make string and strip trailing space
+  km_alias+="'"                 # append closing single quote
 
   # NOTE: now use this like --
   # "${make_me[@]}" mrproper
@@ -273,7 +282,8 @@ kernelupdate_configure()
   if [[ ! -e "${sources_dir}" ]] ; then
       version_number="<TBD>"
   else
-      notice_msg_n "Old pwd: [$PWD]; moving to sources_dir"
+      notice_msg "Old pwd: [$PWD]"
+      notice_msg_n "moving to sources_dir"
       cd "${sources_dir%/}" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for kernelversion"
       notice_msg_n "gettig kernel version"
       version_number=$("${make_me[@]}" -s kernelversion)
@@ -337,11 +347,11 @@ display_config()
     separator "$(hostname) $PN-$BUILD" "(manual build tips)"
     notice_msg "${Mon}If building manually${Boff} --"
     notice_msg "  ${Mon}first${Boff} cd ${sources_dir}"
-    notice_msg "  ${Mon}then${Boff} copy/paste the make_me variable assignment --"
-    notice_msg "  ${Gon}make_me=(make \"${make_args[@]}\")${Boff}"
+    notice_msg "  ${Mon}then${Boff} copy/paste the km_alias variable assignment below --"
+    notice_echo_msg "  ${Gon}$km_alias${Boff}"
     echo
     notice_msg "${Mon}then use e.g.${Boff} --"
-    _msg1='"${make_me[@]}"'
+    _msg1='km'
     _msg2="./scripts/kconfig/merge_config.sh .config ${Boff}<path-to-config-fragment>"
     notice_msg "${Gon}${_msg1} ${_msg2}${Boff}"
     notice_msg "or"
@@ -355,7 +365,11 @@ display_config()
     notice_msg "or"
     _msg2='install'
     _msg0='INSTALL_PATH="${boot_dir}"'
-    notice_msg "${_msg0} ${Gon}${_msg1} ${_msg2}${Boff}"
+    notice_msg "${Gon}${_msg1} ${_msg0} ${_msg2}${Boff}"
+    _msg0="${Con}# note: in Bash, aliases are expanded only when they are the first word of a command."
+    _msg0+=" So, when manually adding environment variables like INSTALL_PATH in this example, place them"
+    _msg0+=" AFTER the alias, as shown here"
+    notice_msg_n "$_msg0"; notice_echo_msg  # _msg_n to wrap; _echo_msg to add newline
     echo
     notice_msg "or just"
     notice_msg "${Gon}${_msg1}${Boff}"
@@ -1092,7 +1106,7 @@ sanity_check() {
 
     info_msg "running sanity_check() ..."
     info_msg "sources_dir: ${sources_dir}"
-    if [[ $starting_step -eq 0 ]]
+    if [[ $starting_step -eq 1 ]]
     then
         # if a sources directory has not been linked, advise the user about this
         if [[ ! -e "${sources_dir}" ]]
@@ -1104,15 +1118,18 @@ sanity_check() {
         else
             # confirm the current configuration before executing main script
             answer=""
-            yn_prompt "${BYon}Starting ${PN}.\n Please confirm configuration above.\n${BCon}Continue? ${Boff}?"
+            _do_first_prompt="${BMon}Starting ${PN} at step [ ${BWon}$starting_step${BMon} ]"
+            _do_first_prompt+=" --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}\n"
+            _do_first_prompt+="   ${BYon}Please verify configuration above.${Boff}"
+            yn_prompt "${_do_first_prompt}\n${BCon}   Continue? ${Boff}?"
             [[ ! "$answer" == [Yy]* ]] && return 1
         fi
     else
         # resume operation at some step other than 0
-        _do_first_prompt="${BMon}Resuming at step [ ${BWon}$starting_step${BMon} ]"
+        _do_first_prompt="${BMon}Resuming ${PN} at step [ ${BWon}$starting_step${BMon} ]"
         _do_first_prompt+=" --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}\n"
-        _do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
-        prompt "${_do_first_prompt}\n${BCon} Continue? ${Boff}?"
+        _do_first_prompt+="   ${BYon}Please verify configuration above.${Boff}"
+        yn_prompt "${_do_first_prompt}\n${BCon}   Continue? ${Boff}?"
         [[ ! "$answer" == [yY]* ]] && return 1
     fi
     return 0
