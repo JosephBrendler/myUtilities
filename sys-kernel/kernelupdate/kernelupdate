@@ -292,7 +292,7 @@ kernelupdate_configure()
       #   but for domU, I don't want the "-gentoo" part, so strip it
   fi
   # if this build is for a domU, then fix the version number
-  if [ "${model}" == "domU" ] ; then
+  if [[ "${model}" == "domU" ]] ; then
       notice_msg "cleaning version_number for domU"
       version_number="${version_number/-gentoo/}"
       handle_result $? "$version_number" "" || die "failed to clean version_number for domU"
@@ -468,7 +468,7 @@ make_mrproper() {
 
     notice_msg "*Completely* cleaning ${model} build directory ..."
     # CAUTION: this will destroy your system if model_dir%/ is unassigned
-    if [ ! -z "${model_dir%/}" ] ; then
+    if [[ ! -z "${model_dir%/}" ]] ; then
         answer=""
         _msg="${BYon}Caution: About to remove model_dir [${model_dir%/}] filestructure with"
         _msg+=" ${BRon}rm -r -f ${model_dir%/}/* ${model_dir%/}/.*${Boff} "
@@ -547,7 +547,7 @@ clean_distrib_dirs()
     for x in "$lib_dir" "$boot_dir"
     do
         [[ -d "$x" ]] && find "${x%/}/" -mindepth 1 -iname '*' -delete
-        [ ! -d "$x" ] && mkdir -p "$x"
+        [[ ! -d "$x" ]] && mkdir -p "$x"
     done
     notice_msg "${BCon}Cleaning the tarball and ebuild publishing directory...${Boff}"
     find "${distrib_dir}" -iname '*.tar.bz2' -delete && \
@@ -564,7 +564,7 @@ clean_distrib_dirs()
 install_kernel()
 {
     local _k_out_dir _k_name_list _file _find_args _ik_FLAGGED="$FALSE"
-    local _old_dir="$PWD" _result=0
+    local _old_dir="$PWD" _result=0 _ik_ret=0
     # stage kernel
     notice_msg_n "moving to sources_dir"
     cd "$sources_dir" ; handle_result $? "$PWD" "" || die "failed to cd sources_dir for install_kernel"
@@ -572,25 +572,31 @@ install_kernel()
     notice_msg "${BCon}Installing the kernel ...${Boff}"
     # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
     if [[ "${model}" == "domU" ]] ; then
-        INSTALL_PATH="${host_dir}" "${make_me[@]}" install
-        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install
+        info_msg "installing kernel to host_dir [$host_dir]"
+        INSTALL_PATH="${host_dir}" "${make_me[@]}" install ; _result=$?
+        info_msg_n "done installing kernel to host_dir; result:"
+        info_handle_result $_result "" "" || _ik_ret=$(( _ik_ret + 1 ))
+        info_msg "installing kernel to boot_dir [$boot_dir]"
+        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install ; _result=$?
+        info_msg_n "done installing kernel to host_dir; result:"
+        info_handle_result $_result "" "" || _ik_ret=$(( _ik_ret + 2 ))
     else
         # Otherwise install to boot_dir for tarball. Start with make install
         info_msg "installing with INSTALL_PATH ... make_me"
         echo_e_msg_n "${BWon}"
-        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install | sed 's|^|    |' ; _result=$(( _result + 1 ))
+        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install | sed 's|^|    |' ; _result=$?
         echo_e_msg_n "${Boff}"
         info_msg_n "done installing with INSTALL_PATH ... make_me; result:"
-        info_handle_result $_result "" "" || _ik_FLAGGED="$TRUE"
+        info_handle_result $_result "" "" || { _ik_FLAGGED="$TRUE"; ik_ret=$(( _ik_ret + 1 )) ; }
         #   also copy the proper image manually to the proper deployed kernel name
         #   as specified in the confg file
         info_msg "installing image [$image] with cp"
         echo_e_msg_n "${BMon}"
         cp -av "${model_dir%/}/arch/${arch}/boot/${image}" \
-             "${boot_dir%/}/${kernel}-${version_number}" | sed 's|^|    |'  ; _result=$(( _result + 2 ))
+             "${boot_dir%/}/${kernel}-${version_number}" | sed 's|^|    |' ; _result=$?
         echo_e_msg_n "${Boff}"
         info_msg_n "done installing image with cp; result:"
-        info_handle_result $_result "" "" || _ik_FLAGGED="$TRUE"
+        info_handle_result $_result "" "" || { _ik_FLAGGED="$TRUE"; _ik_ret=$(( _ik_ret + 2 )) ; }
         # for extra assurance, copy all kernels found here, named as built
         # ${image} specified in config file should be one of --
         #  "Image" (uncompressed, raw kernel binary)
@@ -619,10 +625,11 @@ install_kernel()
         for _file in "${_k_files[@]}" ; do
             debug_msg "${BWon}copying file [$_file]${Boff}"
             echo_e_msg_n "${BMon}"
-            cp -av "${_file}" "${boot_dir%/}/" | sed 's|^|    |' ; _result=$(( _result + 1 ))
+            cp -av "${_file}" "${boot_dir%/}/" | sed 's|^|    |' ; _result=$?
             echo_e_msg_n "${Boff}"
             info_msg_n "done staging other kernel image formats; result:"
-            info_handle_result $_result "" "" || _ik_FLAGGED="$TRUE"
+            info_handle_result $_result "" "" || { _ik_FLAGGED="$TRUE"; _ik_ret=$(( _ik_ret + 1 )) ; }
+
         done
     fi
 
@@ -668,14 +675,18 @@ install_modules()
   module_dir="${_module_path_clean##*/}"
   handle_result $? "${module_dir}" "" || die "failed to assign module_dir"
 
-  # fix the build and source symlinks
-  notice_msg "${BCon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
-  cd "${lib_dir%/}/modules/${module_dir}" && notice_msg "Now working in $PWD"
-  rm -v build 2>/dev/null && ln -snfv /usr/src/linux build ; _result=$?
+  # fix the build and source symlinks (rm old links with -f so it wont error if they don't exist)
+  notice_msg_n "moving to module_dir"
+  cd "${lib_dir%/}/modules/${module_dir}"
+  handle_result $? "$PWD" "" || die "failed to cd module_dir for install_modules"
+  notice_msg_n "${BCon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/build symlink...${Boff}"
+  notice_echo_msg    # _msg_n to wrap; _echo_msg to add newline
+  rm -f -v build 2>/dev/null && ln -snfv /usr/src/linux build ; _result=$?
   notice_msg_n "Done fixing build symlink; result:"
   handle_result $_result "" ""
-  notice_msg "${BCon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/source symlink...${Boff}"
-  rm -v source 2>/dev/null && ln -snfv /usr/src/linux source ; _result=$?
+  notice_msg_n "${BCon}Fixing the ${lib_dir%/}/modules/${module_dir%/}/source symlink...${Boff}"
+  notice_echo_msg    # _msg_n to wrap; _echo_msg to add newline
+  rm -f -v source 2>/dev/null && ln -snfv /usr/src/linux source ; _result=$?
   notice_msg_n "Done fixing source symlink; result:"
   handle_result $_result "" ""
 
@@ -707,7 +718,13 @@ install_dtbs()
     )
     # then execute that array
     mapfile -d '' -t _files < <("${_find_cmd[@]}")
-    cp -av "${_files[@]}" "${boot_dir%/}/dts/${dtb_folder%/}/" ; _result=$?
+    if (( ${#_files[@]} > 0 )); then
+        cp -av "${_files[@]}" "${boot_dir%/}/dts/${dtb_folder%/}/" ; _result=$?
+    else
+        warn_msg "no dtb files found"
+        warn_msg "your kernel sources may not properly support $model"
+        confirm_continue_or_exit
+    fi
     notice_msg_n "Done copying dtbs; result:"
     handle_result $_result "" ""
 
@@ -717,9 +734,16 @@ install_dtbs()
         find "${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/"
         -maxdepth 1 -mindepth 1
         -type f -iname '*.dtb*' -and -not -iname '\.*'
+        -print0                   # Null separator
     )
     mapfile -d '' -t _files < <("${_find_cmd[@]}")
-    cp -av "${_files[@]}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; _result=$?
+    if (( ${#_files[@]} > 0 )); then
+        cp -av "${_files[@]}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; _result=$?
+    else
+        warn_msg "no overlay files found"
+        warn_msg "your kernel sources may not properly support $model"
+        confirm_continue_or_exit
+    fi
     notice_msg_n "Done copying overlays; result:"
     handle_result $_result "" ""
 
@@ -728,15 +752,26 @@ install_dtbs()
         find "${model_dir%/}/arch/${arch}/boot/dts/${overlay_folder%/}/"
         -maxdepth 1 -mindepth 1
         -type f -iname 'README*'
+        -print0                   # Null separator
     )
     mapfile -d '' -t _files < <("${_find_cmd[@]}")
-    cp -av "${_files[@]}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; _result=$?
+    if (( ${#_files[@]} > 0 )); then
+        cp -av "${_files[@]}" "${boot_dir%/}/dts/${overlay_folder%/}/" ; _result=$?
+    else
+        warn_msg "no overlay README file found"
+    fi
     notice_msg_n "Done copying overlay README files; result:"
     handle_result $_result "" ""
 
     # copy the one dtb file we need up to boot
     notice_msg "${BCon}Staging the primary dtb file for tarball ...${Boff}"
-    cp -av "${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb" "${boot_dir%/}/" ; _result=$?
+    if [[ -f "${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb" ]]; then
+        cp -av "${boot_dir%/}/dts/${dtb_folder%/}/${model}.dtb" "${boot_dir%/}/" ; _result=$?
+    else
+        warn_msg "primary dtb file not found"
+        warn_msg "your kernel sources may not properly support $model"
+        confirm_continue_or_exit
+    fi
     notice_msg_n "Done staging primary dtb file for tarball; result:"
     handle_result $_result "" ""
 
@@ -781,7 +816,7 @@ make_tarball()
     handle_result $? "${module_dir}" "" || die "failed to assign module_dir"
 
     # create staged tar archive
-    notice_msg "${BCon}Creating the tar archive ...${Boff}"
+    notice_msg "${BCon}Creating the tar archive (tarball) ...${Boff}"
 
     # create tarball from staged contents; don't include kernel sources
     _tar_args=(
@@ -792,8 +827,9 @@ make_tarball()
         "./lib"
     )
     debug_msg "tar_command: [tar ${_tar_args[@]}]"
-    tar "${_tar_args[@]}" ; _result=$?
-    handle_result "$_result" "Complete" ""
+    tar "${_tar_args[@]}" | sed 's|^|   |' ; _result=$?
+    notice_msg_n "Done creating tarball; result:"
+    handle_result "$_result" "Complete" "" || die "failed to create tarball"
     if [ "$_result" -eq 0 ]; then
       notice_msg "Your tarball is located in the ${BCon}${distrib_dir}${BYon} directory${Boff}"
     else
@@ -1077,7 +1113,7 @@ make_sources_message() {
     info_msg "running make_sources_message() ..."
     info_msg "config_dir: ${config_dir}"
     info_msg_n "README-instructions file"
-    [ -f "${config_dir%/}/README-instructions" ]
+    [[ -f "${config_dir%/}/README-instructions" ]]
     info_handle_result $? "found" "not found" || return 1
 
     # read contents of instructions into array, excluding lines beginning with ##
@@ -1094,7 +1130,7 @@ make_sources_message() {
 
 sanity_check() {
     local _result=0
-    local _do_first_prompt
+    local _do_first_prompt _msg
     # veryfy the sanity of the combination of arguments on the command line
     ### this is carried over from jus example, but it is not used here (yet)
 
@@ -1126,9 +1162,10 @@ sanity_check() {
         fi
     else
         # resume operation at some step other than 0
-        _do_first_prompt="${BMon}Resuming ${PN} at step [ ${BWon}$starting_step${BMon} ]"
-        _do_first_prompt+=" --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}\n"
-        _do_first_prompt+="   ${BYon}Please verify configuration above.${Boff}"
+        _msg="${BMon}Resuming ${PN} at step [ ${BWon}$starting_step${BMon} ]"
+        _msg+=" --[ ${BGon}$(_get_entry "$starting_step" 1)${BMon} ]--${Boff}"
+        notice_msg "$_msg"
+        _do_first_prompt+="${BYon}Please verify configuration above.${Boff}"
         yn_prompt "${_do_first_prompt}\n${BCon}   Continue? ${Boff}?"
         [[ ! "$answer" == [yY]* ]] && return 1
     fi
