@@ -10,8 +10,8 @@
 # (3) You must first have cloned/linked the kernel sources <project_root>/linux directory
 #
 # (4) you can either "seed" build dir with .config or interactively (manually)
-# make one with, e.g. --
-    eval ${make_me} imx_v8_defconfig
+# make one with, e.g. using the km alias explained in the kernelupdate config screen --
+    km imx_v8_defconfig
 #
 # (5) first run of kernelupdate for any given "model" creates directory structure
 #
@@ -36,10 +36,14 @@
   # ignore (deprecated) ./update-ebuild.sh   ## created for  EGIT based ebuild,
   # but we're now downloading, and making tarball directly
 
-  # See https://www.raspberrypi.com/documentation/computers/linux_kernel.html#choosing_sources
-  # browse https://www.kernel.org/ to determine latest stable version of kernel
-  # browse https://github.com/raspberrypi/linux.git and note available branches and tags
-    branch_version=X.Z   ## e.g. 6.12
+
+# See https://www.raspberrypi.com/documentation/computers/linux_kernel.html#choosing_sources
+# Manually clone raspberry-pi sources
+# browse https://www.kernel.org/ to determine latest stable version of kernel
+# browse https://github.com/raspberrypi/linux.git and note available branches and tags
+    _user=joe               # example
+    model=bcm2712-rpi-5-b   # example
+    branch_version=X.Z      # example 6.12
     git clone --depth 1 --branch rpi-${branch_version}.y https://github.com/raspberrypi/linux.git linux-${branch_version}.y
 
     cd linux-${branch_version}.y
@@ -47,32 +51,34 @@
     cd ..
     mv linux-${branch_version}.y linux-${kernelversion}-raspi
 
-  # then see README-tar-command
+# then see README-tar-command
     tar --exclude '.git*' -cvjpf linux-${kernelversion}-raspi.tbz2 linux-${kernelversion}-raspi
 
-  # create link for kernelupdate use
+# create link for kernelupdate use
     ln -snf linux-${kernelversion}-raspi linux
 
-  # scp to raspi56406 to publish
+# create sha512sum
+    sha512sum linux-${kernelversion}-raspi.tbz2 > linux-${kernelversion}-raspi.tbz2.sha512sum
+
+# scp tarball and sha512sum to raspi56406 to publish
     scp linux-${kernelversion}-raspi.tbz2 raspi56406:/home/${_user}/
+    scp linux-${kernelversion}-raspi.tbz2.sha512sum raspi56406:/home/${_user}/
 
-  # now go to raspi56406 and move (as root) from /home/${_user}/ to /var/www/localhost/htdocs/raspi-sources/
-    cp /home/${_user}/linux-${kernelversion}-raspi.tbz2 /var/www/localhost/htdocs/raspi-sources/
-    rm /home/${_user}/linux-${kernelversion}-raspi.tbz2
+# now go to raspi56406 and verify that move_joetoo_sources_to_webserver (cron job)
+# has moved tarball and sha512sum from /home/${_user}/ to /var/www/localhost/htdocs/raspi-sources/
+# alternatively, use curl to look for the file remotely
+    url="https://raspi56406.brendler/raspi-sources/linux-${kernelversion}-raspi.tbz2"
+    if curl -sfI "$url" > /dev/null; then echo "File exists!"; else echo "File not found (or server error)."; fi
 
-  # manually update the new raspi-sources ebuild
-    cd /home/${_user}/joetoo/sys-kernel/raspi-sources/
-    cp ${latest-version} ${new-version}
-
-  # now go to build-workstation and run (as root)
-    eselect kernelupdate list/set
-
-  # link the new sources and seed a .config file
+# (as _user) link the new sources and seed a .config file from a running system
     cd ~/My_${model}_project/
-    ln -snf /home/${_user}/raspi-sources/-<version> linux
-    cp kernelconfigs/<myconfig> build/${model}/.config
+    ln -snf /home/${_user}/raspi-sources/linux linux
+    cd kernelconfigs/
+    scp raspi56407:/boot/config-* ./
+    cp kernelconfigs/<myrunningconfig> build/${model}/.config
 
-  # now run kernelupdate
+# now (as root) run kernelupdate
+    eselect kernelupdate list/set
     kernelupdate
 
 # For rockchip, amlogic, and nxp/freescale kernels, we browse to find the same specific kernel that
