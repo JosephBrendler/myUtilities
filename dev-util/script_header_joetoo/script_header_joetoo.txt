@@ -17,18 +17,20 @@ notice_msg "That's all I have to say about that"
 # @note other script header modules are available as USE flag selections in the dev-util/script_header_joetoo package
 #-----[ metadata tagging key ]------------------------------------------------
 # @note
-# @note lines below starting '# @xxx' are interpreted by summarize_header as metadata
-# @usage @usage describes the usage syntax, options, and arguments for a function
-# @args @args defines positional parameters ($1, $2, etc) and their roles
-# @vars @vars identifies global variables required or modified by the function
-# @ret @ret identifies value(s) returned and/or emitted
-# @deps @deps lists function, script, or package dependencies
-# @req @req specifies prerequisites or state requirements (e.g., must be root)
-# @rule @rule outlines logic constraints or mandatory behaviors
-# @note @note provides administrative or general notes for the user or maintainer
-# @warn @warn provides administrative warning for user or maintainer
-# @ex @ex provides a usage example (standardized for single-line compatibility)
-# @cont @cont identifies a continuation of the previous metadata tag
+# @note summarize_header interprets lines starting '# @xxx' as metadata
+# @note @usage describes syntax, options, and arguments for a function
+# @note @args defines positional parameters ($1, etc) and their roles
+# @note @vars names global variables required or modified by the function
+# @note @ret identifies value(s) returned and/or emitted
+# @note @deps lists function, script, or package dependencies
+# @note @req specifies prerequisites or state requirements
+# @note @rule outlines logic constraints or mandatory behaviors
+# @note @note provides administrative or general notes for user or maintainer
+# @note @warn provides administrative warning for user or maintainer
+# @note @ex provides a usage example
+# @note @cont identifies a continuation of the previous metadata tag
+# @note metadata lines should be concise and less than 80 columns if possible
+# @cont if more than one line must be used, it can be continued w @cont
 
 # @note =====[ Section 0: Global Instructions ]===========================================
 # @note
@@ -1394,27 +1396,6 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
 #   it respects the r_margin and space required for right_status on the right margin of the
 #   last line of the message
 
-_slice_word() # (POSIX) helper for smart_wrap_n - slice a word that wont fit
-{
-  # NOTE: all variables are of higer scope - this function was created only
-  #   because smart_wrap_n has three places where this logic is needed
-  # The current word wont fit between smart_wrap_n's margins, so we have to
-  # slice it and put remainder back in the stack of words for next loop
-  # use printf with format string '%.*s' (. [precision] for string is lenght) * means take arg1
-  _sw_slice=$(printf '%.*s' "$_sw_slice_len" "$_sw_x_peak")
-  _sw_remainder="${_sw_x_peak#"${_sw_slice}"}"
-  shift                                          # remove the big word from the stack
-  printf '%b' "$_sw_slice"                       # print the slice
-  set -- "$_sw_remainder" "$@"                   # push the remainder back onto the stack
-  printf '\n%b' "$(repeat ' ' "$_sw_l_margin")"  # indent to left margin
-  _sw_line_len=$_sw_l_margin                     # reset how much has been rendered
-  _sw_FIRST_WORD=$TRUE
-  _sw_VERY_FIRST_WORD=$FALSE
-}
-# @usage _slice_word
-# @args none
-# @rules this is a helper for smart_wrap_n, not intended for direct use
-
 ask_pass() # (POSIX) silently read password equivalent to 'read -s -p'
 { # @usage ask_pass "prompt_string"
   # @args $1: prompt string (e.g., "Password: ")
@@ -2212,72 +2193,143 @@ echo_e_msg()  # (POSIX) interpreted echo with optional logging
 # @note right_status and handle_result operate at notice level of severity
 # @note but they can be "demoted" to info or debg severity with d_do
 
-notice_msg_n()  # (POSIX) notice-level (severity 5) message without newline
+_maybe_smart_wrap_n() # (POSIX) logic similar to emit(); decide whether a caller should next call smart_wrap_n
+( mask=$1; shift  # first positiona parameter is the bitmask
+  # extract boolean flags using bitwise shift, AND to read the nth most significant bit
+  # this is the value extracted from the bit location(s) pointed to by the glogals of similar name above
+  # _STDOUT, _STDERR, _LOG, _INTERPRET, _NEWLINE, _TIMESTAMP bits are N/A to this decision
+  # _PREFIX, _PRIFIX_BOLD, and _PREFIX_COLOR are N/A to this decision
+  _CONDITIONAL=$((   ( mask >> 6 )  & 1 ))
+  _FORCE=$((         ( mask >> 7 )  & 1 ))
+  _SILENCE=$((       ( mask >> 8 )  & 1 ))
+  _SEVERITY=$((      ( mask >> 24 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
+#  d_do '
+#    echo "_CONDITIONAL: $_CONDITIONAL"
+#    echo "_FORCE: $_FORCE"
+#    echo "_SILENCE: $_SILENCE"
+#    echo "_SEVERITY: $_SEVERITY"
+#  ' "$debug"
+  # INTERACTIVE mode overrides SILENCE
+  [ "$INTERACTIVE" ] && _SILENCE=0
+  # otherwise early exit if _SILENCE is set
+  [ "$_SILENCE" -eq 1 ] && exit 1
+  # apply verbosity rules (unless _FORCE)
+  if [ "$_CONDITIONAL" -eq 1 ] && [ "$_FORCE" -eq 0 ]; then
+    # compare severity to global verbosity (lower severity number = more important)
+    if [ "$_SEVERITY" -gt "$verbosity" ]; then
+      exit 2
+    fi
+  fi
+  # this function's body is a subshell, so not doing unset -v (all will be discarded on exit)
+  # if we made it here, then we dont have a reason NOT to smart_wrap_n
+  # note: like emit(), this functions body is a subshell,
+  #   so unsets are not needed and exit will not terminate the parent
+  exit 0
+)
+# @usage _maybe_smart_wrap_n <bitmask> [args...]
+# @args $1: bitmask constructed by caller (policy + severity)
+# @args $@: optional args passed through to smart_wrap_n by caller
+# @vars verbosity, INTERACTIVE (global policy controls)
+# @ret status: 0 = caller SHOULD invoke smart_wrap_n; non‑zero = skip it
+# @deps emit() semantics (policy mirror), global bitmask constants
+# @req caller must supply a valid bitmask with severity and policy bits set
+# @rule mirrors emit() policy for terminal output: INTERACTIVE overrides
+# @rule SILENCE suppresses wrapping unless INTERACTIVE is set
+# @rule CONDITIONAL obeys verbosity unless FORCE is set
+# @note function body runs in a subshell; exit codes do not affect caller
+# @note smart_wrap_n is NOT called here; caller must invoke it on success
+# @warn only evaluates terminal‑output policy; logging policy is ignored
+
+notice_msg_n()  # (POSIX) info-level (severity 6) message without newline
 { nmn_ret=0; _msg="$*"; _len=$(get_msg_len "$_msg"); _tw=$(termwidth)
-  _status_width=6; _buffer=4; _col=3; _indent=3           # "[ Ok ]" = 6 || " * " = 3
-  _threshold=$(( _tw - _status_width - _buffer - _col ))  # prep to leave room for right_status
-  [ "$_threshold" -lt 0 ] && _threshold=0                 # clamp to zero if negative
-  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
-  _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
+  _status_width=6; _buffer=4; _col=3; _indent=3
+  _threshold=$(( _tw - _status_width - _buffer - _col ))
+  [ "$_threshold" -lt 0 ] && _threshold=0
+  # set first bitmask fairly standard, for short messages (_sm_)
+  #   no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
+  _sm_bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
     | ( notice << SEVERITY_SHIFT ) ))
-  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
-  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
-  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
-  # enforce conditionality BEFORE deciding wrap behavior
-  if [ ! "$DEBUG" ] && [ "$verbosity" -lt "$notice" ]; then return 0; fi
-  # if there wouldnt be room for right_status, then smart-wrap, else just use emit()
-  if [ "$_len" -gt "$_threshold" ]; then
-    emit "$_bitmask" ""  # orepend a prefix and let smart_wrap_n do the rest
-    smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"
+  [ "$LOGGING" ] && _sm_bitmask=$(( _sm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _sm_bitmask=$(( _sm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _sm_bitmask=$(( _sm_bitmask | SILENCE ))
+  # set second bitmask - for long messages (_lm_) send to emit so it can decide
+  #   no NEWLINE, no PREFIX/COLOR, yes conditional and severity so emit can
+  #   determine how chatty the logs are (verbosity vs severity picks color for _msg_n)
+  _lm_bitmask=$((  CONDITIONAL | ( notice << SEVERITY_SHIFT ) ))
+  [ "$LOGGING" ] && _lm_bitmask=$(( _lm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _lm_bitmask=$(( _lm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _lm_bitmask=$(( _lm_bitmask | SILENCE ))
+  # if there is room for right_status, then use short-message protocol - just use emit()
+  if [ "$_len" -le "$_threshold" ]; then
+    emit "$_sm_bitmask" "$_msg"
   else
-    emit "$_bitmask" "$_msg"
+    emit "$_sm_bitmask" ""          # prefix only
+    emit "$_lm_bitmask" "$_msg"     # full message for logging
+    if _maybe_smart_wrap_n "$_sm_bitmask"; then smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"; fi
   fi ; nmn_ret=$?
-  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold _bitmask
+  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold
+  unset -v _sm_bitmask _lm_bitmask
   return $nmn_ret
 }
 # @usage notice_msg_n "message text"
 # @args $*: message string (quoted recommended)
-# @vars LOGGING, DEBUG, QUIET (pseudo-booleans controlling policy)
-# @ret emitted: notice-level prefix + message (no newline)
-# @ret status: exit status of emit()
-# @deps emit, smart_wrap_n, get_msg_len, termwidth
+# @vars LOGGING, DEBUG, QUIET, INTERACTIVE, verbosity (policy controls)
+# @ret emitted: notice-level prefix + wrapped or unwrapped message (no newline)
+# @ret status: exit status of emit() or smart_wrap_n()
+# @deps emit, smart_wrap_n, _maybe_smart_wrap_n, get_msg_len, termwidth
+# @req caller must supply a printable message; terminal width must be known
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
-# @rule logs with timestamp when LOGGING is enabled
-# @note prefix uses severity-implied white; no explicit PREFIX_COLOR
-# @ex notice_msg_n "configuration loaded"
+# @rule QUIET sets SILENCE; INTERACTIVE overrides SILENCE inside emit()
+# @rule long messages: prefix emitted normally; full text logged; wrapped
+# @rule short messages: emitted entirely via emit() with standard bitmask
+# @note prefix uses severity-implied color; no explicit PREFIX_COLOR needed
+# @note smart_wrap_n invoked only if _maybe_smart_wrap_n authorizes output
+# @ex notice_msg_n "configuration loaded successfully"
 
 info_msg_n()  # (POSIX) info-level (severity 6) message without newline
 { imn_ret=0; _msg="$*"; _len=$(get_msg_len "$_msg"); _tw=$(termwidth)
   _status_width=6; _buffer=4; _col=3; _indent=3
   _threshold=$(( _tw - _status_width - _buffer - _col ))
   [ "$_threshold" -lt 0 ] && _threshold=0
-  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
-  _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
+  # set first bitmask fairly standard, for short messages (_sm_)
+  #   no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n)
+  _sm_bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
     | ( info << SEVERITY_SHIFT ) ))
-  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
-  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
-  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
-  # enforce conditionality BEFORE deciding wrap behavior
-  if [ ! "$DEBUG" ] && [ "$verbosity" -lt "$info" ]; then return 0; fi
-  # if there wouldnt be room for right_status, then smart-wrap, else just use emit()
-  if [ "$_len" -gt "$_threshold" ]; then
-    emit "$_bitmask" ""  # prepend a prefix and let smart_wrap_n do the rest
-    smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"
+  [ "$LOGGING" ] && _sm_bitmask=$(( _sm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _sm_bitmask=$(( _sm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _sm_bitmask=$(( _sm_bitmask | SILENCE ))
+  # set second bitmask - for long messages (_lm_) send to emit so it can decide
+  #   no NEWLINE, no PREFIX/COLOR, yes conditional and severity so emit can
+  #   determine how chatty the logs are (verbosity vs severity)
+  _lm_bitmask=$(( CONDITIONAL | ( info << SEVERITY_SHIFT ) ))
+  [ "$LOGGING" ] && _lm_bitmask=$(( _lm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _lm_bitmask=$(( _lm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _lm_bitmask=$(( _lm_bitmask | SILENCE ))
+  # if there is room for right_status, then use short-message protocol
+  if [ "$_len" -le "$_threshold" ]; then
+    emit "$_sm_bitmask" "$_msg"
   else
-    emit "$_bitmask" "$_msg"
+    emit "$_sm_bitmask" ""          # prefix only
+    emit "$_lm_bitmask" "$_msg"     # full message for logging
+    if _maybe_smart_wrap_n "$_sm_bitmask"; then smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"; fi
   fi ; imn_ret=$?
-  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold _bitmask
+  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold
+  unset -v _sm_bitmask _lm_bitmask
   return $imn_ret
 }
 # @usage info_msg_n "message text"
 # @args $*: message string (quoted recommended)
-# @vars LOGGING, DEBUG, QUIET (pseudo-booleans controlling policy)
-# @ret emitted: info-level prefix + message (no newline)
-# @ret status: exit status of emit()
-# @deps emit, smart_wrap_n, get_msg_len, termwidth
+# @vars LOGGING, DEBUG, QUIET, INTERACTIVE, verbosity (policy controls)
+# @ret emitted: info-level prefix + wrapped or unwrapped message (no newline)
+# @ret status: exit status of emit() or smart_wrap_n()
+# @deps emit, smart_wrap_n, _maybe_smart_wrap_n, get_msg_len, termwidth
+# @req caller must supply a printable message; terminal width must be known
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
-# @rule logs with timestamp when LOGGING is enabled
-# @note prefix uses severity-implied white; no explicit PREFIX_COLOR
+# @rule QUIET sets SILENCE; INTERACTIVE overrides SILENCE inside emit()
+# @rule long messages: prefix emitted normally; full text logged; wrapped
+# @rule short messages: emitted entirely via emit() with standard bitmask
+# @note prefix uses severity-implied color; no explicit PREFIX_COLOR needed
+# @note smart_wrap_n invoked only if _maybe_smart_wrap_n authorizes output
 # @ex info_msg_n "starting process"
 
 debug_msg_n()  # (POSIX) debug-level (severity 7) message without newline
@@ -2285,33 +2337,44 @@ debug_msg_n()  # (POSIX) debug-level (severity 7) message without newline
   _status_width=6; _buffer=4; _col=3; _indent=3
   _threshold=$(( _tw - _status_width - _buffer - _col ))
   [ "$_threshold" -lt 0 ] && _threshold=0
-  # no NEWLINE, no PREFIX_COLOR (severity picks color for _msg_n), FORCE
-  _bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
+  # short-message bitmask (_sm_)
+  _sm_bitmask=$(( STDOUT | INTERPRET | PREFIX | PREFIX_BOLD | CONDITIONAL
     | ( debug << SEVERITY_SHIFT ) ))
-  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG | TIMESTAMP ))
-  [ "$DEBUG" ] &&  _bitmask=$(( _bitmask | FORCE ))
-  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
-  # enforce conditionality BEFORE deciding wrap behavior
-  if [ ! "$DEBUG" ] && [ "$verbosity" -lt "$debug" ]; then return 0; fi
-  # if there wouldnt be room for right_status, then smart-wrap, else just use emit()
-  if [ "$_len" -gt "$_threshold" ]; then
-    emit "$_bitmask" ""  # prepend a prefix and let smart_wrap_n do the rest
-    smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"
+  [ "$LOGGING" ] && _sm_bitmask=$(( _sm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _sm_bitmask=$(( _sm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _sm_bitmask=$(( _sm_bitmask | SILENCE ))
+  # long-message bitmask (_lm_)
+  _lm_bitmask=$(( CONDITIONAL | ( debug << SEVERITY_SHIFT ) ))
+  [ "$LOGGING" ] && _lm_bitmask=$(( _lm_bitmask | LOG | TIMESTAMP ))
+  [ "$DEBUG" ]   && _lm_bitmask=$(( _lm_bitmask | FORCE ))
+  [ "$QUIET" ]   && _lm_bitmask=$(( _lm_bitmask | SILENCE ))
+  # if there is room for right_status, then use short-message protocol
+  if [ "$_len" -le "$_threshold" ]; then
+    emit "$_sm_bitmask" "$_msg"
   else
-    emit "$_bitmask" "$_msg"
+    emit "$_sm_bitmask" ""          # prefix only
+    emit "$_lm_bitmask" "$_msg"     # full message for logging
+    if _maybe_smart_wrap_n "$_sm_bitmask"; then smart_wrap_n "$_col" "$_indent" "$_indent" "$_msg"; fi
   fi ; dmn_ret=$?
-  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold _bitmask
+
+  unset -v _msg _len _tw _status_width _buffer _col _indent _threshold
+  unset -v _sm_bitmask _lm_bitmask
   return $dmn_ret
 }
 # @usage debug_msg_n "message text"
 # @args $*: message string (quoted recommended)
-# @vars LOGGING, QUIET (pseudo-booleans controlling policy)
-# @ret emitted: debug-level prefix + message (no newline)
-# @ret status: exit status of emit()
-# @deps emit, smart_wrap_n, get_msg_len, termwidth
-# @rule conditional but always FORCE-enabled; visible when explicitly invoked
-# @rule logs with timestamp when LOGGING is enabled
-# @note prefix uses severity-implied cyan; no explicit PREFIX_COLOR
+# @vars LOGGING, DEBUG, QUIET, INTERACTIVE, verbosity (policy controls)
+# @ret emitted: debug-level prefix + wrapped or unwrapped message (no newline)
+# @ret status: exit status of emit() or smart_wrap_n()
+# @deps emit, smart_wrap_n, _maybe_smart_wrap_n, get_msg_len, termwidth
+# @req caller must supply a printable message; terminal width must be known
+# @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
+# @rule QUIET sets SILENCE; INTERACTIVE overrides SILENCE inside emit()
+# @rule long messages: prefix emitted normally; full text logged; wrapped
+# @rule short messages: emitted entirely via emit() with standard bitmask
+# @note severity is hard-coded to debug; FORCE only set when DEBUG is true
+# @note smart_wrap_n invoked only if _maybe_smart_wrap_n authorizes output
+# @note prefix uses severity-implied cyan; no explicit PREFIX_COLOR needed
 # @ex debug_msg_n "variable x=$x"
 
 right_status()  # (POSIX) NOTICE-level right-margin status indicator
@@ -5450,6 +5513,7 @@ _dh_demo_environment() # (POSIX) demonstrate environment checks (isroot, checkno
 _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
 { demo_widg_ret=0
   _dh_FAILED=$FALSE
+  _dh_result=0
 
   _dh_46="Donaldson Emmons Seward Seymour Panther Couchsachraga Santanoni"
   _dh_46="${_dh_46} Allen Cliff Redfield Colden Marshall Wright Algonquin"
@@ -5535,8 +5599,9 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   _dh_cmd="${_dh_cmd} / ${_data_color}10${_op_color} ))${_Boff}"
   _dh_cmd="${_dh_cmd} ${_op_color}'' ${_quote_color}\"${_var_color}\${BCon}${_quote_color}\"${_Boff}"
   printf "\n"; notice_msg "${BYon}About to run:${Boff}\n ${_dh_cmd}"
-  box_msg "$longone" $(( 8 * $(termwidth) / 10 )) '' "${BCon}"
-  handle_result $? "" "" || _dh_FAILED=$TRUE
+  box_msg "$longone" $(( 8 * $(termwidth) / 10 )) '' "${BCon}" ;   _dh_result=$?
+  notice_msg_n "done running box_msg; result:"
+  handle_result $_dh_result "" "" || _dh_FAILED=$TRUE
 
   #-----[ part 4: sh_countdown - timed safety pause ]-------------------------------------------------------------------
   # construct the command preview string -

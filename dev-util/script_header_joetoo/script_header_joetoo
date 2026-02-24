@@ -119,7 +119,8 @@ debug=7	  #   Debug	Debug-level messages. Detailed information typically only us
 # @note info=6      Info.     Informational messages. Normal operations like user logins or system status.
 # @note debug=7     Debbug    Debug-level messages. Detailed information typically only used during troubleshooting.
 
-# check set null vs unset and assign default verbosity,
+# check set null vs unset and assign default verbosity and loglevel
+loglevel="${loglevel:-"${notice}"}"
 #  but only if not yet assigned by calling program
 verbosity="${verbosity:-"${notice}"}"  # Set default (2) if verbosity is UNSET or NULL
 # synchronized deprecation strategy for "$VERBOSE" (redundant to any verbosity -gt 0)
@@ -1809,6 +1810,7 @@ SEVERITY_SHIFT=24
 
 emit() # (POSIX) consolidated messaging engine in a subshell to isolates positional parameters
 ( emit_ret=0; mask=$1; shift  # first positiona parameter is the bitmask
+  _PRINT_OK="$TRUE"; _LOG_OK="$TRUE"  # default actions
   # extract boolean flags using bitwise shift, AND to read the nth most significant bit
   # this is the value extracted from the bit location(s) pointed to by the glogals of similar name above
   _STDOUT=$((          mask         & 1 ))
@@ -1821,16 +1823,8 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
   _FORCE=$((         ( mask >> 7 )  & 1 ))
   _SILENCE=$((       ( mask >> 8 )  & 1 ))
   _PREFIX=$((        ( mask >> 15 ) & 1 ))
-  # INTERACTIVE mode overrides SILENCE
-  [ "$INTERACTIVE" ] && _SILENCE=0
-  # otherwise early exit if _SILENCE is set
-  [ "$_SILENCE" -eq 1 ] && exit 0
-  # early exit if _LOG is requested but logFile is not writable
-  [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ] && { error_msg  "Error: logFile is not writable"; return 1 ; }
-  # extract _PREFIX fields (non-zero bold/color value means prefix, yes
   _PREFIX_BOLD=$((   ( mask >> 16 ) & 1 ))
   _PREFIX_COLOR=$((  ( mask >> 17 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
-  # extract _SEVERITY (3 bits)
   _SEVERITY=$((      ( mask >> 24 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
 #  d_do '
 #    echo "_STDOUT: $_STDOUT"
@@ -1847,13 +1841,25 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
 #    echo "_PREFIX_COLOR: $_PREFIX_COLOR"
 #    echo "_SEVERITY: $_SEVERITY"
 #  ' "$debug"
-  # apply verbosity rules (unless _FORCE)
-  if [ "$_CONDITIONAL" -eq 1 ] && [ "$_FORCE" -eq 0 ]; then
-    # compare severity to global verbosity (lower severity number = more important)
-    if [ "$_SEVERITY" -gt "$verbosity" ]; then
-      exit 0
-    fi
+
+  # explicitly disable logging if _LOG bit is not set
+  if [ "$_LOG" -eq 0 ]; then _LOG_OK="$FALSE"; fi
+
+  # if _SILENCE bit was set (QUIET is true) and not overridden by INTERACTIVE, then turn off printing (but not logging)
+  if [ "$_SILENCE" -eq 1 ] && [ ! "$INTERACTIVE" ]; then _PRINT_OK="$FALSE"; fi
+
+  # apply verbosity and loglevel rules according to policy
+  if [ "$_CONDITIONAL" -eq 1 ]; then
+    # compare global verbosity to this message's severity (lower severity number = more important)
+    if [ "$_FORCE" -eq 0 ] && [ "$verbosity" -lt "$_SEVERITY" ]; then _PRINT_OK="$FALSE"; fi
+    # compare global loglevel to this message'sseverity (lower severity number = more important)
+    if [ "$loglevel" -lt "$_SEVERITY" ]; then _LOG_OK="$FALSE"; fi
   fi
+
+  # early exit if _LOG is requested but logFile is not writable
+  if [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ]; then error_msg  "Error: logFile is not writable"; exit 1 ; fi
+
+  # non-zero bold/color value means prefix, yes
   # determine prefix color (severity-implied or user override)
   if [ "$_PREFIX_COLOR" -eq 0 ]; then
     # no explicit color provided by caller; so derive it from severity
@@ -1941,46 +1947,61 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
   log_out=$(printf '%s' "${log_prefix} ${msg}" | strip_ansi | _translate_escapes)
   # choose printf format based on _INTERPRET
   if [ "$_INTERPRET" -eq 1 ]; then fmt='%b'; else fmt='%s'; fi
-  # emit to stdout (if _STDOUT), with _NEWLINE, if selected
-  if [ "$_STDOUT" -eq 1 ]; then
+
+  # emit to stdout (if _STDOUT), with _NEWLINE, if selected and enabled
+  if [ "$_PRINT_OK" ] && [ "$_STDOUT" -eq 1 ]; then
     if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
     printf "$out_fmt" "$out"
   fi
-  # mirror to stderr (if _STDERR)
-  if [ "$_STDERR" -eq 1 ]; then
+
+  # mirror to stderr (if _STDERR) if enabled
+  if [ "$_PRINT_OK" ] && [ "$_STDERR" -eq 1 ]; then
     if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
     printf "$out_fmt" "$out" >&2
   fi
+
   # log to file (if _LOG)
-  if [ "$_LOG" -eq 1 ]; then
+  if [ "$_LOG_OK" ]; then
     if [ "$_NEWLINE" -eq 1 ]; then out_fmt='%s\n'; else out_fmt='%s'; fi
     printf "$out_fmt" "$log_out" >> "$logFile"
   fi
+
   # emit() body is a subshell, so not doing unset -v (all will be discarded on exit)
 )
 # @usage emit <bitmask> "message text"
-# @args  $1 bitmask selecting stdout/stderr/log, prefix, severity, policy bits
-# @args  $* message string (all remaining args)
-# @vars  logFile, verbosity; bitmask constants STDOUT..SEVERITY_SHIFT
+# @args  $1: bitmask selecting stdout/stderr/log, prefix, severity, policy bits
+# @args  $*: message string (all remaining args)
+# @vars  logFile, verbosity, loglevel, INTERACTIVE; bitmask constants STDOUT..SEVERITY_SHIFT
 # @ret   prints and/or logs formatted message; honors severity and policy bits
-# @cont  returns 0 on either successful emission or successful suppression; this
-# @cont  is a design feature (changing to non-zero exit for suppression would
-# @cont  break other functions dependent on emit in their pipeline)
+# @ret   always returns 0 on successful print or suppression (design contract)
 # @deps  timestamp(), strip_ansi(), _translate_escapes(), get_severity()
-# @rule  consolidated messaging engine; all _msg/_msg_n wrappers reduce to emit()
-# @rule  policy bits override severity: SILENCE > FORCE > CONDITIONAL > uncond
-# @rule  CONDITIONAL enforces verbosity; FORCE bypasses it; SILENCE suppresses all
-# @rule  INTERPRET selects '%b' (escape processing); otherwise '%s' is used
-# @rule  NEWLINE appends '\n'; STDOUT/STDERR select output streams; LOG writes
-# @rule  PREFIX enables prefix_symbol with severity-implied or caller-specified
-# @rule  PREFIX_COLOR=0 uses severity color; nonzero overrides; PREFIX_BOLD adds
-# @rule  SEVERITY (3 bits) controls prefix symbol, color, and verbosity behavior
+# @rule  PRINT and LOG decisions are made independently:
+# @rule    _PRINT_OK defaults to $TRUE; suppressed by _SILENCE or verbosity rules
+# @rule    _LOG_OK defaults to $TRUE; suppressed by missing LOG bit or loglevel rules
+# @rule  POLICY OVERRIDE ORDER (highest->lowest):
+# @rule    _SILENCE  suppresses PRINT regardless of FORCE or severity
+# @rule    _FORCE    bypasses PRINT verbosity checks (but not loglevel)
+# @rule    _CONDITIONAL â   enables severity filtering for PRINT and LOG
+# @rule    (unconditional) âalways prints/logs (severity ignored)
+# @rule  $QUIET sets _SILENCE in caller; $INTERACTIVE overrides $QUIET (_SILENCE) for PRINT only
+# @rule  $DEBUG sets _FORCE in caller; _FORCE affects PRINT only (not $loglevel)
+# @rule  $verbosity controls PRINT suppression for _CONDITIONAL messages
+# @rule  loglevel   controls LOG   suppression for _CONDITIONAL messages
+# @rule  unconditional messages (e.g. echo_mdg) bypass both $verbosity and $loglevel checks
+# @rule  _STDOUT/_STDERR select output streams; _NEWLINE appends '\n'
+# @rule  _LOG writes ANSI-stripped, escape-normalized text to logFile
+# @rule  _TIMESTAMP applies only to log output
+# @rule  _PREFIX enables prefix_symbol with severity-implied or caller-specified color
+# @rule  _PREFIX_COLOR=0 uses severity color; nonzero overrides; _PREFIX_BOLD adds intensity
+# @rule  _SEVERITY (3 bits) controls prefix symbol, color, and filtering behavior
 # @note  emit() runs in a subshell to isolate positional parameters and avoid
 # @cont  polluting caller scope; all local _FLAG vars are true booleans (1/0)
-# @note  log output is ANSI-stripped and escape-normalized; timestamps apply only
-# @cont  to log messages; stdout/stderr receive full ANSI-colored output
+# @note  PRINT and LOG suppression are independent; suppression is not an error
 # @note  callers must construct bitmask correctly; emit() does not validate it
-# @ex    emit "$((STDOUT|NEWLINE|PREFIX|CONDITIONAL|(5<<SEVERITY_SHIFT)))" "msg"
+# @note  $QUIET (_SILENSE) suppresses PRINT only; logging remains active unless $loglevel blocks it
+# @note  $DEBUG (_FORCE) bypasses PRINT $verbosity but never bypasses loglevel
+# @note  unconditional messages (no _CONDITIONAL bit) always print/log unless SILENCE
+# @ex    emit "$((STDOUT|NEWLINE|PREFIX|CONDITIONAL|(info<<SEVERITY_SHIFT)))" "$_msg"
 
 emerg_msg()  # (POSIX) display emergency-level (severity 0) message $@ (like echo -e)
 { emerg_ret=0; _msg="$*"
