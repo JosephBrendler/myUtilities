@@ -1059,6 +1059,171 @@ _translate_escapes() # (POSIX) translate layout control chars to spaces, preserv
 # @rule targets BS, HT, LF, VT, FF, CR (octal 010-015)
 # @rule preserves ESC (octal 033) to maintain ANSI styling functionality
 
+utf8_char_count() # (POSIX) count the number of unicode characters in a utf-8 sequence of multi-byte characters
+{ ucc_ret=0; _ucc_string=$1; _ucc_count=0
+
+    while [ ! -z "$_ucc_string" ]; do
+        # 'X is POSIX idiom for first character of string X; printf renders the decimal value
+        _ucc_byte=$(printf '%d' "'$_ucc_string")
+        # determine how many bytes there are in the current character, by examining the first byte only
+        if   [ $_ucc_byte -lt 128 ]; then _ucc_n_bytes=1  # ascii ( bit 7 = 0 0-127)
+        elif [ $_ucc_byte -lt 224 ]; then _ucc_n_bytes=2  # utf-8 ( bits 765 = 110 192-223)
+        elif [ $_ucc_byte -lt 240 ]; then _ucc_n_bytes=3  # utf-8 ( bits 7654 = 1110 224-239)
+        elif [ $_ucc_byte -lt 248 ]; then _ucc_n_bytes=4  # utf-8 ( bits 76543 = 11110 240-247)
+        else _ucc_n_bytes=1                               # invalid (248-255)( there are no 5- or 6-byte UTF-8 sequences)
+        fi                                                # also     bits 76 = 10 marks a continuation byte
+                                                          #          (so, 128-191 also not allowed in 1st byte)
+
+        _ucc_count=$((_ucc_count + 1))   # one char regardless of how many bytes
+
+        # remove the first "$_ucc_n_bytes" bytes from the string (one character, n bytes)
+        _ucc_slice=$(printf '%.*s' "$_ucc_n_bytes" "$_ucc_string")
+        _ucc_string="${_ucc_string#"$_ucc_slice"}"
+    done
+    printf '%s\n' "$_ucc_count"  # emit the character count back to the caller
+    unset -v _ucc_string _ucc_count _ucc_byte _ucc_n_bytes _ucc_slice
+    return $ucc_ret
+}
+# @usage  utf8_char_count STRING
+# @args   STRING : input to scan; may contain ASCII or UTF‑8 multibyte chars
+# @ret    Prints count of UTF‑8 characters; returns 0 on success
+# @vars   _ucc_string _ucc_count _ucc_byte _ucc_n_bytes _ucc_slice ucc_ret
+# @rule   Counts characters, not bytes; identifies UTF‑8 length from first byte only
+# @rule   Continuation bytes (10xxxxxx, 128–191) are invalid as first byte
+# @rule   Supports 1–4 byte UTF‑8 sequences; 5–6 byte forms are invalid
+# @note   Uses POSIX printf 'X idiom to read first byte; no external commands used
+# @note   Caller must strip ANSI and escape sequences before invoking
+# @ex   utf8_char_count "A\u1F525B"   # prints 3
+
+
+utf8_char_width() # (POSIX) calculate the column-width of a multi-byte utf-8 character
+{ ucw_ret=0
+  _ucw_char=$1    # $1 = UTF-8 character (1-4 bytes)
+  # 'X is POSIX idiom for first character of string X; printf renders the decimal value
+  _ucw_byte1=$(printf '%d' "'$_ucw_char")
+  #  ASCII fast-path (width = 1)
+  if [ $_ucw_byte1 -lt 128 ]; then printf 1; return; fi
+  #  Decode enough of the codepoint to check ranges
+  #    We only need the numeric value, not full Unicode decoding.
+  #    Extract up to 4 bytes (missing bytes become empty).
+  _b1=$_ucw_byte1
+  # strip one byte and print decimal value of first remaining
+  _b2=$(printf '%d' "'${_ucw_char#?}" 2>/dev/null)
+  # strip two bytes and print decimal value of first remaining
+  _b3=$(printf '%d' "'${_ucw_char#??}" 2>/dev/null)
+  # strip three bytes and print decimal value of first remaining
+  _b4=$(printf '%d' "'${_ucw_char#???}" 2>/dev/null)
+  # reconstruct codepoint from multi-byte payloads (minimal UTF-8 decode)
+  if   [ $_b1 -lt 224 ]; then
+    # 2-byte: 110xxxxx 10xxxxxx
+    _cp=$(( ((_b1 & 0x1F) << 6) | (_b2 & 0x3F) ))
+  elif [ $_b1 -lt 240 ]; then
+    # 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
+    _cp=$(( ((_b1 & 0x0F) << 12) | ((_b2 & 0x3F) << 6) | (_b3 & 0x3F) ))
+  else
+    # 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+    _cp=$(( ((_b1 & 0x07) << 18) | ((_b2 & 0x3F) << 12) | ((_b3 & 0x3F) << 6) | (_b4 & 0x3F) ))
+  fi
+
+  #  zero-width characters
+  # combining marks: U+0300-U+036F
+  if [ $_cp -ge 768 ] && [ $_cp -le 879 ]; then printf 0; return; fi
+  # variation selector VS-16: U+FE0F
+  if [ $_cp -eq 65039 ]; then printf 0; return; fi
+  # zero-width joiner: U+200D
+  if [ $_cp -eq 8205 ]; then printf 0; return; fi
+  # emoji (width = 2)
+  # misc symbols: U+2600-U+26FF
+  if [ $_cp -ge 9728 ] && [ $_cp -le 9983 ]; then printf 2; return; fi
+  # dingbats: U+2700-U+27BF
+  if [ $_cp -ge 9984 ] && [ $_cp -le 10175 ]; then printf 2; return; fi
+  # emoticons: U+1F600-U+1F64F
+  if [ $_cp -ge 128512 ] && [ $_cp -le 128591 ]; then printf 2; return; fi
+  # misc symbols & pictographs: U+1F300-U+1F5FF
+  if [ $_cp -ge 127744 ] && [ $_cp -le 128511 ]; then printf 2; return; fi
+  # transport & map: U+1F680-U+1F6FF
+  if [ $_cp -ge 128640 ] && [ $_cp -le 128767 ]; then printf 2; return; fi
+  # supplemental symbols & pictographs: U+1F900-U+1F9FF
+  if [ $_cp -ge 129280 ] && [ $_cp -le 129535 ]; then printf 2; return; fi
+  # symbols & pictographs extended-A: U+1FA70-U+1FAFF (un-interested in B,C,D,etc - non emoju class chars)
+  if [ $_cp -ge 129648 ] && [ $_cp -le 129775 ]; then printf 2; return; fi
+  printf 1  # default width = 1
+
+  unset -v _ucw_char _ucw_byte1 _b1 _b2 _b3 _b4 _cp
+  return $ucw_ret
+}
+# @usage  utf8_char_width CHAR
+# @args   CHAR : a single UTF-8 character (1–4 bytes)
+# @ret    Prints display width (0, 1, or 2); returns 0
+# @vars   _ucw_char _ucw_byte1 _b1 _b2 _b3 _b4 _cp ucw_ret
+# @rule   ASCII and most BMP chars have width 1
+# @rule   Emoji and pictographs (U+2600–U+26FF, U+2700–U+27BF,
+# @cont   U+1F300–U+1F5FF, U+1F600–U+1F64F, U+1F680–U+1F6FF,
+# @cont   U+1F900–U+1F9FF, U+1FA70–U+1FAFF) have width 2
+# @rule   Combining marks (U+0300–U+036F), VS16 (U+FE0F), and ZWJ
+# @cont   (U+200D) have width 0
+# @note   Performs minimal UTF-8 decode to obtain codepoint
+# @note   No external commands; POSIX-compliant
+# @ex     utf8_char_width "$(printf '\xF0\x9F\x94\xA5')"  # FIRE emoji → 2
+
+utf8_string_width() # (POSIX) compute display width of a UTF-8 string
+{ usw_ret=0
+  _usw_string=$1; _usw_str_width=0
+  # iterate until string is empty
+  while [ ! -z "$_usw_string" ]; do
+    # read first byte (POSIX 'X idiom = 1st char of string X)
+    _usw_b1=$(printf '%d' "'$_usw_string")
+    # determine UTF-8 sequence length (see comments in utf8_char_count() - same logic
+    if   [ $_usw_b1 -lt 128 ]; then _usw_n=1
+    elif [ $_usw_b1 -lt 224 ]; then _usw_n=2
+    elif [ $_usw_b1 -lt 240 ]; then _usw_n=3
+    elif [ $_usw_b1 -lt 248 ]; then _usw_n=4
+    else _usw_n=1   # invalid first byte; treat as single width-1 char
+    fi
+    # extract the full UTF-8 character (n bytes)
+    # ( .n = precision so , '%.*s' gets the 1st arg # of bytes out of 2nd arg str )
+    _usw_char=$(printf '%.*s' "$_usw_n" "$_usw_string")
+    _usw_cw=$(utf8_char_width "$_usw_char")       # call fn() to compute width of this character
+    _usw_str_width=$((_usw_str_width + _usw_cw))  # accumulate total column width
+    _usw_string="${_usw_string#"$_usw_char"}"     # drop n bytes from the front
+  done
+  printf '%s\n' "$_usw_str_width"  # send answer to caller on stdout
+  unset -v _usw_string _usw_str_width _usw_b1 _usw_n _usw_char _usw_cw
+  return $usw_ret
+}
+# @usage  utf8_string_width "$STRING"
+# @args   STRING : UTF-8 text with no ANSI escapes (caller strips them)
+# @ret    Prints total display width; returns 0
+# @vars   _usw_string _usw_str_width _usw_b1 _usw_n _usw_char _usw_cw usw_ret
+# @rule   Iterates UTF-8 characters using leading-byte detection
+# @rule   Uses utf8_char_width() to assign width 0/1/2 per character
+# @note   No external commands; POSIX-compliant
+# @note   Caller must remove ANSI SGR sequences before invoking
+# @ex     utf8_string_width "A$(printf '\xF0\x9F\x94\xA5')B"  # prints 4
+
+new_get_msg_len() # (POSIX) compute display width of a message string
+{ gml_ret=0
+  # require at least one argument
+  [ $# -lt 1 ] && return 1
+  # expand escapes, strip ANSI SGR sequences
+  _gml_clean=$(printf '%b' "$*" | _translate_escapes | strip_ansi)
+  # compute display width using UTF-8 width engine
+  _gml_width=$(utf8_string_width "$_gml_clean")
+  printf '%s\n' "$_gml_width"
+  unset -v _gml_clean _gml_width
+  return $gml_ret
+}
+# @usage  get_msg_len STRING
+# @args   STRING : message text; may contain escapes and ANSI SGR codes
+# @ret    Prints display width of visible characters; returns 0
+# @vars   _gml_clean _gml_width gml_ret
+# @rule   Expands escapes, strips ANSI, then computes UTF-8 display width
+# @rule   Uses utf8_string_width() for width 0/1/2 per character
+# @note   Caller may pass multiple words; all are joined by "$*"
+# @note   No external commands; POSIX-compliant
+# @ex     get_msg_len "A$(printf '\xF0\x9F\x94\xA5')B"  # prints 4
+
+
 get_msg_len() # helper not to be called directly (get actual printable length of message)
 { # strip ANSI escape sequences, and use ${#var} to count what remains
   [ $# -lt 1 ] && return 1   # guard clause; reject if no message
