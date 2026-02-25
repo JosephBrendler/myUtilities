@@ -2370,3 +2370,46 @@ get_keyfile_and_unlock_method() {
 }
 
 
+old_utf8_string_width() # (POSIX) compute display width of a UTF-8 string
+{ usw_ret=0
+  _usw_string=$1; _usw_str_width=0
+  # iterate until string is empty
+  while [ ! -z "$_usw_string" ]; do
+    # Tier 2 optimization - detect any "run" of ascii chars and handle them quickly
+    LC_ALL=C _usw_prefix="${_usw_string%%[! -~]*}"
+    if [ ${#_usw_prefix} -gt 1 ] ; then
+      _usw_run_length=${#_usw_prefix}
+      _usw_str_width=$(( _usw_str_width + _usw_run_length ))
+      _usw_string=${_usw_string#"${_usw_prefix}"}; continue
+    fi
+    # read first byte (POSIX 'X idiom = 1st char of string X)
+    _usw_b1=$(printf '%d' "'$_usw_string")
+    # determine UTF-8 sequence length (see comments in utf8_char_count() - same logic
+    # Tier 1 optimization - if byte 1 is ascii increment count and return quicky
+    if   [ $_usw_b1 -lt 128 ]; then  # ascii: handle quickly (increment; drop; continue)
+       _usw_n=1; _usw_str_width=$((_usw_str_width + 1)); _usw_string=${_usw_string#?}; continue
+    elif [ $_usw_b1 -lt 224 ]; then _usw_n=2
+    elif [ $_usw_b1 -lt 240 ]; then _usw_n=3
+    elif [ $_usw_b1 -lt 248 ]; then _usw_n=4
+    else _usw_n=1   # invalid first byte; treat as single width-1 char
+    fi
+    # extract the full UTF-8 character (n bytes)
+    # ( .n = precision so , '%.*s' gets the 1st arg # of bytes out of 2nd arg str )
+    _usw_char=$(printf '%.*s' "$_usw_n" "$_usw_string")
+    _usw_cw=$(utf8_char_width "$_usw_char")       # call *** utf8_char_width() *** to get width of this character
+    _usw_str_width=$((_usw_str_width + _usw_cw))  # accumulate total column width
+    _usw_string="${_usw_string#"$_usw_char"}"     # drop n bytes from the front
+  done
+  printf '%s\n' "$_usw_str_width"  # send answer to caller on stdout
+  unset -v _usw_string _usw_str_width _usw_b1 _usw_n _usw_char _usw_cw
+  return $usw_ret
+}
+# @usage  utf8_string_width "$STRING"
+# @args   STRING : UTF-8 text with no ANSI escapes (caller strips them)
+# @ret    Prints total display width; returns 0
+# @vars   _usw_string _usw_str_width _usw_b1 _usw_n _usw_char _usw_cw usw_ret
+# @rule   Iterates UTF-8 characters using leading-byte detection
+# @rule   Uses utf8_char_width() to assign width 0/1/2 per character
+# @note   No external commands; POSIX-compliant
+# @note   Caller must remove ANSI SGR sequences before invoking
+# @ex     utf8_string_width "A$(printf '\xF0\x9F\x94\xA5')B"  # prints 4

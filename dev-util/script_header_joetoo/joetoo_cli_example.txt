@@ -1,0 +1,141 @@
+#!/bin/ash
+# takes no args
+
+script_header_installed_dir="/usr/sbin"
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+# source script_header
+header="${script_header_installed_dir%/}/script_header_joetoo"
+
+echo "header: $header"
+
+if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+printf '%s' "Checking for header commands to confirm sourcing"
+if command -v toc >/dev/null 2>&1 && command -v run_sequence >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot continue"; exit 1; fi
+
+#-----[ variables ]----------------------------------------------------
+
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+# An example is provided in the joetoo_cli_example script and in the template joetoo_cli_example.conf
+#
+# BREAK tells display_vars to add a newline spacer in its output
+# $LOCALIZED exemplifies use of the joetoo pseudo-boolean data type for POSIX scripts
+# $EXAMPLE and $DEFAULTS are pseudo-booleans defined in joetoo_cli_example_local.cmdline_arg_handler
+# $INITIALIZED_ME and $SOURCED_ME exemplify use of the joetoo yn data type
+# Note how each is named and how these types are prefixed in the varlist, to inform initialize_vars
+# and display_vars how to handle them.
+# $longone is a long string defined in script_header_joetoo to test and illustrate smart wrapping
+# by the smart_wrap_n() function. its name is prefixed "lv." in this localized extension of varlist
+# to indicate (long variable), so display_vars will use smart_wrap_n() to display the content of
+# $longone (which is long-one btw, not long-gone)
+#
+# CAVEAT: varlist is instantiated when script_header_joetoo is sourced (above), so it IS safe to add
+# variable names to it in a "variables" section at the top of your main script, but note that
+# the standard joetoo cli script layout calls app_configure() after that --
+# so anything you add to varlist before app_configure will be over-written when app_configure
+# calls initialize_var. which sets all bool. to $FALSE, all yn. to "no" and all others to ""
+#
+# Bottom line: you can append variable names to varlist at the top of your script, but if you do, you
+# ALSO need to reassign them AFTER app_configure runs. Thus it is "easier" to just append
+# variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
+# initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
+LOCALIZED=$FALSE; INITIALIZED_ME="no"
+varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+
+#-----[ functions ]----------------------------------------------------
+
+initialize_command_sequence() # (POSIX) initialize command sequence for joetoo cli framework
+{ ics_ret=0
+  _ics_FLAGGED=$FALSE
+  info_msg_n "creating tempfile for command sequnce"
+  cmd_seq_file=$(mktemp /tmp/${PN}.XXXXXX)
+  info_handle_result $? "$cmd_seq_file" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "setting trap to remove tempfile on EXIT"
+  trap 'rm -f "$cmd_seq_file"' EXIT
+  info_handle_result $? "trap set" ''  || _ics_FLAGGED=$TRUE
+
+  notice_msg_n "initializing command sequence"
+  num_cmds=0   # global variable holding the length of the sequence
+# heredoc needs to be on the left edge; no leading whitespace
+# initialize/clear the command sequence file
+# format for each line of heredoc content is:
+#   command_string${US}description_string
+#   where: command_string is POSIX executable
+#   and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
+#   and:   description_string is a human-readable description of the command
+while IFS= read -r _ics_entry; do
+      [ -z "$_ics_entry" ] && continue
+      # write directly to the file instead of using  ' set -- "$@" '
+      printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
+      num_cmds=$(( num_cmds + 1 ))
+done <<EOF
+printf '%s\n' "this is line 1"${US}print example line number one
+printf '%s\n' "this is line 2"${US}print example line number two
+printf '\n'${US}print a newline
+printf '%s\n' "this is line 3 (after a blank line)"${US}print line number 3
+test_function "${BGon}hello${Boff}"${US}run test_function
+EOF
+  handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initailizing starting_step"
+  starting_step=1
+  info_handle_result $? "$starting_step" '' || _ics_FLAGGED=$TRUE
+
+  info_msg_n "initializing stopping step"
+  stopping_step="$num_cmds"
+  info_handle_result $? "$stopping_step" '' || _ics_FLAGGED=$TRUE
+
+  [ "$_ics_FLAGGED" ] && ics_ret=1
+  export num_cmds
+  export cmd_seq_file
+  unset -v _ics_entry _ics_FLAGGED _ics_result
+  return $ics_ret
+}
+# @usage initialize_command_sequence || die "failed to initialize_command_sequence"
+# @vars sets global num_cmds, cmd_seq_file
+# @vars initializes global starting_step=1, stopping_step=$num_cmds
+# @rule creates a temporary file for command execution and sets an EXIT trap for cleanup
+# @rule command sequency entry format 'command_string${US}description_string'
+# @cont where: command_string is POSIX executable
+# @cont and:   ${US} is teletype era unit separator char \037 pre-cooked with printf
+# @cont and:   description_string is a human-readable description of the command
+# @ret 0 on success; 1 on failure
+
+ #-----[ for testing only ]------------------------------------------------
+test_function() {
+  test_ret=0; _tf_in="$1"
+  printf '%b\n' "this was printed by the test function: $_tf_in" || test_ret=1
+  unset -v _tf_in
+  return $test_ret
+}
+# @usage test_function <message>
+#-----[ main script ]----------------------------------------------------
+
+app_configure || die "failed to app_configure"
+
+# re-assign varlist variables appended at the top of the script and thus
+# over-written by app_configure
+info_msg_n "(re)assigning LOCALIZED"
+LOCALIZED=$TRUE
+info_handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED"
+info_msg_n "(re)assigning INITIALIZED_ME"
+INITIALIZED_ME="yes"
+info_handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
+
+d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
+info_msg "(BEFORE process_cmdline)"
+
+process_cmdline "$@" || die "failed to process_cmdline"
+
+show_config
+info_msg "(AFTER process_cmdline)"
+
+run_sequence "$status_file" "$starting_step" "$stopping_step"
+result=$?
+separator "$PN-$BUILD" "(Done)"
+notice_msg_n "$PN complete. Results:"
+handle_result $result "exemplary success" "exemplary failure"
+exit $result
