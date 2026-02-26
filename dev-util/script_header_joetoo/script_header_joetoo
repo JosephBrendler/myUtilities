@@ -1442,14 +1442,14 @@ utf8_char_count() # (POSIX) count the number of unicode characters in a utf-8 se
     return $ucc_ret
 }
 # @usage  utf8_char_count STRING
-# @args   STRING : input to scan; may contain ASCII or UTF‑8 multibyte chars
-# @ret    Prints count of UTF‑8 characters; returns 0 on success
+# @args   STRING : input to scan; may contain ASCII or UTF-8 multibyte chars
+# @ret    prints count of UTF-8 characters; returns 0 on success
 # @vars   _ucc_string _ucc_count _ucc_byte _ucc_n_bytes _ucc_slice ucc_ret
-# @rule   Counts characters, not bytes; identifies UTF‑8 length from first byte only
-# @rule   Continuation bytes (10xxxxxx, 128–191) are invalid as first byte
-# @rule   Supports 1–4 byte UTF‑8 sequences; 5–6 byte forms are invalid
-# @note   Uses POSIX printf 'X idiom to read first byte; no external commands used
-# @note   Caller must strip ANSI and escape sequences before invoking
+# @rule   counts characters, not bytes; identifies UTF-8 length from first byte only
+# @rule   continuation bytes (10xxxxxx, 128-191) are invalid as first byte
+# @rule   supports 1-4 byte UTF-8 sequences; 5-6 byte forms are invalid
+# @note   uses POSIX printf 'X idiom to read first byte; no external commands used
+# @note   caller must strip ANSI and escape sequences before invoking
 # @ex   utf8_char_count "A\u1F525B"   # prints 3
 
 
@@ -1510,18 +1510,88 @@ utf8_char_width() # (POSIX) calculate the column-width of a multi-byte utf-8 cha
   return $ucw_ret
 }
 # @usage  utf8_char_width CHAR
-# @args   CHAR : a single UTF-8 character (1–4 bytes)
-# @ret    Prints display width (0, 1, or 2); returns 0
+# @args   CHAR : a single UTF-8 character (1-4 bytes)
+# @ret    prints display width (0, 1, or 2); returns 0
 # @vars   _ucw_char _ucw_byte1 _b1 _b2 _b3 _b4 _cp ucw_ret
 # @rule   ASCII and most BMP chars have width 1
-# @rule   Emoji and pictographs (U+2600–U+26FF, U+2700–U+27BF,
-# @cont   U+1F300–U+1F5FF, U+1F600–U+1F64F, U+1F680–U+1F6FF,
-# @cont   U+1F900–U+1F9FF, U+1FA70–U+1FAFF) have width 2
-# @rule   Combining marks (U+0300–U+036F), VS16 (U+FE0F), and ZWJ
+# @rule   emoji and pictographs (U+2600-U+26FF, U+2700-U+27BF,
+# @cont   U+1F300-U+1F5FF, U+1F600-U+1F64F, U+1F680-U+1F6FF,
+# @cont   U+1F900-U+1F9FF, U+1FA70-U+1FAFF) have width 2
+# @rule   combining marks (U+0300-U+036F), VS16 (U+FE0F), and ZWJ
 # @cont   (U+200D) have width 0
-# @note   Performs minimal UTF-8 decode to obtain codepoint
-# @note   No external commands; POSIX-compliant
+# @note   performs minimal UTF-8 decode to obtain codepoint
+# @note   no external commands; POSIX-compliant
 # @ex     utf8_char_width "$(printf '\xF0\x9F\x94\xA5')"  # FIRE emoji → 2
+
+_translate_emojis_for_log() # (POSIX) emit helper not indended for direct use (translate emojis logs)
+{ # since emit() is a subshell, we call this in a pipeline
+  # This table uses the same set of variable names as the "Tier 5 optimization"
+  # section of utf8_string_width, for consistency
+  sed "
+  # SI/SO and ESC sequences
+  s/$(printf '\016')//g; s/$(printf '\017')//g;
+  s/$(printf '\033')\[[0-9;]*[mK]//g;
+  # box-drawing single-/double-wall + junctions (defined as direct octal sequences)
+  s/$(printf "${H_wall}")/-/g;   s/$(printf "${V_wall}")/|/g;          # single-wall
+  s/$(printf "${UL_wall}")/+/g;  s/$(printf "${UR_wall}")/+/g;
+  s/$(printf "${LL_wall}")/+/g;  s/$(printf "${LR_wall}")/+/g;
+  s/$(printf "${H_wall_dbl}")/=/g;  s/$(printf "${V_wall_dbl}")/|/g;   # double-wall
+  s/$(printf "${UL_wall_dbl}")/+/g; s/$(printf "${UR_wall_dbl}")/+/g;
+  s/$(printf "${LL_wall_dbl}")/+/g; s/$(printf "${LR_wall_dbl}")/+/g;
+  s/$(printf "${T_down}")/+/g;  s/$(printf "${T_up}")/+/g;             # junctions
+  s/$(printf "${T_right}")/+/g; s/$(printf "${T_left}")/+/g;
+  s/$(printf "${CROSS}")/+/g;   s/$(printf "${CROSS_dbl}")/+/g;
+  # severity / status / error (defined as hex codepoint strings)
+  s/$(u_echo "\U${cross_mark}")/[!!]/g;
+  s/$(u_echo "\U${cross_mark_new}")/[!!]/g;
+  s/$(u_echo "\U${check_mark}")/[Ok]/g;
+  s/$(u_echo "\U${check_mark_new}")/[Ok]/g;
+  s/$(u_echo "\U${check_mark_button}")/[Ok]/g;
+  s/$(u_echo "\U${check_mark_button_new}")/[Ok]/g;
+  s/$(u_echo "\U${no_entry}")/[NO ENTRY]/g;
+  s/$(u_echo "\U${no_entry_new}")/[NO ENTRY]/g;
+  s/$(u_echo "\U${prohibited}")/[PROHIBITED]/g;
+  s/$(u_echo "\U${explosion}")/[EXPLOSION]/g;
+  s/$(u_echo "\U${collision}")/[COLLISION]/g;
+  s/$(u_echo "\U${bomb}")/[BOMB]/g;
+  # tools / work / process
+  s/$(u_echo "\U${hammer}")/[WORK]/g;
+  s/$(u_echo "\U${hammer_and_wrench}")/[PROCESS]/g;
+  s/$(u_echo "\U${wrench}")/[WRENCH]/g;
+  s/$(u_echo "\U${gear}")/[GEAR]/g;
+  s/$(u_echo "\U${toolbox}")/[TOOLBOX]/g;
+  # thinking / analysis / investigation
+  s/$(u_echo "\U${face_thinking}")/[THINKING]/g;
+  s/$(u_echo "\U${magnifying_glass_left}")/[SEARCH]/g;
+  s/$(u_echo "\U${magnifying_glass_right}")/[SEARCH]/g;
+  # messaging faces
+  s/$(u_echo "\U${face_grin}")/[:D]/g;
+  s/$(u_echo "\U${face_beam}")/[:D]/g;
+  s/$(u_echo "\U${face_grimace}")/[:S]/g;
+  s/$(u_echo "\U${face_frown1}")/[:(]/g;
+  s/$(u_echo "\U${face_frown2}")/[:(]/g;
+  # celebration / success
+  s/$(u_echo "\U${confetti}")/[SUCCESS]/g;
+  s/$(u_echo "\U${trophy}")/[WIN]/g;
+  # clean up zero-width modifiers that might remain
+  s/$(u_echo "\U${VS16}")//g
+  "
+}
+# @usage _translate_emojis_for_log
+# @args reads from stdin (stream/pipe)
+# @vars H_wall, V_wall, UL_wall, UR_wall, LL_wall, LR_wall, H_wall_dbl, 
+# @cont V_wall_dbl, UL_wall_dbl, UR_wall_dbl, LL_wall_dbl, LR_wall_dbl,
+# @cont T_down, T_up, T_right, T_left, CROSS, CROSS_dbl (Box-Drawing)
+# @vars cross_mark, check_mark, face_grin, etc. (Emoji Hex Strings)
+# @ret emits filtered ASCII/UTF-8 text to stdout
+# @deps sed, printf, u_echo
+# @rule strips SI/SO (\016/\017) and ANSI CSI (m/K) escape sequences
+# @rule flattens Unicode box-drawing characters to ASCII (-, |, +, =)
+# @rule translates specific multi-byte emojis into searchable [TAGS]
+# @rule final pass removes Variation Selector-16 (VS16) modifiers
+# @note intended as a helper for emit() to sanitize log file output
+# @ex printf "Checking... ${check_mark}" | _translate_emojis_for_log
+
 
 utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 { usw_ret=0
@@ -2211,7 +2281,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
 #    debug_msg "considering whether to include [$_iv_item] in _iv_parmlist"
     case "$_iv_item" in
       # effectively remove these from the list, if user included them
-      *verbosity|*VERBOSE|*QUIET|*DEBUG|*EMOJI*)
+      *loglevel|*verbosity|*VERBOSE|*QUIET|*DEBUG|*EMOJI*)
 #        debug_msg "NOT including [$_iv_item] in _iv_parmlist"
         continue
         ;;
@@ -2599,31 +2669,39 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
 #        echo "log_prefix...: $log_prefix"
 #    ' "$debug"
   # prepend timestamp (for LOG only) and space only if there actaully is content in ts
-  if [ ! -z "$ts" ]; then log_prefix="${ts} ${log_prefix}"; fi
+  log_prefix="${ts}${ts:+ }${log_prefix}"
   # build the message body
   msg="$*"  # all remaining positional parameters, after bitmask was shifted
-  # build the full output string
+  # build the full screen output string (do for log below)
   out="${prefix}${msg}"
-  log_out=$(printf '%s' "${log_prefix} ${msg}" | strip_ansi | _translate_escapes)
+
   # choose printf format based on _INTERPRET
   if [ "$_INTERPRET" -eq 1 ]; then fmt='%b'; else fmt='%s'; fi
+  # modify printf format for newline, if needed
+  if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
 
   # emit to stdout (if _STDOUT), with _NEWLINE, if selected and enabled
   if [ "$_PRINT_OK" ] && [ "$_STDOUT" -eq 1 ]; then
-    if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
     printf "$out_fmt" "$out"
   fi
 
   # mirror to stderr (if _STDERR) if enabled
   if [ "$_PRINT_OK" ] && [ "$_STDERR" -eq 1 ]; then
-    if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
     printf "$out_fmt" "$out" >&2
   fi
 
   # log to file (if _LOG)
   if [ "$_LOG_OK" ]; then
-    if [ "$_NEWLINE" -eq 1 ]; then out_fmt='%s\n'; else out_fmt='%s'; fi
-    printf "$out_fmt" "$log_out" >> "$logFile"
+     # to use sed-in-a-pipeline for log filtering, we need to be careful with line-endings
+    if [ "$_NEWLINE" -eq 1 ]; then
+      # standard line - simple pipe to stream edit in _translate_emojis_for_log
+      printf '%s\n' "${log_prefix}${log_prefix:+ }${msg}" | strip_ansi | \
+        _translate_escapes | _translate_emojis_for_log >> "$logFile"
+    else
+      # partial line - also remove newline, i.e. delete $(printf '\n'), the literal byte 0x0A
+      printf '%s\n' "${log_prefix}${log_prefix:+ }${msg}" | strip_ansi | \
+        _translate_emojis_for_log | tr -d "$(printf '\n')" >> "$logFile"
+    fi
   fi
 
   # emit() body is a subshell, so not doing unset -v (all will be discarded on exit)
@@ -3124,21 +3202,21 @@ right_status()  # (POSIX) NOTICE-level right-margin status indicator
 # @cont right_status a single canonical layout function.
 
 handle_result()  # (POSIX) NOTICE-level descriptive result + right_status
-{ exit_status="$1"; _ok_msg_in="$2"; _err_msg_in="$3"
+{ hr_exit_status="$1"; _hr_ok_msg_in="$2"; _hr_err_msg_in="$3"
   if ! isint "$1" ; then  error_msg  "error: handle_result requires \$1 to be integer exit_status": return 1; fi
   # build descriptive message (or suppress via no_msg)
-  if [ "$_ok_msg_in" = "${no_msg}" ] ; then _ok_msg=""; else _ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
-  if [ "$_err_msg_in" = "${no_msg}" ] ; then _err_msg=""; else _err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  if [ "$_hr_ok_msg_in" = "${no_msg}" ] ; then _hr_ok_msg=""; else _hr_ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$_hr_err_msg_in" = "${no_msg}" ] ; then _hr_err_msg=""; else _hr_err_msg=" (${BRon}${3:-error!}${Boff})"; fi
   # build bitmask: NOTICE severity, stdout, no newline (right_status adds it)
   _bitmask=$(( STDOUT | CONDITIONAL | ( notice << SEVERITY_SHIFT ) ))
   [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG ))     # no TIMESTAMP
   [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
   [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
   # choose descriptive message
-  case "$exit_status" in 0 ) _msg="$_ok_msg" ;; * ) _msg="$_err_msg" ;; esac
+  case "$hr_exit_status" in 0 ) _hr_msg="$_hr_ok_msg" ;; * ) _hr_msg="$_hr_err_msg" ;; esac
   # emit descriptive message exactly where notice_msg_n left the cursor and close line with right_status
-  emit "$_bitmask" "$_msg" ; right_status "$exit_status"
-  unset -v _ok_msg_in _err_msg_in _ok_msg _err_msg _msg _bitmask; return $exit_status ; }
+  emit "$_bitmask" "$_hr_msg" ; right_status "$hr_exit_status"
+  unset -v _hr_ok_msg_in _hr_err_msg_in _hr_ok_msg _hr_err_msg _hr_msg _bitmask; return $hr_exit_status ; }
 # @usage handle_result <status> <ok_msg> <err_msg> || <fail-action>
 # @args $1 exit status; $2 success text; $3 error text
 # @vars LOGGING DEBUG QUIET no_msg
@@ -3151,92 +3229,233 @@ handle_result()  # (POSIX) NOTICE-level descriptive result + right_status
 # @note stdout used even on failure; stderr reserved for real error messages
 # @ex notice_msg_n "doing X"; run_cmd; handle_result "$?" "ok" "failed"
 # @note handle_result is a NOTICE-level UI primitive paired with right_status.
-# @cont It participates in the announce/act/report idiom and is intentionally
-# @cont severity-neutral
+# @cont It participates in the announce/act/report idiom
 
-info_right_status() # (POSIX) "demote" right_status() to INFO severity, and local verbosity++ if DEBUG
-{ irs_ret=0
-  if [ "$DEBUG" ]; then
-    verbosity=6 d_do right_status "$@" "$info"; irs_ret=$?
+info_right_status()  # (POSIX) INFO-level right-margin status indicator
+{ irs_ret=0; _irs_CUF_OK="$TRUE"
+  # guard
+  [ $# -lt 1 ] && { error_msg  "Error: info_right_status requires integer status code"; return 1; }
+  _irs_status=$1
+  # choose ascii or emoji messages
+  if [ "$_irs_status" -eq 0 ]; then
+    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+      _irs_msg="${BBon}[ ${Boff}$(emoji_safe "$check_mark_button") ${BBon}]${Boff}"
+      _irs_width=7 # emoji width handled by utf8_string_width, but for cursor movement we need approx
+    else
+      _irs_msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}"
+      _irs_width=7
+    fi
   else
-    d_do right_status "$@" "$info"; irs_ret=$?
-  fi; return $irs_ret ; }
-# @usage info_right_status <status> || <fail-action>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
-# @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+      _irs_msg="${BBon}[ ${Boff}$(emoji_safe "$cross_mark") ${BBon}]${Boff}"
+      _irs_width=7 # emoji width handled by utf8_string_width, but for cursor movement we need approx
+    else
+      _irs_msg="${BBon}[ ${BGon}!! ${BBon}]${Boff}"
+      _irs_width=7
+    fi
+  fi
+  # compute terminal width and movement
+  _irs_tw=$(termwidth)
+  isint "$_irs_tw" || _irs_tw=80
+  _irs_move=$(( _irs_tw - _irs_width ))
+  [ "$_irs_move" -lt 0 ] && _irs_move=0
 
-info_handle_result() # (POSIX) "demote" handle_result() to INFO severity, and local verbosity++ if DEBUG
-{ ihr_ret=0
-  if [ "$DEBUG" ]; then
-    verbosity=6 d_do handle_result "$@" "$info"; ihr_ret=$?
-  else
-    d_do handle_result "$@" "$info"; ihr_ret=$?
-  fi; return $ihr_ret ; }
+  # apply the same quiet/silence policy to cursor movement that emit applies to printing
+  if [ "$QUIET" ] && [ ! "$INTERACTIVE" ]; then _irs_CUF_OK="$FALSE"; fi
+
+  # cursor movement, with conditionality applied by d_do; return 1 if CUF itself fails
+  if [ "$_irs_CUF_OK" ] ; then
+     d_do '
+      printf "%b" "\r"
+      CUF "$_irs_move" || { unset -v _irs_status _irs_msg _irs_tw _irs_width _irs_move _irs_CUF_OK; return 1; }
+    ' "$info"
+  fi
+  # INFO severity (shifted), stdout, newline, conditional, interpret not needed for pre-cooked colors
+  _bitmask=$(( STDOUT | NEWLINE | CONDITIONAL | (info << SEVERITY_SHIFT) ))
+  # apply policy bits (do not use TIMESTAMP in right_status when logging)
+  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG ))
+  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
+  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
+  # emit will send colored output to stdout (and a ansi/excape-cleaned version to the log if logging)
+  emit "$_bitmask" "$_irs_msg"; irs_ret=$?
+  unset -v _irs_status _irs_msg _irs_tw _irs_width _irs_move _irs_CUF_OK _bitmask; return $irs_ret ; }
+# @usage right_status <status_code> || <fail-action>
+# @args $1 integer status code (0=Ok, nonzero=failure)
+# @vars LOGGING, DEBUG, QUIET, logFile
+# @vars EMOJI_CAPABLE (computed), EMOJI_DISABLE (user configured)
+# @deps emit termwidth CUF isint bitmask-constants emoji_safe
+# @rule INFO severity; suppressed when verbosity < INFO unless FORCE is set
+# @rule prints to stdout even on failure; stderr is reserved for real errors
+# @rule uses emit with LOG but no TIMESTAMP to append clean status to log
+# @cont preserves context-aware logging: info_msg_n opens a line, info_right_status
+# @cont closes it on the same line with [ Ok ] or [ !! ]
+# @rule cursor movement handled via '\r' and CUF before calling emit
+# @note acts as a surveillance proxy: reports observed results, not errors
+# @ex info_msg_n "creating file"; sudo ... >/dev/null 2>&1; info_right_status $?
+# @note info_right_status is a INFO-level UI primitive. Severity is not part of its
+# @cont identity; it is the "report-result" step of the announce/act/report
+# @cont info_right_status a single canonical layout function.
+
+info_handle_result()  # (POSIX) INFO-level descriptive result + right_status
+{ ihr_exit_status="$1"; _ihr_ok_msg_in="$2"; _ihr_err_msg_in="$3"
+  if ! isint "$1" ; then  error_msg  "error: handle_result requires \$1 to be integer exit_status": return 1; fi
+  # build descriptive message (or suppress via no_msg)
+  if [ "$_ihr_ok_msg_in" = "${no_msg}" ] ; then _ihr_ok_msg=""; else _ihr_ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$_ihr_err_msg_in" = "${no_msg}" ] ; then _ihr_err_msg=""; else _ihr_err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  # build bitmask: INFO severity, stdout, no newline (right_status adds it)
+  _bitmask=$(( STDOUT | CONDITIONAL | ( info << SEVERITY_SHIFT ) ))
+  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG ))     # no TIMESTAMP
+  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
+  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
+  # choose descriptive message
+  case "$ihr_exit_status" in 0 ) _ihr_msg="$_ihr_ok_msg" ;; * ) _ihr_msg="$_ihr_err_msg" ;; esac
+  # emit descriptive message exactly where info_msg_n left the cursor and close line with right_status
+  emit "$_bitmask" "$_ihr_msg" ; right_status "$ihr_exit_status"
+  unset -v _ihr_ok_msg_in _ihr_err_msg_in _ihr_ok_msg _ihr_err_msg _ihr_msg _bitmask; return $ihr_exit_status ; }
 # @usage info_handle_result <status> <ok_msg> <err_msg> || <fail-action>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
-# @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @args $1 exit status; $2 success text; $3 error text
+# @vars LOGGING DEBUG QUIET no_msg
+# @deps emit info_right_status bitmask-constants
+# @rule INFO severity; suppressed when verbosity < INFO unless FORCE is set
+# @rule prints inline descriptive text, then calls right_status to close line
+# @rule uses emit with LOG but without TIMESTAMP to append clean text to log
+# @cont preserves context-aware logging: info_msg_n opens a line, handle_result
+# @cont adds description, right_status adds final status on same line
+# @note stdout used even on failure; stderr reserved for real error messages
+# @ex info_msg_n "doing X"; run_cmd; info_handle_result "$?" "ok" "failed"
+# @note info_handle_result is a INFO-level UI primitive paired with info_right_status.
+# @cont It participates in the announce/act/report idiom
 
-debug_right_status() # (POSIX) "demote" right_status() to DEBUG severity, and local verbosity++ if DEBUG
-{ drs_ret=0
-  if [ "$DEBUG" ]; then
-    verbosity=7 d_do right_status "$@" "$debug"; drs_ret=$?
+debug_right_status()  # (POSIX) DEBUG-level right-margin status indicator
+{ drs_ret=0; _drs_CUF_OK="$TRUE"
+  # guard
+  [ $# -lt 1 ] && { error_msg  "Error: debug_right_status requires integer status code"; return 1; }
+  _drs_status=$1
+  # choose ascii or emoji messages
+  if [ "$_drs_status" -eq 0 ]; then
+    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+      _drs_msg="${BBon}[ ${Boff}$(emoji_safe "$check_mark_button") ${BBon}]${Boff}"
+      _drs_width=7 # emoji width handled by utf8_string_width, but for cursor movement we need approx
+    else
+      _drs_msg="${BBon}[ ${BGon}Ok ${BBon}]${Boff}"
+      _drs_width=7
+    fi
   else
-    d_do right_status "$@" "$debug"; drs_ret=$?
-  fi; return $drs_ret ; }
-# @usage debug_right_status <status> || <fail-action>
-# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
-# @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+      _drs_msg="${BBon}[ ${Boff}$(emoji_safe "$cross_mark") ${BBon}]${Boff}"
+      _drs_width=7 # emoji width handled by utf8_string_width, but for cursor movement we need approx
+    else
+      _drs_msg="${BBon}[ ${BGon}!! ${BBon}]${Boff}"
+      _drs_width=7
+    fi
+  fi
+  # compute terminal width and movement
+  _drs_tw=$(termwidth)
+  isint "$_drs_tw" || _drs_tw=80
+  _drs_move=$(( _drs_tw - _drs_width ))
+  [ "$_drs_move" -lt 0 ] && _drs_move=0
 
-debug_handle_result() # (POSIX) "demote" handle_result() to DEBUG severity, and local verbosity++ if DEBUG
-{ dhr_ret=0
-  if [ "$DEBUG" ]; then
-    verbosity=7 d_do handle_result "$@" "$debug"; dhr_ret=$?
-  else
-    d_do handle_result "$@" "$debug"; dhr_ret=$?
-  fi; return $dhr_ret ; }
+  # apply the same quiet/silence policy to cursor movement that emit applies to printing
+  if [ "$QUIET" ] && [ ! "$INTERACTIVE" ]; then _drs_CUF_OK="$FALSE"; fi
+
+  # cursor movement, with conditionality applied by d_do; return 1 if CUF itself fails
+  if [ "$_drs_CUF_OK" ] ; then
+     d_do '
+      printf "%b" "\r"
+      CUF "$_drs_move" || { unset -v _drs_status _drs_msg _drs_tw _drs_width _drs_move _drs_CUF_OK; return 1; }
+    ' "$debug"
+  fi
+  # DEBUG severity (shifted), stdout, newline, conditional, interpret not needed for pre-cooked colors
+  _bitmask=$(( STDOUT | NEWLINE | CONDITIONAL | (debug << SEVERITY_SHIFT) ))
+  # apply policy bits (do not use TIMESTAMP in right_status when logging)
+  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG ))
+  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
+  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
+  # emit will send colored output to stdout (and a ansi/excape-cleaned version to the log if logging)
+  emit "$_bitmask" "$_drs_msg"; drs_ret=$?
+  unset -v _drs_status _drs_msg _drs_tw _drs_width _drs_move _drs_CUF_OK _bitmask; return $drs_ret ; }
+# @usage right_status <status_code> || <fail-action>
+# @args $1 integer status code (0=Ok, nonzero=failure)
+# @vars LOGGING, DEBUG, QUIET, logFile
+# @vars EMOJI_CAPABLE (computed), EMOJI_DISABLE (user configured)
+# @deps emit termwidth CUF isint bitmask-constants emoji_safe
+# @rule DEBUG severity; suppressed when verbosity < DEBUG unless FORCE is set
+# @rule prints to stdout even on failure; stderr is reserved for real errors
+# @rule uses emit with LOG but no TIMESTAMP to append clean status to log
+# @cont preserves context-aware logging: debug_msg_n opens a line, debug_right_status
+# @cont closes it on the same line with [ Ok ] or [ !! ]
+# @rule cursor movement handled via '\r' and CUF before calling emit
+# @note acts as a surveillance proxy: reports observed results, not errors
+# @ex debug_msg_n "creating file"; sudo ... >/dev/null 2>&1; debug_right_status $?
+# @note debug_right_status is a DEBUG-level UI primitive. Severity is not part of its
+# @cont identity; it is the "report-result" step of the announce/act/report
+# @cont debug_right_status a single canonical layout function.
+
+debug_handle_result()  # (POSIX) DEBUG-level descriptive result + right_status
+{ dhr_exit_status="$1"; _dhr_ok_msg_in="$2"; _dhr_err_msg_in="$3"
+  if ! isint "$1" ; then  error_msg  "error: handle_result requires \$1 to be integer exit_status": return 1; fi
+  # build descriptive message (or suppress via no_msg)
+  if [ "$_dhr_ok_msg_in" = "${no_msg}" ] ; then _dhr_ok_msg=""; else _dhr_ok_msg=" (${BGon}${2:-success!}${Boff})"; fi
+  if [ "$_dhr_err_msg_in" = "${no_msg}" ] ; then _dhr_err_msg=""; else _dhr_err_msg=" (${BRon}${3:-error!}${Boff})"; fi
+  # build bitmask: DEBUG severity, stdout, no newline (right_status adds it)
+  _bitmask=$(( STDOUT | CONDITIONAL | ( debug << SEVERITY_SHIFT ) ))
+  [ "$LOGGING" ] && _bitmask=$(( _bitmask | LOG ))     # no TIMESTAMP
+  [ "$DEBUG" ]   && _bitmask=$(( _bitmask | FORCE ))
+  [ "$QUIET" ]   && _bitmask=$(( _bitmask | SILENCE ))
+  # choose descriptive message
+  case "$dhr_exit_status" in 0 ) _dhr_msg="$_dhr_ok_msg" ;; * ) _dhr_msg="$_dhr_err_msg" ;; esac
+  # emit descriptive message exactly where debug_msg_n left the cursor and close line with right_status
+  emit "$_bitmask" "$_dhr_msg" ; right_status "$dhr_exit_status"
+  unset -v _dhr_ok_msg_in _dhr_err_msg_in _dhr_ok_msg _dhr_err_msg _dhr_msg _bitmask; return $dhr_exit_status ; }
 # @usage debug_handle_result <status> <ok_msg> <err_msg> || <fail-action>
-# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
-# @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @args $1 exit status; $2 success text; $3 error text
+# @vars LOGGING DEBUG QUIET no_msg
+# @deps emit right_status bitmask-constants
+# @rule DEBUG severity; suppressed when verbosity < DEBUG unless FORCE is set
+# @rule prints inline descriptive text, then calls right_status to close line
+# @rule uses emit with LOG but without TIMESTAMP to append clean text to log
+# @cont preserves context-aware logging: debug_msg_n opens a line, handle_result
+# @cont adds description, right_status adds final status on same line
+# @note stdout used even on failure; stderr reserved for real error messages
+# @ex debug_msg_n "doing X"; run_cmd; handle_result "$?" "ok" "failed"
+# @note debug_handle_result is a DEBUG-level UI primitive paired with debug_right_status.
+# @cont It participates in the announce/act/report idiom
 
-notice_echo_msg() # (POSIX) "conditionalize" echo_msg() at NOTICE severity, and local verbosity++ if DEBUG
+notice_echo_msg() # (POSIX) "conditionalize" echo_msg() at NOTICE severity, and local loglevel/verbosity++ if DEBUG
 { iem_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=5 d_do echo_msg "$@" "$notice"; iem_ret=$?
+    loglevel=5 verbosity=5 d_do echo_msg "$@" "$notice"; iem_ret=$?
   else
     d_do echo_msg "$@" "$notice"; iem_ret=$?
   fi; return $iem_ret ; }
 # @usage info_echo_msg <message>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @note this is not to make the command wrapped by d_do ... $info run when loglevel/verbosity=$info
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is <5
 
-info_echo_msg() # (POSIX) "conditionalize" echo_msg() at INFO severity, and local verbosity++ if DEBUG
+info_echo_msg() # (POSIX) "conditionalize" echo_msg() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { iem_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=6 d_do echo_msg "$@" "$info"; iem_ret=$?
+    loglevel=6 verbosity=6 d_do echo_msg "$@" "$info"; iem_ret=$?
   else
     d_do echo_msg "$@" "$info"; iem_ret=$?
   fi; return $iem_ret ; }
 # @usage info_echo_msg <message>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @note this is not to make the command wrapped by d_do ... $info run when loglevel/verbosity=$info
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is 5
 
-debug_echo_msg() # (POSIX) "conditionalize" echo_msg() at INFO severity, and local verbosity++ if DEBUG
+debug_echo_msg() # (POSIX) "conditionalize" echo_msg() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { dem_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=7 d_do echo_msg "$@" "$debug"; dem_ret=$?
+    loglevel=7 verbosity=7 d_do echo_msg "$@" "$debug"; dem_ret=$?
   else
     d_do echo_msg "$@" "$debug"; dem_ret=$?
   fi; return $dem_ret ; }
 # @usage debug_echo_msg <message>
-# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
+# @note this is not to make the command wrapped by d_do ... $debug run when loglevel/verbosity=$debug
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when logleve/verbosity is 5
 
 echo_msg_n()  # (POSIX) raw echo with logging; modern replacement for log_echo_n
 { echo_msg_ret=0; _msg="$*"
@@ -3254,29 +3473,29 @@ echo_msg_n()  # (POSIX) raw echo with logging; modern replacement for log_echo_n
 # @note no prefix, no severity, no color; preserves literal escapes
 # @ex echo_msg_n "hello world"
 
-info_echo_msg_n() # (POSIX) "conditionalize" echo_msg_n() at INFO severity, and local verbosity++ if DEBUG
+info_echo_msg_n() # (POSIX) "conditionalize" echo_msg_n() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { iemn_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=6 d_do echo_msg_n "$@" "$info"; iemn_ret=$?
+    loglevel=6 verbosity=6 d_do echo_msg_n "$@" "$info"; iemn_ret=$?
   else
     d_do echo_msg_n "$@" "$info"; iemn_ret=$?
   fi; return $iemn_ret ; }
 # @usage info_echo_msg_n <message>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @note this is not to make the command wrapped by d_do ... $info run when loglevel/verbosity=$info
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is 5
 
-debug_echo_msg_n() # (POSIX) "conditionalize" echo_msg_n() at INFO severity, and local verbosity++ if DEBUG
+debug_echo_msg_n() # (POSIX) "conditionalize" echo_msg_n() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { demn_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=7 d_do echo_msg_n "$@" "$debug"; demn_ret=$?
+    loglevel=7 verbosity=7 d_do echo_msg_n "$@" "$debug"; demn_ret=$?
   else
     d_do echo_msg_n "$@" "$debug"; demn_ret=$?
   fi; return $demn_ret ; }
 # @usage debug_echo_msg_n <message>
-# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
+# @note this is not to make the command wrapped by d_do ... $debug run when loglevel/verbosity=$debug
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is 5
 
 echo_e_msg_n()  # (POSIX) interpreted echo with optional logging
 { echo_e_msg_ret=0; _msg="$*"
@@ -3294,29 +3513,29 @@ echo_e_msg_n()  # (POSIX) interpreted echo with optional logging
 # @note INTERPRET enables escape processing on stdout only
 # @ex echo_e_msg_n "line1\nline2"
 
-info_echo_e_msg_n() # (POSIX) "conditionalize" echo_e_msg_n() at INFO severity, and local verbosity++ if DEBUG
+info_echo_e_msg_n() # (POSIX) "conditionalize" echo_e_msg_n() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { ieemn_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=6 d_do echo_e_msg_n "$@" "$info"; ieemn_ret=$?
+    loglevel=6 verbosity=6 d_do echo_e_msg_n "$@" "$info"; ieemn_ret=$?
   else
     d_do echo_e_msg_n "$@" "$info"; ieemn_ret=$?
   fi; return $ieemn_ret ; }
 # @usage info_echo_msg_n <message>
-# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @note this is not to make the command wrapped by d_do ... $info run when loglevel/verbosity=$info
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is 5
 
-debug_echo_e_msg_n() # (POSIX) "conditionalize" echo_e_msg_n() at INFO severity, and local verbosity++ if DEBUG
+debug_echo_e_msg_n() # (POSIX) "conditionalize" echo_e_msg_n() at INFO severity, and local loglevel/verbosity++ if DEBUG
 { deemn_ret=0
   if [ "$DEBUG" ]; then
-    verbosity=7 d_do echo_e_msg_n "$@" "$debug"; deemn_ret=$?
+    loglevel=7 verbosity=7 d_do echo_e_msg_n "$@" "$debug"; deemn_ret=$?
   else
     d_do echo_e_msg_n "$@" "$debug"; deemn_ret=$?
   fi; return $deemn_ret ; }
 # @usage debug_echo_msg_n <message>
-# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
+# @note this is not to make the command wrapped by d_do ... $debug run when loglevel/verbosity=$debug
 # @cont (it would run anyway since it operates at notice severity),
-# @cont  this is to make it NOT run when verbosity is 5
+# @cont  the d_do is to make it NOT run when loglevel/verbosity is 5
 
 # @note -----[ Section 6.c.: Unicode/Emoji UI/Layout tools ]------------------------------------------------------
 
@@ -3371,8 +3590,57 @@ emit_utf8_from_hex() # (POSIX) encode a unicode codepoint (hex) into UTF-8 bytes
 }
 
 
-u_echo() # (BASH) in UTF-8 env, echo -e -n one or more unicode chars $@
-{ LC_CTYPE=en_US.UTF-8 printf '%b' "$@" ; }
+u_echo() # (POSIX) in UTF-8 env, emit one or more unicode chars $@
+{  # iterate over every argument passed to the function ($@)
+  for _ue_arg in "$@"; do
+    # split internal \U sequences into space-separated hex strings
+    # use a literal backslash-U for the replacement pattern (to be replaced)
+    _ue_parts=$(printf '%s' "$_ue_arg" | sed 's/\\U/ /g')
+    # iterate over each part (hex codepoint) in this argument
+    for _ue_h_cp in $_ue_parts; do
+      [ -z "$_ue_h_cp" ] && continue
+      # clean the hex string for the awk bit-shifter
+      # (remove \U or 0x prefixes in case any parts have such)
+        _ue_h_cp="${_ue_h_cp#\\U}"
+        _ue_h_cp="${_ue_h_cp#0x}"
+      # use $((16# )) math to translate hex to decimal
+      _ue_n=$((16#$_ue_h_cp))
+      # use awk bit-shifter to generate literal UTF-8 bytes
+      # no strtonum() nor smart printf required; works in minimal BusyBox
+      awk -v n="$_ue_n" 'BEGIN {
+        # 1 byte = 7 bit (ascii) payload (upper limit = 2^7 - 1 = 0x7F [127])
+        # each "%c" in a printf format string treats its arg number a an integer
+        # and prints the "character" (char in c programming) associated with that number
+        if (n < 128) printf "%c", n
+        # 2-bytes = 5 + 6 = 11 payload bits (upper limit = 2^11 - 1 = 0x7FF [2047])
+        # continuation bytes have 6 bit payloads, 2^6 (64) is a value 1 larger than can be
+        # represented in 6 bits, so if you divide an 8-bit number by 2^6, the remainder
+        # is the value of the 6 lsb (the payload) + 128 is the dec value of the mandatory
+        # lead bits of a cont byte (10xxxxxx).
+        # the vlue of the lead byte of a 2-byte sequence inclues the integer division by 64
+        # which is the value contributed to the number by other than its 6 lsb,
+        # and the + 192 is the dec value of the mandatory lead bits of the first byte (110xxxxx)
+        else if (n < 2048) printf "%c%c", 192+int(n/64), 128+int(n%64)
+        # 3-bytes 4 + 6 + 6 = 16 payload bits (upper limit= 2^16 - 1 = 0xFFFF [65535])
+        # similar to above (2 contnuation bytes with the same lsb math)
+        # The msb cont byte contributes the 6-bit remainder of int division of the value that
+        # comes from other than the 6 lsb plus 128 (cont byte lead bits again)
+        # The first byte gets integer division by 4096 to compute the value coming from other
+        # than the 12 lsb (2 x cont byte payloads). the + 224 is the dec value of the mandatory
+        # lead bits of the first byte of a 3-byte sequence (1110xxxx)
+        else if (n < 65536) printf "%c%c%c", 224+int(n/4096), 128+int(n/64)%64, 128+int(n%64)
+        # 4 -bytes = 3 + 6 + 6 + 6 = 21 bits (upper limit= 2^21 - 1 = 0x1FFFFF [2097151])
+        # Same math for the two least significant bytes.
+        # The most significant cont byte contributes the 6-bit remainder of int division by 2^12(4096)
+        # which is the value of other than the 12 least significant bits, and the + 128 is cont byte lead bits again)
+        # The first (MSB) byte  int div by 2^18(262144 is the value from other than the 18 lsb
+        # (3 x 6-bit cont byte payloads) and + 240 is the dec value of the mandatory lead
+        # bits of a 4-byte sequence (11110xxx)
+        else printf "%c%c%c%c", 240+int(n/262144), 128+int(n/4096)%64, 128+int(n/64)%64, 128+int(n%64)
+      }' 2>/dev/null
+    done
+  done
+}
 
 emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
 { [ ! $# -eq 1 ] && die "one arg allowed/required"
@@ -3635,20 +3903,17 @@ progress_inline() # (POSIX) show progress of silent process on next line $1=step
 # @note automatically emits newline upon reaching 100% to preserve the bar
 
 sh_countdown() # (POSIX) count-down seconds (arg $1)
-{ shc_ret=0
-  _shc_rem_time="${1:-30}"  # guard; default to 30 sec. if no arg given
-  [ "$1" = "" ] && notice_msg "No argument given, defaulting to 30 seconds"
-  # execute countdown
-  while [ "${_shc_rem_time}" -ge "0" ] ; do  # use -ge 0 to display the final state
-    # build this with set -- in curly braces to protect parameters, make it more readable on two lines and to get one exit status
-    { set -- '\r%b Pausing. [ %b%02d%b ] seconds remaining ...   ';
-      set -- "$@" "${BGon}*${Boff}" "${BGon}" "$_shc_rem_time" "${Boff}";
-      printf "$@" ; } ; [ ! $? -eq 0 ] && shc_ret=1
-    # exit loop immediatly after reaching/printing 00 (don't do "last" sleep cycle)
-    [ "$_shc_rem_time" -eq 0 ] && break
-    sleep 1; _shc_rem_time=$(($_shc_rem_time - 1))
-  done || shc_ret=2
-  printf "\n"  #clean up the line for the next command
+{ shc_ret=0; _shc_rem_time="${1:-30}"  # guard; default to 30 sec. if no arg given
+  while [ "${_shc_rem_time}" -ge "0" ] ; do
+  printf '\r'; # return to left edge
+  _msg=" ${BGon}*${Boff} Pausing ${BBon}[${Boff}"                 # prefix and "Pausing ["
+  _msg="${_msg} ${BGon}$(printf '%02d' "$_shc_rem_time")${Boff}"   # nn
+  _msg="${_msg} ${BBon}]${Boff} seconds remaining ...   "          # " ] seconds remaining ...   "
+  echo_msg_n "$_msg"
+  [ ! $? -eq 0 ] && shcy_ret=1
+  sleep 1; _shc_rem_time=$(( _shc_rem_time - 1 ))
+  [ "$_shc_rem_time" -eq 0 ] && break; done || shc_ret=2
+  printf '\n'      #clean up the line for the next command
   unset -v _shc_rem_time ; return $shc_ret ; }
 # @usage sh_countdown [seconds]
 # @args $1 number of seconds to pause (defaults to 30)
@@ -3657,40 +3922,73 @@ sh_countdown() # (POSIX) count-down seconds (arg $1)
 # @note special note: bb sh cannot use base#number notation (don't prefix w 10#)
 # @note breaks immediately at 0 to avoid an unnecessary final sleep cycle
 
-strip_last_arg() # (POSIX) remove final arg from $@ for legacy d_* wrappers
-{ sla_ret=0; set -- "$@"
-  # build a set -- command with all arguments from $@ except the last one
-  _cmd="set --"
-  while [ $# -gt 1 ]; do
-    _arg=$1
-    # POSIX-safe single-quote escaping
-    # escape any single quotes already in the string variable, so that it can be
-    # safely wrapped inside single quotes later
-    # replaces every literal ' char with the char sequence: '\''
-    # the sed commadn is enclosed with double quotes, so it process backslashes first
-    # \\\\ becomes \\ (which sed interprets as a single literal backslash \)
-    # the result sed actually receives is s/'/'\''/g (g applies it globally on each line)
-    _quoted_arg=$(printf "%s" "$_arg" | sed "s|'|'\\\\''|g")
-    # so now append the safely single-quoted the argument to the growing set -- command
-    _cmd="$_cmd '$_quoted_arg'"
-    # we don't need this argument anymore, so discard it
-    shift
-  done
-  printf '%s\n' "$_cmd"
-  unset -v _arg _quoted_arg
-  return $sla_ret
-}
-# @usage eval "$(strip_last_arg "$@")"
-# @args  $@ full argument list; final arg is legacy level and removed
-# @vars  _arg current arg; _quoted_arg safely quoted arg; _cmd output command
-# @ret   emits a `set --` command rebuilding $@ minus last arg; returns 0
-# @deps  printf sed; requires POSIX shell quoting rules
-# @rule  must not interpret escapes; must preserve all literal characters
-# @note  preserves \n, ANSI codes, whitespace; emit handles interpretation
-# @warn  do NOT use raw command substitution on args
-# @cont  only eval the emitted command string to rebuild $@
-# @ex    eval "$(strip_last_arg "$@")"; info_msg "$@"
+legacy_wrapper_dispatch()
+{ lwd_ret=0
+  [ $# -lt 3 ] && die "insufficient args. legacy_wrapper_dispatch requires legacy_func target_func + args"
+  _lwd_legacy_func=$1; _lwd_target_func=$2
+  _lwd_SEVERITY="$FALSE"; _lwd_LOGGING="$FALSE"
+  shift 2 # remove the legacy and new function names from the argument list
 
+  # formulate an appropriate deprecation warning based on name of legcy function
+  case "$_lwd_legacy_func" in log_*|*_log_*) _lwd_LOGGING="$TRUE" ;; esac
+  case "$_lwd_legacy_func" in d_*|de_*|dE_*) _lwd_SEVERITY="$TRUE" ;; esac
+  if [ "$_lwd_LOGGING" ]; then
+    _lwd_dep_msg="$_lwd_legacy_func is deprecated; use \"LOGGING=\$TRUE $_lwd_target_func\"."
+  else
+    _lwd_dep_msg="$_lwd_legacy_func is deprecated; use \"$_lwd_target_func\"."
+  fi
+  if [ "$_lwd_SEVERITY" ]; then
+    _lwd_dep_msg="${_lwd_dep_msg} (stripping severity arg if integer)"
+  fi
+  [ "$DEBUG" ] && warn_msg "${BYon}Warning:${Boff} $_lwd_dep_msg"
+  # consider legacy *E* messages to be used in error, inconsistent with severity model
+  # so issue a second (error) message
+  case "$_lwd_legacy_func" in
+    *E*)
+      _lwd_err_msg="$_lwd_legacy_func is obsolete and inconsistent"
+      _lwd_err_msg="${_lwd_err_msg} with the severity model; use $_lwd_target_func instead"
+      error_msg "${BRon}Deprecated:${Boff} $_lwd_err_msg" ;;
+  esac
+  # if severity is "claimed" check if last arg is integer before bothering to rotate
+  _lwd_last_arg=""
+  for _lwd_last_arg; do : ; done
+  if ! isint "$_lwd_last_arg"; then _lwd_SEVERITY="$FALSE"; fi
+  # iterate over all args but not w while $# -gt 0 b/c rotation "puts them back"
+  _lwd_n=$#
+   # guard: only want to strip for d_ w a severity arg
+   #   but if there is only one integer arg, I am going to assume it is NOT severity
+   #   (therefor the quantitative guard is -gt 1 rather than -gt 0)
+  if [ "$_lwd_SEVERITY" ] && [ "$_lwd_n" -gt 1 ]; then
+    _lwd_i=1    # now rotate (move first (n-1) args to the end of $@ args
+    while [ "$_lwd_i" -lt "$_lwd_n" ]; do
+      set -- "$@" "$1"
+      shift
+      _lwd_i=$(( _lwd_i + 1 ))
+    done
+    shift # discard what was originally the last argument (the severity level)
+  fi
+  # hand-off from legacy to new target function
+  if [ "$_lwd_LOGGING" ]; then
+    LOGGING=$TRUE "$_lwd_target_func" "$@"  # hand off from legacy to inheriting function
+  else
+    "$_lwd_target_func" "$@"
+  fi
+  lwd_ret=$?
+  unset -v _lwd_legacy_func _lwd_target_func _lwd_SEVERITY _lwd_LOGGING
+  unset -v _lwd_n _lwd_i _lwd_last_arg
+  return $lwd_ret
+}
+# @note routes legacy calls, handles logging state, and strips severity args
+# @usage legacy_wrapper_dispatch <legacy_func> <target_func> [args ...]
+# @args $1: Name of the calling legacy function (for pattern matching)
+# @args $2: Name of the new function to be executed
+# @args $@: Positional parameters to be processed and passed
+# @vars _lwd_legacy_func, _lwd_target_func, _lwd_SEVERITY, _lwd_LOGGING
+# @ret exit status of the executed <target_func>
+# @rule mode is inferred from legacy_name prefix (d_, *_log_*, *E*)
+# @rule uses parameter rotation to avoid eval/subshell limits (POSIX safe)
+# @ex legacy_wrapper_dispatch "d_message" "info_msg" "Hello" "critical"
+# @cont results in: info_msg "Hello"
 
 #-----[ Logging ]--------------------------------------------------------------------------------------
 
@@ -4525,7 +4823,7 @@ unlock_luks_devices()
 # prior to main script use is to place the extending definitions in .conf file in the
 # /etc/<package_name> configuration directory ($config_dir).  A commented out copy of this
 # information is provided in the template config file to exemplify
-varlist="PN BUILD user logFile status_file config_dir config_files verbosity"
+varlist="PN BUILD user logFile status_file config_dir config_files verbosity loglevel"
 varlist="${varlist} num_cmds starting_step stopping_step BREAK"
 varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
 varlist="${varlist} bool.EMOJI_CAPABLE bool.EMOJI_DISABLE"
@@ -4627,6 +4925,15 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
     info_handle_result $? "now set: $verbosity" '' || _c_FLAGGED=$TRUE
   else
     info_handle_result 0 "already set: $verbosity" ''
+  fi
+
+  # set default loglevel if not set externally
+  info_msg_n "maybe assigning loglevel"
+  if [ -z "$loglevel" ] ; then
+    loglevel=5
+    info_handle_result $? "now set: $loglevel" '' || _c_FLAGGED=$TRUE
+  else
+    info_handle_result 0 "already set: $loglevel" ''
   fi
 
   # initialize EMOJI_CAPABLE - is set automatically, redo that after initialization
@@ -6118,7 +6425,7 @@ _dh_demo_boolean() # (POSIX) demonstrate bool truth validation with a variety of
   done
 
   printf "\n"
-  error_msg_n ""
+  notice_msg_n ""
   smart_wrap_n 3 3 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
   printf "\n"
 
@@ -6458,6 +6765,80 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
 # @usage _dh_demo_widgets
 # @args none
 # @rules demonstrating established decorative and informative UI elements
+
+_dh_demo_emojis() # (POSIX) demonstrate emoji policy, emoji_safe, and right_status
+{ demo_emoji_ret=0
+  _dh_FAILED=$FALSE
+  _dh_result=0
+
+  #-----[ part 1: show emoji policy state ]---------------------------------------------------------
+  # construct the command preview string -
+  # line 1 - printf 'EMOJI_CAPABLE=[ %s ] EMOJI_DISABLE=[ %s ]\n' "${EMOJI_CAPABLE}" "${EMOJI_DISABLE}"
+  _dh_cmd="   ${_func_color}printf${_Boff} ${_quote_color}\"EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\\\\n\"${_Boff} "
+  _dh_cmd="${_dh_cmd}${_var_color}\"\${EMOJI_CAPABLE}\" \"\${EMOJI_DISABLE}\"${_Boff}"
+  printf "\n"; notice_msg "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+
+  # Logic execution
+  printf 'EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\n' "${EMOJI_CAPABLE:-}" "${EMOJI_DISABLE:-}"
+  printf "\n"
+
+  #-----[ part 2: basic emoji_safe() + right_status ]----------------------------------------------
+  # construct the command preview string -
+  # line 1 - emoji_safe "$check_mark_button"; right_status $?
+  _dh_cmd="   ${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${check_mark_button}\"${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}\n"
+  # line 2 - emoji_safe "$cross_mark"; right_status $?
+  _dh_cmd="${_dh_cmd}   ${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${cross_mark}\"${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}"
+  printf "\n"; notice_msg "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+
+  # Logic execution
+  emoji_safe "$check_mark_button"; _dh_result=$?
+  right_status $_dh_result
+  printf "\n"
+  emoji_safe "$cross_mark"; _dh_result=$?
+  right_status $_dh_result
+  printf "\n"
+
+  #-----[ part 3: emoji_safe() inside notice_msg ]-------------------------------------------------
+  # construct the command preview string -
+  # line 1 - notice_msg "$(emoji_safe "$hammer") Running a work-like task..."
+  _dh_cmd="   ${_func_color}notice_msg${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${hammer}\"${_quote_color}${_Boff})"
+  _dh_cmd="${_dh_cmd} Running a work-like task...\"${_Boff}"
+  printf "\n"; notice_msg "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+
+  # Logic execution
+  notice_msg "$(emoji_safe "$hammer") Running a work-like task..."
+  _dh_result=$?
+  [ "$_dh_result" -eq 0 ] || _dh_FAILED=$TRUE
+  printf "\n"
+
+  #-----[ part 4: demonstrate EMOJI_DISABLE override ]---------------------------------------------
+  # construct the command preview string -
+  # line 1 - EMOJI_DISABLE="$TRUE"; emoji_safe "$check_mark_button"; right_status $?
+  _dh_cmd="   ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${TRUE}\"${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${check_mark_button}\"${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}\n"
+  # line 2 - EMOJI_DISABLE="$FALSE"
+  _dh_cmd="${_dh_cmd}   ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${FALSE}\"${_Boff}"
+  printf "\n"; notice_msg "${BYon}About to run:${Boff} ${_cmt_color}# EMOJI_DISABLE override${_Boff}\n ${_dh_cmd}"
+
+  # Logic execution
+  EMOJI_DISABLE="$TRUE"
+  emoji_safe "$check_mark_button"; _dh_result=$?
+  right_status $_dh_result
+  printf "\n"
+  EMOJI_DISABLE="$FALSE"
+
+  [ "$_dh_FAILED" ] && demo_emoji_ret=1
+  unset -v _dh_cmd _dh_FAILED _dh_result
+  return $demo_emoji_ret
+}
+# @usage _dh_demo_emojis
+# @args none
+# @rule demonstrates emoji policy, emoji_safe(), and right_status integration
+
 
 demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of this header
 { dh_final_status=0   # clear all bits of this status "bitmask" variable

@@ -2413,3 +2413,394 @@ old_utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 # @note   No external commands; POSIX-compliant
 # @note   Caller must remove ANSI SGR sequences before invoking
 # @ex     utf8_string_width "A$(printf '\xF0\x9F\x94\xA5')B"  # prints 4
+
+old_sh_countdown() # (POSIX) count-down seconds (arg $1)
+{ shc_ret=0
+  _shc_rem_time="${1:-30}"  # guard; default to 30 sec. if no arg given
+  [ "$1" = "" ] && notice_msg "No argument given, defaulting to 30 seconds"
+  # execute countdown
+  while [ "${_shc_rem_time}" -ge "0" ] ; do  # use -ge 0 to display the final state
+    # build this with set -- in curly braces to protect parameters, make it more readable on two lines and to get one exit sta>
+    { set -- '\r %s*%s Pausing. %s[%s %s%02d%s %s]%s seconds remaining ...   ';   # this is the format specifier
+      set -- "$@" "${BGon}" "${Boff}" "${BBon}" "${Boff}" "${BGon}";            # this and below appends the color and
+      set -- "$@" "$_shc_rem_time" "${Boff}" "${BBon}" "${Boff}" ;              # message arguments
+      printf "$@" ; } ; [ ! $? -eq 0 ] && shc_ret=1                        # this passes arguments to printf
+    # exit loop immediatly after reaching/printing 00 (don't do "last" sleep cycle)
+    [ "$_shc_rem_time" -eq 0 ] && break
+    sleep 1; _shc_rem_time=$(( _shc_rem_time - 1 ))
+  done || shc_ret=2
+  printf "\n"  #clean up the line for the next command
+  unset -v _shc_rem_time ; return $shc_ret ; }
+
+
+#strip_last_arg() # (POSIX) remove final arg from $@ for legacy d_* wrappers
+strip_last_arg_for_eval() # (POSIX) remove final arg from $@ for legacy d_* wrappers
+{ sla_ret=0; set -- "$@"
+  # build a set -- command with all arguments from $@ except the last one
+  _cmd="set --"
+  while [ $# -gt 1 ]; do
+    _arg=$1
+    # POSIX-safe single-quote escaping
+    # escape any single quotes already in the string variable, so that it can be
+    # safely wrapped inside single quotes later
+    # replaces every literal ' char with the char sequence: '\''
+    # the sed command is enclosed with double quotes, so the shell processes backslashes first
+    # \\\\ becomes \\ (which sed then interprets as a single literal backslash \)
+    # the result sed actually receives is s/'/'\''/g (g applies it globally on each line)
+    _quoted_arg=$(printf "%s" "$_arg" | sed "s|'|'\\\\''|g")
+    # so now append the safely single-quoted the argument to the growing set -- command
+    _cmd="$_cmd '$_quoted_arg'"
+    # we don't need this argument anymore, so discard it
+    shift
+  done
+  printf '%s\n' "$_cmd" 
+  unset -v _arg _quoted_arg
+  return $sla_ret
+}
+# @usage eval "$(strip_last_arg "$@")"
+# @args  $@ full argument list; final arg is legacy level and removed
+# @vars  _arg current arg; _quoted_arg safely quoted arg; _cmd output command
+# @ret   emits a `set --` command rebuilding $@ minus last arg; returns 0
+# @deps  printf sed; requires POSIX shell quoting rules
+# @rule  must not interpret escapes; must preserve all literal characters
+# @note  preserves \n, ANSI codes, whitespace; emit handles interpretation
+# @warn  do NOT use raw command substitution on args
+# @cont  only eval the emitted command string to rebuild $@
+# @ex    eval "$(strip_last_arg "$@")"; info_msg "$@"
+
+
+LBLUE="36"       # foreground light blue (cyan)(deprecated - keep here for compatibility)
+
+LBACK="46"       # background light blue (cyan)(deprecated - keep here for compatibility)
+
+Lon="${CSI}${LBLUE}m"   # (deprecated - keep here for compatibility)
+
+LBon="${CSI}${LBLUE};${BOLD}m"   # (deprecated - keep here for compatibility)
+
+isnumber() # (deprecated - use isint() or isnumeric(); isnumber tests if $1 is an integer
+{ # @usage isnumber "input"
+  # @note maintained for legacy compatibility; redirects to universal isnumeric()
+  W_message "${BYon}Warning:${Boff} non_stty_separator is deprecated (use separator(), which has been upgraded)"
+  isnumeric "$@"
+}
+
+echo_n_long() # deprecated - use smart_wrap_n
+{ W_message "${BYon}Warning:${Boff} echo_n_long is deprecated (use smart_wrap_n(), which has been upgraded)"
+  [ ! $# -eq 3 ] && die "invalid arguments"
+  # translate for compatibility - smartwrap also uses r_margin
+  _enl_start_col="$1"; shift
+  _ens_indent="$1"; shift
+  _enl_msg="$@"
+  smart_wrap_n "$_enl_start_col" "$_ens_indent" "" "$_enl_msg" ; }
+
+log_separator() # (deprecated; use LOGGING="$TRUE" separator() instead)
+{ log_sep_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_separator() is deprecated; use LOGGING=\$TRUE separator() instead"; fi
+  LOGGING="$TRUE" separator "$@"; log_sep_ret=$?; return $log_sep_ret ; }
+
+d_log_separator() # (deprecated; use LOGGING="$TRUE" separator() instead)
+{ log_sep_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_separator() is deprecated; use LOGGING=\$TRUE separator() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" separator "$@"; log_sep_ret=$?; return $log_sep_ret ; }
+
+log_right_status() # (deprecated; use LOGGING="$TRUE" right_status() instead)
+{ log_right_status_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_separator() is deprecated; use LOGGING=\$TRUE right_status() instead"; fi
+  LOGGING="$TRUE" right_status "$@"
+  log_right_status_ret=$?; return $log_right_status_ret ; }
+# @usage log_right_status <status_code> <level>
+# @rule deprecated; use LOGGING=$TRUE right_status() instead
+# @rule DEBUG shows a deprecation warning
+# @rule forces LOGGING and delegates to right_status
+
+d_right_status() # (deprecated; use right_status, which is conditional now, instead)
+{ d_right_status_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_right_status() is deprecated; use right_status, which is conditional now, instead"; fi
+  eval "$(strip_last_arg "$@")"
+  right_status "$@"; d_right_status_ret=$?; return $d_right_status_ret ; }
+# @usage d_right_status <status_code> <level>
+# @rule deprecated; use right_status(), which is conditional now
+# @rule DEBUG shows a deprecation warning
+# @rule passes args to right_status after stripping level
+
+d_log_right_status() # (deprecated; use LOGGING=\$TRUE right_status, which is conditional now, instead)
+{ d_right_status_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_right_status() is deprecated; use LOGGING=\$TRUE right_status, which is conditional now, instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" right_status "$@"; d_right_status_ret=$?; return $d_right_status_ret ; }
+# @usage d_log_right_status <status_code> <level>
+# @rule deprecated; use LOGGING=$TRUE right_status() instead
+# @rule DEBUG shows a deprecation warning
+# @rule forces LOGGING and delegates to right_status
+
+non_stty_right_status()    # (deprecated; use right_status)
+{ W_message "${BYon}Warning:${Boff} non_stty_right_status is deprecated (use right_status(), which has been upgraded)"
+  right_status "$@" ; }
+
+
+log_handle_result() # (deprecated; use LOGGING=$TRUE handle_result() instead)
+{ log_handle_result_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_handle_result() is deprecated; use LOGGING=\$TRUE handle_result() instead"; fi
+  LOGGING="$TRUE" handle_result "$@"; log_handle_result=$?; return $log_handle_result ; }
+# @usage log_handle_result <status> <ok_msg> <err_msg>
+# @rule deprecated; use LOGGING=$TRUE handle_result() instead
+# @rule DEBUG prints a deprecation warning
+# @rule forces LOGGING and delegates to handle_result
+
+d_handle_result() # (deprecated; use handle_result(), which is conditional now, instead)
+{ d_handle_result_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_handle_result() is deprecated; use handle_result(), which is conditional now, instead"; fi
+  eval "$(strip_last_arg "$@")"
+  handle_result "$@"; d_handle_result=$?; return $d_handle_result ; }
+# @usage d_handle_result <status> <ok_msg> <err_msg> <level>
+# @rule deprecated; use handle_result(), which is conditional now
+# @rule DEBUG prints a deprecation warning
+# @rule strips trailing level arg and delegates to handle_result
+
+d_log_handle_result() # (deprecated; use LOGGING=$TRUE handle_result() instead)
+{ d_log_handle_result_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_handle_result() is deprecated; use LOGGING=\$TRUE handle_result() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" handle_result "$@"; d_log_handle_result=$?; return $d_log_handle_result ; }
+# @usage d_log_handle_result <status> <ok_msg> <err_msg> <level>
+# @rule deprecated; use LOGGING=$TRUE handle_result() instead
+# @rule DEBUG prints a deprecation warning
+# @rule strips trailing level arg, forces LOGGING, delegates to handle_result
+
+prompt() # deprecated (use yn_prompt)
+{ W_message "${BYon}Warning:${Boff} prompt is deprecated (use yn_prompt(), which has been upgraded)"
+  yn_prompt "$@"; }
+
+
+new_prompt() # deprecated (use yns_prompt)
+{ W_message "${BYon}Warning:${Boff} new_prompt is deprecated (use yns_prompt(), which has been upgraded)"
+  yns_prompt "$@"; }
+
+
+message() # (deprecated; use info_msg) display text message $@ (like echo -e)
+{ message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} message() is deprecated; use info_msg() instead"; fi
+  info_msg "$@"; message_ret=$?; return $message_ret ; }
+
+W_message() # (deprecated; use warn_msg) display warning message $@ (like echo -e)
+{ w_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} W_message() is deprecated; use warn_msg() instead"; fi
+  warn_msg "$@"; w_message_ret=$?; return $w_message_ret ; }
+
+E_message() # (deprecated; use error_msg) display error message $@ (like echo -e)
+{ e_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} E_message() is deprecated; use error_msg() instead"; fi
+  error_msg "$@"; e_message_ret=$?; return $e_message_ret ; }
+
+log_message() # (deprecated; use info_msg with LOGGING="$TRUE") display text message $@ (like echo -e)
+{ log_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_message() is deprecated; use LOGGING=\$TRUE info_msg() instead"; fi
+  LOGGING="$TRUE" info_msg "$@"; log_message_ret=$?; return $log_message_ret ; }
+
+log_E_message() # (deprecated; use error_msg) display error message $@ (like echo -e)
+{ log_e_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_E_message() is deprecated; use LOGGING=\$TRUE error_msg() instead"; fi
+  LOGGING="$TRUE" error_msg "$@"; log_e_message_ret=$?; return $log_e_message_ret ; }
+
+d_message()   # (deprecated; use info_msg, which is conditional now
+{ d_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_message() is deprecated; use info_msg, which is conditional now"; fi
+  eval "$(strip_last_arg "$@")"
+  info_msg "$@"; d_message_ret=$?; return $d_message_ret ; }
+
+dE_message()  # (deprecated; inconsistent legacy behavior; use error_msg)
+{ dE_message_ret=0
+  error_msg "${BRon}Deprecated:${Boff} dE_message() is obsolete and inconsistent with the severity model; use error_msg() instead"
+  eval "$(strip_last_arg "$@")"
+  error_msg "$@"; dE_message_ret=$?; return $dE_message_ret ; }
+
+d_log_message()  # (deprecated; use LOGGING="$TRUE" info_msg)
+{ d_log_message_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_message() is deprecated; use LOGGING=\$TRUE info_msg() instead"; fi
+    eval "$(strip_last_arg "$@")"
+    LOGGING="$TRUE" info_msg "$@"; d_log_message_ret=$?; return $d_log_message_ret ; }
+
+d_log_E_message()  # (deprecated; use LOGGING="$TRUE" info_msg)
+{ d_log_e_message_ret=0;
+  error_msg "${BRon}Deprecated:${Boff} d_logE_message() is obsolete and inconsistent with the severity model; use error_msg() instead"
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" error_msg "$@"; d_log_e_message_ret=$?; return $d_log_e_message_ret ; }
+
+log_echo() # (deprecated; use LOGGING="$TRUE" echo_msg() instead)
+{ log_echo_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_echo() is deprecated; use LOGGING=\$TRUE echo_msg() instead"; fi
+  LOGGING="$TRUE" echo_msg "$@"; log_echo_ret=$?; return $log_echo_ret ; }
+
+log_echo_e() # (deprecated; use LOGGING="$TRUE" echo_e_msg() instead)
+{ log_echo_e_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_echo_e() is deprecated; use LOGGING=\$TRUE echo_e_msg() instead"; fi
+  LOGGING="$TRUE" echo_e_msg "$@"; log_echo_e_ret=$?; return $log_echo_e_ret ; }
+
+d_echo() # (deprecated; use echo_msg() instead)
+{ d_echo_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_echo() is deprecated; use echo_msg() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  echo_msg "$@"; d_echo_ret=$?; return $d_echo_ret ; }
+
+de_echo() # (deprecated; use echo_e_msg() instead)
+{ de_echo_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} de_echo() is deprecated; use echo_e_msg() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  echo_e_msg "$@"; de_echo_ret=$?; return $de_echo_ret ; }
+
+d_log_echo() # (deprecated; use LOGGING="$TRUE" echo_msg() instead)
+{ d_log_echo_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_echo() is deprecated; use LOGGING=\$TRUE echo_msg() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" echo_msg "$@"; d_log_echo_ret=$?; return $d_log_echo_ret ; }
+
+d_log_echo_e()  # (deprecated; use LOGGING="$TRUE" echo_e_msg instead)
+{ d_log_echo_e_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_echo_e() is deprecated; use LOGGING=\$TRUE echo_e_msg() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" echo_e_msg "$@"; d_log_echo_e_ret=$?; return $d_log_echo_e_ret ; }
+
+
+message_n() # (deprecated; use <severity>_msg_n instead)
+{ message_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} message_n() is deprecated; use info/notice_msg_n() instead"; fi
+  info_msg_n "$@"; message_n_ret=0; return $message_n_ret ; }
+
+E_message_n() # (deprecated; use error_msg_n instead)
+{ E_message_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} E_message_n() is deprecated; use error_msg_n() instead"; fi
+  error_msg_n "$@"; E_message_n_ret=$?; return $E_message_n_ret ; }
+
+log_message_n() # (deprecated; use LOGGING=$TRUE info_msg_n() instead)
+{ log_message_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_message_n() is deprecated; use LOGGING=\$TRUE info_msg_n() instead"; fi
+  LOGGING="$TRUE" info_msg_n "$@"; log_message_n_ret=$?; return $log_message_n_ret ; }
+
+log_E_message_n() # (deprecated; use LOGGING=$TRUE error_msg_n instead)
+{ log_E_message_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_E_message_n() is deprecated; use LOGGING=\$TRUE error_msg_n() instead"; fi
+  LOGGING="$TRUE" error_msg_n "$@"; log_E_message_n_ret=$?; return $log_E_message_n_ret ; }
+
+d_message_n() # (deprecated; use <severity>_msg_n instead)
+{ d_message_n_ret=0;  if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_message_n() is deprecated; use info/notice_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  info_msg_n "$@"; d_message_n_ret=$?; return $d_message_n_ret ; }
+
+dE_message_n() # (deprecated; use error_msg_n instead)
+{ dE_message_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} dE_message_n() is deprecated; use error_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  error_msg_n "$@" ; dE_message_n_ret=$?; return $dE_message_n_ret ; }
+
+d_log_message_n() # (deprecated; use LOGGING=$TRUE info_msg_n() instead)
+{ d_log_message_n_ret=0;  if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_message_n() is deprecated; use LOGGING=\$TRUE info_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" info_msg_n "$@";  d_log_message_n_ret=$?; return $d_log_message_n_ret ; }
+
+d_log_E_message_n() # (deprecated; use LOGGING=$TRUE error_msg_n() instead)
+{ d_log_E_message_n_ret=0;  if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_E_ message_n() is deprecated; use LOGGING=\$TRUE error_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" error_msg_n "$@"; d_log_E_message_n_ret=$?; return $d_log_E_message_n_ret ; }
+
+
+d_echo_n() # (deprecated; use echo_msg_n() instead)
+{ d_echo_n_ret=0;  if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_echo_n() is deprecated; use echo_msg_n instead"; fi
+  eval "$(strip_last_arg "$@")"
+  echo_msg_n "$@"; d_echo_n_ret=$?; return $d_echo_n_ret ; }
+
+de_echo_n() # (deprecated; use echo_e_msg_n() instead)
+{ de_echo_n_ret=0;  if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} de_echo_n() is deprecated; use echo_e_msg_n instead"; fi
+  eval "$(strip_last_arg "$@")"
+  echo_e_msg_n "$@"; de_echo_n_ret=$?; return $de_echo_n_ret ; }
+
+log_echo_n() # (deprecated; use LOGGING=$TRUE echo_msg_n instead)
+{ log_echo_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_echo_n() is deprecated; use LOGGING=\$TRUE echo_msg_n() instead"; fi
+  LOGGING="$TRUE" echo_msg_n "$@"; log_echo_n_ret=$?; return $log_echo_n_ret ; }
+
+log_echo_e_n() # (deprecated; use LOGGING=$TRUE echo_e_msg_n instead)
+{ log_echo_e_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_echo_e_n() is deprecated; use LOGGING=\$TRUE echo_e_msg_n() instead"; fi
+  LOGGING="$TRUE" echo_e_msg_n "$@"; log_echo_e_n_ret=$?; return $log_echo_e_n_ret ; }
+
+
+d_log_echo_n() # (deprecated; use LOGGING=$TRUE echo_msg_n instead)
+{ d_log_echo_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_echo_n() is deprecated; use LOGGING=\$TRUE echo_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" echo_msg_n "$@"; d_log_echo_n_ret=$?; return $d_log_echo_n_ret ; }
+
+
+d_log_echo_e_n() # (deprecated; use LOGGING=$TRUE echo_e_msg_n instead)
+{ d_log_echo_e_n_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} d_log_echo_n() is deprecated; use LOGGING=\$TRUE echo_e_msg_n() instead"; fi
+  eval "$(strip_last_arg "$@")"
+  LOGGING="$TRUE" echo_e_msg_n "$@"; d_log_echo_e_n_ret=$?; return $d_log_echo_e_n_ret ; }
+
+log_show_config() # (deprecated; use LOGGING="$TRUE" show_config() instead)
+{ log_sc_ret=0; if [ "$DEBUG" ]; then
+    warn_msg "${BYon}Warning:${Boff} log_show_config() is deprecated; use LOGGING=\$TRUE show_config() instead"; fi
+  LOGGING="$TRUE" show_config "$@"; log_sc_ret=$?; return $log_sc_ret ; }
+
+debug_do()          # (POSIX) IAW verbosity, execute one command
+{ # @usage debug_do <command string> <level>
+  # @note legacy wrapper; redirects to d_do()
+  # @warn deprecated (use d_do, which has been upgraded)
+  W_message "${BYon}Warning:${Boff} debug_do is deprecated (use d_do(), which has been upgraded)"
+  d_do "$@"; }
+
+old_info_right_status() # (POSIX) "demote" right_status() to INFO severity, and local verbosity++ if DEBUG
+{ irs_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=6 d_do right_status "$@" "$info"; irs_ret=$?
+  else
+    d_do right_status "$@" "$info"; irs_ret=$?
+  fi; return $irs_ret ; }
+# @usage info_right_status <status> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+old_debug_right_status() # (POSIX) "demote" right_status() to DEBUG severity, and local verbosity++ if DEBUG
+{ drs_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=7 d_do right_status "$@" "$debug"; drs_ret=$?
+  else
+    d_do right_status "$@" "$debug"; drs_ret=$?
+  fi; return $drs_ret ; }
+# @usage debug_right_status <status> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+
+old_info_handle_result() # (POSIX) "demote" handle_result() to INFO severity, and local verbosity++ if DEBUG
+{ ihr_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=6 d_do handle_result "$@" "$info"; ihr_ret=$?
+  else
+    d_do handle_result "$@" "$info"; ihr_ret=$?
+  fi; return $ihr_ret ; }
+# @usage info_handle_result <status> <ok_msg> <err_msg> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $info run when verbosity=$info
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
+old_debug_handle_result() # (POSIX) "demote" handle_result() to DEBUG severity, and local verbosity++ if DEBUG
+{ dhr_ret=0
+  if [ "$DEBUG" ]; then
+    verbosity=7 d_do handle_result "$@" "$debug"; dhr_ret=$?
+  else
+    d_do handle_result "$@" "$debug"; dhr_ret=$?
+  fi; return $dhr_ret ; }
+# @usage debug_handle_result <status> <ok_msg> <err_msg> || <fail-action>
+# @note this is not to make the command wrapped by d_do ... $debug run when verbosity=$debug
+# @cont (it would run anyway since it operates at notice severity),
+# @cont  this is to make it NOT run when verbosity is 5
+
