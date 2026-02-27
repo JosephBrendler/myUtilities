@@ -65,7 +65,7 @@ non_interactive_header="${script_header_installed_dir%/}/script_header_joetoo_no
 #   so this is really just a safeguard - not a mandate on where to log
 # note: using id -u here to test if the user is root, b/c this is the top
 #   of the header where no functions are defined yet, but once defined,
-#   isroot() can do the same sort of thing
+#   isroot can do the same sort of thing
 if [ "$(id -u)" -eq 0 ]; then
   logFile=/var/log/script_header_joetoo.log
 else
@@ -95,7 +95,7 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
   # result=1; [ "$result" ] && echo true || echo false  {status 1 == failure; but this will return "true"}
   # to test an exit status, use [ "$result" -eq 0 ]
 
-# no_msg is a space overwritten by a backspace, used handle_result() to send null message with a non-null string
+# no_msg is a space overwritten by a backspace, used handle_result to send null message with a non-null string
 no_msg=" \b"
 
 #-----[ defined logging/display severity/verbosity levels ]----------
@@ -207,6 +207,156 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 #   see http://en.wikipedia.org/wiki/ANSI_escape_code
 #   see also http://ascii-table.com/ansi-escape-sequences.php
 
+u_hex_to_octal() # (POSIX) convert hex codepoint to octal escape sequence
+{ uho_ret=0
+  # iterate over every argument passed to the function ($@)
+  for _uho_arg in "$@"; do
+    # split internal \U sequences into space-separated hex strings
+    # use a literal backslash-U for the replacement pattern (to be replaced)
+    _uho_parts=$(printf '%s' "$_uho_arg" | sed 's/\\U/ /g')
+    # iterate over each part (hex codepoint) in this argument
+    for _uho_h_cp in $_uho_parts; do
+      [ -z "$_uho_h_cp" ] && continue
+      # clean the hex string for the awk bit-shifter
+      # (remove \U or 0x prefixes in case any parts have such)
+        _uho_h_cp="${_uho_h_cp#\\U}"
+        _uho_h_cp="${_uho_h_cp#0x}"
+      # verify that _uho_h_cp is actually a hex string (0-9, a-f, A-F)
+      # if it fails the regex match, set return status to 1 and skip
+      case "$_uho_h_cp" in *[!0-9a-fA-F]*) uho_ret=1; continue ;; esac
+      # use $((16# )) math to translate hex to decimal
+      _uho_n=$((16#$_uho_h_cp))
+      # use awk bit-shifter to generate literal UTF-8 bytes
+      # no strtonum() nor smart printf required; works in minimal BusyBox
+      awk -v n="$_uho_n" 'BEGIN {
+        # 1 byte = 7 bit (ascii) payload (upper limit = 2^7 - 1 = 0x7F [127])
+        # each "\\%03o" in a printf format string treats its arg number a an integer
+        # and prints the \-prefixed 3-digit octal byte code for each
+        if (n < 128) printf "\\%03o", n
+        # 2-bytes = 5 + 6 = 11 payload bits (upper limit = 2^11 - 1 = 0x7FF [2047])
+        # continuation bytes have 6 bit payloads, 2^6 (64) is a value 1 larger than can be
+        # represented in 6 bits, so if you divide an 8-bit number by 2^6, the remainder
+        # is the value of the 6 lsb (the payload) + 128 is the dec value of the mandatory
+        # lead bits of a cont byte (10xxxxxx).
+        # the vlue of the lead byte of a 2-byte sequence inclues the integer division by 64
+        # which is the value contributed to the number by other than its 6 lsb,
+        # and the + 192 is the dec value of the mandatory lead bits of the first byte (110xxxxx)
+        else if (n < 2048) printf "\\%03o\\%03o", 192+int(n/64), 128+int(n%64)
+        # 3-bytes 4 + 6 + 6 = 16 payload bits (upper limit= 2^16 - 1 = 0xFFFF [65535])
+        # similar to above (2 contnuation bytes with the same lsb math)
+        # The msb cont byte contributes the 6-bit remainder of int division of the value that
+        # comes from other than the 6 lsb plus 128 (cont byte lead bits again)
+        # The first byte gets integer division by 4096 to compute the value coming from other
+        # than the 12 lsb (2 x cont byte payloads). the + 224 is the dec value of the mandatory
+        # lead bits of the first byte of a 3-byte sequence (1110xxxx)
+        else if (n < 65536) printf "\\%03o\\%03o\\%03o", 224+int(n/4096), 128+int(n/64)%64, 128+int(n%64)
+        # 4 -bytes = 3 + 6 + 6 + 6 = 21 bits (upper limit= 2^21 - 1 = 0x1FFFFF [2097151])
+        # Same math for the two least significant bytes.
+        # The most significant cont byte contributes the 6-bit remainder of int division by 2^12(4096)
+        # which is the value of other than the 12 least significant bits, and the + 128 is cont byte lead bits again)
+        # The first (MSB) byte  int div by 2^18(262144 is the value from other than the 18 lsb
+        # (3 x 6-bit cont byte payloads) and + 240 is the dec value of the mandatory lead
+        # bits of a 4-byte sequence (11110xxx)
+        else printf "\\%03o\\%03o\\%03o\\%03o", 240+int(n/262144), 128+int(n/4096)%64, 128+int(n/64)%64, 128+int(n%64)
+      }' 2>/dev/null
+    done
+  done
+  unset -v _uho_arg _uho_parts _uho_h_cp _uho_n
+  return $uho_ret
+}
+# @usage u_hex_to_octal <hex_codepoint> [hex_codepoint...]
+# @args $1..$n: hex strings (e.g. "1F528", "0x2714", or "\U2714")
+# @vars uho_ret: set to 0 on success, 1 if invalid hex encountered
+# @ret emits backslashed octal sequence(s) to stdout (e.g. \360\237\224\250)
+# @deps printf, sed, awk
+# @rule POSIX shell variable localization and unsetting principles applied
+# @note repurposed from u_echo logic to provide pre-cooking strings
+# @ex hammer_octal=$(u_hex_to_octal "1F528")
+
+_pre_cook_controls_and_emojis() # (POSIX) pre-cook the set of emoji considered most "active" for optimizatoin
+{ cae_ret=0
+  # initialize global ASCII controls
+  BEL=$(printf '\007')  # h:0x07, d:07;  only when you literally need bells and whistles
+  BS=$(printf  '\010')  # h:0x08, d:08;  oves cursor one column left; does not erase
+  HT=$(printf  '\011')  # h:0x09, d:09;  equiv \t (horizontal tab)
+  LF=$(printf  '\012')  # h:0x0A, d:10;  (linefeed)
+  VT=$(printf  '\013')  # h:0x0B, d:11   (vertical tab; rarely used)
+  FF=$(printf  '\014')  # h:0x0C, d:12;  equiv \f (form feed; page break in printers)
+  CR=$(printf  '\015')  # h:0x0D, d:13;  equiv \r (carriage return; moves cursor to column 0)
+  ESC=$(printf '\033')  # h:01Bx, d:27;  see CSI, ESCon, ESG0 (introduces ANSI/VT control sequences)
+  US=$(printf  '\037')  # h:0x1F, d:31;  Unit Separator (an ASCII "file separator"; ideal delimiter -never appears in normal text)
+  DEL=$(printf '\177')  # h:0x7F, d:127; delete (destructive delete on paper tape; now a control character)
+  EOF=$(printf '\032')  # h:0x1A, d:26;  End of File (aka SUB, CTRL-Z; but note: the byte itself is not an EOF character in Unix)
+  SO=$(printf  '\016')  # h:0x0E, d:14;  Shift Out (switch to G1 character set (e.g., line-drawing)
+  SI=$(printf  '\017')  # h:0x0F, d:15;  Shift In (switch back to G0 character set)
+  # map: "variable_suffix:hex_source"
+  # this list is synchronized with the sed patterns in _filter_log_output
+  _cae_map="
+    cross_mark:$cross_mark
+    cross_mark_new:$cross_mark_new
+    check_mark:$check_mark
+    check_mark_new:$check_mark_new
+    check_mark_button:$check_mark_button
+    check_mark_button_new:$check_mark_button_new
+    no_entry:$no_entry
+    no_entry_new:$no_entry_new
+    prohibited:$prohibited
+    explosion:$explosion
+    collision:$collision
+    bomb:$bomb
+    hammer:$hammer
+    hammer_and_wrench:$hammer_and_wrench
+    wrench:$wrench
+    gear:$gear
+    toolbox:$toolbox
+    face_thinking:$face_thinking
+    magnifying_glass_left:$magnifying_glass_left
+    magnifying_glass_right:$magnifying_glass_right
+    face_grin:$face_grin
+    face_beam:$face_beam
+    face_grimace:$face_grimace
+    face_frown1:$face_frown1
+    face_frown2:$face_frown2
+    confetti:$confetti
+    trophy:$trophy
+    VS16:$VS16
+    "
+  # iterate through the list and use u_hex_to_octal() to pre-cook the bin_<name> version of each
+  for _cae_pair in $_cae_map; do
+    _cae_var_name="bin_${_cae_pair%:*}"
+    _cae_hex_val="${_cae_pair#*:}"
+    # get the octal escape (e.g. \360\237\224\250)
+    # note: u_hex_to_octal should be able to return values for the entire list in one call,
+    # but it would need to be modified to separate them in output, and we would still
+    # need to iterate throug what would then be two parallel lists, so instead,
+    # we use this single-arg method for maximum reliability
+    _cae_octal=$(u_hex_to_octal "$_cae_hex_val")
+    # controlled use of eval below enables POSIX "associative" variable
+    # name use, to pre-cook the characters (e.g bin_hammer becomes a raw binary 3-byte character)
+    eval "$_cae_var_name=\$(printf '${_cae_octal}')"
+    [ ! $? -eq 0 ] && cae_ret=1
+  done
+  unset -v _cae_map _cae_pair _cae_var_name _cae_hex_val _cae_octal
+  return $cae_ret
+}
+# @usage _pre_cook_controls_and_emojis
+# @vars BEL, BS, HT, LF, VT, FF, CR, ESC, US, DEL, EOF, SO, SI (global ASCII)
+# @vars bin_<name>: baked binary UTF-8 characters for the active emoji set
+# @ret cae_ret (0 for success, 1 for hex conversion failure)
+# @deps u_hex_to_octal, printf
+# @rule mirrors the emoji mapping used in _filter_log_output
+# @note initializes non-printable control characters to avoid repeated printf subshells
+# @note pre-cooks emoji to binary to optimize emit and log filtering performance
+
+# call the _pre_cook_controls_and_emojis function to pre-bake the set of emojis considered "active"
+# (this is to enable binary optimization of the log-filering that emit has to do
+#  to provide clean log output when EMOJI_CAPABLE is true and EMOJI_DISABLE is not)
+_pre_cook_controls_and_emojis
+
+# order matters - this call must precede the variable assignments depending on the availability
+# of values set by it (e.g. ESC, so CSI can be set below and then all the colors
+# depending on that
+
 #-----[ ASCII Control Characters ( [:control:] )]-----------------------------
 #Octal	Hex	Abbr	Description
 #000	00	NUL	Null
@@ -224,17 +374,8 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 #177	7F	DEL	Delete
 
 # potentially useful in scripts --
-BEL=$(printf '\007')  # only when you literally need bells and whistles
-BS=$(printf '\010')   # note: this is non-destructive (not a delete)
-HT=$(printf '\011')   # equiv \t
-LF=$(printf '\012')   # equiv \l
-VT=$(printf '\013')   #
-FF=$(printf '\014')   # equiv \f
-CR=$(printf '\015')   # equiv \r
-ESC=$(printf '\033')  # see CSI, ESCon, ESG0
-US=$(printf '\037')   # Unit Separator (The ideal delimiter)
-DEL=$(printf '\177')  # delete
-EOF=$(printf '\032')  # End of File (aka SUB)
+# NOTE: precooked variables for these controls is now done inside the
+# _pre_cook_controls_and_emojis function which is defined and called above
 
 NUL='\000'            # only for matching  (do not pre-cook, and do not try to print)
                       # NUL cannot be stored in a shell variable as a raw byte
@@ -372,8 +513,8 @@ ESCoff="${ESC}(B"  # Maps G0 to Standard ASCII
 # ESC)C Sequence (Explicit G1 Selection)
 ESG1="${ESC})0"    # Maps G1 to DEC Special Graphics
 # Shift In/Out Control Characters (Fast G0/G1 Toggling)
-SO=$(printf '\016')        # Shift Out (Activate G1, Graphics ON - ASCII 14, hex \x0E)
-SI=$(printf '\017')        # Shift In (Activate G0, Standard ASCII ON - ASCII 15, hex \x0F)
+# NOTE: precooked variables for SO/SI controls is now done inside the
+# _pre_cook_controls_and_emojis function which is defined and called above
 # note: migrated all of these from legacy string assignments (e.g. ESCon="${ESC}(0")
 #   to subshell printf generation of the actual binary escape code bytes
 #   (i.e. pre-cooked and don't need the -e for echo or the %b vs %s for printf)
@@ -409,11 +550,18 @@ T_right_dbl='\342\225\240'    # ╠ (0x2560)
 T_left_dbl='\342\225\243'     # ╣ (0x2563)
 CROSS_dbl='\342\225\254'      # ╬ (0x256C)
 
-# note: these should NOT be pre-cooked like the control sequences above
+# Note: these should NOT be pre-cooked like the control sequences above
 #   b/c that would convert them to binary representation of letters (e.g. \161 => q)
-#   and we need to presesrve the octal code so it cab be interpreted as graphic
+#   and we need to presesrve the octal code so it can be interpreted as graphic
 #   after the interpreter (e.g. echo -e or printf '%b') has received the
 #   control sequence telling it to do so
+# The Rule: Never pre-cook DEC Graphics because sed and grep cannot
+#   distinguish them from standard alphabet letters
+# Note also: the unicode emojis below are NOT like that - they are represented
+#   by specific byte-sequences that occupy space in the utf8 map reserved
+#   exclusively for emoji - there is no standard ascii character that shares
+#   these values -- every byte of every emoji has bit 8 = 1, so its value
+#   is always > 128 and thus out of range for ascii
 
 # @note -----[ Section 1.b.: Unicode/Emojis ]--------------------------------------------------------------
 
@@ -759,8 +907,6 @@ uD_UR_wall='\u2557'
 uD_LL_wall='\u255A'
 uD_LR_wall='\u255D'
 
-
-
 # @note =====[ Section 2: Terminal & Cursor Control Functions ]=====================================================
 color() # (POSIX) set FG $1, optional [bold $2], optional [BG $3]
 { # @usage color FG [BOLD] [BG]
@@ -931,7 +1077,7 @@ CUP() # (ANSI) move cursor to position row=$1, col=$2 (both default to 1 if omit
 # @usage CUP [row] [col]
 # @args $1: Row (default 1); $2: Column (default 1)
 # @ret 0 if moved; 1 if args are not integers
-# @rule Validates input via isint()
+# @rule Validates input via isint
 
 #---[ Cursor Relative Movement ]-----------------------------------
 CUU() # (ANSI) Move the cursor up ($1 cells)
@@ -1523,75 +1669,50 @@ utf8_char_width() # (POSIX) calculate the column-width of a multi-byte utf-8 cha
 # @note   no external commands; POSIX-compliant
 # @ex     utf8_char_width "$(printf '\xF0\x9F\x94\xA5')"  # FIRE emoji → 2
 
-_translate_emojis_for_log() # (POSIX) emit helper not indended for direct use (translate emojis logs)
-{ # since emit() is a subshell, we call this in a pipeline
-  # This table uses the same set of variable names as the "Tier 5 optimization"
-  # section of utf8_string_width, for consistency
-  sed "
-  # SI/SO and ESC sequences
-  s/$(printf '\016')//g; s/$(printf '\017')//g;
-  s/$(printf '\033')\[[0-9;]*[mK]//g;
-  # box-drawing single-/double-wall + junctions (defined as direct octal sequences)
-  s/$(printf "${H_wall}")/-/g;   s/$(printf "${V_wall}")/|/g;          # single-wall
-  s/$(printf "${UL_wall}")/+/g;  s/$(printf "${UR_wall}")/+/g;
-  s/$(printf "${LL_wall}")/+/g;  s/$(printf "${LR_wall}")/+/g;
-  s/$(printf "${H_wall_dbl}")/=/g;  s/$(printf "${V_wall_dbl}")/|/g;   # double-wall
-  s/$(printf "${UL_wall_dbl}")/+/g; s/$(printf "${UR_wall_dbl}")/+/g;
-  s/$(printf "${LL_wall_dbl}")/+/g; s/$(printf "${LR_wall_dbl}")/+/g;
-  s/$(printf "${T_down}")/+/g;  s/$(printf "${T_up}")/+/g;             # junctions
-  s/$(printf "${T_right}")/+/g; s/$(printf "${T_left}")/+/g;
-  s/$(printf "${CROSS}")/+/g;   s/$(printf "${CROSS_dbl}")/+/g;
-  # severity / status / error (defined as hex codepoint strings)
-  s/$(u_echo "\U${cross_mark}")/[!!]/g;
-  s/$(u_echo "\U${cross_mark_new}")/[!!]/g;
-  s/$(u_echo "\U${check_mark}")/[Ok]/g;
-  s/$(u_echo "\U${check_mark_new}")/[Ok]/g;
-  s/$(u_echo "\U${check_mark_button}")/[Ok]/g;
-  s/$(u_echo "\U${check_mark_button_new}")/[Ok]/g;
-  s/$(u_echo "\U${no_entry}")/[NO ENTRY]/g;
-  s/$(u_echo "\U${no_entry_new}")/[NO ENTRY]/g;
-  s/$(u_echo "\U${prohibited}")/[PROHIBITED]/g;
-  s/$(u_echo "\U${explosion}")/[EXPLOSION]/g;
-  s/$(u_echo "\U${collision}")/[COLLISION]/g;
-  s/$(u_echo "\U${bomb}")/[BOMB]/g;
-  # tools / work / process
-  s/$(u_echo "\U${hammer}")/[WORK]/g;
-  s/$(u_echo "\U${hammer_and_wrench}")/[PROCESS]/g;
-  s/$(u_echo "\U${wrench}")/[WRENCH]/g;
-  s/$(u_echo "\U${gear}")/[GEAR]/g;
-  s/$(u_echo "\U${toolbox}")/[TOOLBOX]/g;
-  # thinking / analysis / investigation
-  s/$(u_echo "\U${face_thinking}")/[THINKING]/g;
-  s/$(u_echo "\U${magnifying_glass_left}")/[SEARCH]/g;
-  s/$(u_echo "\U${magnifying_glass_right}")/[SEARCH]/g;
-  # messaging faces
-  s/$(u_echo "\U${face_grin}")/[:D]/g;
-  s/$(u_echo "\U${face_beam}")/[:D]/g;
-  s/$(u_echo "\U${face_grimace}")/[:S]/g;
-  s/$(u_echo "\U${face_frown1}")/[:(]/g;
-  s/$(u_echo "\U${face_frown2}")/[:(]/g;
-  # celebration / success
-  s/$(u_echo "\U${confetti}")/[SUCCESS]/g;
-  s/$(u_echo "\U${trophy}")/[WIN]/g;
-  # clean up zero-width modifiers that might remain
-  s/$(u_echo "\U${VS16}")//g
+_filter_log_output() # (POSIX) emit helper not indended for direct use (translate emojis logs)
+{ # first, filter ansi sequences and layout-breaking escapes, then pipe to sed
+  strip_ansi | _translate_escapes | sed "
+  s/[${SO}${SI}]//g;
+  s/${bin_cross_mark}/[!!]/g;
+  s/${bin_cross_mark_new}/[!!]/g;
+  s/${bin_check_mark}/[Ok]/g;
+  s/${bin_check_mark_new}/[Ok]/g;
+  s/${bin_check_mark_button}/[Ok]/g;
+  s/${bin_check_mark_button_new}/[Ok]/g;
+  s/${bin_no_entry}/[NO ENTRY]/g;
+  s/${bin_no_entry_new}/[NO ENTRY]/g;
+  s/${bin_prohibited}/[PROHIBITED]/g;
+  s/${bin_explosion}/[EXPLOSION]/g;
+  s/${bin_collision}/[COLLISION]/g;
+  s/${bin_bomb}/[BOMB]/g;
+  s/${bin_hammer}/[WORK]/g;
+  s/${bin_hammer_and_wrench}/[PROCESS]/g;
+  s/${bin_wrench}/[WRENCH]/g;
+  s/${bin_gear}/[GEAR]/g;
+  s/${bin_toolbox}/[TOOLBOX]/g;
+  s/${bin_face_thinking}/[THINKING]/g;
+  s/${bin_magnifying_glass_left}/[SEARCH]/g;
+  s/${bin_magnifying_glass_right}/[SEARCH]/g;
+  s/${bin_face_grin}/[:D]/g;
+  s/${bin_face_beam}/[:D]/g;
+  s/${bin_face_grimace}/[:S]/g;
+  s/${bin_face_frown1}/[:(]/g;
+  s/${bin_face_frown2}/[:(]/g;
+  s/${bin_confetti}/[SUCCESS]/g;
+  s/${bin_trophy}/[WIN]/g;
+  s/${bin_VS16}//g
   "
 }
-# @usage _translate_emojis_for_log
+# @usage ... | _filter_log_output
 # @args reads from stdin (stream/pipe)
-# @vars H_wall, V_wall, UL_wall, UR_wall, LL_wall, LR_wall, H_wall_dbl, 
-# @cont V_wall_dbl, UL_wall_dbl, UR_wall_dbl, LL_wall_dbl, LR_wall_dbl,
-# @cont T_down, T_up, T_right, T_left, CROSS, CROSS_dbl (Box-Drawing)
-# @vars cross_mark, check_mark, face_grin, etc. (Emoji Hex Strings)
-# @ret emits filtered ASCII/UTF-8 text to stdout
-# @deps sed, printf, u_echo
-# @rule strips SI/SO (\016/\017) and ANSI CSI (m/K) escape sequences
-# @rule flattens Unicode box-drawing characters to ASCII (-, |, +, =)
-# @rule translates specific multi-byte emojis into searchable [TAGS]
+# @vars ESC, SI, SO, bin_*, etc.
+# @ret emits filtered ASCII text to stdout
+# @deps strip_ansi, _translate_escapes, sed
+# @rule translates layout-breakers (BS, HT, LF, VT, FF, CR) to spaces via _translate_escapes
+# @rule strips ANSI CSI sequences via strip_ansi
+# @rule flattens SI/SO (\016/\017) and Unicode emojis to searchable ASCII tags
 # @rule final pass removes Variation Selector-16 (VS16) modifiers
-# @note intended as a helper for emit() to sanitize log file output
-# @ex printf "Checking... ${check_mark}" | _translate_emojis_for_log
-
+# @note logic matches "Tier 5 optimization" in utf8_string_width
 
 utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 { usw_ret=0
@@ -1752,6 +1873,8 @@ get_msg_len() # (POSIX) compute display width of a message string
   [ $# -lt 1 ] && return 1
   # Tier 4 optimization - memoizaton (single entry cache) to speed up repeat-calls
   _gml_str="$*"
+  # if the message is an empty string, answer so immediately
+  [ -z "$_gml_str" ] && { printf "%s\n" 0; return 0 ; }
   if [ "$_gml_str" = "$gml_last_str" ]; then printf '%s\n' "$gml_last_width"; return; fi
   # expand escapes, strip ANSI SGR sequences
   _gml_clean=$(printf '%b' "$*" | _translate_escapes | strip_ansi)
@@ -1935,9 +2058,12 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
 { swr_ret=0
   if [ $# -lt 3 ] ; then error_msg "minimum 3 args: curr_col, l_margin, r_margin; remainder=msg"; return 1; fi
   if ! isint $1 ; then error_msg "Error: arg \$1 must be numeric starting column/caracter position"; return 1; fi
-  _sw_current_col=$1                                            # assign _sw_current_col
-  if isint "$2"; then _sw_l_margin=$2; else _sw_l_margin=0; fi  # assign _sw_l_margin
-  if isint "$3"; then _sw_r_margin=$3; else _sw_r_margin=0; fi  # assugb _sw_r_margin
+  # provide numeric defaults for null/empty inputs
+  _sw_current_col=${1:-0}; _sw_l_margin=${2:-0}; _sw_r_margin=${3:-0}
+  # revert to 0 if the provided value is a non-integer string
+  isint "$_sw_current_col" || _sw_current_col=0
+  isint "$_sw_l_margin"    || _sw_l_margin=0
+  isint "$_sw_r_margin"    || _sw_r_margin=0
   shift 3
   # (do not translate internal escapes ([:control:] chars like \n, \t, \r, etc.)
   #  b/c want to preserve (e.g. multi-line prompt) line formatting, and
@@ -1954,6 +2080,9 @@ smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainde
   # after shift and reassembly; set a default message argument to "<empty>" if none provided
   [ $# -eq 0 ] && set -- "$@" "<empty>"
   _sw_tw=$(termwidth); isint "$_sw_tw" || _sw_tw=80  # ensure _sw_tw is a save number for math
+  # clamp to terminal width
+  [ "$_sw_l_margin" -ge "$_sw_tw" ] && _sw_l_margin=$(( _sw_tw - 1 ))
+  [ "$_sw_r_margin" -ge "$_sw_tw" ] && _sw_r_margin=$(( _sw_tw - 1 ))
   # calculate the "right_status collision zone" so the last wrap keeps us clear of it
   _sw_status_width=6   # e.g. "[ Ok ]" = 6 char
   _sw_buffer=4         # padding for more visually appealing wrapping
@@ -2556,7 +2685,10 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
   _PREFIX_BOLD=$((   ( mask >> 16 ) & 1 ))
   _PREFIX_COLOR=$((  ( mask >> 17 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
   _SEVERITY=$((      ( mask >> 24 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
+#  args="$@"
 #  d_do '
+#    echo "mask: $mask"
+#    echo "args: $args"
 #    echo "_STDOUT: $_STDOUT"
 #    echo "_STDERR: $_STDERR"
 #    echo "_LOG: $_LOG"
@@ -2570,6 +2702,10 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
 #    echo "_PREFIX_BOLD: $_PREFIX_BOLD"
 #    echo "_PREFIX_COLOR: $_PREFIX_COLOR"
 #    echo "_SEVERITY: $_SEVERITY"
+#    echo "verbosity: $verbosity"
+#    echo "loglevel: $loglevel"
+#    echo "_PRINT_OK: $(TrueFalse $_PRINT_OK)"
+#    echo "_LOG_OK: $(TrueFalse $_LOG_OK)"
 #  ' "$debug"
 
   # explicitly disable logging if _LOG bit is not set
@@ -2690,18 +2826,37 @@ emit() # (POSIX) consolidated messaging engine in a subshell to isolates positio
     printf "$out_fmt" "$out" >&2
   fi
 
-  # log to file (if _LOG)
+  # log to file (if _LOG) - note: I moved strip_ansi() and _translate_escapes into
+  #   the filter pipeline built into _filter_log_output (so if a newline is needed
+  #   it must be added after _filter_log_output does its job
   if [ "$_LOG_OK" ]; then
-     # to use sed-in-a-pipeline for log filtering, we need to be careful with line-endings
-    if [ "$_NEWLINE" -eq 1 ]; then
-      # standard line - simple pipe to stream edit in _translate_emojis_for_log
-      printf '%s\n' "${log_prefix}${log_prefix:+ }${msg}" | strip_ansi | \
-        _translate_escapes | _translate_emojis_for_log >> "$logFile"
-    else
-      # partial line - also remove newline, i.e. delete $(printf '\n'), the literal byte 0x0A
-      printf '%s\n' "${log_prefix}${log_prefix:+ }${msg}" | strip_ansi | \
-        _translate_emojis_for_log | tr -d "$(printf '\n')" >> "$logFile"
-    fi
+    # Tier 3 log filtering optimization (ASCII-only short-circuit)
+    case "${msg}" in
+      *"[! -~]"* ) # not in "space-to-tilda" is outside the range of printable ascii characters
+        # need filtering because there is at least one non-ascii character present in the msg
+        # to use sed-in-a-pipeline for log filtering, we need to be careful with line-endings
+        if [ "$_NEWLINE" -eq 1 ]; then
+          # standard line - simple pipe to stream edit in _filter_log_output
+          # then append a newline with the grouping | { cat; printf '\n'; } (cat i/o followed by printf)
+          printf '%s' "${log_prefix}${log_prefix:+ }${msg}" | \
+            _filter_log_output | { cat; printf '\n'; } >> "$logFile"
+        else
+          # partial line - also remove newline, i.e. delete $(printf '\n'), the literal byte 0x0A
+          printf '%s' "${log_prefix}${log_prefix:+ }${msg}" | \
+            _filter_log_output | tr -d "$(printf '\n')" >> "$logFile"
+        fi
+        ;;
+      *        ) # *** all ascii - *** - bypass filtering ***
+        if [ "$_NEWLINE" -eq 1 ]; then
+          # standard line - simple pipe to stream edit in _filter_log_output
+          # then append a newline with the grouping | { cat; printf '\n'; } (cat i/o followed by printf)
+          printf '%s' "${log_prefix}${log_prefix:+ }${msg}" | { cat; printf '\n'; } >> "$logFile"
+        else
+          # partial line - also remove newline, i.e. delete $(printf '\n'), the literal byte 0x0A
+          printf '%s' "${log_prefix}${log_prefix:+ }${msg}" | tr -d "$(printf '\n')" >> "$logFile"
+        fi
+        ;;
+    esac
   fi
 
   # emit() body is a subshell, so not doing unset -v (all will be discarded on exit)
@@ -2963,10 +3118,13 @@ _maybe_smart_wrap_n() # (POSIX) logic similar to emit; decide whether a caller s
   _SILENCE=$((       ( mask >> 8 )  & 1 ))
   _SEVERITY=$((      ( mask >> 24 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
 #  d_do '
+#    echo "mask: $mask"
 #    echo "_CONDITIONAL: $_CONDITIONAL"
 #    echo "_FORCE: $_FORCE"
 #    echo "_SILENCE: $_SILENCE"
 #    echo "_SEVERITY: $_SEVERITY"
+#    echo "verbosity: $verbosity"
+#    echo "loglevel: N/A for smart-wrapping"
 #  ' "$debug"
   # INTERACTIVE mode overrides SILENCE
   [ "$INTERACTIVE" ] && _SILENCE=0
@@ -2989,7 +3147,7 @@ _maybe_smart_wrap_n() # (POSIX) logic similar to emit; decide whether a caller s
 # @args $1: bitmask constructed by caller (policy + severity)
 # @args $@: optional args passed through to smart_wrap_n by caller
 # @vars verbosity, INTERACTIVE (global policy controls)
-# @ret status: 0 = caller SHOULD invoke smart_wrap_n; non‑zero = skip it
+# @ret status: 0 = caller SHOULD invoke smart_wrap_n; non-zero = skip it
 # @deps emit semantics (policy mirror), global bitmask constants
 # @req caller must supply a valid bitmask with severity and policy bits set
 # @rule mirrors emit policy for terminal output: INTERACTIVE overrides
@@ -2997,7 +3155,7 @@ _maybe_smart_wrap_n() # (POSIX) logic similar to emit; decide whether a caller s
 # @rule CONDITIONAL obeys verbosity unless FORCE is set
 # @note function body runs in a subshell; exit codes do not affect caller
 # @note smart_wrap_n is NOT called here; caller must invoke it on success
-# @warn only evaluates terminal‑output policy; logging policy is ignored
+# @warn only evaluates terminal-output policy; logging policy is ignored
 
 notice_msg_n()  # (POSIX) info-level (severity 6) message without newline
 { nmn_ret=0; _msg="$*"; _len=$(get_msg_len "$_msg"); _tw=$(termwidth)
@@ -3018,6 +3176,22 @@ notice_msg_n()  # (POSIX) info-level (severity 6) message without newline
   [ "$LOGGING" ] && _lm_bitmask=$(( _lm_bitmask | LOG | TIMESTAMP ))
   [ "$DEBUG" ]   && _lm_bitmask=$(( _lm_bitmask | FORCE ))
   [ "$QUIET" ]   && _lm_bitmask=$(( _lm_bitmask | SILENCE ))
+d_do '
+  echo "_msg: $_msg"
+  echo "_len: $_len"
+  echo "_tw: $_tw"
+  echo "_status_width: $_status_width"
+  echo "_buffer: $_buffer"
+  echo "_threshold: $_threshold"
+  echo "notice: $notice"
+  echo "LOGGING: $(TrueFalse $LOGGING)"
+  echo "DEBUG: $(TrueFalse $DEBUG)"
+  echo "QUIET: $(TrueFalse $QUIET)"
+  echo "_sm_bitmask: $_sm_bitmask"
+  echo "_lm_bitmask: $_lm_bitmask"
+  echo "_col: $_col"
+  echo "_indent: $_indent"
+' "$debug"
   # if there is room for right_status, then use short-message protocol - just use emit
   if [ "$_len" -le "$_threshold" ]; then
     emit "$_sm_bitmask" "$_msg"
@@ -3080,7 +3254,7 @@ info_msg_n()  # (POSIX) info-level (severity 6) message without newline
 # @args $*: message string (quoted recommended)
 # @vars LOGGING, DEBUG, QUIET, INTERACTIVE, verbosity (policy controls)
 # @ret emitted: info-level prefix + wrapped or unwrapped message (no newline)
-# @ret status: exit status of emit or smart_wrap_n()
+# @ret status: exit status of emit or smart_wrap_n
 # @deps emit, smart_wrap_n, _maybe_smart_wrap_n, get_msg_len, termwidth
 # @req caller must supply a printable message; terminal width must be known
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
@@ -3124,7 +3298,7 @@ debug_msg_n()  # (POSIX) debug-level (severity 7) message without newline
 # @args $*: message string (quoted recommended)
 # @vars LOGGING, DEBUG, QUIET, INTERACTIVE, verbosity (policy controls)
 # @ret emitted: debug-level prefix + wrapped or unwrapped message (no newline)
-# @ret status: exit status of emit or smart_wrap_n()
+# @ret status: exit status of emit or smart_wrap_n
 # @deps emit, smart_wrap_n, _maybe_smart_wrap_n, get_msg_len, termwidth
 # @req caller must supply a printable message; terminal width must be known
 # @rule conditional; suppressed if severity > $verbosity unless DEBUG-forced
@@ -3310,7 +3484,7 @@ info_handle_result()  # (POSIX) INFO-level descriptive result + right_status
   # choose descriptive message
   case "$ihr_exit_status" in 0 ) _ihr_msg="$_ihr_ok_msg" ;; * ) _ihr_msg="$_ihr_err_msg" ;; esac
   # emit descriptive message exactly where info_msg_n left the cursor and close line with right_status
-  emit "$_bitmask" "$_ihr_msg" ; right_status "$ihr_exit_status"
+  emit "$_bitmask" "$_ihr_msg" ; info_right_status "$ihr_exit_status"
   unset -v _ihr_ok_msg_in _ihr_err_msg_in _ihr_ok_msg _ihr_err_msg _ihr_msg _bitmask; return $ihr_exit_status ; }
 # @usage info_handle_result <status> <ok_msg> <err_msg> || <fail-action>
 # @args $1 exit status; $2 success text; $3 error text
@@ -3405,7 +3579,7 @@ debug_handle_result()  # (POSIX) DEBUG-level descriptive result + right_status
   # choose descriptive message
   case "$dhr_exit_status" in 0 ) _dhr_msg="$_dhr_ok_msg" ;; * ) _dhr_msg="$_dhr_err_msg" ;; esac
   # emit descriptive message exactly where debug_msg_n left the cursor and close line with right_status
-  emit "$_bitmask" "$_dhr_msg" ; right_status "$dhr_exit_status"
+  emit "$_bitmask" "$_dhr_msg" ; debug_right_status "$dhr_exit_status"
   unset -v _dhr_ok_msg_in _dhr_err_msg_in _dhr_ok_msg _dhr_err_msg _dhr_msg _bitmask; return $dhr_exit_status ; }
 # @usage debug_handle_result <status> <ok_msg> <err_msg> || <fail-action>
 # @args $1 exit status; $2 success text; $3 error text
@@ -3588,7 +3762,6 @@ emit_utf8_from_hex() # (POSIX) encode a unicode codepoint (hex) into UTF-8 bytes
   fi
   unset -v _euh_hex _euh_dec
 }
-
 
 u_echo() # (POSIX) in UTF-8 env, emit one or more unicode chars $@
 {  # iterate over every argument passed to the function ($@)
@@ -5982,10 +6155,10 @@ _dh_show_capabilities()   # demonstrate classes of capability in this header fil
   _dh_cmd="${_dh_cmd} ${_cmd_color}printf${_Boff} ${_quote_color}\"    \"${_Boff};"
   # line 2 part 2 - notice_msg_n ""     # notice_msg_n displayed as a function
   _dh_cmd="${_dh_cmd} ${_func_color}notice_msg_n${_Boff} ${_quote_color}\"\"${_Boff};"
-  # line 2 part 3 - smart_wrap_n 7 7 7  # ${_Boff} ${_data_color} in case not bold
-  _dh_cmd="${_dh_cmd}  ${_func_color}smart_wrap_n${_Boff} ${_data_color}7 7 7${_Boff}"
-  # line 2 part 4 - "${BCon}Section: content..."
-  _dh_cmd="${_dh_cmd} ${_quote_color}\"\${BCon}Section: content...\"${_Boff}"
+  # line 2 part 3 - smart_wrap_n 3 3 3  # ${_Boff} ${_data_color} in case not bold
+  _dh_cmd="${_dh_cmd}  ${_func_color}smart_wrap_n${_Boff} ${_data_color}3 3 3${_Boff}"
+  # line 2 part 4 - "${BCon}Section: content... (followed by each section running at 7 7 7)"
+  _dh_cmd="${_dh_cmd} ${_quote_color}\"\${BCon}Section: content...(followed by each section running at 7 7 7)\"${_Boff}"
 
   printf "\n"; notice_msg "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
   # execute the actual demonstration

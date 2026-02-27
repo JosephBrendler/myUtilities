@@ -2804,3 +2804,375 @@ old_debug_handle_result() # (POSIX) "demote" handle_result() to DEBUG severity, 
 # @cont (it would run anyway since it operates at notice severity),
 # @cont  this is to make it NOT run when verbosity is 5
 
+validate_status_file_legacy()  # validate or create command sequence status file $1 
+{
+    [ $# -ne 1 ] && error_msg "Error: must specify status_file" && return 1
+    cmdseq_statusfile=$1
+    d_message "cmdseq_statusfile: [ ${cmdseq_statusfile} ]" 3
+    status_dir=$(dirname ${cmdseq_statusfile})
+    d_message "status_dir: [ ${status_dir} ]" 3
+    info_msg_n "validating status_dir [${status_dir}] ..."
+    if [ ! -d ${status_dir} ] ; then
+        echo -en " (creating) ..."
+        mkdir -p ${status_dir} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    info_msg_n "validating cmdseq_statusfile [${cmdseq_statusfile}] ..."
+    if [ ! -f ${cmdseq_statusfile} ] ; then
+        echo -en " (creating) ..."
+#        touch ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
+        echo "0" > ${cmdseq_statusfile} && right_status $? || ( right_status $? && return 1 )
+    else
+        echo -en " (valid)" ; right_status $TRUE
+    fi
+    # final validation
+    info_msg_n "re-verifying cmdseq_statusfile [${cmdseq_statusfile}] ..."
+    [ -f ${cmdseq_statusfile} ] && result=$TRUE || result=1
+    right_status $result
+    return $result
+}
+
+
+linear_search_legacy()        # find $2 in array $1, return index
+{
+    # pass arguments like this usage_legacy: # linear_search_legacy 'cb-setup ${BOARD}' "${command_sequence[@]}"
+    needle="$1" ; shift ; haystack=("$@") ;
+#    echo "needle: ${needle}" ; echo "haystack length: ${#haystack[@]}"
+    for ((i=0; i<${#haystack[@]}; i++ )) ; do
+        [[ "${haystack[$i]}" == "${needle}" ]] && echo $i && return $i
+    done
+}
+usage_legacy()                # explain default usage_legacy; mod with local "usage_legacy module"
+{
+  N=$(( ${#command_sequence[@]} -1 ))
+  separator "${PN}-${BUILD}" "(usage_legacy)"
+  error_msg "${BRon}usage_legacy: ${BGon}${PN} [-[options]] ${Boff}"
+  message "${BYon}valid commandline options --${Boff}"
+  message "  -i | --interactive......: run supervised; confirm execution of each step"
+  message "  -n | --noninteractive...: run un-supervised; automatically do each step"
+  message "  -s | --status....: return status (next step, step_number)"
+  message "  -r | --resume....: resume at next step in statusfile"
+  message "  -v | --verbose...: increase verbosity"
+  message "  -q | --quiet.....: decrease verbosity"
+  message "  -[0-${N}]..........: save N to status file and resume at step N"
+  message "  ${BYon}*${Boff} Single-character options may be combined."
+  message "    e.g. ${BGon}${PN} --verbose -nqr8${Boff} would resume non-interactively"
+  message "    (automatic, unsupervised) at step 8 with normal verbosity"
+  message "${BMon}Caveat:${Boff}"
+  message "   -i (interactive/supervised) is on by default"
+  message "   -r (resume) sets starting_step to # in [ $cmdseq_statusfile ]"
+  message "   -[0-${N}] sets starting_step (default 0 otherwise)"
+  # source user-script specific usage_legacy-module which should be built in the same format
+  message "${BMon}additional ${BPN} - commandline options:${Boff}"
+  [ -f /etc/${BPN}/local.usage_legacy ] && source /etc/${BPN}/local.usage_legacy
+  echo
+  message "${BYon}${PN} workflow sequence (steps):${Boff}"
+  for ((s=0; s<${#msg1_sequence[@]}; s++))
+  do
+    echo -e "    ${LBon}${s}: ${msg1_sequence[$s]}${Boff}"
+  done
+  error_msg "exiting process [$$]" && exit 1
+}
+
+display_configuration_legacy() # use get_longest and display_vars to display ${varlist}
+{
+    # will pick up PN, BUILD, varlist from the environment of whatever script
+    # sources script_header_joetoo_extended
+    separator "${PN}-${BUILD}" "(configuration)"
+    longest=$(get_longest ${varlist})
+    display_vars ${longest} ${varlist}
+    return 0
+}
+
+run_sequence_legacy()         # run start to stop steps in ${command_sequeyce[@]} and output status to $1
+{
+    # run the sequence of commands stored in the command_sequence array
+    # for each step, store updated status in a status file provided as arg $1
+    [ $# -ne 1 ] && error_msg "run_sequence_legacy requires exactly one argument (cmdseq_statusfile) " && error_msg "exiting process [$$]" &&>
+    cmdseq_statusfile=$1 ; echo ; separator "${PN}-${BUILD}" "(running command sequence)" ; echo
+    d_message "starting_step: [ ${starting_step} ]" 3
+    d_message "stopping_step: [ ${stopping_step} ]" 3
+    for ((step=${starting_step}; step<=${stopping_step}; step++))
+    do
+        separator "${PN}-${BUILD}" "(${step}: ${command_sequence[${step}]})"
+        d_message "Writing step [ $step ] to cmdseq_statusfile ( $cmdseq_statusfile )" 2
+        echo $step > ${cmdseq_statusfile}
+        if [[ ${INTERACTIVE} ]] ; then
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will prompt to ${step}: (${msg1_sequence[${step}]})"
+            d_message "${msg}" 2
+            response=""
+            # confirm user is ready/wants to run the next command
+            new_prompt "${BMon}Are you ready to ${BGon}${msg1_sequence[${step}]}${BMon}?${Boff}"
+        else  # automatically execute other steps for non-interactive
+            msg="INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+            msg+=" ; will automatically ${step}: (${msg1_sequence[${step}]})"
+            d_message "${msg}" 2
+            message "${BMon}Beginning ${BGon}${command_sequence[${step}]}${BMon} as instructed ...${Boff}"
+            response="y"
+       fi  ## interactive
+       case $response in
+           [Yy] )  # execute this command and continue
+               d_message "${LBon}About to run ${BYon}${command_sequence[${step}]}${LBon} ...${Boff}" 1 ; \
+               eval ${command_sequence[${step}]} ; result=$?
+               if [ $result -eq 0 ] ; then
+                   d_message "${BYon}Note:${Boff} ${command_sequence[${step}]} ${BGon}completed successfully${Boff}" 1
+               else
+                   die "Failed to ${msg1_sequence[${step}]} [${command_sequence[${step}]}]"
+               fi
+               ;;
+           [Ss] )
+               d_message "${BYon}As requested, skipping ${Boff} ${msg1_sequence[${step}]} ${BGon}${command_sequence[${step}]}${Boff}" 1
+               ;;
+           *    )  # abort due to negative response
+               d_message "${BRon}As instructed, not running ${BGon}${command_sequence[${step}]}${BRon}. Quitting...${Boff}" 1 ; \
+               error_msg "exiting process [$$]" && exit ;;
+        esac
+    done
+    echo
+}
+
+
+process_cmdline_legacy()      # process command line arguments
+{
+  arglist="$@"
+
+  last=""
+  d_message "processing command line with [ ${arglist} ]" 2
+  d_message "my PID: $$" 5
+  # shift each argument into position $1 and examine it
+  #   process the argument or processit with its own arguments
+  while [ ! -z "$1" ]
+  do
+    d_message "arg1 = [ $1 ]" 3
+    # if arg begins with a single dash, process it alone
+    if [ "${1:0:1}" == "-" ] && [ "${1:1:1}" != "-" ] ; then
+      d_message "processing [ $1 ] alone as single-dash argument" 3
+      process_argument_legacy $1 $2   # incl $2 in case $1 uses an operand
+      result=$?
+####      [[ "${1}" =~ ^(-t|-b|-o)$ ]] && shift  # extra shift to clear target, board, or outputdevice
+      [[ "${result}" -eq 6 ]] && shift  # extra shift to clear operand
+      shift  # normal shift to next argument
+    # if arg begins with a double dash, process it alone
+    elif [ "${1:0:2}" == "--" ] ; then
+      d_message "processing [ $1 ] alone as double-dash argument" 3
+      process_argument_legacy $1 $2   # incl $2 in case $1 uses an operand
+      result=$?
+####      [[ "$1" == "--target" ]] && shift  # extra shift to clear target
+      [[ "${result}" -eq 6 ]] && shift  # extra shift to clear operand
+      shift  # normal shift to next argument
+    else
+      d_message "does not start with - or --" 3
+      usage_legacy; error_msg "exiting process [$$]" && exit
+    fi
+  done
+  d_message "done with process_command_line" 2
+  return 0
+}
+
+process_argument_legacy()     # process one argument (considering the next a potential operand)
+{
+  # return 0 if success and processed no operand
+  # return 6 if success and processed an operand $2
+  # return 1 if error
+  d_message "about to process [ $* ]" 2
+  d_message "1: [ $1 ], 2: [ $2 ]" 2
+  d_message "my PID: $$" 5
+  # process command line argument (must be one of the following)
+  [ ! -z "$1" ] && case "$1" in
+    "-"[sS] | "--status"         )
+      # display status
+      d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
+      read starting_step < ${cmdseq_statusfile};
+      result=$?
+      if [ $starting_step -eq 0 ] ; then
+          msg="${BWon}Status: $starting_step ;"
+      else
+          msg="${BWon}Status: Step $(($starting_step - 1)) complete ;"
+      fi
+      msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${command_sequence[${starting_step}]}${BWon} ]${Boff}"
+      message "${msg}"
+      error_msg "exiting process [$$]" && exit;
+      ;;
+    "-"[rR] | "--resume"         )
+      # resume at stored step unless that is overridden by a new start # (below)
+      d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
+      export RESUME=${TRUE}
+      read starting_step < ${cmdseq_statusfile};
+      result=$?
+      msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+      msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+      d_message "${msg}" 2
+      ;;
+    -*[0-9]*  )
+        # currently there are double-digit steps; if the next char is also numeric, append it
+        myarg=${1:1} # drop the leading "-"
+        export RESUME=${TRUE}
+        if $(isnumber ${myarg}) && [ ${myarg} -ge 0 ] && \
+          [ ${myarg} -lt ${#command_sequence[@]} ] ; then
+            export starting_step=${myarg};
+            result=$?
+            msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
+            msg+=" to status file [${Boff}${cmdseq_statusfile}${BYon}]${Boff}"
+            d_message "${msg}" 2
+            echo ${starting_step} > ${cmdseq_statusfile};
+            msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
+            msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+            d_message "${msg}" 2
+        else
+            # it may be a combination of numbers and letters - hand off to process_compound_arg_legacy
+            process_compound_arg_legacy $1
+            result=$?
+        fi
+        ;;
+    "-"[iI] | "--interactive"    )
+      # interactive
+      export INTERACTIVE=${TRUE};
+      result=$?
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[nN] | "--noninteractive" )
+      # non-interactive
+      export INTERACTIVE=${FALSE}
+      result=$?
+      d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+      ;;
+    "-"[qQ] | "--quiet"          )
+      # decrease verbosity
+      if [[ ${verbosity} -gt 0 ]] ; then
+          let verbosity--
+          result=$?
+      elif [[ ${verbosity} -eq 0 ]] ; then
+          export VERBOSE=${FALSE}
+          result=$?
+          d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+      else
+          # error
+          result=1
+          derror_msg "${BWon}error: negative verbosity: ${verbosity}${Boff}" 2
+      fi
+      ;;
+    "-"[vV] | "--verbose"        )
+      # increase verbosity
+      export VERBOSE=${TRUE}
+      if [[ ${verbosity} -lt 6 ]] ; then
+          let verbosity++
+          result=$?
+          d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+      fi
+      ;;       # note: "numeric" args like -4 should fall through to this default
+    *                            )
+      # run local arg module if it exists (must end with "* ) process_compound_arg_legacy $1 ;;")
+      if [ -f /etc/${BPN}/local.cmdline_arguments ] ; then
+          source /etc/${BPN}/local.cmdline_arguments
+          # each should set result as shown above, and if needed USED_OPERAND
+      else
+          process_compound_arg_legacy $1
+          result=$?
+      fi
+      ;;
+  esac
+  d_message "done with process_argument_legacy" 3
+  return $result
+}
+
+
+process_compound_arg_legacy()    # process a compount argument
+{
+    d_message "about to process compound [ $* ]" 2
+    d_message "my PID: $$" 5
+    # must begin with a single dash
+    [ ! "${1:0:1}" == "-" ] && error_msg "${E_BAD_ARGS}" && usage_legacy && error_msg "exiting process [$$]" && exit 1
+    # must not begin with two dashes (would have been picked in process_argument_legacy)
+    [ "${1:0:2}" == "--" ] && error_msg "${E_BAD_ARGS}" && usage_legacy && error_msg "exiting process [$$]" && exit 1
+    # strip leading dash(es)
+    myargs=${1##-}
+    # handle remaining characters in sequence
+    while [ -n "${myargs}" ]
+    do
+        #handle one character at at time, from the left
+        case ${myargs:0:1} in
+            [sS] )
+                # display status
+                d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
+                read starting_step < ${cmdseq_statusfile};
+                if [ $starting_step -eq 0 ] ; then
+                    msg="${BWon}Status: $starting_step ;"
+                else
+                    msg="${BWon}Status: Step $(($starting_step - 1)) complete ;"
+                fi
+                msg+=" next step would be [ ${BMon}$starting_step${BWon} ]"
+                msg+=" [ ${BGon}${command_sequence[${starting_step}]} ${BWon}]${Boff}"
+                d_message "${msg}" 2
+                error_msg "exiting process [$$]" && exit;
+                ;;
+            [rR] )
+                # resume at stored step unless that is overridden by a new start # (below)
+                d_message "${BYon}reading status file: [ ${BWon}${cmdseq_statusfile}${BYon}  ]${Boff}" 2
+                export RESUME=${TRUE}
+                read starting_step < ${cmdseq_statusfile};
+                msg="${BWon}Resuming at step [ ${BMon}$starting_step${BWon} ]"
+                msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                d_message "${msg}" 2
+                ;;
+            [0-9] )
+                # since there may be double-digit steps, then if the next char is also numeric, append it and "shift"
+                export RESUME=${TRUE}
+                starting_step="${myargs:0:1}";
+                if [[ "${myargs:1:1}" == [0-9] ]] ; then
+                    export starting_step="${myargs:0:2}";
+                    myargs=${myargs:1}
+                fi
+                if [ $starting_step -gt ${#command_sequence[@]} ] ; then
+                    error_msg "invalid starting_step [${starting_step}]"
+                    usage_legacy
+                else
+                    msg="${BYon}Saving next step ${BWon}${starting_step}${BYon}"
+                    msg+=" to status file [${Boff}${cmdseq_statusfile}${BYon}]${Boff}"
+                    d_message "${msg}" 2
+                    echo ${starting_step} > ${cmdseq_statusfile};
+                    msg="${BWon}Resuming at step [ ${BMon}${starting_step}${BWon} ]"
+                    msg+=" --[ ${BGon}${msg1_sequence[${starting_step}]}${BWon} ]--${Boff}"
+                    d_message "${msg}" 2
+                fi
+                ;;
+            [iI] )
+                # interactive
+                export INTERACTIVE=${TRUE};
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [nN] )
+                # non-interactive
+                export INTERACTIVE=${FALSE}
+                d_message "${BYon}setting INTERACTIVE: $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}" 2
+                ;;
+            [qQ] )
+                # decrease verbosity
+                [[ ${verbosity} -gt 0 ]] && let verbosity--
+                [[ ${verbosity} -eq 0 ]] && export VERBOSE=${FALSE}
+                d_message "${BYon}decreased verbosity: ${verbosity}${Boff}" 2
+                ;;
+            [vV] )
+                # increase verbosity
+                [[ ${verbosity} -lt 6 ]] && let verbosity++
+                export VERBOSE=${TRUE}
+                d_message "${BYon}increased verbosity: ${verbosity}${Boff}" 2
+                ;;       # note: "numeric" args like -4 should fall through to this default
+            *   )
+                # run local arg module if it exists (must end with "* ) error_msg "${E_BAD_ARGS}" && usage_legacy ;;")
+                if [ -f /etc/${BPN}/local.cmdline_compound_arguments ] ;then
+                    source /etc/${BPN}/local.cmdline_compound_arguments
+                else
+                    error_msg "${E_BAD_ARGS}"
+                    usage_legacy
+                fi
+                ;;
+        esac
+        #strip first char from myargs (i.e. "shift" one character)
+        myargs=${myargs:1}
+    done
+    d_message "done with process_compount_arg" 3
+    return 0
+}
