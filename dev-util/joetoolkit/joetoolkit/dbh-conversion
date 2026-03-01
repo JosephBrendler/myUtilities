@@ -1,5 +1,6 @@
-#!/bin/bash
-source /usr/sbin/script_header_joetoo
+#!/bin/sh
+. /usr/sbin/script_header_joetoo || { printf '%s\n' "error: failed to source /usr/sbin/script_header_joetoo"; exit 1 ; }
+if ! command -v j_msg >/dev/null 2>&1; then printf '%s\n' "error: cannot find command j_msg"; exit 2 ; fi
 
 #-----[ variables ]------------------------------------
 binary_chars="01\."
@@ -9,123 +10,132 @@ allowed_bases="dbh"
 
 filtered_string=""
 
-VERBOSE=$TRUE
-verbosity=0  # change to >= 2 for debug output
-
 #-----[ functions ]------------------------------------
 
 b2d() {
     float_num=$1
-    dec_num=$(echo "scale=10; ibase=2; $float_num" | bc)
-    message "decimal: $dec_num"
+    dec_num=$(printf '%s\n' "scale=10; ibase=2; $float_num" | bc)
+    j_msg "decimal: $dec_num"
 }
 
 d2b() {
     float_num=$1
-    binary_num=$(echo "scale=10; obase=2; $float_num" | bc)
-    message "binary: $binary_num"
+    binary_num=$(printf '%s\n' "scale=10; obase=2; $float_num" | bc)
+    j_msg "binary: $binary_num"
 }
 
 d2h() {
     float_num=$1
-    hex_num=$(echo "scale=10; obase=16; $float_num" | bc)
-    message "hex: $hex_num"
+    hex_num=$(printf '%s\n' "scale=10; obase=16; $float_num" | bc)
+    j_msg "hex: $hex_num"
 }
 
 b2h(){
     float_num=$1
-    hex_num=$(echo "scale=10; obase=16; ibase=2; $float_num" | bc)
-    message "hex: $hex_num"
+    hex_num=$(printf '%s\n' "scale=10; obase=16; ibase=2; $float_num" | bc)
+    j_msg "hex: $hex_num"
 }
 
 h2d(){
     float_num=$1
-    dec_num=$(echo "scale=10; ibase=16; $float_num" | bc)
-    message "decimal: $dec_num"
+    float_num=$(printf '%s' "$float_num" | tr 'a-f' 'A-F')
+    dec_num=$(printf '%s\n' "scale=10; ibase=16; $float_num" | bc)
+    j_msg "decimal: $dec_num"
 }
 
 h2b() {
     float_num=$1
-    binary_num=$(echo "scale=10; obase=2; ibase=16; $float_num" | bc)
-    message "binary: $binary_num"
+    float_num=$(printf '%s' "$float_num" | tr 'a-f' 'A-F')
+    binary_num=$(printf '%s\n' "scale=10; obase=2; ibase=16; $float_num" | bc)
+    j_msg "binary: $binary_num"
 }
 
 usage() {
-    message "Usage:  ${Gon}dbh-conversion <number> [<out_base>]${Boff}"
-    message "  input $1 can be floating point, binary, decimal, or hex"
-    message "  Specify input base with \"<base>#\" convention; examples --"
-    message "    2#101.01 (base 2)"
-    message "    8#77.63 (base 8)"
-    message "    16#FF.2A (base 16)"
-    message "    36#abc.0c (base 36)"
-    message "  out_base $2 can be b|2, d|10, or h|16"
-    exit
-}
-
-filter_string() {
-    input_string="$1" ; allowed_chars="$2"
-    # filter allowed characters from input_string and assign remnants to ${filtered_string}
-    filtered_string=$(echo "$input_string" | sed "s/[$allowed_chars]//g")
+    j_msg "Usage:  ${Gon}dbh-conversion ${Mon}<number> ${Con}[<out_base>]${Boff}"
+    j_msg "  input \$1 can be floating point, binary, decimal, or hex"
+    j_msg "  Specify input base with \"<base>#\" convention; examples --"
+    j_msg "    2#101.01 (base 2)"
+    j_msg "    8#77.63 (base 8)"
+    j_msg "    16#FF.2A (base 16)"
+    j_msg "    36#abc.0c (base 36)"
+    j_msg "  out_base \$2 can be b|2, d|10, or h|16"
+    exit 1
 }
 
 #-----[ main script ]----------------------------------
 
 # one (inputnumber) or two (inputnumber OBASE) allowed
-( [ $# -gt 2 ] || [ $# -eq 0 ] ) && useage
+[ $# -gt 2 ] && usage # guard: no more than 2 args
+[ $# -lt 1 ] && usage # guard: no less than 1 arg
+OBASE="${2:-d}"       # guard: if no $2, default OBASE to decimal
 
 # $2 specifies OBASE; default to decimal
 if [ $# -eq 2 ] ; then
-    case ${2:0:1} in
-        "b"|"2" ) OBASE="b" ;;
-        "d"     ) OBASE="d" ;;
-        "h"     ) OBASE="h" ;;
-        "1"     )
-            if [ "${2:1:1}" == "0" ] ; then OBASE="d" ;
-            elif [ "${2:1:1}" == "6" ] ; then OBASE="h" ;
-            else E_message "invalid out_base: [ $2 ]"; usage
-            fi ;;
-        *       ) E_message "invalid out_base: [ $2 ]"; usage ;;
+    case "$OBASE" in
+        b|d|h) : ;; # already good
+        2    ) OBASE="b" ;;
+        10   ) OBASE="d" ;;
+        16   ) OBASE="h" ;;
+        *       ) j_msg "${err:+-$err}" "Invalid output base"; usabe ;;
     esac
 fi
 
 # sanity check OBASE
-input_string=$OBASE
-filter_string "$input_string" "$allowed_bases"
-[ ! -z "$filtered_string" ] && ( E_message "invalid OBASE: [ $OBASE ]" ; usage )
-d_message "just set OBASE = [ $OBASE ]" 2
+input_string="$OBASE"
+case "$OBASE" in
+  d|b|h) : ;; # do nothing (goog)
+  *    ) j_msg "${err:+-$err}" "invalid OBASE: [ $OBASE ]" ; usage ;;
+esac
+j_msg "${debug:+-$debug}" "OBASE: [ $OBASE ]"
 
 # get input base
-if [[ "$1" == *"#"* ]] ; then
+case "$1" in
+  *"#"* )
     # there is a # - figure out base
-    input_base="$(echo $1 | cut -d'#' -f1)"
+    input_base="${1%#*}" # extract bb from bb#nnnn
     case "$input_base" in
         "2"  ) IBASE="b" ;;
         "10" ) IBASE="d" ;;
         "16" ) IBASE="h" ;;
-        *    ) E_message "invlid input base: [ $input_base ]"; usage ;;
+        *    ) j_msg "${err:+-$err}" "invlid input base: [ $input_base ]"; usage ;;
     esac
-else
+    ;;
+  * )
     # there is no # - assume decimal
     IBASE="d"
-fi
-d_message "just set IBASE = [ $IBASE ]" 2
+    ;;
+esac
+j_msg "${debug:+-$debug}" "IBASE: [ $IBASE ]"
 
 # sanity check input number digits
-input_string="$(echo $1 | cut -d'#' -f2)"
-d_message "just set input_string = [ $input_string ]" 2
+input_string="${1#*#}"   # extract nnnn from bb#nnnn
+j_msg "${debug:+-$debug}" "just set input_string = [ $input_string ]"
 
 case "$IBASE" in
-    "b" ) filter_string "$input_string" "$binary_chars" ;;
-    "d" ) filter_string "$input_string" "$decimal_chars" ;;
-    "h" ) filter_string "$input_string" "$hex_chars" ;;
-    *   ) E_message "invalid IBASE: [ $IBASE ]" ; usage ;;
+    "b" )
+      case "$input_string" in
+        *[!01.]* )
+          j_msg "${err:+-$err}" "non-binary digits in input_string: [ $input_string ]"
+          exit 1
+          ;;
+      esac ;;
+    "d" )
+      case "$input_string" in
+        *[!0-9.]* )
+          j_msg "${err:+-$err}" "non-decimal digits in input_string: [ $input_string ]"
+          exit 1
+          ;;
+      esac ;;
+    "h" )
+      case "$input_string" in
+        *[!0-9a-fA-F.]* )
+          j_msg "${err:+-$err}" "non-hex digits in input_string: [ $input_string ]"
+          exit 1
+          ;;
+      esac ;;
+    *   ) j_msg "${err:+-$err}" "invalid IBASE: [ $IBASE ]" ; usage ;;
 esac
-d_message "result of filte_string(): [ $filtered_string ]" 2
 
-if [ ! -z "$filtered_string" ] ; then
-    E_message "invalid digits in input_string: [ $1 ]. Remnants: [ $filtered_string ]"
-    usage
-else
-   d_message "about to call conversion function wth command ${Gon}eval ${IBASE}2${OBASE} ${input_string}${Boff}" 2
-    eval "${IBASE}2${OBASE}" "${input_string}"
-fi
+j_msg "${debug:+-$debug}" "about to run ${Gon}${IBASE}2${OBASE} ${Con}${input_string}${Boff}"
+func="${IBASE}2${OBASE}"
+"$func" "${input_string}"
