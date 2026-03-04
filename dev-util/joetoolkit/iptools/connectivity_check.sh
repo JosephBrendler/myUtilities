@@ -5,7 +5,6 @@ source /usr/sbin/script_header_joetoo
 # ensure a ping failure in output4[...]=$(ping ...| grep 'packets') returns *ping exit status
 set -o pipefail
 
-
 PN=$(basename $0)
 
 declare -A results4
