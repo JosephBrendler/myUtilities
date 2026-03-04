@@ -173,6 +173,34 @@ EMOJI_CAPABLE="$FALSE"  # this is set automatically accordint to system capabili
 is_utf8_terminal && EMOJI_CAPABLE="$TRUE"
 EMOJI_DISABLE="$FALSE"  # this can be set manually by a user .conf, to opt out of emojis
 
+#-----[ initialize ascii control characters for UI ]------------------------------------
+
+_init_ascii_controls() # (POSIX) pre-cook the set of emoji considered most "active" for optimizatoin
+{ iac_ret=0; SED_LOT_FILTER=""
+  # initialize global ASCII controls
+  BEL=$(printf '\007')  # h:0x07, d:07;  only when you literally need bells and whistles
+  BS=$(printf  '\010')  # h:0x08, d:08;  oves cursor one column left; does not erase
+  HT=$(printf  '\011')  # h:0x09, d:09;  equiv \t (horizontal tab)
+  LF=$(printf  '\012')  # h:0x0A, d:10;  (linefeed)
+  VT=$(printf  '\013')  # h:0x0B, d:11   (vertical tab; rarely used)
+  FF=$(printf  '\014')  # h:0x0C, d:12;  equiv \f (form feed; page break in printers)
+  CR=$(printf  '\015')  # h:0x0D, d:13;  equiv \r (carriage return; moves cursor to column 0)
+  ESC=$(printf '\033')  # h:01Bx, d:27;  see CSI, ESCon, ESG0 (introduces ANSI/VT control sequences)
+  US=$(printf  '\037')  # h:0x1F, d:31;  Unit Separator (an ASCII "file separator"; ideal delimiter -never appears in normal text)
+  DEL=$(printf '\177')  # h:0x7F, d:127; delete (destructive delete on paper tape; now a control character)
+  EOF=$(printf '\032')  # h:0x1A, d:26;  End of File (aka SUB, CTRL-Z; but note: the byte itself is not an EOF character in Unix)
+  SO=$(printf  '\016')  # h:0x0E, d:14;  Shift Out (switch to G1 character set (e.g., line-drawing)
+  SI=$(printf  '\017')  # h:0x0F, d:15;  Shift In (switch back to G0 character set)
+
+  SED_LOG_FILTER="
+    s/${ESC}\[[0-9;]*[mK]//g;
+    s/[${SO}${SI}${BEL}${ESC}]//g;
+    s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g;
+  "
+  return $iac_ret
+}
+_init_ascii_controls
+
 #-----[ standard multiples of byte sizes ]---------------------------
 KiB=1024
 MiB=$(( KiB * 1024 ))
@@ -211,8 +239,209 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 # (e.g. will work with any sed, because default is BRE and would
 #  require use of an extra -E flag to work if we defined to a ERE standard)
 
-#-----[ globals supporting terminal io ]--------------------------------------------
-# Easy ANSI Escape sequences to put color in my scripts ]---
+#-----[ raw hex Unicode/Emojis ]--------------------------------------------------------------
+# source the 2026-0303-refactored script_header_joetoo_unicode
+. /usr/sbin/script_header_joetoo_unicode
+
+#-----[ Global Active Emoji Registry ]---------------------------------------
+# format: "index:name:hexvalue:log_translation" (Space or Newline separated)
+# index (1-31) maps to the bitmask field [10-14] extracted in emit
+# name is used for the bin_<name> variables and log filtering
+# hexvalue is the asset by referneced by the source
+#   codepoint of the variable by the same name
+# log_translation is an "ascii-moji"
+# IMPORTANT: this assignment must FOLLOW the raw hex definitions above,
+#   and it must PRECEDE the u_hex_to_octal and _pre_cook_ui_assets function definitions below
+ACTIVE_EMOJI_REGISTRY="
+1${US}VS16${US}$VS16${US}
+2${US}cross_mark${US}$cross_mark${US}!!
+3${US}cross_mark_new${US}$cross_mark_new${US}!!
+4${US}check_mark${US}$check_mark${US}Ok
+5${US}check_mark_new${US}$check_mark_new${US}Ok
+6${US}check_mark_button${US}$check_mark_button${US}Ok
+7${US}check_mark_button_new${US}$check_mark_button_new${US}Ok
+8${US}no_entry${US}$no_entry${US}[NO_ENTRY]
+9${US}no_entry_new${US}$no_entry_new${US}[NO_ENTRY]
+10${US}prohibited${US}$prohibited${US}[PROHIBITED]
+11${US}explosion${US}$explosion${US}[EXPLOSION]
+12${US}collision${US}$collision${US}[COLLISION]
+13${US}bomb${US}$bomb${US}[BOMB]
+14${US}hammer${US}$hammer${US}[WORK]
+15${US}hammer_and_wrench_new${US}$hammer_and_wrench_new${US}[PROCESS]
+16${US}wrench${US}$wrench${US}[WRENCH]
+17${US}gear_new${US}$gear_new${US}[GEAR]
+18${US}toolbox${US}$toolbox${US}[TOOLBOX]
+19${US}face_thinking${US}$face_thinking${US}[THINKING]
+20${US}magnifying_glass_left${US}$magnifying_glass_left${US}[SEARCH]
+21${US}magnifying_glass_right${US}$magnifying_glass_right${US}[SEARCH]
+22${US}face_grin${US}$face_grin${US}[:D]
+23${US}face_beam${US}$face_beam${US}[:D]
+24${US}face_grimace${US}$face_grimace${US}[:S]
+25${US}face_frown1${US}$face_frown1${US}[:(]
+26${US}face_frown2_new${US}$face_frown2_new${US}[:(]
+27${US}confetti${US}$confetti${US}[SUCCESS]
+28${US}trophy${US}$trophy${US}[WIN]
+"
+
+idx_of_emoji() # (POSIX) returns the registry index of a named emoji
+{ _ioe_ret=1; _ioe_name="${1:-}"; _ioe_idx=""
+  [ -z "$_ioe_name" ] && return 1
+  # scan the registry for the name in the second field
+  _ioe_idx=$(echo "$ACTIVE_EMOJI_REGISTRY" | while read -r _line; do
+    # find _line; strip longest ${US}* to get idx
+    case "$_line" in *"${US}${_ioe_name}${US}"*) printf '%s' "${_line%%${US}*}";
+      exit 0 ;; # exit the subshell with success
+    esac; done)
+  if [ -n "$_ioe_idx" ]; then printf '%s\n' "$_ioe_idx";else _ioe_ret=1; fi
+  unset -v _ioe_name _ioe_idx; return $_ioe_ret ; }
+# @usage idx_of_emoji <name>
+# @args 1: emoji_name (e.g. "explosion", "hammer")
+# @vars ACTIVE_EMOJI_REGISTRY
+# @ret 0: success (prints index), 1: not found
+# @deps ACTIVE_EMOJI_REGISTRY
+# @ex idx_of_emoji explosion
+
+name_of_emoji() # (POSIX) returns the registry name of an indexed emoji
+{ _noe_ret=1; _noe_idx_in="${1:-}"; _noe_name=""
+  [ -z "$_noe_idx_in" ] && return 1
+  # scan the registry for the index in the first field
+  _noe_name=$(echo "$ACTIVE_EMOJI_REGISTRY" | while read -r _line; do
+    # find _line; strip shortest *${US} to get remainder then strip longest ${US}* to get name
+    case "$_line" in "${_noe_idx_in}${US}"*) _noe_rem="${_line#*${US}}"
+        printf '%s' "${_noe_rem%%${US}*}"; exit 0 ;;   # exit the subshell with success
+    esac; done)
+  if [ -n "$_noe_name" ]; then printf '%s\n' "$_noe_name"; else _noe_ret=1; fi
+  unset -v _noe_idx_in _noe_name _noe_rem; return $_noe_ret ; }
+# @usage name_of_emoji <idx>
+# @args 1: emoji_idx (0-31)
+# @vars ACTIVE_EMOJI_REGISTRY
+# @ret 0: success (prints name), 1: not found
+# @deps ACTIVE_EMOJI_REGISTRY
+# @ex name_of_emoji 9
+
+
+#-----[ raw values for emit bitmask definition ]-------------------------------------------------------------------
+
+# @note Messaging/Logging = semantic meaning + severity + destination
+# @note joetoo consolidated logging/messaging protocol uses a bitmask
+# @cont to enable calling functions to provide all relevant information
+# @cont in a single positional parameter $1; after it is injested and
+# @cont the bits are extracted, $1 can be discarded, and the remainder
+# @cont of $@ is the payload to be emitted
+#
+# @note single-bit flags for boolean behaviors
+# @cont  (orthogonal, expressive, easy to combine)
+# @note bit(s)
+# @note [0]      STDOUT        - emit to stdout
+# @note [1]      STDERR         - mirror (or redirect?) output to stderr
+# @note [2]      LOG          - output to a file
+# @note [3]      INTERPRET      - use '%b' to INTERPRET backslash escapes
+# @note [4]      NEWLINE        - append a newline at the end of the message
+# @note [5]      TIMESTAMP      - prepend a timestamp (on log messages)
+# @note [6]      CONDITIONAL    - respect verbosity IAW severity
+# @note [7]      FORCE          - force print regardless of verbosity
+# @note [8]      SILENCE        - suppress, override severity, even if FORCE
+# @note NOTE: FORCE and SILENCE ara part of a POLICY layer,
+# @note  ( not part of the severyity/verbosity [CONDITIONAL] system;
+# @note    FORCE overrides severity/verbosity [CONDITIONAL] rules,
+# @note    as does SILENCE, which also overrides even FORCE)
+# @note  ( Override priority: SILENCE > FORCE > CONDITIONAL > unconditional )
+# @note [6-8] 8:SILENCE; 7:FORCE; 6:CONDITIONAL
+# @note   000       unconditional print (no verbosity logic)
+# @note   100       conditional print (respect verbosity)
+# @note   010       forced print (ignore verbosity)
+# @note   110       severity labeling + forced print
+# @note   *01       always suppress (even if FORCE is set)
+# @note [9]      EMOJI          - single-bit flat to turn on emoji prefix
+# @note [10-14]  EMOJI_INDEX    - (5 bit index into ACTIVE_EMOJI_REGISTRY
+# @note   see list at ACTIVE_EMOJI_REGISTRY="..."
+# @note [15]     PREFIX         - single-bit flag to turn on prefix
+# @note [16]     PREFIX_BOLD    - intensity
+# @note [17-19]  PREFIX_COLOR   - (3 bit RGB)(19:R, 18:G, 17:B)
+# @note   000 (0)   black normally, but here means severity-implied color
+# @note   001 (1)   blue
+# @note   010 (2)   green
+# @note   011 (3)   cyan
+# @note   100 (4)   red
+# @note   101 (5)   magenta
+# @note   110 (6)   yellow
+# @note   111 (7)   white
+# @note [20-23]  RESERVED (future)
+# @note [24-26]  SEVERITY (3 bits)
+# @note   000 (0)   emerg
+# @note   001 (1)   alert
+# @note   010 (2)   crit
+# @note   011 (3)   err
+# @note   100 (4)   warning
+# @note   101 (5)   notice
+# @note   110 (6)   info
+# @note   111 (7)   debug
+# @note [26-30]  RESERVED (future)
+# @note [31]     DO NOT USE (sign bit)
+#
+# @note Define global constants for bitmask setting by calling functions
+# @note STDOUT=1 ................. 1 << 0 (no shift required)
+# @note STDERR=2 ................. 1 << 1
+# @note LOG=4 .................... 1 << 2
+# @note INTERPRET=8 .............. 1 << 3
+# @note NEWLINE=16 ............... 1 << 4
+# @note TIMESTAMP=32 ............. 1 << 5
+# @note CONDITIONAL=64 ........... 1 << 6
+# @note FORCE=128 ................ 1 << 7
+# @note SILENCE=256 .............. 1 << 8
+# @note EMOJI_INDEX_SHIFT=10 ..... 5-bit field starts at bit 10
+# @note EMOJI_INDEX_MASK=31744 ... 31 << 10 (clears default/prior setting)
+# @note PREFIX=32768 ............. 1 << 15
+# @note PREFIX_BOLD=65536 ........ 1 << 16
+# @note PREFIX_COLOR_SHIFT=17 .... 3-bit field starts at bit 17
+# @note PREFIX_COLOR_MASK=917504 . 7 << 17 (clears default/prior setting)
+# @note SEVERITY_SHIFT=24 ........ 3-bit field starts at bit 24
+# @note SEVERITY_MASK=117440512 .. 7 << 24 (clears default/prior setting)
+# @note 1 << n shift a "1" bit n positions left (more significant)
+
+STDOUT=1
+STDERR=2
+LOG=4
+INTERPRET=8
+NEWLINE=16
+TIMESTAMP=32
+CONDITIONAL=64
+FORCE=128
+SILENCE=256
+PREFIX=32768
+PREFIX_BOLD=65536
+PREFIX_COLOR_SHIFT=17
+PREFIX_COLOR_MASK=917504  # $(( 7 << 17 ))
+PREMOJI=512
+PREMOJI_SHIFT=10
+PREMOJI_MASK=31744        # $(( 31 << 10 ))
+SEVERITY_SHIFT=24
+SEVERITY_MASK=117440512   # $(( 7 << 24 ))
+
+
+#
+# These global constant values are used to facilitate setting of the
+#   bitmask by calling functions.  This essentially makes the api
+#   "self documenting" while this is integer math, it is usefull to
+#   think of each of these as a single-bit binary number, 1 or 0,
+#   shifted into its bit-position to attain the value above.
+# Note that the assignment SILENCE=0; SILENCE=256 is equivalent
+#   to SILENCE=0; SILENCE$(( SILENCE | ( 1 << 8 ) ))
+#
+# To avoid confusion, the names applied inside the function are prefixed
+#   with '_' to inidcate their local scope. THESE local-scoped variables
+#   *ARE *ACTUAL* BOOLEAN values, in which 1=true; 0=false, and as such
+#   they cannot be directly tested --> [ "$CONDITIONAL" ] does NOT work,
+#   it MUST be done like this [ "$CONDITIONAL" -eq 1 ]
+#
+# DO NOT CONFUSE these with joetoo's pseudo-boolean type only ever assigned
+#   one of TRUE=0, FALSE="", so that they CAN be directly tested like
+#   FLAGGED=$TRUE; [ $FLAGGED ] will always behave as expected
+
+
+#-----[ globals supporting terminal io ]-------------------------------------------------------------------------------------------
+#  these two functions must be defined before the variable assignments that will depend on values they "cook:
+#
 #   see http://en.wikipedia.org/wiki/ANSI_escape_code
 #   see also http://ascii-table.com/ansi-escape-sequences.php
 
@@ -228,12 +457,15 @@ u_hex_to_octal() # (POSIX) convert hex codepoint to octal escape sequence
       [ -z "$_uho_h_cp" ] && continue
       # clean the hex string for the awk bit-shifter
       # (remove \U or 0x prefixes in case any parts have such)
+#echo "DEBUG TRIPWIRE: uho_h_cp BEFORE strip: [$_uho_h_cp]" >&2
         _uho_h_cp="${_uho_h_cp#\\U}"
         _uho_h_cp="${_uho_h_cp#0x}"
+#echo "DEBUG TRIPWIRE: uho_h_cp AFTER strip:  [$_uho_h_cp]" >&2
       # verify that _uho_h_cp is actually a hex string (0-9, a-f, A-F)
       # if it fails the regex match, set return status to 1 and skip
       case "$_uho_h_cp" in *[!0-9a-fA-F]*) uho_ret=1; continue ;; esac
-      # use $((16# )) math to translate hex to decimal
+#echo "DEBUG TRIPWIRE: uho_h_cp is [$_uho_h_cp]" >&2
+     # use $((16# )) math to translate hex to decimal
       _uho_n=$((16#$_uho_h_cp))
       # use awk bit-shifter to generate literal UTF-8 bytes
       # no strtonum() nor smart printf required; works in minimal BusyBox
@@ -282,85 +514,87 @@ u_hex_to_octal() # (POSIX) convert hex codepoint to octal escape sequence
 # @note repurposed from u_echo logic to provide pre-cooking strings
 # @ex hammer_octal=$(u_hex_to_octal "1F528")
 
-_pre_cook_controls_and_emojis() # (POSIX) pre-cook the set of emoji considered most "active" for optimizatoin
-{ cae_ret=0
-  # initialize global ASCII controls
-  BEL=$(printf '\007')  # h:0x07, d:07;  only when you literally need bells and whistles
-  BS=$(printf  '\010')  # h:0x08, d:08;  oves cursor one column left; does not erase
-  HT=$(printf  '\011')  # h:0x09, d:09;  equiv \t (horizontal tab)
-  LF=$(printf  '\012')  # h:0x0A, d:10;  (linefeed)
-  VT=$(printf  '\013')  # h:0x0B, d:11   (vertical tab; rarely used)
-  FF=$(printf  '\014')  # h:0x0C, d:12;  equiv \f (form feed; page break in printers)
-  CR=$(printf  '\015')  # h:0x0D, d:13;  equiv \r (carriage return; moves cursor to column 0)
-  ESC=$(printf '\033')  # h:01Bx, d:27;  see CSI, ESCon, ESG0 (introduces ANSI/VT control sequences)
-  US=$(printf  '\037')  # h:0x1F, d:31;  Unit Separator (an ASCII "file separator"; ideal delimiter -never appears in normal text)
-  DEL=$(printf '\177')  # h:0x7F, d:127; delete (destructive delete on paper tape; now a control character)
-  EOF=$(printf '\032')  # h:0x1A, d:26;  End of File (aka SUB, CTRL-Z; but note: the byte itself is not an EOF character in Unix)
-  SO=$(printf  '\016')  # h:0x0E, d:14;  Shift Out (switch to G1 character set (e.g., line-drawing)
-  SI=$(printf  '\017')  # h:0x0F, d:15;  Shift In (switch back to G0 character set)
-  # map: "variable_suffix:hex_source"
-  # this list is synchronized with the sed patterns in _filter_log_output
-  _cae_map="
-    cross_mark:$cross_mark
-    cross_mark_new:$cross_mark_new
-    check_mark:$check_mark
-    check_mark_new:$check_mark_new
-    check_mark_button:$check_mark_button
-    check_mark_button_new:$check_mark_button_new
-    no_entry:$no_entry
-    no_entry_new:$no_entry_new
-    prohibited:$prohibited
-    explosion:$explosion
-    collision:$collision
-    bomb:$bomb
-    hammer:$hammer
-    hammer_and_wrench:$hammer_and_wrench
-    wrench:$wrench
-    gear:$gear
-    toolbox:$toolbox
-    face_thinking:$face_thinking
-    magnifying_glass_left:$magnifying_glass_left
-    magnifying_glass_right:$magnifying_glass_right
-    face_grin:$face_grin
-    face_beam:$face_beam
-    face_grimace:$face_grimace
-    face_frown1:$face_frown1
-    face_frown2:$face_frown2
-    confetti:$confetti
-    trophy:$trophy
-    VS16:$VS16
-    "
-  # iterate through the list and use u_hex_to_octal() to pre-cook the bin_<name> version of each
-  for _cae_pair in $_cae_map; do
-    _cae_var_name="bin_${_cae_pair%:*}"
-    _cae_hex_val="${_cae_pair#*:}"
+_pre_cook_ui_assets() # (POSIX) pre-cook the set of emoji considered most "active" for optimizatoin
+{ cua_ret=0
+  # Note: all ascii control pre-cooking moved up to _init_ascii_controls
+  # pre-cook standalone UI assets (Box drawing)
+  # (list contains the variables we want to 'bake' into bin_ equivalents
+#  for _cua_ui_var in uH_wall uV_wall uUL_wall uUR_wall uLL_wall uLR_wall \
+#                     uD_H_wall uD_V_wall uD_UL_wall uD_UR_wall uD_LL_wall uD_LR_wall; do
+#    # Perform indirect expansion to get the hex value from the variable name
+#    eval "_cua_hex=\"\${$_cua_ui_var}\""
+#    # convert and bake into bin_<var_name>
+#    _cua_octal=$(u_hex_to_octal "$_cua_hex")
+#    eval "bin_$_cua_ui_var=\"\$(printf '${_cua_octal}')\""
+#  done
+  # precook the binary multi-byte binary emoji characters AND append to SED_LOG_FILTER
+  #   for _filter_log_output - this is a series of substitution lines like
+  #   s/$bin_emoji/$hex_val/g so that emojis in the logging stream are replaced by their hex codepoint
+  for _cua_entry in $ACTIVE_EMOJI_REGISTRY; do
+    # strip longest match for ${US}* from the right - leaving the index number
+    _cua_idx="${_cua_entry%%${US}*}"
+    # strip shortest match for *${US} from the left; remainder is like "cross_mark${US}274C${US}!!"
+    _cua_rem="${_cua_entry#*${US}}"
+    # sript longest match for ${US}* from the right of remainder - leaving the name
+    _cua_name="${_cua_rem%%${US}*}"
+    # strip longset match for *${US} from the left of remainder  - new remainder
+    _cua_rem="${_cua_rem#*${US}}"
+    # sript longest match for ${US}* from the right of remainder - leaving the hex
+    _cua_hex="${_cua_rem%%${US}*}"
+    # safety gate: validate hex to prevent '16#' crash in u_hex_to_octal
+    # (strip the leading backslash and U/u for the validation check)
+    _cua_hex_clean="${_cua_hex#*[Uu]}"
+    case "$_cua_hex_clean" in
+      *[!0-9a-fA-F]*) cua_ret=1; continue ;; # contains non-hex characters
+      "")             cua_ret=1; continue ;; # is empty
+    esac
+    # strip longest match for *${US} from the left - leaving ascii-art (trans)
+    _cua_trans="${_cua_entry##*${US}}"
     # get the octal escape (e.g. \360\237\224\250)
-    # note: u_hex_to_octal should be able to return values for the entire list in one call,
-    # but it would need to be modified to separate them in output, and we would still
-    # need to iterate throug what would then be two parallel lists, so instead,
-    # we use this single-arg method for maximum reliability
-    _cae_octal=$(u_hex_to_octal "$_cae_hex_val")
+    _cua_octal=$(u_hex_to_octal "$_cua_hex")
     # controlled use of eval below enables POSIX "associative" variable
     # name use, to pre-cook the characters (e.g bin_hammer becomes a raw binary 3-byte character)
-    eval "$_cae_var_name=\$(printf '${_cae_octal}')"
-    [ ! $? -eq 0 ] && cae_ret=1
+    eval "bin_$_cua_name=\"\$(printf '${_cua_octal}')\""
+    [ ! $? -eq 0 ] && cua_ret=1
+    # now add this emoji's rule to the precooked log filtering sed script
+    # retrieve the binary just created to ensure consistency
+    eval "_cua_bin=\$bin_${_cua_name}"
+    if [ -z "$_cua_bin" ] || [ -z "$_cua_trans" ]; then
+      # failed to make a bin_ or don't have a trans for it ...
+      continue
+    else
+      # append rule: s/binary_emoji/text_translation/g;
+      SED_LOG_FILTER="${SED_LOG_FILTER}s/$_cua_bin/$_cua_trans/g; "
+    fi
   done
-  unset -v _cae_map _cae_pair _cae_var_name _cae_hex_val _cae_octal
-  return $cae_ret
+  unset -v _cua_idx _cua_rem _cua_name _cua_hex _cua_hex_clean
+  unset -v _cua_entry _cua_trans _cua_octal _cua_bin
+  return $cua_ret
 }
-# @usage _pre_cook_controls_and_emojis
+# @usage _pre_cook_ui_assets
 # @vars BEL, BS, HT, LF, VT, FF, CR, ESC, US, DEL, EOF, SO, SI (global ASCII)
 # @vars bin_<name>: baked binary UTF-8 characters for the active emoji set
-# @ret cae_ret (0 for success, 1 for hex conversion failure)
+# @ret cua_ret (0 for success, 1 for hex conversion failure)
 # @deps u_hex_to_octal, printf
 # @rule mirrors the emoji mapping used in _filter_log_output
 # @note initializes non-printable control characters to avoid repeated printf subshells
 # @note pre-cooks emoji to binary to optimize emit and log filtering performance
 
-# call the _pre_cook_controls_and_emojis function to pre-bake the set of emojis considered "active"
+# call the _pre_cook_ui_assets function to pre-bake the set of emojis considered "active"
 # (this is to enable binary optimization of the log-filering that emit has to do
 #  to provide clean log output when EMOJI_CAPABLE is true and EMOJI_DISABLE is not)
-_pre_cook_controls_and_emojis
+_pre_cook_ui_assets
+
+# --- TRIPWIRE: Post-Cook Audit ---
+#_audit_var="check_mark"
+#eval "_audit_val=\$$_audit_var"
+#case "$_audit_val" in
+#    *[!0-9a-fA-F]*)
+#        printf "!!! TRIPWIRE: %s is ALREADY binary: [%s]\n" "$_audit_var" "$_audit_val" >&2 ;;
+#    *)
+#        printf "--- TRIPWIRE: %s is still hex: [%s]\n" "$_audit_var" "$_audit_val" >&2 ;;
+#esac
+#unset -v _audit_var _audit_val
 
 # order matters - this call must precede the variable assignments depending on the availability
 # of values set by it (e.g. ESC, so CSI can be set below and then all the colors
@@ -384,7 +618,7 @@ _pre_cook_controls_and_emojis
 
 # potentially useful in scripts --
 # NOTE: precooked variables for these controls is now done inside the
-# _pre_cook_controls_and_emojis function which is defined and called above
+# _init_ascii_controls function which is defined and called above
 
 NUL='\000'            # only for matching  (do not pre-cook, and do not try to print)
                       # NUL cannot be stored in a shell variable as a raw byte
@@ -523,7 +757,7 @@ ESCoff="${ESC}(B"  # Maps G0 to Standard ASCII
 ESG1="${ESC})0"    # Maps G1 to DEC Special Graphics
 # Shift In/Out Control Characters (Fast G0/G1 Toggling)
 # NOTE: precooked variables for SO/SI controls is now done inside the
-# _pre_cook_controls_and_emojis function which is defined and called above
+# _init_ascii_controls function which is defined and called above
 # note: migrated all of these from legacy string assignments (e.g. ESCon="${ESC}(0")
 #   to subshell printf generation of the actual binary escape code bytes
 #   (i.e. pre-cooked and don't need the -e for echo or the %b vs %s for printf)
@@ -572,459 +806,6 @@ CROSS_dbl='\342\225\254'      # â•¬ (0x256C)
 #   these values -- every byte of every emoji has bit 8 = 1, so its value
 #   is always > 128 and thus out of range for ascii
 
-# @note -----[ Section 1.b.: Unicode/Emojis ]--------------------------------------------------------------
-
-# factors determining which emoji to display in context
-#
-# The emoji must directly relate to the subject matter of the section. This is the **primary** consideration.
-#
-# 1. Content/Topic Relevance	puzzle
-#
-# Purpose 		My Variable Name
-# Steps/Process 	gear
-# New Ideas/Concepts	light_bulb
-# Fixes/Tools		hammer_and_wrench
-# Errors/Warnings	no_entry
-# Rejection/Failure	cross_mark
-# Success/Validation	check_mark_button
-#
-# 2. Tone and Intent	(blue side-face indicates "heading)
-
-# The emoji must align with the intended tone of the response
-# (e.g., helpful, cautionary, or encouraging).
-
-# Purpose		My Variable Name
-# Debugging/Analysis	lady_bug
-# Search/Investigation	magnifying_glass_left
-# Repair/Correction	wrench
-# Formal/Technical	book
-# Conceptual/Thinking	face_thinking
-# Celebratory		confetti
-#
-# 3. Consistency and Visual Hierarchy (ladder)
-
-# Use a distinct, contextually consistent emoji for the main topic headings
-# within a single response, avoiding overuse to maintain clarity
-#
-# 4. Example of Usage	(hammer)
-#
-# variables like `${hammer}` and `${cross_mark}` to indicate status or actions
-#
-#  specialized functions using these are found later in layou/UI and messaging sections
-# variable value assignments follow
-#
-# Action/Execution	u_message ${hammer} "hello, world" Indicates a WORK process is running or starting
-# Error/Termination	uE_message ${cross_mark} "testing uE_error_message"` Clearly signals a failure, stop, or invalid state
-
-# VS16 (Variation Selector-16, code point U+FE0F) is an invisible control character used to specify
-#   that the preceding character should be displayed with an emoji rather than a monochrome text
-#   (this is needed for some older emojis (like heart_red)
-VS16="\UFE0F"
-
-light="1F3FB"
-mediumlight="1F3FC"
-medium="1F3FD"
-mediumdark="1F3FE"
-dark="1F3FF"
-
-bat="1F987"
-penguin="1F427"
-mouseface="1F42D"
-mouse="1F401"
-
-# human body parts - skin-tonable
-hand="270B"
-hand_new="${hand}${VS16}"
-hand_ok="1F44C"
-thumb_up="1F44D"
-thumb_down="1F44E"
-
-# hearts
-face_grin="1F600"
-face_beam="1F601"
-face_hearts="1F970"
-face_thinking="1F914"
-face_grimace="1F62C"
-face_rolleyes="1F644"
-face_confused="1F615"
-face_frown1="1F641"
-face_frown2="2639"
-face_frown2_new="${face_frown2}${VS16}"
-face_tearsofjoy="1F602"
-face_hearteyes="1F60D"
-face_blowkiss="1F618"
-face_cowboy="1F920"
-face_sunglasses="1F60E"
-
-# hearts
-heart_red="2764"
-heart_red_new="${heart_red}${VS16}"
-heart_pink="1FA77"
-heart_orange="1F9E1"
-heart_yellow="1F49B"
-heart_green="1F49A"
-heart_blue="1F499"
-heart_lightblue="1FA75"
-heart_purple="1F49C"
-heart_brown="1F90E"
-heart_black="1FA76"
-heart_white="1F90D"
-
-poopile="1F4A9"
-
-kiss="1F48B"
-
-explosion="1F4A5"
-collision="1F4A5"
-thought_balloon="1F4AD"
-
-# tools
-compass="1F9ED"
-hammer="1F528"
-axe="1FA93"
-pickaxe="26CF"
-pickaxe_new="${pickaxe}${VS16}"
-hammer_and_pick="2692"
-hammer_and_pick_new="${hammer_and_pick}${VS16}"
-hammer_and_wrench="1F6E0"
-hammer_and_wrench_new="${hammer_and_wrench}${VS16}"
-bomb="1F4A3"
-shield="1F6E1"
-saw="1FA9A"
-wrench="1F527"
-screwdriver="1FA9B"
-nut_and_bolt="1F529"
-gear="2699"
-gear_new="${gear}${VS16}"
-hook="1FA9D"
-toolbox="1F9F0"
-magnet="1F9F2"
-magnifying_glass_left="1F50D"
-magnifying_glass_right="1F50E"
-ladder="1FA9C"
-lock="1F512"
-lock_open="1F513"
-key="1F511"
-shovel="1FA8F"
-broom="1F9F9"
-basket="1F9FA"
-bucket="1FAA3"
-shopping_cart="1F6D2"
-light_bulb="1F4A1"
-
-# sci tools
-dna="1F9EC"
-microscope="1F52C"
-telescope="1F52D"
-satellite_antenna="1F4E1"
-
-# signs
-no_entry="26D4"
-no_entry_new="${no_entry}${VS16}"
-prohibited="1F6AB"
-radioactive="2622"
-radioactive_new="${radioactive}${VS16}"
-biohazard="2623"
-biohazard_new="${biohazard}${VS16}"
-traffic_light_vertical="1F6A6"
-traffic_light_horizontal="1F6A5"
-
-# stuff
-baloon="1F388"
-confetti="1F38A"
-jack_o_lantern="1F383"
-santa="1F385"
-recycling="267B"
-recycling_new="${recycling}${VS16}"
-check_mark_button="2705"
-check_mark_button_new="${check_mark_button}${VS16}"
-cross_mark_button="274E"
-cross_mark_button_new="${cross_mark_button}${VS16}"
-check_mark="2714"
-check_mark_new="${check_mark}${VS16}"
-cross_mark="274C"
-cross_mark_new="${cross_mark}${VS16}"
-splatter="1FADF"
-moneybag="1F4B0"
-dollar="1F4B2"
-credit_card="1F4B3"
-om_symbol="1F549"
-peace_dove="1F54A"
-water_drop="1F4A7"
-water_splash="1F4A6"
-fire="1F525"
-fire_extinguisher="1F9EF"
-crystal_ball="1F52E"
-abacus="1F9EE"
-bricks="1F9F1"
-teddy_bear="1F9F8"
-paper_roll="1F9FB"
-soap_bar="1F9FC"
-palette="1F3A8"
-tophat="1F3A9"
-circuis="1F3AA"
-magic_want="1FA84"
-guitar="1F3B8"
-trumpet="1F3BA"
-drums="1F941"
-camera="1F4F7"
-radio="1F4FB"
-eye_glasses="1F453"
-umbrella="2602"
-umbrella_new="${umbrella}${VS16}"
-cyclone="1F300"
-earth_africa="1F30D"
-earth_americas="1F30E"
-earth_asia="1F30F"
-globe="1F310"
-soccerball="26BD"
-soccerball_new="${soccerball}${VS16}"
-baseball="26BE"
-baseball_new="${baseball}${VS16}"
-basketball="1F3C0"
-football="1F3C8"
-trophy="1F3C6"
-
-# games
-direct_hit="1F3AF"
-eightball="1F3B1"
-dice="1F3B2"
-puzzle="1F9E9"
-
-# black and white
-book="1F56E"
-candle="1F56F"
-skull_and_bones="1F571"
-sunglasses="1F576"
-
-# circles
-circle_red="1F534"
-circle_orange="1F7E0"
-circle_yellow="1F7E1"
-circle_green="1F7E2"
-circle_blue="1F535"
-circle_purple="1F7E3"
-circle_brown="1F7E4"
-circle_black="26AB"
-circle_black_new="${circle_black}${VS16}"
-circle_white="26AA"
-circle_white_new="${circle_white}${VS16}"
-
-# vehicles
-rocket="1F680"
-locomotive="1F682"
-fire_engine="1F692"
-
-# flags
-flag_chequered="1F3C1"
-
-# plants
-hibiscus="1F33A"
-blossom="1F33C"
-tulip="1F337"
-lotus="1FAB4"
-sunflower="1F33B"
-rosette="1F3F5"
-bouquet="1F490"
-rose="1F339"
-cactus="1F335"
-fern="1F33F"
-seedling="1F331"
-clover="1F340"
-maple_leaf="1F341"
-fallen_leaves="1F342"
-fluttering_leaf="1F343"
-tree_deciduous="1F333"
-tree_palm="1F334"
-tree_evergreen="1F332"
-clover="1F340"
-desert_island="1F3DD"
-
-# beverages
-coffee="2615"
-coffee_new="${coffee}${VS16}"
-tea="1F375"
-wine_red="1F377"
-cocktail="1F378"
-beer_mug="1F37A"
-tumbler="1F943"
-milk_glass="1F95B"
-ice_cube="1F9CA"
-
-# food
-cookie="1F36A"
-popcorn="1F37F"
-
-# animals
-snail="1F40C"
-dragon="1F409"
-monkey="1F412"
-bug="1F41B"
-ant="1F41C"
-lady_bug="1F41E"
-turtle="1F422"
-frog_face="1F438"
-microbe="1F9A0"
-
-# vegetables
-tomato="1F345"
-carrot="1F955"
-corn="1F33D"
-potato="1F954"
-broccoli="1F966"
-cucumber="1F952"
-leafy_green="1F96C"
-eggplant="1F346"
-onion="1F9C5"
-garlic="1F9C4"
-peanut="1F95C"
-chestnut="1F330"
-mushroot="1F344"
-
-# fruits
-apple_red="1F34E"
-apple_green="1F34F"
-pear="1F350"
-peach="1F351"
-avocado="1F951"
-tangerine="1F34A"
-lemon="1F34B"
-banana="1F34C"
-watermelon="1F349"
-grapes="1F347"
-strawberry="1F353"
-cherries="1F352"
-pineapple="1F34D"
-mango="1F96D"
-kiwi="1F95D"
-coconut="1F965"
-
-# line/box drawing unicode characters
-uH_wall='\u2500'
-uV_wall='\u2502'
-uUL_wall='\u250C'
-uUR_wall='\u2510'
-uLL_wall='\u2514'
-uLR_wall='\u2518'
-uD_H_wall='\u2550'
-uD_V_wall='\u2551'
-uD_UL_wall='\u2554'
-uD_UR_wall='\u2557'
-uD_LL_wall='\u255A'
-uD_LR_wall='\u255D'
-
-# @note Messaging/Logging = semantic meaning + severity + destination
-# @note joetoo consolidated logging/messaging protocol uses a bitmask
-# @cont to enable calling functions to provide all relevant information
-# @cont in a single positional parameter $1; after it is injested and
-# @cont the bits are extracted, $1 can be discarded, and the remainder
-# @cont of $@ is the payload to be emitted
-#
-# @note single-bit flags for boolean behaviors
-# @cont  (orthogonal, expressive, easy to combine)
-# @note bit(s)
-# @note [0]      STDOUT        - emit to stdout
-# @note [1]      STDERR         - mirror (or redirect?) output to stderr
-# @note [2]      LOG          - output to a file
-# @note [3]      INTERPRET      - use '%b' to INTERPRET backslash escapes
-# @note [4]      NEWLINE        - append a newline at the end of the message
-# @note [5]      TIMESTAMP      - prepend a timestamp (on log messages)
-# @note [6]      CONDITIONAL    - respect verbosity IAW severity
-# @note [7]      FORCE          - force print regardless of verbosity
-# @note [8]      SILENCE        - suppress, override severity, even if FORCE
-# @note NOTE: FORCE and SILENCE ara part of a POLICY layer,
-# @note  ( not part of the severyity/verbosity [CONDITIONAL] system;
-# @note    FORCE overrides severity/verbosity [CONDITIONAL] rules,
-# @note    as does SILENCE, which also overrides even FORCE)
-# @note  ( Override priority: SILENCE > FORCE > CONDITIONAL > unconditional )
-# @note [6-8] 8:SILENCE; 7:FORCE; 6:CONDITIONAL
-# @note   000       unconditional print (no verbosity logic)
-# @note   100       conditional print (respect verbosity)
-# @note   010       forced print (ignore verbosity)
-# @note   110       severity labeling + forced print
-# @note   *01       always suppress (even if FORCE is set)
-# @note [9]      RESERVED (future)
-# @note [10-14]  EMOJI_INDEX    - (5 bit index into "active_emojis" list
-# @note [15]     PREFIX         - single-bit flag to turn on prefix
-# @note [16]     PREFIX_BOLD    - intensity
-# @note [17-19]  PREFIX_COLOR   - (3 bit RGB)(19:R, 18:G, 17:B)
-# @note   000 (0)   black normally, but here means severity-implied color
-# @note   001 (1)   blue
-# @note   010 (2)   green
-# @note   011 (3)   cyan
-# @note   100 (4)   red
-# @note   101 (5)   magenta
-# @note   110 (6)   yellow
-# @note   111 (7)   white
-# @note [20-23]  RESERVED (future)
-# @note [24-26]  SEVERITY (3 bits)
-# @note   000 (0)   emerg
-# @note   001 (1)   alert
-# @note   010 (2)   crit
-# @note   011 (3)   err
-# @note   100 (4)   warning
-# @note   101 (5)   notice
-# @note   110 (6)   info
-# @note   111 (7)   debug
-# @note [26-30]  RESERVED (future)
-# @note [31]     DO NOT USE (sign bit)
-#
-# @note Define global constants for bitmask setting by calling functions
-# @note STDOUT=1 ................. 1 << 0 (no shift required)
-# @note STDERR=2 ................. 1 << 1
-# @note LOG=4 .................... 1 << 2
-# @note INTERPRET=8 .............. 1 << 3
-# @note NEWLINE=16 ............... 1 << 4
-# @note TIMESTAMP=32 ............. 1 << 5
-# @note CONDITIONAL=64 ........... 1 << 6
-# @note FORCE=128 ................ 1 << 7
-# @note SILENCE=256 .............. 1 << 8
-# @note EMOJI_INDEX_SHIFT=10 ..... 5-bit field starts at bit 10
-# @note EMOJI_INDEX_MASK=31744 ... 31 << 10 (clears default/prior setting)
-# @note PREFIX=32768 ............. 1 << 15
-# @note PREFIX_BOLD=65536 ........ 1 << 16
-# @note PREFIX_COLOR_SHIFT=17 .... 3-bit field starts at bit 17
-# @note PREFIX_COLOR_MASK=917504 . 7 << 17 (clears default/prior setting)
-# @note SEVERITY_SHIFT=24 ........ 3-bit field starts at bit 24
-# @note SEVERITY_MASK=117440512 .. 7 << 24 (clears default/prior setting)
-# @note 1 << n shift a "1" bit n positions left (more significant)
-
-STDOUT=1
-STDERR=2
-LOG=4
-INTERPRET=8
-NEWLINE=16
-TIMESTAMP=32
-CONDITIONAL=64
-FORCE=128
-SILENCE=256
-PREFIX=32768
-PREFIX_BOLD=65536
-PREFIX_COLOR_SHIFT=17
-PREFIX_COLOR_MASK=917504
-EMOJI_INDEX_SHIFT=10
-EMOJI_INDEX_MASK=31744     # $(( 31 << 10 ))
-SEVERITY_SHIFT=24
-SEVERITY_MASK=117440512
-
-#
-# These global constant values are used to facilitate setting of the
-#   bitmask by calling functions.  This essentially makes the api
-#   "self documenting" while this is integer math, it is usefull to
-#   think of each of these as a single-bit binary number, 1 or 0,
-#   shifted into its bit-position to attain the value above.
-# Note that the assignment SILENCE=0; SILENCE=256 is equivalent
-#   to SILENCE=0; SILENCE$(( SILENCE | ( 1 << 8 ) ))
-#
-# To avoid confusion, the names applied inside the function are prefixed
-#   with '_' to inidcate their local scope. THESE local-scoped variables
-#   *ARE *ACTUAL* BOOLEAN values, in which 1=true; 0=false, and as such
-#   they cannot be directly tested --> [ "$CONDITIONAL" ] does NOT work,
-#   it MUST be done like this [ "$CONDITIONAL" -eq 1 ]
-#
-# DO NOT CONFUSE these with joetoo's pseudo-boolean type only ever assigned
-#   one of TRUE=0, FALSE="", so that they CAN be directly tested like
-#   FLAGGED=$TRUE; [ $FLAGGED ] will always behave as expected
 
 
 # @note =====[ Section 2: Terminal & Cursor Control Functions ]=====================================================
@@ -1789,43 +1570,15 @@ utf8_char_width() # (POSIX) calculate the column-width of a multi-byte utf-8 cha
 # @note   no external commands; POSIX-compliant
 # @ex     utf8_char_width "$(printf '\xF0\x9F\x94\xA5')"  # FIRE emoji â†’ 2
 
-_filter_log_output() # (POSIX) emit helper not indended for direct use (translate emojis logs)
-{ # first, filter ansi sequences and layout-breaking escapes, then pipe to sed
-  #  Tier 4 optimization for log filterint - integrate strip_ansi | _translate_escapes | sed
-  # set LC_ALL=C so sed treats the incoming stream as a raw byte-array
-  LC_ALL=C sed "
-  s/${CSI}[0-9;]*[mK]//g;
-  s/[${SO}${SI}${BEL}${ESC}]//g;
-  s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g;
-  s/${bin_cross_mark}/!!/g;
-  s/${bin_cross_mark_new}/!!/g;
-  s/${bin_check_mark}/Ok/g;
-  s/${bin_check_mark_new}/Ok/g;
-  s/${bin_check_mark_button}/Ok/g;
-  s/${bin_check_mark_button_new}/Ok/g;
-  s/${bin_no_entry}/[NO ENTRY]/g;
-  s/${bin_no_entry_new}/[NO ENTRY]/g;
-  s/${bin_prohibited}/[PROHIBITED]/g;
-  s/${bin_explosion}/[EXPLOSION]/g;
-  s/${bin_collision}/[COLLISION]/g;
-  s/${bin_bomb}/[BOMB]/g;
-  s/${bin_hammer}/[WORK]/g;
-  s/${bin_hammer_and_wrench}/[PROCESS]/g;
-  s/${bin_wrench}/[WRENCH]/g;
-  s/${bin_gear}/[GEAR]/g;
-  s/${bin_toolbox}/[TOOLBOX]/g;
-  s/${bin_face_thinking}/[THINKING]/g;
-  s/${bin_magnifying_glass_left}/[SEARCH]/g;
-  s/${bin_magnifying_glass_right}/[SEARCH]/g;
-  s/${bin_face_grin}/[:D]/g;
-  s/${bin_face_beam}/[:D]/g;
-  s/${bin_face_grimace}/[:S]/g;
-  s/${bin_face_frown1}/[:(]/g;
-  s/${bin_face_frown2}/[:(]/g;
-  s/${bin_confetti}/[SUCCESS]/g;
-  s/${bin_trophy}/[WIN]/g;
-  s/${bin_VS16}//g
-  "
+
+_filter_log_output() # (POSIX) emit helper
+{
+  # Tier 5 log-filter optimization -
+  # use a pre-cooked sed script to filter the output stream
+  # (ansi seq, controls, and format-breakers are addressed by filter content
+  #  created by _init_ascii_controls(); emoji subsitutions are addressed
+  #  by filter content added by _pre_cook_ui_assets
+  LC_ALL=C sed "$SED_LOG_FILTER"
 }
 # @usage ... | _filter_log_output
 # @args reads from stdin (stream/pipe)
@@ -1837,6 +1590,7 @@ _filter_log_output() # (POSIX) emit helper not indended for direct use (translat
 # @rule flattens Unicode emojis to searchable ASCII tags
 # @rule final pass removes Variation Selector-16 (VS16) modifiers
 # @note logic matches "Tier 5 optimization" in utf8_string_width
+
 
 utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 { usw_ret=0
@@ -2703,20 +2457,21 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   # extract boolean flags using bitwise shift, AND to read the nth most
   #  significant bit. this is the value extracted from the bit location(s)
   #  pointed to by the glogals of similar name above
-  _STDOUT=$((          mask         & 1 ))
-  _STDERR=$((        ( mask >> 1 )  & 1 ))
-  _LOG=$((           ( mask >> 2 )  & 1 ))
-  _INTERPRET=$((     ( mask >> 3 )  & 1 ))
-  _NEWLINE=$((       ( mask >> 4 )  & 1 ))
-  _TIMESTAMP=$((     ( mask >> 5 )  & 1 ))
-  _CONDITIONAL=$((   ( mask >> 6 )  & 1 ))
-  _FORCE=$((         ( mask >> 7 )  & 1 ))
-  _SILENCE=$((       ( mask >> 8 )  & 1 ))
-  _PREFIX=$((        ( mask >> 15 ) & 1 ))
-  _PREFIX_BOLD=$((   ( mask >> 16 ) & 1 ))
-  _PREFIX_COLOR=$((  ( mask >> 17 ) & 7 ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
-  _SEVERITY=$((      ( mask >> 24 ) & 7 ))       # 3-bit field 7 = 0b111
-  _PREMOJI=$((       ( mask >> 10 ) & 31 ))      # 5-bit field 31= 0b11111
+  _STDOUT=$((          mask         & 1  ))
+  _STDERR=$((        ( mask >> 1 )  & 1  ))
+  _LOG=$((           ( mask >> 2 )  & 1  ))
+  _INTERPRET=$((     ( mask >> 3 )  & 1  ))
+  _NEWLINE=$((       ( mask >> 4 )  & 1  ))
+  _TIMESTAMP=$((     ( mask >> 5 )  & 1  ))
+  _CONDITIONAL=$((   ( mask >> 6 )  & 1  ))
+  _FORCE=$((         ( mask >> 7 )  & 1  ))
+  _SILENCE=$((       ( mask >> 8 )  & 1  ))
+  _PREMOJI=$((       ( mask >> 9 )  & 1  ))
+  _PREMOJI_IDX=$((   ( mask >> 10 ) & 31 ))       # 5-bit field 31= 0b11111
+  _PREFIX=$((        ( mask >> 15 ) & 1  ))
+  _PREFIX_BOLD=$((   ( mask >> 16 ) & 1  ))
+  _PREFIX_COLOR=$((  ( mask >> 17 ) & 7  ))       # 3-bit field 7 = 0b111 but 0b format is not POSIX
+  _SEVERITY=$((      ( mask >> 24 ) & 7  ))       # 3-bit field 7 = 0b111
 #  args="$@"
 #  d_do '
 #    echo "mask: $mask"
@@ -2735,6 +2490,7 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
 #    echo "_PREFIX_COLOR: $_PREFIX_COLOR"
 #    echo "_SEVERITY: $_SEVERITY"
 #    echo "_PREMOJI: $_PREMOJI"
+#    echo "_PREMOJI_IDX: $_PREMOJI_IDX"
 #    echo "verbosity: $verbosity"
 #    echo "loglevel: $loglevel"
 #    echo "_PRINT_OK: $(TrueFalse $_PRINT_OK)"
@@ -2792,8 +2548,10 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   else
     prefix_color=""
   fi
+
   # build timestamp (if enabled)
   if [ "$_TIMESTAMP" -eq 1 ]; then ts="$(timestamp)"; else ts=""; fi
+
   # build prefix symbol (note that space on right is separation from msg
   # (also note that each is precisely 3 char - for predictable spacing)
   case "$_SEVERITY" in
@@ -2828,21 +2586,53 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   else
     prefix=""; log_prefix=""
   fi
-#    d_do '
-#        echo "After _PREFIX - _LOG - _SEVERITY block"
-#        echo "_PREFIX......: [$_PREFIX]"
-#        echo "_LOG.........: [$_LOG]"
-#        echo "_SEVERITY....: [$_SEVERITY]"
-#        severity_mark=$(get_severity "$_SEVERITY")
-#        echo "severity_mark: $severity_mark"
-#        echo "log_prefix...: $log_prefix"
-#    ' "$debug"
+
+  premoji_str=""  # default: no emoji prefix
+  # if no explicit emoji was requested, check if severity implies one
+  if [ "$_PREMOJI" -eq 1 ]; then
+    premoji_idx=$_PREMOJI_IDX  # start with the explicit bits set in the bitmask
+    # yes emoji prefix
+    if [ "$premoji_idx" -eq 0 ]; then
+      # no user-specified emoji, so severity dictates
+      case "$_SEVERITY" in
+        0|1)   premoji_idx=1 ;;  # Emerg, Alert ,...... cross_mark
+        2|3)   premoji_idx=10 ;; # Error, Critical .... explosion
+        4)     premoji_idx=7 ;;  # Warning ............ no_entry
+        5)     premoji_idx=18 ;; # Notice ............. face_thinking
+        6)     premoji_idx=21 ;; # Info ............... face_grin
+        7)     premoji_idx=19 ;; # Debug .............. magnifying_glass_left
+      esac
+    fi  # index is zero
+    # look up the name via the authority; if found, resolve the binary variable
+    if _name=$(name_of_emoji "$premoji_idx"); then
+      eval "_cooked=\$bin_${_name}"
+      if [ "$_cooked" ]; then
+        # apply padding: space + emoji + space (4 columns total)
+        premoji_str=" ${_cooked} "
+      fi
+    fi
+  fi  # PREMOJI
+
   # prepend timestamp (for LOG only) and space only if there actaully is content in ts
   log_prefix="${ts}${ts:+ }${log_prefix}"
   # build the message body
   msg="$*"  # all remaining positional parameters, after bitmask was shifted
   # build the full screen output string (do for log below)
-  out="${prefix}${msg}"
+  out="${premoji_str}${prefix}${msg}"
+
+#  d_do '
+#      echo "After _PREFIX - block"
+#      echo "_PREFIX......: [$_PREFIX]"
+#      echo "_PREMOJI.....: [$_PREMOJI]"
+#      echo "premoji_idx..: $premoji_idx"
+#      echo "premoji_str..: $premoji_str"
+#      echo "_LOG.........: [$_LOG]"
+#      echo "_SEVERITY....: [$_SEVERITY]"
+#      severity_mark=$(get_severity "$_SEVERITY")
+#      echo "severity_mark: $severity_mark"
+#      echo "log_prefix...: $log_prefix"
+#      echo "out.........: $out"
+#  ' "$debug"
 
   # choose printf format based on _INTERPRET
   if [ "$_INTERPRET" -eq 1 ]; then fmt='%b'; else fmt='%s'; fi
@@ -2907,9 +2697,9 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
 # @rule    _PRINT_OK defaults to $TRUE; suppressed by _SILENCE or verbosity rules
 # @rule    _LOG_OK defaults to $TRUE; suppressed by missing LOG bit or loglevel rules
 # @rule  POLICY OVERRIDE ORDER (highest->lowest):
-# @rule    _SILENCE  suppresses PRINT regardless of FORCE or severity
-# @rule    _FORCE    bypasses PRINT verbosity checks (but not loglevel)
-# @rule    _CONDITIONAL â   enables severity filtering for PRINT and LOG
+# @rule    _SILENCE suppresses PRINT regardless of FORCE or severity
+# @rule    _FORCE bypasses PRINT verbosity checks (but not loglevel)
+# @rule    _CONDITIONAL enables severity filtering for PRINT and LOG
 # @rule    (unconditional) âalways prints/logs (severity ignored)
 # @rule  $QUIET sets _SILENCE in caller; $INTERACTIVE overrides $QUIET (_SILENCE) for PRINT only
 # @rule  $DEBUG sets _FORCE in caller; _FORCE affects PRINT only (not $loglevel)
@@ -2979,7 +2769,11 @@ _view_mask() # (POSIX) (debug utility to extract and view bitmask bit settings
 }
 
 _parse_msg_options() # (POSIX) standardized policy engine with -c color override
-{ _pmo_sm_bitmask="$1"; shift; _pmo_shift=0
+{ _pmo_sm_bitmask="$1"; shift; _pmo_shift=0;    _pmo_premoji_default=0
+  # initialize the premoji defaults based on environment variable capable/disabled state
+  [ $EMOJI_CAPABLE ] && [ ! $EMOJI_DISABLE ] && _pmo_premoji_default=$PREMOJI
+  # apply the default to the starting bitmask
+  _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_premoji_default ))
   # iterate through args and act on options
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3006,19 +2800,23 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
                     6)     _pmo_sm_dest=$STDOUT; _pmo_sm_bold=0;            _pmo_sm_cond=$CONDITIONAL; _pmo_sm_col=$RGB_G ;;
                     7)     _pmo_sm_dest=$STDOUT; _pmo_sm_bold=$PREFIX_BOLD; _pmo_sm_cond=$CONDITIONAL; _pmo_sm_col=$RGB_C ;;
                   esac
-                  # now update the sm bitmask itself *** PREFIX *** set, too (implied) for sm only
-                  _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_sm_dest | PREFIX | _pmo_sm_bold | _pmo_sm_cond \
+                  # now update the sm bitmask itself *** PREFIX, _pmo_premoji_default *** set, too (implied) for sm only
+                  _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_sm_dest | PREFIX | _pmo_premoji_default | _pmo_sm_bold | _pmo_sm_cond \
                                    | (_pmo_sm_col << PREFIX_COLOR_SHIFT) | (_pmo_lvl << SEVERITY_SHIFT))) ;;
-              c) # color override: expects arg 3-bit RGB (0-7) [shift for arg] [N/A for lm bitmask]
+              C) # color override: expects arg 3-bit RGB (0-7)
                  if [ -z "$_pmo_cluster" ]; then
-                   _pmo_val="$2"; shift; _pmo_shift=$(( _pmo__shift + 1 ))
+                   _pmo_val="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
                  else
-                   _pmo_val="$_pmo_sm_cluster"; _pmo_cluster=""
+                   _pmo_val="$_pmo_cluster"; _pmo_cluster=""
                  fi
-                 # clear existing color and set new one [N/A for lm bitmask]
+                 # clear existing 3-bit color field and then set with new value
                  _pmo_sm_bitmask=$(( (_pmo_sm_bitmask & ~PREFIX_COLOR_MASK) | ((_pmo_val & 7) << PREFIX_COLOR_SHIFT) )) ;;
+              c) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX_COLOR_MASK )) ;;  # CLEAR color to zero (no argument)
               B) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREFIX_BOLD )) ;;    # set bold (dont need to clear b/c ( 1 | 1 = 1 )[N/A for lm bitmask]
+              b) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX_BOLD )) ;;   # clear binary PREFIX_BOLD switch (disable bold prefix)
               e) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | INTERPRET )) ;;      # interpret (like echo -e) [N/A for lm bitmask]
+              E) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~INTERPRET )) ;;     # force-override INTERPRET to OFF (disable backslash interpretation)
+              N) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | NEWLINE )) ;;        # force-override NEWLINE to ON
               n) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~NEWLINE )) ;;       # -n meals clear NEWLINE (like echo -n) [N/A for lm bitmask]
               P) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREFIX )) ;;         # set PREFIX (*, !, !! per severity) [N/A for lm bitmask]
               p) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX )) ;;        # clear PREFIX [N/A for lm bitmask]
@@ -3026,13 +2824,20 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
                  _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~(PREFIX | PREFIX_BOLD | SEVERITY_MASK | CONDITIONAL | PREFIX_COLOR_MASK) )) ;;
               T) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | TIMESTAMP )) ;;      # T = timestamp ON [N/A for lm bitmask]
               t) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~TIMESTAMP )) ;;     # t = timestamp OFF [N/A for lm bitmask]
-              M) # override PREFIX with selected emoji: expects arg 5-bit index (0-31) [shift for arg] [N/A for lm bitmask]
-                 if [ -z "$_pmo_cluster" ]; then
-                   _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
-                 else
-                   _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
-                 fi
-                 _pmo_sm_bitmask=$(( _pmo_sm_bitmask | ((_pmo_idx & 31) << EMOJI_INDEX_SHIFT) )) ;;
+              M) # override PREFIX with selected emoji: set binary PREMOJI switch and 5-bit index (0-31) [shift for arg] [N/A for lm bitmask]
+                if [ -z "$_pmo_cluster" ]; then
+                  _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
+                else
+                  _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
+                fi
+                # clear both PREMOJI and existing 5-bits
+                _pmo_sm_bitmask=$(( ( _pmo_sm_bitmask & ~( PREMOJI | PREMOJI_MASK ) ) ))
+                # SET both with bitwise OR PREMOJI and shifted Index
+                _pmo_sm_bitmask=$(( ( _pmo_sm_bitmask | PREMOJI | ( ( _pmo_idx & 31 ) << PREMOJI_SHIFT ) ) )) ;;
+                #                12 3                             4 5               4                  3 2 10
+              m) # explicit opt-out to disable emoji prefix
+                _pmo_premoji_default=0                                      # kill the default so severity logic doesn't re-enable it
+                _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREMOJI )) ;;        # clear binary PREMOJI switch (disable emoji prefix)
             esac
           done ;;
       -*) die "unknown option: $1" ;;
@@ -3042,15 +2847,17 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
     shift
   done
   pmo_sm_bitmask=$_pmo_sm_bitmask; pmo_shift=$_pmo_shift
-  unset -v _pmo_sm_bitmask _pmo_shift _pmo_lvl _pmo_idx _pmo_cluster _pmo_char _pmo_sm_dest _pmo_sm_bold _pmo_sm_cond _pmo_sm_col _pmo_sm_val
+  unset -v _pmo_sm_bitmask _pmo_shift _pmo_lvl _pmo_idx _pmo_cluster _pmo_char _pmo_sm_dest
+  unset -v _pmo_sm_bold _pmo_sm_cond _pmo_sm_col _pmo_val _pmo_premoji_default
 }
 # @usage _parse_msg_options <initial_bitmask> [options...]
-# @args $1: base bitmask on behalf of j_msg
-# @args $2+: clustered flags (e.g., -6nh) or discrete flags
-# @vars sets external globals pmo_bitmask, pmo_shift
-# @ret 0 on success, 100 for help
-# @rule option -h returns 100 to trigger caller to print
-# @cont one-line usage msga
+# @opts -[0-7] severity; -C <0-7>/c color; -B/b bold; -M <0-31>/m emoji; -T/t timestamp
+# @cont -P/p prefix; -e/E interpret; -N/n newline; -u unconditional; -h help
+# @args 1: initial_bitmask; 2+: options (supports clustering)
+# @ret 0: success, 100: help request; sets pmo_sm_bitmask/pmo_shift
+# @vars pmo_sm_bitmask pmo_shift (modified); EMOJI_CAPABLE EMOJI_DISABLE (req)
+# @deps die
+# @rule consumes options until '--' or non-option; 'h' triggers immediate return 100
 # @note internal logic engine for j_msg policy enforcement
 
 j_msg() # (POSIX) universal messaging entry point
@@ -3112,11 +2919,20 @@ j_msg() # (POSIX) universal messaging entry point
   if [ $(( _jm_sm_bitmask & NEWLINE )) -eq 0 ]; then
     _jm_len=$(get_msg_len "$_jm_msg")    # get_msg_len is a unicode-aware message-width calculator
     _jm_tw=$(termwidth)                  # termwidth checks COLUMNS, tput, stty or falls back to 80
-    _jm_col=3                            # smart_wrap_n will be instructed use this (prefix width) as l_margin
+    _jm_prefix_width=0                   # smart_wrap_n will be instructed use this as l_margin
+    # extract PREFIX bit to determine if its standard 3-col width is included
+    if [ $(( (_jm_sm_bitmask >> 15) & 1 )) -eq 1 ]; then
+      _jm_prefix_width=$(( _jm_prefix_width + 3 ))   # e.g. " * " or "!! "
+    fi
+    # extract PREMOJI bits to determine if a padded emoji width is included
+    _jm_premoji_val=$(( (_jm_sm_bitmask >> 10) & 31 ))
+    if [ "$_jm_premoji_val" -gt 0 ]; then
+      _jm_col=$(( _jm_col + 4 ))      # space (1) + emoji (2) + space (1) = 4
+    fi
     _jm_status_width=6                   # this is the width of "[ Ok ]", "[ !! ]", or emoji equiv, since emoji=2
     _jm_buffer=4                         # this is just a "safety" buffer to ensure there is wrap-room
     # determine how long a one-line message can be and still have room for right_status
-    _jm_threshold=$(( _jm_tw - ( _jm_col + _jm_status_width + _jm_buffer ) ))
+    _jm_threshold=$(( _jm_tw - ( _jm_prefix_width + _jm_status_width + _jm_buffer ) ))
     if [ "$_jm_len" -gt "$_jm_threshold" ] && [ "$_jm_threshold" -gt 0 ]; then
       # this message would not fit and still have room for right status so - 3 steps to long-message path
       # (1) use regular bitmast to have emit print a prefix (both log and screen)
@@ -3133,7 +2949,7 @@ j_msg() # (POSIX) universal messaging entry point
       emit "$_jm_lm_bitmask" "$_jm_msg"
       # (3) use the regular bitmask to ask _maybe_smart_wrap_n (y/n?) is it ok to have smart_wrap_n
       #     output to screen? if yes, then semd tp smart_wrap_n, using prefix width for margins
-      if _maybe_smart_wrap_n "$_jm_sm_bitmask"; then smart_wrap_n "$_jm_col" "$_jm_col" "$_jm_col" "$_jm_msg"; fi
+      if _maybe_smart_wrap_n "$_jm_sm_bitmask"; then smart_wrap_n "$_jm_prefix_width" "$_jm_prefix_width" "$_jm_prefix_width" "$_jm_msg"; fi
     else
       # this message will fit and still have room for right status, so just have emit handle it
       emit "$_jm_sm_bitmask" "$_jm_msg"
@@ -3144,7 +2960,7 @@ j_msg() # (POSIX) universal messaging entry point
   fi
   jm_ret=$?
   unset -v _jm_base _jm_sm_bitmask _jm_lm_bitmask _jm_msg _jm_len _jm_tw _jm_threshold
-  unset -v _jm_col _jm_status_width _jm_buffer
+  unset -v _jm_prefix_width _jm_status_width _jm_buffer
   return $jm_ret
 }
 # @usage j_msg [-0-7] [-e] [-n] [-pP] [-tT] [-M idx] [-u] [-h] [--] <message>
@@ -3153,13 +2969,16 @@ j_msg() # (POSIX) universal messaging entry point
 # @opts -0..7: severity policy; -e: interpret escapes; -n: suppress newline
 # @opts -p: suppress prefix; -P: force prefix; -t: suppress timestamp; -T: force timestamp
 # @opts -M: emoji index override; -u: unconditional; -h: usage
-# @ret 0 on success, 100 for help, or return code of emit()
+# @ret 0 on success, 100 for help, or return code of emit
 # @deps _parse_msg_options, emit, get_msg_len, termwidth, smart_wrap_n, _maybe_smart_wrap_n
 # @vars pmo_bitmask, pmo_shift, LOGGING, DEBUG, QUIET
 # @rule severity levels [0-7] establish base policy for gate, destination, color, and prefix
 # @rule lowercase modifiers (n, p, t) allow subtractive overrides of severity defaults
 # @rule uppercase modifiers (P, T) allow explicit enabling of features
-# @rule if -n is set and message exceeds threshold, output is split: Header(emit) -> Body(Log:emit) -> Body(Screen:smart_wrap_n)
+# @rule if -n is set and message exceeds threshold, output is split:
+# @cont   header(emit) -> body(log:emit) -> body(screen:smart_wrap_n)
+# @cont   * this is a separation of concerns issue j_msg is the brain and determines the intent
+# @cont   * and emit remains a high-performance, low-latency stream-pusher
 # @note handles policy-based messaging with automatic terminal wrapping and log sanitization
 
 # @note -----[ Section 6.b.: UI/Layout tool ]--------------------------------------------------------------
@@ -3226,6 +3045,8 @@ right_status()  # (POSIX) right-margin indicator of status $1, per severity $2
   # guard - reject zero args
   [ $# -lt 1 ] && { j_msg -3  "Error: right_status requires integer status code"; return 1; }
   _rs_status=$1; _rs_lvl=${2:-$notice}  # default to notice severity
+#echo "DEBUG TRIPWIRE: right_status received arg1: [$1]" >&2
+#isint "$1" || echo "DEBUG: CRITICAL - $1 IS NOT AN INTEGER" >&2
   # choose ascii or emoji messages per policy - use _rs_width to know how far from right margin to print status
   # presently _rs_width=7 in all cases [ Ok ], [ !! ], [ <2-col-emoju> ] are all 6 cols
   #   plus 1 col to ensure a character ON the right margin does now result it terminal adding extra newline
@@ -3338,7 +3159,10 @@ handle_result()  # (POSIX) if status $1 is 0, descriptive result $2 else $3; the
 # is_utf8_terminal moved to top of header to run befure needed in default setting
 
 emit_utf8_from_hex() # (POSIX) encode a unicode codepoint (hex) into UTF-8 bytes as octal escapes
-{ _euh_hex="$1";   _euh_dec=$((16#$_euh_hex))
+{ _euh_hex="${1##*[Uu]}"         # strip leading \[Uu]
+  [ -z "$_euh_hex" ] && return 1 # guard against empty input
+#echo "DEBUG TRIPWIRE: _euh_hex is [$_euh_hex]" >&2
+   _euh_dec=$((16#$_euh_hex))
   # each tier shifts and masks to extract the payload bits for each UTF-8 byte
   # shift: 6 bits per continuation byte; 12 bits for 3-byte sequences; 18 bits for 4-byte sequences
   # OR masks 0xC0 = 1100 0000; 0x80 = 1000 0000; 0xE0 = 1110 0000; 0xF0 = 1111 0000
