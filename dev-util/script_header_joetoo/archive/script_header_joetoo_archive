@@ -3962,3 +3962,142 @@ _j_msg_n_wrapper()
   fi
   unset -v _jnw_sev _jnw_msg _jnw_len _jnw_tw _jnw_thresh _jnw_sm _jnw_lm
 }
+
+old_get_msg_len() # helper not to be called directly (get actual printable length of message)
+{ # strip ANSI escape sequences, and use ${#var} to count what remains
+  [ $# -lt 1 ] && return 1   # guard clause; reject if no message
+  # normalize: translate layout breaking control chars single space
+  # then strip ANSI to get the visible length
+  _stripped=$(printf '%b' "$*" | _translate_escapes | strip_ansi)
+  _len="${#_stripped}"; echo "${_len:-0}" # if empty, return 0
+  unset -v _stripped _len ; }
+# @usage get_msg_len "string"
+# @ret (int) count of visible characters
+# @deps _translate_escapes strip_ansi
+# @rule uses translation strategy to ensure layout chars don't inflate count
+# @rule uses "$*" to treat all arguments as a single message string and strip_ansi to filter it
+
+old_emit_utf8_from_hex() # (POSIX) encode a unicode codepoint (hex) into UTF-8 bytes as octal escapes
+{ _euh_hex="${1##*[Uu]}"         # strip leading \[Uu]
+  [ -z "$_euh_hex" ] && return 1 # guard against empty input
+#echo "DEBUG TRIPWIRE: _euh_hex is [$_euh_hex]" >&2
+   _euh_dec=$((16#$_euh_hex))
+  # each tier shifts and masks to extract the payload bits for each UTF-8 byte
+  # shift: 6 bits per continuation byte; 12 bits for 3-byte sequences; 18 bits for 4-byte sequences
+  # OR masks 0xC0 = 1100 0000; 0x80 = 1000 0000; 0xE0 = 1110 0000; 0xF0 = 1111 0000
+  # AND mask: 0x3F = 0011 1111 (read the 6 least significant bits of a continuation byte)
+  # 0x0-0x7F - single-byte (ASCII)(7bits)
+  # printf '\\%03o' renders a 3digit octal number
+  # 0xxxxxxx
+#  if [ $_euh_dec -le 0x7F ]; then
+  if [ $_euh_dec -le 127 ]; then
+    printf '\\%03o' "$_euh_dec"
+  # 0x80-0x7FF - two byte unicode sequence (5 + 6 = 11 bits)
+  # 110xxxxx 10xxxxxx
+#  elif [ $_euh_dec -le 0x7FF ]; then
+  elif [ $_euh_dec -le 2047 ]; then
+    # shift: 6, past LSB byte 1, OR with C0 to read 5 bit payload of byte 1 with 110 x lead bits
+    # then AND mask w 3F to read 6 LSB payload of cont. byte, with 10 led bits
+    printf '\\%03o\\%03o' \
+      $(( (_euh_dec >> 6)        | 0xC0 )) \
+      $(( (_euh_dec & 0x3F)      | 0x80 ))
+  # 0x800-0xFFFF - three byte unicode sequence (4 + 6 + 6 = 16 bits)
+  # 1110xxxx 10xxxxxx 10xxxxxx
+#  elif [ $_euh_dec -le 0xFFFF ]; then
+  elif [ $_euh_dec -le 65535 ]; then
+    # shift: 12, past LSB bytes 1 and 2, payload bits, OR with E0 to read 4 bit payload of byte 1 with 1110 x lead bits
+    # then shift 6, past LSB byte 1, AND mask w 3F to read 6 LSB payload of cont byte 1, with 10 led bits
+    # then AND mask w 3F to read 6 LSB payload of cont byte 2, with 10 led bits
+    printf '\\%03o\\%03o\\%03o' \
+      $(( (_euh_dec >> 12)       | 0xE0 )) \
+      $(( ((_euh_dec >> 6)&0x3F) | 0x80 )) \
+      $(( (_euh_dec & 0x3F)      | 0x80 ))
+  # 0x10000-? - four byte unicode sequence (3 + 6 + 6 + 6 = 21 bits)
+  # 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+  else
+    # shift: 18, past LSB bytes 1-3, payload bits, OR with F0 to read 3 bit payload of byte 1 with 11110 x lead bits
+    # then shift 12, past LSB byte 1-2, AND mask w 3F to read 6 LSB payload of cont byte 1, with 10 led bits
+    # then shift 6, past LSB byte 1, AND mask w 3F to read 6 LSB payload of cont byte 2, with 10 led bits
+    # then AND mask w 3F to read 6 LSB payload of cont byte 3, with 10 led bits
+    printf '\\%03o\\%03o\\%03o\\%03o' \
+      $(( (_euh_dec >> 18)       | 0xF0 )) \
+      $(( ((_euh_dec >> 12)&0x3F)| 0x80 )) \
+      $(( ((_euh_dec >> 6)&0x3F) | 0x80 )) \
+      $(( (_euh_dec & 0x3F)      | 0x80 ))
+  fi
+  unset -v _euh_hex _euh_dec
+}
+# @usage emit_utf8_from_hex <hex_codepoint>
+# @args $1: hex string representing a Unicode codepoint (e.g., "1F427")
+# @ret emits a string of octal escapes (e.g., \360\237\220\247) to stdout
+# @rule uses shell bit-shifting arithmetic to calculate UTF-8 byte sequences
+# @rule supports 1, 2, 3, and 4-byte UTF-8 encodings
+
+u_hex_to_octal() # (POSIX) convert hex codepoint to octal escape sequence
+{ uho_ret=0
+  # iterate over every argument passed to the function ($@)
+  for _uho_arg in "$@"; do
+    # split internal \U sequences into space-separated hex strings
+    # use a literal backslash-U for the replacement pattern (to be replaced)
+    _uho_parts=$(printf '%s' "$_uho_arg" | sed 's/\\U/ /g')
+    # iterate over each part (hex codepoint) in this argument
+    for _uho_h_cp in $_uho_parts; do
+      [ -z "$_uho_h_cp" ] && continue
+      # clean the hex string for the awk bit-shifter
+      # (remove \U or 0x prefixes in case any parts have such)
+#echo "DEBUG TRIPWIRE: uho_h_cp BEFORE strip: [$_uho_h_cp]" >&2
+        _uho_h_cp="${_uho_h_cp#\\U}"
+        _uho_h_cp="${_uho_h_cp#0x}"
+#echo "DEBUG TRIPWIRE: uho_h_cp AFTER strip:  [$_uho_h_cp]" >&2
+      # verify that _uho_h_cp is actually a hex string (0-9, a-f, A-F)
+      # if it fails the regex match, set return status to 1 and skip
+      case "$_uho_h_cp" in *[!0-9a-fA-F]*) uho_ret=1; continue ;; esac
+#echo "DEBUG TRIPWIRE: uho_h_cp is [$_uho_h_cp]" >&2
+     # use $((16# )) math to translate hex to decimal
+      _uho_n=$((16#$_uho_h_cp))
+      # use awk bit-shifter to generate literal UTF-8 bytes
+      # no strtonum() nor smart printf required; works in minimal BusyBox
+      awk -v n="$_uho_n" 'BEGIN {
+        # 1 byte = 7 bit (ascii) payload (upper limit = 2^7 - 1 = 0x7F [127])
+        # each "\\%03o" in a printf format string treats its arg number a an integer
+        # and prints the \-prefixed 3-digit octal byte code for each
+        if (n < 128) printf "\\%03o", n
+        # 2-bytes = 5 + 6 = 11 payload bits (upper limit = 2^11 - 1 = 0x7FF [2047])
+        # continuation bytes have 6 bit payloads, 2^6 (64) is a value 1 larger than can be
+        # represented in 6 bits, so if you divide an 8-bit number by 2^6, the remainder
+        # is the value of the 6 lsb (the payload) + 128 is the dec value of the mandatory
+        # lead bits of a cont byte (10xxxxxx).
+        # the vlue of the lead byte of a 2-byte sequence inclues the integer division by 64
+        # which is the value contributed to the number by other than its 6 lsb,
+        # and the + 192 is the dec value of the mandatory lead bits of the first byte (110xxxxx)
+        else if (n < 2048) printf "\\%03o\\%03o", 192+int(n/64), 128+int(n%64)
+        # 3-bytes 4 + 6 + 6 = 16 payload bits (upper limit= 2^16 - 1 = 0xFFFF [65535])
+        # similar to above (2 contnuation bytes with the same lsb math)
+        # The msb cont byte contributes the 6-bit remainder of int division of the value that
+        # comes from other than the 6 lsb plus 128 (cont byte lead bits again)
+        # The first byte gets integer division by 4096 to compute the value coming from other
+        # than the 12 lsb (2 x cont byte payloads). the + 224 is the dec value of the mandatory
+        # lead bits of the first byte of a 3-byte sequence (1110xxxx)
+        else if (n < 65536) printf "\\%03o\\%03o\\%03o", 224+int(n/4096), 128+int(n/64)%64, 128+int(n%64)
+        # 4 -bytes = 3 + 6 + 6 + 6 = 21 bits (upper limit= 2^21 - 1 = 0x1FFFFF [2097151])
+        # Same math for the two least significant bytes.
+        # The most significant cont byte contributes the 6-bit remainder of int division by 2^12(4096)
+        # which is the value of other than the 12 least significant bits, and the + 128 is cont byte lead bits again)
+        # The first (MSB) byte  int div by 2^18(262144 is the value from other than the 18 lsb
+        # (3 x 6-bit cont byte payloads) and + 240 is the dec value of the mandatory lead
+        # bits of a 4-byte sequence (11110xxx)
+        else printf "\\%03o\\%03o\\%03o\\%03o", 240+int(n/262144), 128+int(n/4096)%64, 128+int(n/64)%64, 128+int(n%64)
+      }' 2>/dev/null
+    done
+  done
+  unset -v _uho_arg _uho_parts _uho_h_cp _uho_n
+  return $uho_ret
+}
+# @usage u_hex_to_octal <hex_codepoint> [hex_codepoint...]
+# @args $1..$n: hex strings (e.g. "1F528", "0x2714", or "\U2714")
+# @vars uho_ret: set to 0 on success, 1 if invalid hex encountered
+# @ret emits backslashed octal sequence(s) to stdout (e.g. \360\237\224\250)
+# @deps printf, sed, awk
+# @rule POSIX shell variable localization and unsetting principles applied
+# @note repurposed from u_echo logic to provide pre-cooking strings
+# @ex hammer_octal=$(u_hex_to_octal "1F528")
