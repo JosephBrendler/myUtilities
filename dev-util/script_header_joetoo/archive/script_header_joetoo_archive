@@ -4101,3 +4101,218 @@ u_hex_to_octal() # (POSIX) convert hex codepoint to octal escape sequence
 # @rule POSIX shell variable localization and unsetting principles applied
 # @note repurposed from u_echo logic to provide pre-cooking strings
 # @ex hammer_octal=$(u_hex_to_octal "1F528")
+
+old_summarize_header() # (POSIX) list functions and notes in installed headers
+{ # Note: script_header_installed_dir may be defined in/prior to function call
+  #   to enable testing development versions
+  # @usage summarize_header [filter_pattern]
+  # @args $1: optional regex/string to filter function names (e.g., "info_")
+  # @deps sed grep termwidth
+  # @rule processes the script source line-by-line to extract function names and @tags
+  # @rule filters output based on $1 to show specific function families
+  # @note this is the engine for the 'toc' command and header self-documentation
+  # @note future: will be extracted to a stand-alone package for broader script analysis
+
+  # define some regex search patterns --
+  # _sh_FUNCTION_REGEX: matches any legal POSIX filename
+  # ( must start w alpha char or "_", and may include only alpha, numeric, or "_" prior to () )
+  _sh_FUNCTION_REGEX="^[_[:alpha:]][_[:alnum:]]*\(\)"
+  # _sh_METADATA_REGEX: matches summarize_headers() convention for supplemental comments for users
+  # match our new metadata tag format "# @tagname decriptivetext"
+  # so look for zero+ whitespace, followed by one+ #,
+  # followed by one+ whitespce, followed by @, followed by one+ alphanum
+  _sh_METADATA_REGEX="^${W0}#+${W1}@${A1}"
+  # default to all script_header_joetoo modules installed in /usr/sbin/
+  if [ -d "$script_header_installed_dir" ] ; then
+    _sh_dir="${script_header_installed_dir%/}"
+  else
+    _sh_dir="/usr/sbin"
+  fi
+  [ ! -d "$_sh_dir" ] && { j_msg -3 "invalid _sh_dir [$_sh_dir]"; return 1 ; }
+  if [ $# -eq 0 ] ; then
+    _sh_header_glob="${_sh_dir}/script_header_joetoo*"
+  else
+    _sh_header_glob="${_sh_dir}/script_header_joetoo_${1}*"
+  fi
+  j_msg -5 "looking for headers in $_sh_header_glob"
+  # expand the glob into positional parameters
+  # to protect against the remote possibility of filename with whitespace
+  set -- ${_sh_header_glob}
+  # check if the glob actually found files
+  if [ ! -f "$1" ]; then j_msg -3 "No header sources found in ${_sh_dir}"; return 1; fi
+  # begin output with separator
+  separator "summarize_header-${BUILD}" "(content summary)"
+  # now that j_msg -5n employs smart_wrap_n, use that to word-wrap this
+  _sh_msg="This script header defines ${BYon}common variables${Boff}, ${BYon}ANSI sequences${Boff}, "
+  _sh_msg="${_sh_msg}and the following ${BGon}functions/utilities${Boff} as described below:\n"
+  j_msg -5n ${_sh_msg}; printf "\n"   # message unquoted to enable word-wrap
+  # identify and process all matching installed header files
+  for _sh_filespec in "$@"; do
+    if [ ! -f "$_sh_filespec" ] ;then
+      j_msg -3 "$_sh_filespec not found; continuing"
+      continue  # if grep id'd a bad filename, skip to next in for loop
+    fi
+    # generate a separator for each module
+#    separator "${_sh_PN}-${BUILD}" "($(basename ${_sh_filespec}))"
+    separator "${_sh_PN}-${BUILD}" "(${_sh_filespec##*/})"   # equivalent to basename but w/o subshell function call
+
+
+    # make two passes through the selected header file, use regex-parsing to select all lines
+    #   that are either a function definition or a metadata tag/paylod
+    # in the first pass, calculate the max length of function names and metadata lables used
+    #   so as to be able (in the second pass) to determine starting column and indent intended
+    #     for both function names and metadata
+    # in the second pass through the selected header file, use that info and the length of
+    #   the current function name/metadata label to calculate the dot-padding required to
+    #   provide the desired visual alignment, and generate the appropriately colorized output
+
+    #-----[ FIRST PASS ]----------------------------------------------------------------
+    # measure longest function name in this header file (to determine printf column width)
+    # (extract only the function name to a list, and then calculate the longest)
+    _sh_fn_list=$(grep -E "$_sh_FUNCTION_REGEX" "$_sh_filespec" | cut -d'(' -f1)
+
+    # FUNCTIONs
+    # with the list, calculate the length of the longest function name
+    #   add 2 for "()" to get true max displayed length
+    _sh_fn_max_len=$(( $(get_longest $_sh_fn_list) + 2 ))
+    j_msg -5 "_sh_fn_max_len: $_sh_fn_max_len" 4
+    # assign the internal separator to appear between function name and padding
+    _sh_fn_sep=" "
+    # calculate length of the column (between the gutters) to be passed to pad()-->smart_wrap_n
+    _sh_fn_col_width=$(( _sh_fn_max_len + ${#_sh_fn_sep} ))
+    # determine the offset to the function description column that accomodates
+    # the entire column and the gutters - this is where the cursor
+    #   will be when smart_wrap_n is called to smart-wrap the description
+    #   Math: _sh_fn_max_len + 2c.Lpad + 2c.dots(min) + 2c.Rpad
+    _sh_fn_col=$((_sh_fn_col_width + 2 + 2 + 2 ))
+    j_msg -5 "_sh_fn_col: $_sh_fn_col" 4
+    # assign the number of the column to which to indent any subseqent lines of the description
+    _sh_fn_indent="${_sh_fn_col}"   # for now, wrap/indent to align directly under start point
+
+    # METADATA
+    # calculate the length of the longest metadata lable to determine the prinf column width
+    #   for metadata (these are known a priori, but change)
+    _sh_label_list="usage arguments variables dependencies requirements"
+    _sh_label_list="${_sh_label_list} rules notes warning unknown"
+    _sh_label_max_len=$(get_longest $_sh_label_list)
+    j_msg -5 "_sh_label_list: $_sh_label_list" 4
+    j_msg -5 "_sh_label_max_len: $_sh_label_max_len" 4
+    # assign the internal separator to appear between metadata label and padding
+    _sh_label_sep=": "
+    # calculate the length of the column (between the gutters) to be passed to pad()
+    _sh_label_col_width=$(( _sh_label_max_len + ${#_sh_label_sep} ))
+    # determine the offset to the function metadata payload column that accomodates
+    # the entire column and the gutters - this is where the cursor
+    #   will be when smart_wrap_n is called to smart-wrap the metadata payload
+    #   Math: _sh_label_max_len + 4c.Lpad + 2c.dots(min) + 2c.Rpad
+    _sh_label_col=$((_sh_label_col_width + 4 + 2 + 2 ))
+    j_msg -5 "_sh_label_col: $_sh_label_col" 4
+    # assign the number of the column to which to indent any subsequent lines of metadata payload
+    _sh_label_indent="${_sh_label_col}"   # for now, wrap/indent to align directly under start point
+    #-----[ SECOND PASS ]----------------------------------------------------------------
+    # regex-parse for both '^function()  # comment' and/or '^# *()* comment'
+    # ( pick up both function definitions and tagged metadata )
+    # ( see regex definitions above )( pipe grep output to a while read loop )
+    grep -E "^(${_sh_FUNCTION_REGEX}|${_sh_METADATA_REGEX})" "$_sh_filespec" | while read -r _sh_line; do
+        # handle POSIX function name
+#        j_msg -5 "_sh_line: $_sh_line" 4
+        # example: _sh_line: SCP()    # (ANSI) save the current cursor position || _sh_fn_name: [SCP()   ]
+        if printf '%s\n' "$_sh_line" | grep -Eq "$_sh_FUNCTION_REGEX"; then
+            # check if there is still whitespace - remove if so
+            # this printf generates a string w/o CR,
+            # piped to tr to delete (-d) the complement (-c) of whitespace
+            # piped to wc to count the characters left
+            # i.e. grab filename [text left of first (]
+            _sh_tmp=$(printf '%s' "$_sh_line" | cut -d'(' -f1)
+            # trim whitespace if needed
+            if [ "$(printf '%s' "$_sh_tmp" | tr -dc '[:space:]' | wc -c)" -gt 0 ] ; then
+                _sh_tmp="${_sh_tmp#"${_sh_tmp%%[! ]*}"}"              # ltrim (just in case)
+                _sh_fn_name="${_sh_tmp%"${_sh_tmp##*[![:space:]]}"}"  # r-trim (just in case)
+            else
+                _sh_fn_name="$_sh_tmp"   # <=== 99% of the time we probably come right here
+            fi
+            # put the parentheses back on and handle null case
+            if [ -z "$_sh_fn_name" ] ; then
+              _sh_fn_name="<null>"
+            else
+              _sh_fn_name="${_sh_fn_name}()"
+            fi
+#            j_msg -5 "_sh_fn_name: [${_sh_fn_name}]" 4
+            _sh_comment="${_sh_line#*#}" # all text right of #
+            # handle "null comment" cases where no # exists on the line
+            [ "$_sh_comment" = "$_sh_line" ] && _sh_comment=""
+            # OUTPUT 2c margin gutter pad, colorized function name, and 1c space
+            printf '%b' "  ${_func_color}${_sh_fn_name} "
+#            printf '%b' "  ${BYon}${_sh_fn_name} "             <--- change from yellow to _func_color
+#            j_msg -5 "_sh_fn_max_len: $_sh_fn_max_len" 4
+#            j_msg -5 "#_sh_fn_name: ${#_sh_fn_name}" 4
+            # OUTPUT dot-padding and gutter padding (2c)
+            # use pad() to generate the required padding
+            #   usage: pad "cur" "sep" "min" "color" "marker" "col"
+            pad "$_sh_fn_name" ' ' "2" "${_func_color}" '.' "${_sh_fn_col_width}"
+#            pad "$_sh_fn_name" ' ' "2" "${Yon}" '.' "${_sh_fn_col_width}"        <--- change from yellow to _func_color
+            printf "  "  # inter-column pad spacing
+#            echo_n_long "$_sh_fn_col" "$_sh_fn_indent" "$_sh_comment"               # smart-word wrap comment
+            smart_wrap_n "$_sh_fn_col" "$_sh_fn_indent" "" "$_sh_comment"               # smart-word wrap comment
+            printf "\n"   # newline for hanging smart_wrap_n
+        # handle metadata tags
+        elif printf '%s\n' "$_sh_line" | grep -Eq "$_sh_METADATA_REGEX"; then
+            # extract and parse tag (text between '@' and first space)
+            _sh_tag=$(printf '%s\n' "$_sh_line" | cut -d'@' -f2 | cut -d' ' -f1)
+#            _sh_label_payload=$(printf '%s\n' "$_sh_line" | cut -d'@' -f2 | cut -d' ' -f2-)
+             # sed matches (and substitutes a null string for) i.e. removes -
+             #   line beginning with zero+ whitespace, followed by #, followed by
+             #   one+ whitespace, followed by @ (the tag symbol), followed by
+             #   the tag lable just extracted in the command above, followed by
+             #   one+ whitespace
+            _sh_label_payload=$(printf '%s\n' "$_sh_line" | sed "s/^${W0}#${W1}@${_sh_tag}${W1}//")
+            case "$_sh_tag" in
+                usage) _sh_label="usage" ;;
+                args ) _sh_label="arguments" ;;
+                vars ) _sh_label="variables" ;;
+                ret  ) _sh_label="returns" ;;
+                deps ) _sh_label="dependencies" ;;
+                req  ) _sh_label="requirements" ;;
+                rule ) _sh_label="rules" ;;
+                note ) _sh_label="notes" ;;
+                warn ) _sh_label="warning" ;;
+                ex   ) _sh_label="example" ;;
+                cont ) _sh_label="continuation" ;;
+                ''   ) _sh_label="<null>" ;;
+                *    ) _sh_label="unknown" ;;
+            esac
+            # note: longest of these is 13 char
+#            j_msg -5 "_sh_label: $_sh_label" 4
+#            j_msg -5 "_sh_label_col: $_sh_label_col" 4
+#            j_msg -5 "_sh_label_indent: $_sh_label_indent" 4
+            # OUTPUT 4c margin gutter pad, colorized function name, and 1c space
+            printf "    ${_data_color}%-${#_sh_label}s:${Boff} " "$_sh_label"
+#            printf "    ${BMon}%-${#_sh_label}s:${Boff} " "$_sh_label"         <--- change from $BMon to _data_color
+            # OUTPUT dot-padding and gutter padding (2c)
+            # use pad() to generate the required padding
+            #   usage: pad "cur" "sep" "min" "color" "marker" "col"
+            pad "$_sh_label" ': ' "2" "${_data_color}" '.' "${_sh_label_col_width}"
+#            pad "$_sh_label" ': ' "2" "${Mon}" '.' "${_sh_label_col_width}"    <--- change from Mon to _data_color
+            printf '%s' "  " # inter- column gutter
+
+#            j_msg -5 "_sh_line: [$_sh_line]" 4
+#            j_msg -5 "_sh_tag: [$_sh_tag]" 4
+#            j_msg -5 "_sh_label_payload: [$_sh_label_payload]" 4
+
+#            echo_n_long "${_sh_label_col}" "${_sh_label_indent}" "$_sh_label_payload"
+            smart_wrap_n "${_sh_label_col}" "${_sh_label_indent}" "" "$_sh_label_payload"
+            printf "\n"   # newline for hanging echo_n_long
+        else  # safety catch for unexpected matches
+        printf "  ${BRon}UNKNOWN:  %s${Boff}\n" "$_sh_line"
+        fi  # function|comment|other
+    done  # while
+  done  # for
+  echo
+  j_msg -5 "To run functional tests, use: ${BGon}demonstrate_header${Boff}"
+  separator "$(hostname)" "(complete)"
+  unset -v _sh_PN _sh_msg _sh_filespec _sh_line _sh_fn_name _sh_comment _sh_dir _sh_header_glob
+  unset -v _sh_fn_list _sh_fn_max_len _sh_FUNCTION_REGEX _sh_fn_col _sh_METADATA_REGEX
+  unset -v _sh_label_list _sh_label_max_len _sh_tag _sh_label_col _sh_label_indent _sh_label _sh_label_payload
+  unset -v _sh_tmp _sh_fn_sep _sh_fn_indent _sh_fn_col_width _sh_label_sep _sh_label_col_width
+  return 0
+}
