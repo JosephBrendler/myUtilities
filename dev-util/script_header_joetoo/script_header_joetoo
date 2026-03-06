@@ -720,6 +720,9 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
 # (this is primarily to enable binary optimization of the real-time log-filering that emit has to do
 #  to provide clean log output when EMOJI_CAPABLE is true and EMOJI_DISABLE is not)
 _precook_ui_assets
+# order matters - this call must precede the variable assignments depending on the availability
+# of values set by it (e.g. ESC, so CSI can be set below and then all the colors
+# depending on that
 
 # --- TRIPWIRE: Post-Cook Audit ---
 #_audit_var="check_mark"
@@ -732,9 +735,23 @@ _precook_ui_assets
 #esac
 #unset -v _audit_var _audit_val
 
-# order matters - this call must precede the variable assignments depending on the availability
-# of values set by it (e.g. ESC, so CSI can be set below and then all the colors
-# depending on that
+# order matters - this function must precede the variable assignments depending
+#   on its availability (like longone= )
+emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
+{ [ ! $# -eq 1 ] && die "one arg allowed/required"
+  [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ] || return 0
+  _es_hex="$1"
+  _es_oct=$(emit_utf8_from_hex "$_es_hex")
+  LC_CTYPE=en_US.utf8 printf '%b' "$_es_oct"
+  unset -v _es_oct _es_hex
+}
+# @usage emoji_safe <hex_codepoint>
+# @args $1: hex codepoint for a single emoji
+# @vars EMOJI_CAPABLE: global flag; must be TRUE to enable output
+# @vars EMOJI_DISABLE: global flag; if TRUE, suppresses output
+# @ret emits binary UTF-8 character to stdout if enabled; otherwise null
+# @deps emit_utf8_from_hex, printf
+
 
 #-----[ ASCII Control Characters ( [:control:] )]-----------------------------
 #Octal	Hex	Abbr	Description
@@ -3214,20 +3231,8 @@ u_echo() # (POSIX) Wrapper for emit_utf8_from_hex to render multiple codepoints
 # @ret emits binary UTF-8 characters to stdout
 # @deps emit_utf8_from_hex, printf
 
-emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
-{ [ ! $# -eq 1 ] && die "one arg allowed/required"
-  [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ] || return 0
-  _es_hex="$1"
-  _es_oct=$(emit_utf8_from_hex "$_es_hex")
-  LC_CTYPE=en_US.utf8 printf '%b' "$_es_oct"
-  unset -v _es_oct _es_hex
-}
-# @usage emoji_safe <hex_codepoint>
-# @args $1: hex codepoint for a single emoji
-# @vars EMOJI_CAPABLE: global flag; must be TRUE to enable output
-# @vars EMOJI_DISABLE: global flag; if TRUE, suppresses output
-# @ret emits binary UTF-8 character to stdout if enabled; otherwise null
-# @deps emit_utf8_from_hex, printf
+# emoji_safe moved to the front of the header after _precook_ui_assets so it is
+# available to initialize .e.g longone
 
 bremoji() # (POSIX) use emoji()/uecho() to display one unicode char $1 in brackets
 { [ ! $# -eq 1 ] && die "one arg allowed/required"
