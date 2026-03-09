@@ -26,7 +26,7 @@ grep -Ev "^(\s*$|#)" /usr/sbin/script_header_joetoo_unicode | while read -r _ite
     if [ $((_i % 2)) -eq 0 ]; then _clr="${BCon}"; else _clr="${BGon}"; fi
     # print the label and the rendered glyph
     _pad=$(repeat '.' $(( _column_width - ${#_name} -2 )))
-    printf "${_clr}%s${_clr}%s${Boff}" "$_name" "${_pad}: "
+    printf "${_clr}%s${_clr} %s${Boff}" "$_name" "${_pad}: "
     LC_CTYPE=en_US.utf8 printf '%b\n' "$_octal_val"
     _i=$(( _i + 1 ))
 done
