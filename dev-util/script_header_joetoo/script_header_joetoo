@@ -196,11 +196,9 @@ _init_ascii_controls() # (POSIX) precook the set of emoji considered most "activ
   SO=$(printf  '\016')  # h:0x0E, d:14;  Shift Out (switch to G1 character set (e.g., line-drawing)
   SI=$(printf  '\017')  # h:0x0F, d:15;  Shift In (switch back to G0 character set)
 
-  SED_LOG_FILTER="
-    s/${ESC}\[[0-9;]*[mK]//g;
-    s/[${SO}${SI}${BEL}${ESC}]//g;
-    s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g;
-  "
+  # consolidate initial rules   ansi                 controls                           escapes
+  SED_LOG_FILTER="s/${ESC}\[[0-9;]*[mK]//g; s/[${SO}${SI}${BEL}${ESC}]//g; s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g; "
+  # note: _precook_registry appends rules for each registry, and _precook_ui_assets closes out with fallback rules for unicode
   return $iac_ret
 }
 _init_ascii_controls
@@ -616,7 +614,8 @@ emit_utf8_from_hex() # (POSIX) encode a unicode codepoint (hex) into UTF-8 bytes
 _precook_registry() # (POSIX) helper to precook the assets in one registry "$1"
 { pr_ret=0; _pr_REGISTRY="$1"
   # precook binary multi-byte binary unicode characters AND append to SED_LOG_FILTER for
-  #   filtering log output - this is a series of substitution lines like
+  #   filtering log output - SED_LOG_FILTER is initialized very early in the header (about line 196)
+  # by _init_ascii_controls().  It is appended here to beome a series of substitution lines like
   #   s/$bin_emoji/$trans/g so that unicode characters in the logging stream are replaced by ascii-art
   # These are not index-constrained, but use the same 4-field parsing as emojis
   ### for _pr_entry in $_pr_REGISTRY; do  ## (replace with while read to protect vs word splits
@@ -733,7 +732,8 @@ EOF
   idx_severity_01_emoji=$(idx_of_emoji "cross_mark")            # emerg|alert
   idx_severity_23_emoji=$(idx_of_emoji "explosion")             # crit|err
   idx_severity_4_emoji=$(idx_of_emoji "no_entry")               # warn
-  idx_severity_5_emoji=$(idx_of_emoji "face_thinking")          # notice
+#  idx_severity_5_emoji=$(idx_of_emoji "face_thinking")          # notice
+  idx_severity_5_emoji=$(idx_of_emoji "uTHUNDER")          # notice
   idx_severity_6_emoji=$(idx_of_emoji "face_grin")              # info
   idx_severity_7_emoji=$(idx_of_emoji "magnifying_glass_left")  # debug
 
@@ -752,18 +752,30 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
   _PATTERN_WIDTH_0=""
   _PATTERN_WIDTH_1=""
   _PATTERN_WIDTH_2=""
-  SED_LOG_FILTER=""
+#  SED_LOG_FILTER=""  # <--- do not reset this. it is initialized early by _init_ascii_controls()
 
-
-  #----[ pass 0: Zero Width Registry ]----------------------------------------
-  _precook_registry "$ACTIVE_ZERO_WIDTH_REGISTRY" || cua_ret=1
+  #----[ pass 0: Emoji Registry ]---------------------------------------------
+  _precook_registry "$ACTIVE_EMOJI_REGISTRY" || cua_ret=1
 
   #----[ pass 1: UI Box Drawing Registry ]------------------------------------
   _precook_registry "$ACTIVE_UI_BOX_REGISTRY" || cua_ret=1
 
-  #----[ pass 2: Emoji Registry ]---------------------------------------------
-  _precook_registry "$ACTIVE_EMOJI_REGISTRY" || cua_ret=1
+  #----[ pass 2: Zero Width Registry ]----------------------------------------
+  _precook_registry "$ACTIVE_ZERO_WIDTH_REGISTRY" || cua_ret=1
+  # note: ZW pass has to go last so the SED_LOG_FILTER has the combined
+  # characters earlier in search pattern than the indifidual ZWs like VS16
+  # (otherwise the ZWs get stripped first and the engine cannot recognize the
+  #  byte sequences of the remnanats of multi-character grapheme somethingorothers
 
+  # write "fall-back" rules for SED_LOG_FILTER; use semicolon separator
+  # 4-byte (emojis, etc)
+  _catch_all="s/[\xf0-\xf7][\x80-\xbf][\x80-\xbf][\x80-\xbf]/[emoji]/g"
+  # 3-byte (special symbols/cjk)
+  _catch_all="${_catch_all}; s/[\xe0-\xef][\x80-\xbf][\x80-\xbf]/[sym]/g"
+  # 2-byte (latin extended/greek)
+  _catch_all="${_catch_all}; s/[\xc2-\xdf][\x80-\xbf]/[char]/g"
+  # Append to the end of filter
+  SED_LOG_FILTER="${SED_LOG_FILTER}; ${_catch_all}"
 
   unset -v _cua_idx _cua_rem _cua_name _cua_hex
   unset -v _cua_entry _cua_trans _cua_octal _cua_bin
@@ -812,6 +824,60 @@ emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
 # @ret emits binary UTF-8 character to stdout if enabled; otherwise null
 # @deps emit_utf8_from_hex, printf
 
+_examine_registry()
+{ dr_ret=0;   _dr_REGISTRY=$1
+  # use while read rather than for ... in to manage word splitting; use heredoc rather than | to avoid subshell variable trap
+  # (careful: heredoc lines must be at left edge of screen)
+  # first pass - read variable lengths for alignment
+  _dr_longest_idx=0; _dr_longest_name=0; _dr_longest_var=0; _dr_longest_label=0
+  while IFS= read -r _dr_line; do
+  #  echo "_dr_line: $_dr_line"
+    [ -z "$_dr_line" ] && continue  # Skip empty lines
+    # read US separated fields into variables
+    IFS="$US" read -r _dr_idx _dr_name _dr_var _dr_label <<EOF
+$_dr_line
+EOF
+#echo "_dr_idx: [$_dr_idx]; _dr_longest_idx: [$_dr_longest_idx]; dr_idx len: [${#_dr_idx}]"
+    [ "${#_dr_idx}" -gt "$_dr_longest_idx" ] && _dr_longest_idx="${#_dr_idx}"
+    [ "${#_dr_name}" -gt "$_dr_longest_name" ] && _dr_longest_name="${#_dr_name}"
+    [ "${#_dr_var}" -gt "$_dr_longest_var" ] && _dr_longest_var="${#_dr_var}"
+    [ "${#_dr_label}" -gt "$_dr_longest_label" ] && _dr_longest_label="${#_dr_label}"
+  done<<EOF
+$(printf '%s\n' "$_dr_REGISTRY")
+EOF
+
+  # second pass - print diagnostic data for emoji registry: index, name, emoju, bytes | then cooked form emoji and its bytes
+  #printf '%s\n' "$ACTIVE_EMOJI_REGISTRY" | while IFS= read -r _dr_line; do
+  #for _dr_line in "$ACTIVE_EMOJI_REGISTRY"; do
+  while IFS= read -r _dr_line; do
+  #  echo "_dr_line: $_dr_line"
+    [ -z "$_dr_line" ] && continue  # Skip empty lines
+    # read US separated fields into variables
+    # (careful: heredoc lines must be at left edge of screen)
+    IFS="$US" read -r _dr_idx _dr_name _dr_var _dr_label <<EOF
+$_dr_line
+EOF
+
+#echo "_dr_label: [$_dr_label]; _dr_longest_label: [$_dr_longest_label]; dr_label len: [${#_dr_label}]"
+    # emit registry data
+    repeat ' ' $(( _dr_longest_idx - ${#_dr_idx} ))  # PRE space-pad idx w no extra
+    printf '%s:' "$_dr_idx"
+    printf ' %s ' "$_dr_name"
+    repeat '.' $(( _dr_longest_name - ${#_dr_name} ))  # .-pad name w no extra
+    printf ' %s  ' "$_dr_label"
+    # emit emoji
+    emoji_safe "$_dr_var"; printf ' '
+    # dump bytes
+    emoji_safe "$_dr_var" | od -An -t x1 | head -n1 | tr -d '\n'
+    eval "printf '  precooked: %b' \"\$bin_$_dr_name\""
+    eval "printf '%b' \"\$bin_$_dr_name\"" | od -An -t x1 | head -n1
+  #  printf '\n'
+  done<<EOF
+$(printf '%s\n' "$_dr_REGISTRY")
+EOF
+
+  unset -v _dr_REGISTRY _dr_line _dr_idx _dr_name _dr_var _dr_label
+}
 
 #-----[ ASCII Control Characters ( [:control:] )]-----------------------------
 #Octal	Hex	Abbr	Description
@@ -1913,132 +1979,6 @@ utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 # @note  Designed for POSIX shells; avoids external commands except printf
 # @ex    w=$(utf8_string_width "A U+2600 B")  # sun symbol counted as width 2
 
-old_utf8_string_width() # (POSIX) compute display width of a UTF-8 string
-{ usw_ret=0
-  _usw_string=$1; _usw_str_width=0
-  # iterate until string is empty
-  while [ ! -z "$_usw_string" ]; do
-    # tier 2 optimization - detect any "run" of ascii chars and handle them quickly
-    LC_ALL=C _usw_prefix="${_usw_string%%[! -~]*}"
-    if [ ${#_usw_prefix} -gt 1 ] ; then
-      _usw_run_length=${#_usw_prefix}
-      _usw_str_width=$(( _usw_str_width + _usw_run_length ))
-      _usw_string=${_usw_string#"${_usw_prefix}"}; continue
-    fi
-    # read first byte (POSIX 'X idiom = 1st char [byte] of string X)
-    _usw_b1=$(printf '%d' "'$_usw_string")
-    # determine UTF-8 sequence byte-length of the current character, by examining the first byte only
-    # if these are non-ascii, then they are the actual binary bytes of which the multi-byte
-    # unicode characters consist, placed into the message with a method like
-    # _msg="${_msg} $(emoji_safe $hammer)" or simpler by _msg="${_msg} $(printf '%s' $bin_hammer)"
-    # tier 1 optimization - if byte 1 is ascii, increment count and return quicky
-    if   [ $_usw_b1 -lt 128 ]; then  # ascii: ( bit 7 = 0 0-127) handle quickly (increment; drop; continue)
-       _usw_n=1; _usw_str_width=$((_usw_str_width + 1)); _usw_string=${_usw_string#?}; continue
-    elif [ $_usw_b1 -lt 224 ]; then _usw_n=2     # utf-8 ( bits 765 = 110 192-223)
-    elif [ $_usw_b1 -lt 240 ]; then _usw_n=3     # utf-8 ( bits 7654 = 1110 224-239)
-    elif [ $_usw_b1 -lt 248 ]; then _usw_n=4     # utf-8 ( bits 76543 = 11110 240-247)
-    else _usw_n=1   # treat as single 1-col char # invalid (248-255)( there are no 5- or 6-byte UTF-8 sequences)
-    fi                                           # also     bits 76 = 10 marks a continuation byte
-                                                 #          (so, 128-191 also not allowed in 1st byte)
-    # extract the full UTF-8 character (n bytes)
-    # moved this _usw_char= here, to enable tier 5 optimizaton and slice/drop from string further below
-    # %. is precision; with s it is length; so '%.*s' substitutes the first arg for *
-    #   and uses the result to format the second arg in the printf output
-    #   (thus if _usw_n=4 printf '%.4s' "$_usw_string" prints 4 bytes)
-    #   (the fact that it is s and not b means the result is the byte sequence, NOT the cooked binary character)
-    _usw_char=$(printf '%.*s' "$_usw_n" "$_usw_string")
-    # tier 5 optimization - use precomputed character width look-up
-    #   (heavy lifting done in advance by _precook_registry)
-    # cannot use case "$_usw_char" in "$_PATTERN_WIDTH_0") ... here,
-    # because in posix case, the pattern is not interpreted as logic
-    # so the | caracters inserted by _precook_registry do not function
-    # as logical OR among alternative patterns - they are just literal |
-    # characters considered to be part of the pattern itself
-   _usw_cw=""
-    case "$_PATTERN_WIDTH_0" in *"|$_usw_char|"* ) _usw_cw=0 ;; esac
-    if [ -z "$_usw_cw" ]; then
-        case "$_PATTERN_WIDTH_1" in *"|$_usw_char|"* ) _usw_cw=1 ;; esac
-    fi
-    if [ -z "$_usw_cw" ]; then
-        case "$_PATTERN_WIDTH_2" in *"|$_usw_char|"* ) _usw_cw=2 ;; esac
-    fi
-    # if tier 5 lookup matched, skip UTF-8 decode entirely
-    if [ ! -z "$_usw_cw" ]; then
-      _usw_str_width=$((_usw_str_width + _usw_cw))
-      _usw_string="${_usw_string#"$_usw_char"}"
-      continue
-    fi
-    # tier 3 optimization - in-line the utf8_char_width calculation rather than call function
-    # extract the full UTF-8 character (n bytes)
-    # ( .n = precision so , '%.*s' gets the 1st arg # of bytes out of 2nd arg str )
-    #  Decode enough of the codepoint to check ranges
-    #    We only need the numeric value, not full Unicode decoding.
-    #    Extract up to 4 bytes (missing bytes become empty).
-    # strip one byte and print decimal value of first remaining
-    _usw_b2=$(printf '%d' "'${_usw_string#?}" 2>/dev/null)
-    # strip two bytes and print decimal value of first remaining
-    _usw_b3=$(printf '%d' "'${_usw_string#??}" 2>/dev/null)
-    # strip three bytes and print decimal value of first remaining
-    _usw_b4=$(printf '%d' "'${_usw_string#???}" 2>/dev/null)
-    # reconstruct codepoint from multi-byte payload bits (minimal UTF-8 decode)
-    if   [ $_usw_b1 -lt 224 ]; then
-      # 2-byte: 110xxxxx 10xxxxxx
-      _cp=$(( ((_usw_b1 & 0x1F) << 6) | (_usw_b2 & 0x3F) ))
-    elif [ $_usw_b1 -lt 240 ]; then
-      # 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
-      _cp=$(( ((_usw_b1 & 0x0F) << 12) | ((_usw_b2 & 0x3F) << 6) | (_usw_b3 & 0x3F) ))
-    else
-      # 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-      _cp=$(( ((_usw_b1 & 0x07) << 18) | ((_usw_b2 & 0x3F) << 12) | ((_usw_b3 & 0x3F) << 6) | (_usw_b4 & 0x3F) ))
-    fi
-    #  zero-width characters
-    # combining marks: U+0300-U+036F
-    if [ $_cp -ge 768 ] && [ $_cp -le 879 ]; then _usw_cw=0
-    # variation selector VS-16: U+FE0F
-    elif [ $_cp -eq 65039 ]; then _usw_cw=0
-    # zero-width joiner: U+200D
-    elif [ $_cp -eq 8205 ]; then _usw_cw=0
-    # emoji (width = 2)
-    # misc symbols: U+2600-U+26FF
-    elif [ $_cp -ge 9728 ] && [ $_cp -le 9983 ]; then _usw_cw=2
-    # dingbats: U+2700-U+27BF
-    elif [ $_cp -ge 9984 ] && [ $_cp -le 10175 ]; then _usw_cw=2
-    # emoticons: U+1F600-U+1F64F
-    elif [ $_cp -ge 128512 ] && [ $_cp -le 128591 ]; then _usw_cw=2
-    # misc symbols & pictographs: U+1F300-U+1F5FF
-    elif [ $_cp -ge 127744 ] && [ $_cp -le 128511 ]; then _usw_cw=2
-    # transport & map: U+1F680-U+1F6FF
-    elif [ $_cp -ge 128640 ] && [ $_cp -le 128767 ]; then _usw_cw=2
-    # supplemental symbols & pictographs: U+1F900-U+1F9FF
-    elif [ $_cp -ge 129280 ] && [ $_cp -le 129535 ]; then _usw_cw=2
-    # symbols & pictographs extended-A: U+1FA70-U+1FAFF (un-interested in B,C,D,etc - non emoju class chars)
-    elif [ $_cp -ge 129648 ] && [ $_cp -le 129775 ]; then _usw_cw=2
-    else _usw_cw=1  # default width = 1
-    fi
-    _usw_str_width=$((_usw_str_width + _usw_cw))         # accumulate total column width
-    _usw_string="${_usw_string#"$_usw_char"}"            # drop n bytes from the front
-  done
-  printf '%s\n' "$_usw_str_width"  # send answer to caller on stdout
-  unset -v _usw_string _usw_str_width _usw_b1 _usw_b2 _usw_b3 _usw_b4
-  unset -v _usw_n _usw_char _usw_cw _usw_prefix _usw_run_length _cp
-  return $usw_ret
-}
-# @usage utf8_string_width "string"
-# @args  $1 : UTF-8 string whose display width (columns) is computed
-# @vars  (none)
-# @ret   Prints computed display width (columns) to stdout; returns 0 on success
-# @deps  printf; LC_ALL=C for ASCII range tests; POSIX parameter slicing
-# @rule  tier 2: detect printable ASCII runs ([ -~]) and count them in bulk
-# @rule  tier 1: single ASCII byte fast-path (width=1; drop byte; continue)
-# @rule  tier 3: inline UTF-8 decode and width rules (no utf8_char_width call)
-# @rule  tier 5: precomputed width table for known box-drawing and emoji
-# @rule  Zero-width: combining marks U+0300–U+036F, VS-16 (U+FE0F), ZWJ (U+200D)
-# @rule  Wide: selected emoji and symbol ranges treated as width 2
-# @rule  Default width = 1 for all other decoded codepoints
-# @note  Uses minimal UTF-8 decode; invalid sequences are treated as width 1
-# @note  Designed for POSIX shells; avoids external commands except printf
-# @ex    w=$(utf8_string_width "A U+2600 B")  # sun symbol counted as width 2
-
 get_msg_len() # (POSIX) compute display width of a message string
 { gml_ret=0
   # require at least one argument
@@ -2194,18 +2134,18 @@ pad() # generate pad for cur(str $1) + sep(str $2) w min(int $3) color(str $4) m
 # @warn failure to properly quote all args may result in unexpected behavior
 
 longone="I had been studying trail guides and maps of the Adirondacks"
-longone="${longone} $(emoji_safe $uMOUNTAIN) on and off for years."
+longone="${longone} ${bin_uMOUNTAIN}${bin_uMOUNTAIN}${bin_uMOUNTAIN}  on and off for years."
 longone="${longone} The desire to become a ${BGon}46er${Boff} was not new I had put it on my bucket list while I was still"
 longone="${longone}  in high school."
 longone="${longone}  This new idea on the other hand -- to do it as a through hike"
-longone="${longone} $(emoji_safe $uBOOT$tree_evergreen) -- had begun to formulate in my mind"
+longone="${longone} ${bin_uBOOT}${bin_tree_evergreen} -- had begun to formulate in my mind"
 longone="${longone} shortly after I had finished hiking the Appalachian Trail and Long Trail in 2017. In 2018 and 2019"
 longone="${longone} I got updated maps and trail guides to study, but my hopes of doing this in 2020 were suffocated"
 longone="${longone} by COVID-19.  During the spring of 2021, after I got my second round of COVID vaccination in March,"
 longone="${longone} I tried to get serious and finalize my initial plans and preparation."
 longone="${longone}  I used both Alltrails and Gaia GPS on-line mapping software to design the routes for my draft plan."
 longone="${longone}  I watched online tutorials about how to use these tools for planning and real-time navigation,"
-longone="${longone} $(emoji_safe $compass)"
+longone="${longone} ${bin_compass}"
 longone="${longone}  and I created an initial draft route plan.  I also used that draft route plan to create a spreadsheet"
 longone="${longone}  (like I had used on the Appalachian Trail) to estimate achievable daily objectives peaks, distances,"
 longone="${longone}  water sources, camps, etc.  I knew my plan would change after I started executing it, but I felt much more"
@@ -2214,7 +2154,7 @@ longone="${longone}   I also downloaded to my phone the topographic maps and rou
 longone="${longone}  of the Alltrails and Gaia GPS apps, so that I could use the phone as a real-time GPS navigation device,"
 longone="${longone}  to both record my actual route and to enable me to compare that to my plan visually - or to see my"
 longone="${longone}  actual track, as I might intentionally deviate from my ${BRon}planned${Boff} route."
-longone="${longone} $(emoji_safe $uCAMP)"
+longone="${longone} ${bin_uCAMP}"
 
 smart_wrap_n() # (POSIX) wordwrap string $1 current col, $2 = l_margin, remainder = message words
 { swr_ret=0
@@ -2590,30 +2530,30 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
       *) _iv_parmlist="$_iv_parmlist $_iv_item" ;;        # thus NOT re-initializing these system-wide globals
     esac
   done
-  j_msg -7 "initializing vars: $_iv_parmlist"
+  j_msg -7p "initializing vars: $_iv_parmlist"
   for _iv_var_name in $_iv_parmlist
   do
-    j_msg -7n "about to initialize $_iv_var_name"
+    j_msg -7np "about to initialize $_iv_var_name"
     case $_iv_var_name in
       *.* )   # if echo $_iv_var_name | grep -q "\."; then
         # initialize by type
         _iv_type="${_iv_var_name%.*}"   # strip off chars right of and .
         _iv_var="${_iv_var_name#*.}"    # strip off chars left of and .
-        j_msg -7np " of _iv_type: [$_iv_type] ..."
+        j_msg -7npm " of _iv_type: [$_iv_type] ..."
         case ${_iv_type} in
           [bB]*  )
             # (set $FALSE) boolean convention: parameter is "bool.${_iv_var}" where ${_iv_var} is e.g. "VERBOSE"
-            j_msg -7np "  (${_iv_type}) initializing ${_iv_var} FALSE ..."
+            j_msg -7npm "  (${_iv_type}) initializing ${_iv_var} FALSE ..."
             eval "${_iv_var}=\"\$FALSE\"" ; right_status $? "$debug"
           ;;
           [yY]*  )
             # (set "no") yes/no convention: parameter is "yn.${_iv_var}" where ${_iv_var} is e.g. "EIX"
-            j_msg -7np "  (${_iv_type}) initializing ${_iv_var} (no) ..."
+            j_msg -7npm "  (${_iv_type}) initializing ${_iv_var} (no) ..."
             eval "${_iv_var}='no'" ; right_status $? "$debug"
           ;;
           [lLrR]*  )
             # (set "") lonstring convention: parameter is "lv.${_iv_var}" where ${_iv_var} is e.g. "CMDLINE"
-            j_msg -7np "  (${_iv_type}) initializing ${_iv_var} NULL ..."
+            j_msg -7npm "  (${_iv_type}) initializing ${_iv_var} NULL ..."
             eval "${_iv_var}=''" ; right_status $? "$debug"
           ;;
           *      )
@@ -2627,16 +2567,16 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
       "BREAK" )  # elif [ "$_iv_var_name" = "BREAK" ] ; then
         # ignore BREAK
         _iv_type=""
-        j_msg -7np " of _iv_type: [$_iv_type] ..."
-        j_msg -7np "  ignoring BREAK ..."
+        j_msg -7npm " of _iv_type: [$_iv_type] ..."
+        j_msg -7npm "  ignoring BREAK ..."
         right_status 0 "$debug"
         ;;
       * )  # else
         # untyped - initialize null
         _iv_type=""
         _iv_var="$_iv_var_name"
-        j_msg -7np " of _iv_type: [$_iv_type] ..."
-        j_msg -7np "  (${_iv_type}) initializing ${_iv_var} NULL ..."
+        j_msg -7npm " of _iv_type: [$_iv_type] ..."
+        j_msg -7npm "  (${_iv_type}) initializing ${_iv_var} NULL ..."
         eval "${_iv_var}=''" ; right_status $? "$debug"
         ;;
     esac  # _iv_var_name (fi)
@@ -2769,30 +2709,10 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   _PREMOJI_IDX=$(( ( mask & PREMOJI_IDX_MASK )   >> PREMOJI_IDX_OFFSET   ))
   _PREFIX_COLOR=$(( ( mask & PREFIX_COLOR_MASK ) >> PREFIX_COLOR_OFFSET  ))
   _SEVERITY=$((    ( mask & SEVERITY_MASK )      >> SEVERITY_OFFSET      ))
-#  args="$@"
-#  d_do '
-#    echo "mask: $mask"
-#    echo "args: $args"
-#    echo "_STDOUT: $_STDOUT"
-#    echo "_STDERR: $_STDERR"
-#    echo "_LOG: $_LOG"
-#    echo "_INTERPRET: $_INTERPRET"
-#    echo "_NEWLINE: $_NEWLINE"
-#    echo "_TIMESTAMP: $_TIMESTAMP"
-#    echo "_CONDITIONAL: $_CONDITIONAL"
-#    echo "_FORCE: $_FORCE"
-#    echo "_SILENCE: $_SILENCE"
-#    echo "_PREFIX: $_PREFIX"
-#    echo "_PREFIX_BOLD: $_PREFIX_BOLD"
-#    echo "_PREFIX_COLOR: $_PREFIX_COLOR"
-#    echo "_SEVERITY: $_SEVERITY"
-#    echo "_PREMOJI: $_PREMOJI"
-#    echo "_PREMOJI_IDX: $_PREMOJI_IDX"
-#    echo "verbosity: $verbosity"
-#    echo "loglevel: $loglevel"
-#    echo "_PRINT_OK: $(TrueFalse $_PRINT_OK)"
-#    echo "_LOG_OK: $(TrueFalse $_LOG_OK)"
-#  ' "$debug"
+
+#### uncomment for debugging
+#d_do _view_mask "$mask" "$debug"
+
   # explicitly disable logging if _LOG bit is not set
   if [ "$_LOG" -eq 0 ]; then _LOG_OK="$FALSE"; fi
 
@@ -3075,6 +2995,15 @@ _view_mask() # (POSIX) (debug utility to extract and view bitmask bit settings
   printf '%s\n' "_vm_PREFIX_BOLD: $_vm_PREFIX_BOLD"
   printf '%s\n' "_vm_PREFIX_COLOR: $_vm_PREFIX_COLOR"
   printf '%s\n' "_vm_SEVERITY: $_vm_SEVERITY"
+  printf '%s\n' "INTERACTIVE: $(TrueFalse $INTERACTIVE)"
+  printf '%s\n' "QUIET: $(TrueFalse $QUIET)"
+  printf '%s\n' "DEBUG: $(TrueFalse $DEBUG)"
+  printf '%s\n' "EMOJI_CAPABLE: $(TrueFalse $EMOJI_CAPABLE)"
+  printf '%s\n' "EMOJI_DISABLE: $(TrueFalse $EMOJI_DISABLE)"
+  printf '%s\n' "verbosity: $verbosity"
+  printf '%s\n' "loglevel: $loglevel"
+  printf '%s\n' "logFile: $logFile"
+
   unset -v _vm_STDOUT _vm_STDERR _vm_LOG _vm_INTERPRET _vm_NEWLINE _vm_TIMESTAMP _vm_CONDITIONAL _vm_FORCE
   unset -v _vm_SILENCE _vm_PREFIX _vm_PREFIX_BOLD _vm_PREFIX_COLOR _vm_SEVERITY _vm_PREMOJI _vm_mask _vn_args
 }
@@ -3082,9 +3011,15 @@ _view_mask() # (POSIX) (debug utility to extract and view bitmask bit settings
 _parse_msg_options() # (POSIX) standardized policy engine with -c color override
 { _pmo_sm_bitmask="$1"; shift; _pmo_shift=0;    _pmo_premoji_default=0
   # initialize the premoji defaults based on environment variable capable/disabled state
-  [ $EMOJI_CAPABLE ] && [ ! $EMOJI_DISABLE ] && _pmo_premoji_default=$PREMOJI
-  # apply the default to the starting bitmask
-  _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_premoji_default ))
+  # (note: user's -m option flag can still override to disable on command line
+  if [ $EMOJI_CAPABLE ] && [ ! $EMOJI_DISABLE ] ; then
+    _pmo_premoji_default=$PREMOJI
+    # apply ("add") the policy/environment default to the starting bitmask
+    _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_premoji_default ))
+  else
+   # clear the PREMOJI bit which j_msg sets by default ("subtract")
+   _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREMOJI ))
+  fi
   # iterate through args and act on options
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3137,7 +3072,14 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
               t) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~TIMESTAMP )) ;;     # t = timestamp OFF [N/A for lm bitmask]
               M) # override PREFIX with selected emoji: set binary PREMOJI switch and 5-bit index (0-63) [shift for arg] [N/A for lm bitmask]
                 if [ -z "$_pmo_cluster" ]; then
-                  _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
+                  if isint "$2" && [ "$2" -ge 0 ] && [ "$2" -le 63 ] ; then
+                    # integer in range can be severity argument for -M
+                    _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
+                  else
+                    # its not a number in range! - dont shift.
+                    # Default to 0 (severity-driven) and move on.
+                    _pmo_idx=0
+                  fi
                 else
                   _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
                 fi
@@ -3292,6 +3234,10 @@ j_msg() # (POSIX) universal messaging entry point
 # @cont   header(emit) -> body(log:emit) -> body(screen:smart_wrap_n)
 # @cont   * this is a separation of concerns issue: j_msg is the brain/policy engine
 # @cont   * and emit remains a high-performance, low-latency stream-pusher
+# @note the -m|M flags (like others) will force the associated bit(s) as directed.
+# @append totally logical for -m, but note that -M will force use of emoji prefix
+# @append EVEN IF EMOJI_DISABLE=$TRUE -- this essentially overriedes the override
+# @append (you have been warned ;D )
 # @note handles policy-based messaging with automatic terminal wrapping and log sanitization
 
 # @note -----[ Section 6.b.: UI/Layout tool ]--------------------------------------------------------------
@@ -3726,6 +3672,35 @@ sh_countdown() # (POSIX) count-down seconds (arg $1)
   sleep 1; _shc_rem_time=$(( _shc_rem_time - 1 ))
   [ "$_shc_rem_time" -eq 0 ] && break; done || shc_ret=2
   printf '\n'      #clean up the line for the next command
+  unset -v _shc_rem_time ; return $shc_ret ; }
+# @usage sh_countdown [seconds]
+# @args $1 number of seconds to pause (defaults to 30)
+# @ret 0 if no error; 1 if print error; 2 in countdown error
+# @rule uses \r for in-place counter updates
+# @note special note: bb sh cannot use base#number notation (don't prefix w 10#)
+# @note breaks immediately at 0 to avoid an unnecessary final sleep cycle
+
+milli_countdown() # (POSIX) count-down milliseconds (arg $1)
+{ shc_ret=0; _shc_rem_time="${1:-1000}"  # guard; default to 30 sec. if no arg given
+  HCU  # hide cursor
+  _mc_len=${#_shc_rem_time}
+  while [ "${_shc_rem_time}" -ge "0" ] ; do
+    printf '\r'; # return to left edge
+    _msg="Pausing ${BBon}[${Boff}"      # prefix and "Pausing ["
+    _msg="${_msg} ${BGon}$(printf "%${_mc_len}d" "$_shc_rem_time")${Boff}"  # use "%${_mc_len}d"  for fixed width
+    _msg="${_msg} ${BBon}]${Boff} milliseconds remaining ...   "
+    j_msg -np "$_msg"
+    [ ! $? -eq 0 ] && shcy_ret=1
+    milli_sleep 50; _shc_rem_time=$(( _shc_rem_time - 50 ))
+    [ "$_shc_rem_time" -eq 0 ] && break; done || shc_ret=2
+  printf '\r'; # return to left edge
+  EL;  # erase line
+  _msg="Pausing ${BBon}[${Boff}"      # prefix and "Pausing ["
+  _msg="${_msg} ${BGon}$(printf "%${_mc_len}d" "0")${Boff}"  # print 0 for clean exit
+  _msg="${_msg} ${BBon}]${Boff} milliseconds remaining ...   "
+  j_msg -np "$_msg"
+  printf '\n'      #clean up the line for the next command
+  SCU  # show cursor again
   unset -v _shc_rem_time ; return $shc_ret ; }
 # @usage sh_countdown [seconds]
 # @args $1 number of seconds to pause (defaults to 30)
@@ -5747,160 +5722,341 @@ summarize_header() # (POSIX) list functions and notes in installed headers
 
 #-----[ Demonstration Sub-function Stubs ]---------------------------------------------------------------------
 
-_dh_show_capabilities()   # demonstrate classes of capability in this header file
-{ # @args none
-  # @rule called by demonstrate_header
+_dh_show_capabilities() # (POSIX) demonstrate classes of capability in this header file
+{ sc_ret=0
+    separator "$PN-$BUILD" "(Overview)"
+    j_msg -5p "${BWon}This script header provides a robust POSIX-compliant tool set${Boff}"
+    j_msg -5p "${Con}While outlining some highlights of its capability, this test module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "j_msg - a unicode-capable, severity-aware integrated messaging/logging utility"
+    printf "   "; j_msg -5m "smart_wrap_n - a unicode-capable smart word-wraping utility\""
+    printf "   "; j_msg -5m "globally defined ansi color codes"
+    printf '\n'
 
-# preview the command syntax
-  # should print two lines like this but theme-colored --
-  # j_msg -5 "Description of header capabilities..."
-  # printf "   "; j_msg -5n "; smart_wrap_n 7 7 7 "${BCon}Section: content..."
-  # this requires a complex sequence of commands, so build it by line and parts
-  # line 1 - j_msg -5 "Description of header capabilities..."
-  _dh_cmd="${_func_color}j_msg -5${_Boff} ${_quote_color}\"Description of header capabilities...\"${_Boff}\n"
-  # line 2 part 1 - printf "   ";    # note ${_Boff} ${_quote_color} in case not bold
-  _dh_cmd="${_dh_cmd} ${_cmd_color}printf${_Boff} ${_quote_color}\"    \"${_Boff};"
-  # line 2 part 2 - j_msg -5n "     # j_msg -5n displayed as a function
-  _dh_cmd="${_dh_cmd} ${_func_color}j_msg -5n${_Boff} ${_quote_color}\"\"${_Boff};"
-  # line 2 part 3 - smart_wrap_n 3 3 3  # ${_Boff} ${_data_color} in case not bold
-  _dh_cmd="${_dh_cmd}  ${_func_color}smart_wrap_n${_Boff} ${_data_color}3 3 3${_Boff}"
-  # line 2 part 4 - "${BCon}Section: content... (followed by each section running at 7 7 7)"
-  _dh_cmd="${_dh_cmd} ${_quote_color}\"\${BCon}Section: content...(followed by each section running at 7 7 7)\"${_Boff}"
+    # syntax highlighted preview of the command(s) about to run
+    _dh_cmd="${_func_color}j_msg ${_data_color}-5 -p -M ${_func_color}"
+    _dh_cmd="${_dh_cmd}\$(idx_of_emoji ${_var_color}\$uTHUNDER${_func_color}) ${_Boff}${_quote_color}\"Description:\"${_Boff}\n"
+    _dh_cmd="${_dh_cmd} ${_cmd_color}printf${_Boff} ${_quote_color}\"   \"${_Boff}; "
+    _dh_cmd="${_dh_cmd}${_func_color}j_msg -5nm${_Boff} ${_quote_color}\"\"${_Boff}; "
+    _dh_cmd="${_dh_cmd} ${_func_color}smart_wrap_n${_Boff} ${_data_color}3 3 3 ${_Boff} "
+    _dh_cmd="${_dh_cmd}${_quote_color}\"\${BCon}System: content...\${Boff}\"${_Boff}"
 
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
-  # execute the actual demonstration
-  _dh_msg="This script header is a robust ${BYon}POSIX-compliant utility suite${Boff}. Its core capabilities include:"
-  j_msg -5n ""; smart_wrap_n 3 3 3 "${_dh_msg}"
-  printf "\n"
+    j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}\n"
 
-  # Variable Definitions
-  _dh_msg="${BCon}Variable Definitions:${Boff} Constants for error messages, pseudo-booleans "
-  _dh_msg="${_dh_msg}(${BYon}TRUE=0/FALSE=\"\"${Boff}), and terminal state defaults."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    # execution
+    j_msg -5p -M "$(idx_of_emoji $uTHUNDER)" "Description:";
+    printf "   "; j_msg -5nm ""; smart_wrap_n 3 3 3 "The joetoo header is organized into three systemic layers:"
+    printf "\n"
 
-  # Validation Functions
-  _dh_msg="${BCon}Validation Functions:${Boff} Logic to verify specific numeric types like integers, "
-  _dh_msg="${_dh_msg}hex values, and floats (${BYon}isint, ishexint, isfloat_posix${Boff}), consolidated in ${BYon}isnumeric${Boff}."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    _sc_heading="Foundation"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2))
+    printf "   "; j_msg -5nm "${BCon}${_sc_heading}${Boff}: "
+    _dh_msg="Global state initialization including curated unicode character registries, terminal"
+    _dh_msg="${_dh_msg} ANSI/DEC SGR variables, and pre-cooked UI assets"
+    smart_wrap_n "$_sc_start" 3 3 "$_dh_msg"
+    printf "\n"
 
-  # System and Shell Checks
-  _dh_msg="${BCon}System and Shell Checks:${Boff} Tools to verify root status (${BYon}checkroot${Boff}), "
-  _dh_msg="${_dh_msg}specific mount points (e.g., ${BYon}checkboot${Boff}), and shell interactivity."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    _sc_heading="Core Logic"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2))
+    printf "   "; j_msg -5nm "${BCon}${_sc_heading}${Boff}: "
+    _dh_msg="Strict POSIX validation layer for numeric types - isint, ishexint,"
+    _dh_msg="${_dh_msg} isnumeric - and environmental state - checkroot, checkboot"
+    smart_wrap_n "$_sc_start" 3 3 "$_dh_msg"
+    printf "\n"
 
-  # ANSI Escape Sequences
-  _dh_msg="${BCon}ANSI Escape Sequences:${Boff} A comprehensive set of variables for text styling "
-  _dh_msg="${_dh_msg}(colors, bold, underline, reverse) and cursor manipulation (${BYon}HCU/SCU, SCP/RCP, CUP${Boff})."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    _sc_heading="Functional Pillars"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2))
+    printf "   "; j_msg -5nm "${BCon}${_sc_heading}${Boff}: "
+    _dh_msg="Three distinct systems: 1: UI & Layout Management, 2: Messaging & Logging,"
+    _dh_msg="${_dh_msg} and 3: The CLI Framework & Templates"
+    smart_wrap_n "$_sc_start" 3 3 "$_dh_msg"
+    printf "\n"
 
-  # Messaging tier
-  _dh_msg="${BCon}Messaging tier:${Boff} A categorized system including standard (${BYon}j_msg -5${Boff}), "
-  _dh_msg="${_dh_msg}warning (${BYon}j_msg -4${Boff}), and error (${BYon}j_msg -3${Boff}) outputs with visual color-coded distinction."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    # Pillar 1
+    _sc_heading="UI & Layout Management"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2))
+    printf "   "; j_msg -5nm "${Con}${_sc_heading}${Boff}: "
+    _dh_msg="includes grapheme-aware width calculation(${BYon}get_msg_len${Boff}), backslash-immunized word wrapping (${BYon}smart_wrap_n${Boff})"
+    _dh_msg="${_dh_msg}, plus progress bars, countdown clocks, cursor controls and both DEC Special Graphics and unicode box-drawing"
+    smart_wrap_n "$_sc_start" 6 6 "${_dh_msg}"
+    printf "\n"
 
-  # Box Drawing
-  _dh_msg="${BCon}Box Drawing:${Boff} Mappings for DEC Special Graphics characters (e.g., "
-  _dh_msg="${_dh_msg}${BYon}H_wall='q', V_wall='x', corners${Boff}) and state control (${BYon}ESCon, SO, SI${Boff})."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
+    # Pillar 2
+    _sc_heading="Messaging & Logging"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2 ))
+    printf "   "; j_msg -5nm "${Con}${_sc_heading}${Boff}: "
+    _dh_msg="includes a simple and flexible unicode-capable messenger (${BYon}j_msg${Boff}) implementing RFC-5424 severity and both"
+    _dh_msg="${_dh_msg} verbosity-controlled screen emission, and loglevel-controlled integrated file logging;"
+    _dh_msg="${_dh_msg} and a bitmask driven environmentally aware centralized output stream manager (${BYon}emit${Boff}), the real-time engine for screen"
+    _dh_msg="${_dh_msg} and log message ouput behind j_msg"
+    smart_wrap_n "$_sc_start" 6 6 "${_dh_msg}"
+    printf "\n"
 
-  # Debugging and Logging
-  _dh_msg="${BCon}Debugging and Logging:${Boff} Conditional execution/messaging based on verbosity "
-  _dh_msg="${_dh_msg}levels and timestamped file logging functions (e.g., ${BYon}j_msg -5${Boff})."
-  printf "    "; j_msg -5n ""; smart_wrap_n 7 7 7 "${_dh_msg}"; printf "\n"
-  printf "\n"
-  unset -v _dh_cmd _dh_msg
-  return 0
+    # Pillar 3
+    _sc_heading="CLI Framework & Templates"
+    _sc_start=$(( 3 + ${#_sc_heading} + 2 ))
+    printf "   "; j_msg -5nm "${Con}${_sc_heading}${Boff}: "
+    _dh_msg="includes an option flag and argument policy engine (${BYon}process_cmdline${Boff}), "
+    _dh_msg="${_dh_msg}automated usage generation, automated variable initialization, configuration,"
+    _dh_msg="${_dh_msg} a and display for validation (${BYon}show_config${Boff}), a complex interactive command sequencer"
+    _dh_msg="${_dh_msg} (${BYon}run_sequence${Boff}) and the ${BYon}joetoo_cli_example${Boff} "
+    _dh_msg="${_dh_msg}rapid-deployment application templates"
+    smart_wrap_n "$_sc_start" 6 6 "${_dh_msg}"
+    printf "\n"
+
+    printf "\n"    unset -v _dh_cmd _dh_msg
+    return $sc_ret
 }
 # @usage _dh_show_capabilities
 # @args none
 # @rule called by demonstrate_header
 
-_dh_demo_verbosity() # (POSIX) use status_color, TrueFalse, etc/to display IAW system verbosity
-{  demo_verb_ret=0
-  separator "demonstrate_header-${BUILD}" "(verbosity)"
-  if [ "$verbosity" -gt 0 ]; then _dv_VERBOSE=$TRUE; else _dv_VERBOSE=$FALSE; fi
-
-  # preview the command syntax
-  # Construct the "About to run" preview using the theme engine. it should like like this, but theme-colored:
-  #   j_msg -5 "${BYon}_dv_VERBOSE is currently $(status_color $_dv_VERBOSE)$(TrueFalse $_dv_VERBOSE)${Boff}
-  # this involves complex nested expansions, so do it in three pieces we can maintain --
-  #   part 1 - j_msg -5 "${BYon}_dv_VERBOSE is currently "
-  _dh_cmd="${_func_color}j_msg -5${_Boff} ${_quote_color}\"${_var_color}\${BYon}${_quote_color}_dv_VERBOSE is currently "
-  #   part 2 - $(status_color $_dv_VERBOSE)
-  _dh_cmd="${_dh_cmd}\$(${_Boff}${_func_color}status_color${_Boff} ${_var_color}\$_dv_VERBOSE${_Boff}${_quote_color})${_Boff}"
-  #   part 3 $(TrueFalse $_dv_VERBOSE)${Boff}
-  _dh_cmd="${_dh_cmd}${_quote_color}\$(${_Boff}${_func_color}TrueFalse${_Boff}"   # note \$ is for subshell
-  _dh_cmd="${_dh_cmd} ${_var_color}\$_dv_VERBOSE${_Boff}${_quote_color})${_Boff}"     # note ${_Boff}${_quote_color}in case not bold
-  _dh_cmd="${_dh_cmd}${_var_color}\${Boff}${_quote_color}\"${_Boff}"              # note \$_dv_VERBOSE, \${Boff} displayed as a variables
-  #   also add administrative comment
-  _dh_cmd="${_dh_cmd}  ${_cmt_color}# using two-pass column alignment and pad() utility${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
-
-  # execution logic - store current state to avoid side effects in the main script
-  _dh_oldv=$verbosity
-  # Set state for demonstration
-  _dv_VERBOSE=$TRUE; verbosity=3
-  j_msg -5 "  ${BYon}_dv_VERBOSE is currently $(status_color $_dv_VERBOSE)$(TrueFalse $_dv_VERBOSE)${Boff}"
-  demo_verb_ret=$?
-  # Restore state
-  verbosity=$_dh_oldv
-  printf "\n"
-
-  unset -v _dh_cmd _dh_oldV _dh_oldv _dv_VERBOSE
-  return $demo_verb_ret
-}
-# @usage _dh_demo_verbosity
-# @args none
-# @rule called by demonstrate_header
-
-_dh_demo_versions() # (POSIX) demonstrate version comparison
-{ demo_vers_ret=0
-  separator "demonstrate_header-${BUILD}" "(version comparison)"
+_dh_demo_foundation() # (POSIX) demonstrate bool truth validation and unicode registry
+{ demo_foundation_ret=0
   _dh_FAILED=$FALSE
 
-# preview the command syntax
-  _dh_cmd="${_ctl_color}for${_Boff} ${_var_color}v${_Boff} ${_ctl_color}in${_Boff} ${_quote_color}\"1 1\" \"2 1\" \"1 2\" ...${_Boff}; ${_ctl_color}do${_Boff}\n"
-  _dh_cmd="${_dh_cmd}   ${_func_color}vercomp${_Boff} ${_data_color}\$v1 \$v2${_Boff}; ${_func_color}show_result${_Boff} ${_data_color}\$?${_Boff}\n"
-  _dh_cmd="${_dh_cmd} ${_ctl_color}done${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
+  separator "demonstrate_header-${BUILD}" "(foundation)"
+    j_msg -5p "${BWon}Foundation${Boff}"
+    j_msg -5p "${Con}While highlightinging ${BGon}truth testing${Boff}${Con} for several types of values, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "TrueFalse() - a simple utility to translate types of \"truth\" to a True/False string"
+    printf "   "; j_msg -5m "status_color() - a simple utility to generate G/Y/R/W coloring according to input \"truth\"status"
+    printf "   "; j_msg -5m "j_msg -n and right_status as agents in the announce/act/report-results idiom"
+    j_msg -5p "${Con}While highlighting ${BGon}unicode character registry${Boff}${Con} content and capability, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "separator() for layout, output separation"
+    printf "   "; j_msg -5m "get_longest() and repeat() as agents in fixed width column layout"
+    printf "   "; j_msg -5m "emoji_safe() for dynamic emoji generation and \$bin_emojiname (precooked)"
+    printf "   "; j_msg -5m "ACTIVE_ZERO_WIDTH_- _EMOJI_- and _I_BOX_REGISTRY content"
+    printf "   "; j_msg -5m "use of | od -An -t x1 idiom for unicode binary (hex) byte verification"
+    printf "   "; j_msg -5m "auto-setting of emoji and ascii prefix for j_msg, according to severity"
+    printf "   "; j_msg -5m "use of DEBUG environment variable on cmdline, to override severity for j_msg"
+    printf '\n'
 
-  # execute the actual demonstration
-  for _dh_vtest in "1 1" "2 1" "1 2" "1.2.0 1.2.1" "1.2.0-r1 1.2.0"; do
-    _dh_v1=${_dh_vtest% *}  # equiv =$( printf '%s' "${_dh_vtest}" | cut -d' ' -f1) (but w/o call to cut)
-    _dh_v2=${_dh_vtest#* }  # equiv =$( printf '%s' "${_dh_vtest}" | cut -d' ' -f2) (but w/o call to cut)
+  #-----[ section 1 truth testing ]-----------------------------------------------------
+  # data format: label|value|expectation (0=True, 1=False, 2=unset)
+  _dh_tests="\$TRUE|$TRUE|0 \$FALSE|$FALSE|1 y|y|0 Y|Y|0"
+  _dh_tests="${_dh_tests} n|n|1 N|N|1 t|t|0 T|T|0 f|f|1 F|F|1"
+  _dh_tests="${_dh_tests}  up|up|0 down|down|1 0|0|0 1|1|2 z|z|2 ''|''|1"
 
-    j_msg -5n "${BYon}Compare version ${BWon}${_dh_v1} ${BYon}to ${BWon}${_dh_v2}${Boff}  "
-    vercomp "$_dh_v1" "$_dh_v2"
-    _dh_vercomp_result=$?
-    printf '%b\n' "$(show_result $_dh_vercomp_result)"
-    show_result $_dh_vercomp_result >/dev/null 2>&1
-    _dh_show_result_exit=$?
-    # if any single comparison fails (returns non-zero), mark the module as failed
-    [ "$_dh_show_result_exit" -eq 0 ] || _dh_FAILED=$TRUE
-  done
+  # preview the command syntax for each of the commands to be run (4 lines, like this)
+  # line 1 part 1 - for _dh_t in
+  _dh_cmd="${_ctl_color}  for${_Boff} _dh_t${_Boff} ${_ctl_color}in${_Boff} "
+  # line 1 part 2 - ${_dh_tests}; do
+  _dh_cmd="${_dh_cmd}${_var_color}\${_dh_tests}${_Boff}${_op_color};${_Boff} ${_ctl_color}do${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n${_dh_cmd}"
+  # line 2 -   _dh_val=$(printf '%s' "${_dh_t}" | cut -d'|' -f2)
+  _dh_cmd="       _dh_val${_ctl_color}=\$(${_cmd_color}printf ${_data_color}'%s' "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"${_var_color}\${_dh_t}${_quote_color}\"${_op_color}"
+  _dh_cmd="${_dh_cmd} | ${_cmd_color}cut ${_data_color}-d${_quote_color}'|'${_data_color}"
+  _dh_cmd="${_dh_cmd} -f2${_Boff}${_ctl_color}) ${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 3 -   _dh_out=$(TrueFalse "${_dh_val}")
+  _dh_cmd="       _dh_out${_ctl_color}=\$(${_func_color}TrueFalse ${_quote_color}\""
+  _dh_cmd="${_dh_cmd}${_var_color}\${_dh_val}${_quote_color}\"${_Boff}${_ctl_color})${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 4 -   _dh_status=$?
+  _dh_cmd="       _dh_status${_op_color}=${_var_color}\$?${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 5 -     j_msg -5np "    ${BWon}testing: [${BCon}${_dh_label}${Boff}${BWon}] is $(status_color "${_dh_val}")${_dh_out}${Boff}"
+  _dh_cmd="       ${_func_color}j_msg ${_data_color} -5np${_quote_color}\"    \${BWon}testing:"
+  _dh_cmd="${_dh_cmd} [\${BCon}\${_dh_label}\${Boff}\${BWon}] is "
+  _dh_cmd="${_dh_cmd}\$(status_color \"\${_dh_val}\")\${_dh_out}\${Boff}${_quote_color}\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 6 -  [ "$_dh_status" -eq "$_dh_exp" ] ;  right_status $? ||  _dh_FAILED=$TRUE
+  _dh_cmd="       ${_op_color}[ ${_quote_color}\"\$_dh_status\"${_Boff}${_data_color}"
+  _dh_cmd="${_dh_cmd} -eq ${_quote_color}\"\$_dh_exp\"${_Boff}${_op_color} ] ; ${Boff}"
+  _dh_cmd="${_dh_cmd} ${_func_color}right_status ${_var_color}\$?${_Boff}${_op_color}"
+  _dh_cmd="${_dh_cmd} || ${_Boff}_dh_FAILED${_op_color}=${_quote_color}\"\$TRUE\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 7 - done
+  _dh_cmd="${_ctl_color}    done${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
   printf "\n"
 
-  [ "$_dh_FAILED" ] && demo_vers_ret=1
-  unset -v _dh_cmd _dh_vtest _dh_v1 _dh_v2 _dh_vercomp_result _dh_show_result_exit _dh_FAILED
-  return "$demo_vers_ret"
-}
-# @usage _dh_demo_versions
-# @args none
-# @rule called by demonstrate_header
+  j_msg -5m " ${BYon}Summary of T/F tests with ${BGon}status_color${Boff}() and ${BGon}TrueFalse${Boff}() --"
 
-_dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
-{ separator "demonstrate_header-${BUILD}" "(numeric validation)"
+  # logic execution
+  for _dh_t in ${_dh_tests}; do
+    _dh_label=$(printf '%s' "${_dh_t}" | cut -d'|' -f1)
+    _dh_val=$(printf '%s' "${_dh_t}" | cut -d'|' -f2)
+    _dh_exp=$(printf '%s' "${_dh_t}" | cut -d'|' -f3)
+
+    # explicit translation of the literal '' placeholder to a true null value
+    [ "${_dh_val}" = "''" ] && _dh_val=""
+    # get the formatted output
+    _dh_out=$(TrueFalse "${_dh_val}")
+    # get the exit status from TrueFalse
+    _dh_status=$?
+
+    j_msg -5npm "    ${BWon}testing: [${BCon}${_dh_label}${Boff}${BWon}] is $(status_color "${_dh_val}")${_dh_out}${Boff}"
+
+    # validate that the exit status matches our expectation for this value
+    [ "$_dh_status" -eq "$_dh_exp" ] ; right_status $? || _dh_FAILED=$TRUE
+  done
+    # now use demo_foundation_ret as overall bitmask status for this module
+    [ "$_dh_FAILED" ] && demo_foundation_ret=1   # bit 0 = truth testing demo failed
+
+  printf "\n"
+  j_msg -5nm ""
+  smart_wrap_n 3 3 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
+  printf "\n\n"
+
+  #-----[ section 2 registry examiner ]-----------------------------------------------------
+  _dh_FAILED=$FALSE  # reset for section 2
+  # preview the command syntax for each of the commands to be run (4 lines, like this)
+  # line 1 part 1 - separator "_dh_demo_foundation" "(ACTIVE_ZERO_WIDTH_REGISTRY)"
+  _dh_cmd="${_func_color}    separator ${_quote_color}\"_dh_demo_foundation\""
+  _dh_cmd="${_dh_cmd} \"(ACTIVE_ZERO_WIDTH_REGISTRY)\"${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n${_dh_cmd}"
+  # line 2 - _examine_registry "$ACTIVE_ZERO_WIDTH_REGISTRY"
+  _dh_cmd="${_func_color}    _examine_registry ${_quote_color}\"ACTIVE_ZERO_WIDTH_REGISTRY\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 3 -  handle_result $? || _dh_FAILED=$TRUE
+  _dh_cmd="${_func_color}    handle_result ${_var_color}\$?${_Boff}${_op_color}"
+  _dh_cmd="${_dh_cmd} || ${_Boff}_dh_FAILED${_op_color}=${_quote_color}\"\$TRUE\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 4 - separator "_dh_demo_foundation" "(ACTIVE_EMOJI_REGISTRY)"
+  _dh_cmd="${_func_color}    separator ${_quote_color}\"_dh_demo_foundation\""
+  _dh_cmd="${_dh_cmd} \"(ACTIVE_EMOJI_REGISTRY)\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 5 - _examine_registry "$ACTIVE_EMOJI_REGISTRY"
+  _dh_cmd="${_func_color}    _examine_registry ${_quote_color}\"ACTIVE_EMOJI_REGISTRY\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 6 -  handle_result $? || _dh_FAILED=$TRUE
+  _dh_cmd="${_func_color}    handle_result ${_var_color}\$?${_Boff}${_op_color}"
+  _dh_cmd="${_dh_cmd} || ${_Boff}_dh_FAILED${_op_color}=${_quote_color}\"\$TRUE\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 7 - separator "_dh_demo_foundation" "(ACTIVE_UI_BOX_REGISTRY)"
+  _dh_cmd="${_func_color}    separator ${_quote_color}\"_dh_demo_foundation\""
+  _dh_cmd="${_dh_cmd} \"(ACTIVE_UI_BOX_REGISTRY)\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 8 - _examine_registry "$ACTIVE_UI_BOX_REGISTRY"
+  _dh_cmd="${_func_color}    _examine_registry ${_quote_color}\"ACTIVE_UI_BOX_REGISTRY\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 9 -  handle_result $? || _dh_FAILED=$TRUE
+  _dh_cmd="${_func_color}    handle_result ${_var_color}\$?${_Boff}${_op_color}"
+  _dh_cmd="${_dh_cmd} || ${_Boff}_dh_FAILED${_op_color}=${_quote_color}\"\$TRUE\"${_Boff}"
+  j_msg -5mp "${_dh_cmd}\n"
+
+  printf " $bin_uSNOW "; j_msg -mp "Starging registry examination ..."
+  separator "_dh_demo_foundation" "(ACTIVE_ZERO_WIDTH_REGISTRY)"
+  _examine_registry "$ACTIVE_ZERO_WIDTH_REGISTRY"
+  j_msg -5nmp  "done; result: "
+  handle_result $? || _dh_FAILED=$TRUE
+  separator "_dh_demo_foundation" "(ACTIVE_EMOJI_REGISTRY)"
+  _examine_registry "$ACTIVE_EMOJI_REGISTRY"
+  j_msg -5nmp  "done; result: "
+  handle_result $? || _dh_FAILED=$TRUE
+  separator "_dh_demo_foundation" "(ACTIVE_UI_BOX_REGISTRY)"
+  _examine_registry "$ACTIVE_UI_BOX_REGISTRY"
+  j_msg -5nmp  "done; result: "
+  handle_result $? || _dh_FAILED=$TRUE
+
+  _dh_cmt="${BYon}Note: ${_Boff}use e.g. ${_cmd_color}printf ${_quote_color}\""
+  _dh_cmt="${_dh_cmt}\$bin_hammer\" ${_Boff}to print a precooked emoji\n"
+  _dh_cmt="${_dh_cmt}in either case, pipe output to ${_Boff}"
+  _dh_cmt="${_dh_cmt}${_op_color}| ${_cmd_color}od ${_data_color}"
+  _dh_cmt="${_dh_cmt}-An -t x1 ${_Boff} to see its hex bytes"
+  j_msg -5mp "${_dh_cmt}"
+
+  # update overall status for this module
+  [ "$_dh_FAILED" ] && demo_foundation_ret=$((demo_foundation_ret | 2 ))   # bit 1 = registry demo failed
+
+  separator "$PN" "(severity levels)"
+  #-----[ section 2b  ]-----------------------------------------------------
+  _dh_FAILED=$FALSE  # reset for section 2b
+  # preview the command syntax for each of the commands to be run (4 lines, like this)
+  # line 1 - for _SEVERITY in $(seq 0 7); do
+  _dh_cmd="${_ctl_color}for${_Boff} _SEVERITY ${_ctl_color}in ${_op_color}\$("
+  _dh_cmd="${_dh_cmd}${_cmd_color}seq ${_data_color}0 7${_Boff}${_op_color});"
+  _dh_cmd="${_dh_cmd} ${_ctl_color}do${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n${_dh_cmd}"
+  # line 2 - case "$_SEVERITY" in
+  _dh_cmd="${_ctl_color}    case${_Boff} _SEVERITY ${_ctl_color}in${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 3 - 0|1)   premoji_idx="$idx_severity_01_emoji" ;;  # Emerg, Alert ,...... cross_mark
+  _dh_cmd="        0${_op_color}|${_Boff}1${_ctl_color}) ${_Boff}premoji_idx"
+  _dh_cmd="${_dh_cmd}${_ctl_color}=${_quote_color}\"${_var_color}"
+  _dh_cmd="${_dh_cmd}\$idx_severity_01_emoji${_quote_color}\" ${_ctl_color};;"
+  _dh_cmd="${_dh_cmd}  ${_cmt_color}# Emerg, Alert ,...... cross_mark${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 4 - 2|3)   premoji_idx="$idx_severity_23_emoji" ;;  # Error, Critical .... explosion
+  _dh_cmd="        2${_op_color}|${_Boff}3${_ctl_color}) ${_Boff}premoji_idx"
+  _dh_cmd="${_dh_cmd}${_ctl_color}=${_quote_color}\"${_var_color}"
+  _dh_cmd="${_dh_cmd}\$idx_severity_23_emoji${_quote_color}\" ${_ctl_color};;"
+  _dh_cmd="${_dh_cmd}  ${_cmt_color}# Error, Critical .... explosion${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 5 - ...
+  j_msg -5mp "        ..."
+  # line 6 - esac
+  j_msg -5mp "    ${_ctl_color}esac${_Boff}"
+  # line 7 - _msg="test at severity (${_SEVERITY})"
+  _dh_cmd="    _msg=${_quote_color}\"test at severity ${_ctl_color}("
+  _dh_cmd="${_dh_cmd}${_var_color}\${_SEVERITY}${_ctl_color})${_quote_color}\""
+  j_msg -5mp "${_dh_cmd}"
+  # line 8 - ...
+  j_msg -5mp "    ..."
+  # line 9 -     DEBUG="$TRUE" j_msg -"${_SEVERITY}" "$_msg";
+  _dh_cmd="    DEBUG${_ctl_color}=${_quote_color}\"${_var_color}\$TRUE${_quote_color}\" "
+  _dh_cmd="${_dh_cmd}${_func_color}j_msg ${_data_color}-${_quote_color}\"${_var_color}"
+  _dh_cmd="${_dh_cmd}\${_SEVERITY}${_quote_color}\" ${_quote_color}\"${_var_color}"
+  _dh_cmd="${_dh_cmd}\$_msg${_quote_color}\"${_ctl_color};${_Boff}"
+  j_msg -5mp "${_dh_cmd}"
+  # line 10 - done
+  j_msg -5mp "${_ctl_color}done${_Boff}\n"
+
+  # print diagnostic data for severity-level emoji prefixes
+  for _SEVERITY in $(seq 0 7); do
+    # this case block is copied from emit
+    case "$_SEVERITY" in
+      0|1)   premoji_idx="$idx_severity_01_emoji" ;;  # Emerg, Alert ,...... cross_mark
+      2|3)   premoji_idx="$idx_severity_23_emoji" ;;  # Error, Critical .... explosion
+      4)     premoji_idx="$idx_severity_4_emoji" ;;   # Warning ............ no_entry
+      5)     premoji_idx="$idx_severity_5_emoji" ;;   # Notice ............. face_thinking
+      6)     premoji_idx="$idx_severity_6_emoji" ;;   # Info ............... face_grin
+      7)     premoji_idx="$idx_severity_7_emoji" ;;   # Debug .............. magnifying_glass_left
+    esac
+    _msg="test at severity (${_SEVERITY})"
+    _msg="${_msg} [$(get_severity "${_SEVERITY}")] ||"
+    _msg="${_msg}  emoji prefix should be [$(name_of_emoji "$premoji_idx")]"
+    DEBUG="$TRUE" j_msg -"${_SEVERITY}" "$_msg";
+  done
+
+  [ "$_dh_FAILED" ] && demo_foundation_ret=$(( demo_foundation_ret | 4 ))  # bit 2 = severity demo failed
+
+  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_t _dh_label _dh_val _dh_exp _dh_out _dh_status _dh_tests _dh_PN
+  return $demo_foundation_ret
+}
+# @usage _dh_demo_foundation
+# @args none
+# @rule demonstrating truth-testing and conversion helpers
+
+_dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
+{ demo_core_ret=0;  _dh_FAILED=$FALSE
+  separator "demonstrate_header-${BUILD}" "(core logic)"
+  j_msg -5p "${BWon}Core Logic${Boff}"
+  j_msg -5p "${Con}This module highlights core logic functions including ${BGon}numreic validation${Boff}${Con} such as:${Boff}"
+  printf "   "; j_msg -5m "isint() - tests if input is a decimal integer"
+  printf "   "; j_msg -5m "isfloat_posix() - tests if input is a floating point decimal number"
+  printf "   "; j_msg -5m "ishexint() - recognizes hexadecimal integers per shell standards"
+  printf "   "; j_msg -5m "isnumeric() - tests if input is any valid numeric type (Dec, Hex, or Float)"
+  j_msg -5p "${Con}This module also highlights core logic/environment validation functions such as:${Boff}"
+  printf "   "; j_msg -5m "vercomp() - compare software version numbers"
+  printf "   "; j_msg -5m "isroot, checkroot, checknotroot - check if user is/not roto"
+  printf "   "; j_msg -5m "checkboot - check if boot/efi is mounted"
+  j_msg -5p "${Con}While highlighting the capabilities above, this module also demonstrates:"
+  printf "   "; j_msg -5m "pad() - used to dynamically pad data for vertical alignment"
+  printf '\n'
+
+  #-----[ section 1 - numeric validation ]-------------------------------------------------
+  separator "demonstrate_header-${BUILD}" "(numeric validation)"
   # preview the command syntax
   _dh_cmd="${_func_color}isnumeric${_Boff} ${_quote_color}\"123.45\"${_Boff}${_op_color};${_Boff} ${_func_color}isint${_Boff} ${_quote_color}\"123\"${_Boff}   "
   _dh_cmd="${_dh_cmd} ${_cmt_color}# using two-pass column alignment and pad() utility${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
 
   j_msg -5 "${BYon}Demonstrating Numeric Validation Utilities --${Boff}"
 
   _dh_tests="isint|123|0 isint|abc|1 isfloat_posix|3.14|0 isfloat_posix|123|1 ishexint|0xAF|0 ishexint|123|1 isnumeric|42.5|0 isnumeric|0xCC|0 isnumeric|xyz|1"
   _dh_sep=" "; _dh_sep_len=${#_dh_sep}; _dh_min=2
-  _dh_FAILED=$FALSE
-  demo_num_ret=0
 
   # notes on pad() usage: pad "cur" "sep" "min" "color" "marker" "col"
   # (  need to make 2 passes to parse the test data
@@ -5918,6 +6074,7 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
   # warn failure to properly quote all args may result in unexpected behavior
 
   # first pass: calculate max lengths
+  j_msg -6p "running first pass to determine longest test and value strings"
   _dh_max_test_len=0; _dh_max_val_len=0
   for _dh_t in ${_dh_tests}; do
     _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1)
@@ -5925,22 +6082,25 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
     _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2)
     [ "${#_dh_val}" -gt "$_dh_max_val_len" ] && _dh_max_val_len=${#_dh_val}
   done
+  _dh_status=$?
+  j_msg -6pn "done; result: "
+  handle_result $_dh_status "max test_len: [$_dh_max_test_len] max val_len: [$_dh_max_val_len]" "" "$info"
 
-#  j_msg -5 "_dh_max_test_len:  $_dh_max_test_len" 4
-#  j_msg -5 "_dh_max_val_len: $_dh_max_val_len" 4
+  j_msg -7m "_dh_max_test_len:  $_dh_max_test_len"
+  j_msg -7m "_dh_max_val_len: $_dh_max_val_len"
 
   # set fixed widths
   _dh_opening="Testing"; _dh_open_len=${#_dh_opening}
-#  j_msg -5 "_dh_open_len: $_dh_open_len" 4
-#  j_msg -5 "_dh_sep_len: $_dh_sep_len" 4
+#  j_msg -7m "_dh_open_len: $_dh_open_len"
+#  j_msg -7m "_dh_sep_len: $_dh_sep_len"
   _dh_test_total_sep=$(( _dh_sep_len * 2 ))
-#  j_msg -5 "_dh_test_total_sep: $_dh_test_total_sep" 4
+#  j_msg -7m "_dh_test_total_sep: $_dh_test_total_sep"
   _dh_col_test=$(( $_dh_open_len + $_dh_max_test_len + $_dh_test_total_sep + $_dh_min ))  #  "Testing isnumeric "
   _dh_col_val=$(( $_dh_max_val_len + $_dh_sep_len + $_dh_min ))  #  "'0xAF' "
   _dh_col_TF=9    #  "[False] " - permanently known emprically ([+F+a+l+s+e+]+.+.+)
-#  j_msg -5 "_dh_col_test: $_dh_col_test" 4
-#  j_msg -5 "_dh_col_val: $_dh_col_val" 4
-#  j_msg -5 "_dh_col_TF: $_dh_col_TF" 4
+#  j_msg -7m "_dh_col_test: $_dh_col_test"
+#  j_msg -7m "_dh_col_val: $_dh_col_val"
+#  j_msg -7m "_dh_col_TF: $_dh_col_TF"
 
   # second pass: execution and aligned table print
   for _dh_t in ${_dh_tests}; do
@@ -5969,7 +6129,7 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
 
     # column 1: test function name
     _dh_col1_text="Testing $_dh_test "
-    j_msg -5n "Testing ${BCon}${_dh_test}${Boff} "
+    j_msg -5mn "Testing ${BCon}${_dh_test}${Boff} "
     # force min pad 0 on this column
     pad "${_dh_col1_text} " "$((_dh_sep_len * 3))" "0" "$BCon" "." "$_dh_col_test"
 
@@ -5988,242 +6148,179 @@ _dh_demo_numeric() # (POSIX) demonstrate numeric validation utilities
   done
   printf "\n"
 
-  [ "$_dh_FAILED" ] && demo_num_ret=1
+  [ "$_dh_FAILED" ] && demo_core_ret=$(( demo_core_ret | 1 ))   # bit 0 = numeric validation test failed
+  j_msg -5np "done numeric validation; result:"
+  handle_result $(( demo_core_ret & 1 ))  # mask bit 0 to check result
+
+#-----[ section 2 - version comparison ]-------------------------------------------------
+  separator "demonstrate_header-${BUILD}" "(version comparison)"
+
+# preview the command syntax
+  _dh_cmd="${_ctl_color}for${_Boff} ${_var_color}v${_Boff} ${_ctl_color}in${_Boff} ${_quote_color}\"1 1\" \"2 1\" \"1 2\" ...${_Boff}; ${_ctl_color}do${_Boff}\n"
+  _dh_cmd="${_dh_cmd}   ${_func_color}vercomp${_Boff} ${_data_color}\$v1 \$v2${_Boff}; ${_func_color}show_result${_Boff} ${_data_color}\$?${_Boff}\n"
+  _dh_cmd="${_dh_cmd} ${_ctl_color}done${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}"; printf "\n"
+
+  # execute the actual demonstration
+  for _dh_vtest in "1 1" "2 1" "1 2" "1.2.0 1.2.1" "1.2.0-r1 1.2.0"; do
+    _dh_v1=${_dh_vtest% *}  # equiv =$( printf '%s' "${_dh_vtest}" | cut -d' ' -f1) (but w/o call to cut)
+    _dh_v2=${_dh_vtest#* }  # equiv =$( printf '%s' "${_dh_vtest}" | cut -d' ' -f2) (but w/o call to cut)
+
+    j_msg -5mn "${BYon}Compare version ${BWon}${_dh_v1} ${BYon}to ${BWon}${_dh_v2}${Boff}  "
+    vercomp "$_dh_v1" "$_dh_v2"
+    _dh_vercomp_result=$?
+    printf '%b\n' "$(show_result $_dh_vercomp_result)"
+    show_result $_dh_vercomp_result >/dev/null 2>&1
+    _dh_show_result_exit=$?
+    # if any single comparison fails (returns non-zero), mark the module as failed
+    [ "$_dh_show_result_exit" -eq 0 ] || _dh_FAILED=$TRUE
+  done
+  printf "\n"
+
+  [ "$_dh_FAILED" ] && demo_core_ret=$(( demo_core_ret | 2 ))   # bit 1 = version comparison test failed
+  j_msg -5np "done version comparison; result:"
+  handle_result $(( demo_core_ret & 2 ))  # mask bit 1 to check result
+#-----[ section 3 - environment validation ]-------------------------------------------------
+  separator "demonstrate_header-${BUILD}" "(environment & privileges)"
+
+  #-----[ part 1: isroot - silent root privilege check ]-------------------------------------------------------------------
+  # construct the command preview string - isroot;  ... handle_result
+  # part 1 - isroot; ...
+  _dh_cmd="${_op_color}(${_Boff} ${_func_color}isroot${_Boff} ${_op_color});${_Boff} ... "
+  # [art 2 - handle_result
+  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_cmt_color}# silent predicate check${_Boff}\n ${_dh_cmd}"
+  j_msg -5mn "  Testing isroot (silent): "
+  # logic execution
+  isroot; _dh_result=$?
+  if [ "$(id -u)" -eq 0 ]; then  ## we really are root (basis for test of isroot()
+    [ "$_dh_result" -eq 0 ]
+    handle_result $? "yes root and returned 0" "yes root but did not return 0"
+  else
+    # If we ARE NOT root, isroot should have returned 1 (Failure)
+    [ "$_dh_result" -eq 1 ]
+    handle_result $? "not root and returned 1" "not root but did not return 1"
+  fi
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  #-----[ part 2: checkroot - gatekeeper root privilege check ]-------------------------------------------------------------------
+  # construct the command preview string - ( checkroot ); ... handle_result
+  # part 1 - ( checkroot ); ...
+  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checkroot${_Boff} ${_op_color});${_Boff} ... "
+  # part 2 - handle_result
+  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_cmt_color}# root gatekeeper in subshell (exits if not root)${_Boff}\n ${_dh_cmd}"
+  j_msg -5mn "  Testing checkroot gatekeeper "
+  # logic execution
+  ( checkroot ) >/dev/null 2>&1 ; _dh_result=$?
+  if isroot; then  ## we really are root (basis for test of checkroot()
+    [ "$_dh_result" -eq 0 ]
+    handle_result $? "yes root and returned 0" "yes root but did not return 0"
+  else
+    # If we ARE NOT root, isroot should have returned 1 (Failure)
+    [ "$_dh_result" -eq 1 ]
+    handle_result $? "not root and *exited* 1" "not root but did not exit 1"
+  fi
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  #-----[ part 3: checknotroot - gatekeeper root privilege check ]-------------------------------------------------------------------
+  # construct the command preview string - ( checknotroot ); ... handle_result
+  # part 1 - ( checknotroot ); ...
+  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checknotroot${_Boff} ${_op_color});${_Boff} ... "
+  # part 2 - handle_result
+  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_cmt_color}# user gatekeeper in subshell (exits if root)${_Boff}\n ${_dh_cmd}"
+  j_msg -5mn "  Testing checknotroot gatekeeper: "
+  # logic execution
+  ( checknotroot ) >/dev/null 2>&1 ; _dh_result=$?
+  if ! isroot; then  ## we really are not root (basis for test of checknotroot()
+    [ "$_dh_result" -eq 0 ]
+    handle_result $? "not root and returned 0" "not root but did not return 0"
+  else
+    # If we ARE root, checknotroot should have returned 1 (Failure)
+    [ "$_dh_result" -eq 1 ]
+    handle_result $? "yes root and *exited* 1" "yes root but did not exit 1"
+  fi
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  # Note: In a real script, checkroot might exit; here we just observe.
+
+  #-----[ part 4: checkboot - boot mount check ]-----------------------------------------------------------------------
+  # construct the command preview string - ( checknotroot ); ... handle_result
+  # part 1 - ( checkboot ); ...
+  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checkboot${_Boff} ${_op_color});${_Boff} ... "
+  # part 2 - handle_result
+  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
+  _dh_cmt="${_cmt_color}# verifies mounted status of boot/efi targets via bitmask exit status${_Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_dh_cmt} ${_dh_cmd}"
+  j_msg -5mn "  Testing checkboot gatekeeper: "
+  # logic execution - run checkboot; if it says fail, double-check
+  _dh_OK_msg="All defined boot targets are mounted"
+  _dh_FAIL_msg="One or more targets that should be is not mounted (Code: $_dh_result)"
+
+  ( checkboot ) >/dev/null 2>&1 ; _dh_result=$?
+  handle_result "$_dh_result" "${_dh_OK_msg}" "${_dh_FAIL_msg}"
+  if [ ! "$_dh_result" -eq 0 ]; then
+    # explain the failure code(s) using bitwise math
+    _dh_i=0
+    _dh_targets="/boot /efi /boot/efi"   # bitmask represents these in LSB->MSB order
+    for _dh_tgt in $_dh_targets; do
+      _dh_MOUNTPOINT=$FALSE
+      # check if bit _dh_i is set in the result mask
+      # (shift i bits right and check the LSB by bitwise AND w 1)
+      if [ "$(( (_dh_result >> _dh_i) & 1 ))" -eq 1 ]; then
+        # double-check checkboot's result using sys-util/util-linux's mountpoint
+        # (checks whether a directory or file is a mountpoint. -q = silently)
+        j_msg -5n "checkboot: ${BYon}${_dh_tgt}${Boff} should be but is ${BRon}not${Boff} mounted"
+        mountpoint -q "${_dh_tgt}" && _dh_MOUNTPOINT=$TRUE
+        if [ $_dh_MOUNTPOINT ] ; then
+            printf '%s' "(${BRon}it is${Boff})"
+            _dh_FAILED=$TRUE
+            right_status 1
+        else
+            printf '%s' "(${BGn}it is not${Boff})"
+            right_status 0
+        fi  # actually is mounted
+      fi  # bit i is checkboot failure report
+      _dh_i=$((_dh_i + 1))
+    done  # for _dh_tgt
+  fi  # check boot reports error?
+  # Note: we are NOT double-checking if checkboot says all ok
+
+  [ "$_dh_FAILED" ] && demo_core_ret=$(( demo_core_ret | 4 ))   # bit 2 = environment checks failed
+  j_msg -5np "done environment checks; result:"
+  handle_result $(( demo_core_ret & 4 ))  # mask bit 2 to check result
+
+  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_OK_msg _dh_FAIL_msg
+  unset -v _dh_result _dh_i _dh_targets _dh_tgt _dh_MOUNTPOINT
+  unset -v _dh_BOOT_REALITY
   unset -v _dh_cmd _dh_tests _dh_sep _dh_sep_len _dh_min _dh_max_test_len _dh_max_val_len
   unset -v _dh_opening _dh_open_len _dh_test_total_sep _dh_col_test _dh_col_val _dh_col_TF
   unset -v _dh_t _dh_test _dh_val _dh_exp _dh_result _dh_RESULT_BOOL _dh_bool_str
   unset -v _dh_bool_color _dh_pass_fail _dh_v_label _dh_col1_text _dh_FAILED
-
-  return "$demo_num_ret"
+  unset -v _dh_cmd _dh_vtest _dh_v1 _dh_v2 _dh_vercomp_result _dh_show_result_exit _dh_FAILED
+  return "$demo_core_ret"
 }
-# @usage _dh_demo_numeric
+# @usage _dh_demo_corelogic
 # @args none
 # @rule called by demonstrate_header
 
+_dh_demo_ui_layout() # (POSIX) demonstrate script_header_joetoo user interface/layout/terminal control
+{ demo_ui_ret=0; _dh_FAILED=$FALSE
 
-_dh_demo_debug_utils() # (POSIX) demonstrate debugging (verbosity-conditional execution and messaging)
-{ _dh_FAILED=$FALSE
-  demo_debug_ret=0
-  if [ "$verbosity" -gt 0 ]; then _dh_VERBOSE=$TRUE; else _dh_VERBOSE=$FALSE; fi
+  separator "demonstrate_header-${BUILD}" "(UI / Layout / Terminal Control)"
+    j_msg -5p "${BWon}UI / Layout / Terminal Control${Boff}"
+    j_msg -5p "${Con}While highlightinging ${BGon}Terminal control${Boff}${Con}, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "SCP/RCP/HCU/SCU/CUP/CUF/CUB; the header also supports HVP/CUU/CUD/CPR/QCR/QCC"
+    printf "   "; j_msg -5m "CLR/EL, vt_init, SO/SO, ESC"
+    j_msg -5p "${Con}While highlightinging ${BGon}Box-drawing / UI widgets${Boff}${Con}, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "box_esca, box_shift, box_msg, u_box_msg, progress_inline"
+    j_msg -5m "${Con}earlier modules have demonstrated UI tools handle_result, right_status, and separator"
+    j_msg -5p "${Con}While highlighting its ${BGon}Layout engines / string utilities${Boff}${Con}, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "strip_ansi, _translate_escapes, get_longest, get_msg_len, repeat, pad, smart_wrap_n"
+    j_msg -5m "${Con}earlier modules have demonstrated get_longest() and repeat() as agents in fixed width column layout"
+    j_msg -5m "${Con}earlier modules have also demonstrated emoji generation with both precooked and dynamic assets"
+    printf '\n'
 
-  separator "demonstrate_header-${BUILD}" "(debugging utilities)"
-
-  # temporarily set system verbosity for demonstration
-  _dh_oldv=$verbosity
-  _dh_VERBOSE=$TRUE; verbosity="${notice}"
-  j_msg -5 "${_BYon}_dh_VERBOSE is $(status_color $_dh_VERBOSE)$(TrueFalse $_dh_VERBOSE)${_Boff}"
-  j_msg -5 "${_BYon}system verbosity is ${Boff}[${_data_color}${verbosity}${_Boff}]"
-  j_msg -5 "${_BYon}this corresponds to severity level ${_Boff}[${_data_color}$(get_severity ${verbosity})${_Boff}]"
-
-  # demonstrate verbosity and severity linkage with get_severity and globally defined severity levels
-  # --- Preview Construction for line 1 ---
-  # Goal: printf '%s\n' " crit is severity [$(echo "$crit")]"
-  _dh_cmd="  ${_func_color}printf${_Boff} ${_quote_color}'%s\\\n' "
-  _dh_cmd="${_dh_cmd}\" crit is severity ${_Boff}${_ctl_color}[\$(${_Boff}${_cmd_color}echo${_Boff}"
-  _dh_cmd="${_dh_cmd} \"${_var_color}\$crit${_Boff}\"${_ctl_color})]${_quote_color}\"${_Boff}\n"
-
-  # --- Preview Construction for line 2 ---
-  # Goal: echo "severity 2 is [$(get_severity 2)]"
-  _dh_cmd="${_dh_cmd}  ${_cmd_color}echo${_Boff} "
-  _dh_cmd="${_dh_cmd}${_quote_color}\" severity 2 is ${_Boff}${_ctl_color}[\$(${_func_color}get_severity${_Boff}"
-  _dh_cmd="${_dh_cmd} ${_data_color}2${_Boff}${_ctl_color})]${_quote_color}\"${_Boff}\n"
-
-  # --- Display ---
-  _dh_cmt="${_cmt_color}# demonstrating nested expansion and function calls${Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
-
-  # --- Logic Execution ---
-  printf '%s\n' " crit is severity [$(echo "$crit")]"
-  echo "severity 2 is [$(get_severity 2)]"
-
-  # demonstrate j_msg -p - debugging message (output if verbosity >= level)
-  _dh_cmd="${_func_color}j_msg -7p${_Boff} ${_quote_color}\"Raw debug data: \${_var}\"${_Boff} \"${_var_color}\${debug}${_Boff}\""
-  _dh_cmt="${_cmt_color}# if verbosity >= \${debug} (it is not, so expect no output)${Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_dh_cmt} ${_dh_cmd}"
-  j_msg -7p "  Raw debug data: example_value" "${debug}"
-  # logic execution - and failure check
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  # demonstrate j_msg -5 - debugging message (output if verbosity >= level)
-  _dh_cmd="${_func_color}j_msg -5${_Boff} ${_quote_color}\"Debug message at level \${notice}\"${_Boff} \"${_var_color}\${notice}${_Boff}\""
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_cmt_color}# if verbosity >= \${notice} (it is)${_Boff}\n ${_dh_cmd}"
-  # logic execution - and failure check
-  j_msg -5 "Debug message at level ${notice}"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  # demonstrate j_msg -5n; logic test; right_status $? (conditional status linkage)
-  # case A: looking for a file that does not exist
-  _dh_file_bogus="/usr/sbin/script_header_joetoo_bogus"
-  # construct line 1 of the commands to be displayed
-  _dh_cmd=" ${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_bogus}\"${_Boff}\n"
-  # construct line 2 of the commands to be displayed (single-quote the line with escaped quotes
-  _dh_cmd="${_dh_cmd} ${_func_color}j_msg -5n${_Boff}"
-  _dh_cmd="${_dh_cmd} ${_quote_color}\"looking for \${_dh_header}\"${_Boff}"
-  _dh_cmd="${_dh_cmd} \"${_var_color}\${crit}${_Boff}\"\n"
-  # construct line 3 of the commands to be displayed - starting with the [ test
-  _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}"
-  # isolate the  '!' - copy/paste to test this block will choke otherwise
-  _dh_cmd="${_dh_cmd}"'!'
-  _dh_cmd="${_dh_cmd}${_Boff} ${_opt_color}-z${_Boff} "
-  # Add the find subshell
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header}"
-  _dh_cmd="${_dh_cmd} ${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\"${_Boff}"
-  # Close bracket and add right_status
-  _dh_cmd="${_dh_cmd} ${_ctl_color}]${_Boff} ${_op_color};${_Boff} "
-  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff} "
-  _dh_cmd="${_dh_cmd}\"${_var_color}\${crit}${_Boff}\""
-
-  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
-  # logic execution - and failure check
-  _dh_header="${_dh_file_bogus}"; j_msg -5n "looking for ${_dh_header}"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ]; right_status $?
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  # case B: Looking for a file that does exist
-  _dh_file_real="/usr/sbin/script_header_joetoo"
-  # construct line 1 of the commands to be displayed
-  _dh_cmd="${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_real}\"${_Boff}\n"
-  # construct line 2 of the commands to be displayed
-  _dh_cmd="${_dh_cmd} ${_func_color}j_msg -5n${_Boff} "
-  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${_dh_header}\"${_Boff} "
-  _dh_cmd="${_dh_cmd}\"${_var_color}\${crit}${_Boff}\"\n"
-  # construct line 3 of the commands to be displayed - starting with the [ test
-  _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}!${_Boff} ${_opt_color}-z${_Boff} "
-  # Add the find subshell
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header} "
-  _dh_cmd="${_dh_cmd}${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\" "
-  # Close bracket and add right_status (note: j_msg -5 will add a newline)
-  _dh_cmd="${_dh_cmd}${_ctl_color}]${_Boff}${_op_color};${_Boff} "
-  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff} "
-  _dh_cmd="${_dh_cmd}\"${_var_color}\${crit}${_Boff}\""
-  _dh_cmt="${_cmt_color}# if verbosity >= \${crit}  (it is)${Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
-  # logic execution - and failure check
-  _dh_header="${_dh_file_real}"; j_msg -5n "looking for ${_dh_header}"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ];   right_status $?
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  # demonstrate d_do - case A: simple command (execution if verbosity >= level)
-  # build command - d_do "printf '${BGon}Executed${Boff}'" "$crit" (theme-colored)
-  _dh_cmd="${_func_color} d_do${_Boff} ${_quote_color}\"printf '\${BGon}Executed\${Boff}'\"${_Boff} ${_var_color}\${crit}${_Boff}\""
-  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${_Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
-  # logic execution - and failure check
-  d_do "printf '${BGon} * Executed${Boff}\n'" "$crit"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  # demonstrate d_do - case B: complex multi-part command (execution if verbosity >= level)
-  # build command d_do 'echo "      line 1.1"; echo "      line 1.2"' "$notice" (theme colored)
-  _dh_cmd="${_func_color} d_do${_Boff} ${_quote_color}'echo \"      line 1.1\"; echo \""
-  _dh_cmd="${_dh_cmd}      line 1.2\"'${_Boff} \"${_var_color}\${crit}${_Boff}\""
-  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_dh_cmt}${_dh_cmd}"
-  # logic execution - and failure check
-  d_do 'echo "   line 1.1"; echo "   line 1.2"' "$notice"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  [ "$_dh_FAILED" = "$TRUE" ] && demo_debug_ret=1
-  # restore previous system verbosity
-  verbosity=$_dh_oldv
-  printf "\n"
-
-  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_oldV _dh_oldv _dh_file_bogus _dh_file_real _dh_header _dh_VERBOSE
-  return $demo_debug_ret
-}
-# @usage _dh_demo_debug_utils
-# @args none
-# @rule demonstrating conditional messaging and status utilities
-
-_dh_demo_boolean() # (POSIX) demonstrate bool truth validation with a variety of data types
-{ demo_bool_ret=0
-  _dh_FAILED=$FALSE
-
-  separator "demonstrate_header-${BUILD}" "(boolean utilities)"
-
-  # data format: label|value|expectation (0=True, 1=False, 2=unset)
-  _dh_tests="\$TRUE|$TRUE|0 \$FALSE|$FALSE|1 y|y|0 Y|Y|0"
-  _dh_tests="${_dh_tests} n|n|1 N|N|1 t|t|0 T|T|0 f|f|1 F|F|1"
-  _dh_tests="${_dh_tests}  up|up|0 down|down|1 0|0|0 1|1|2 z|z|2 ''|''|1"
-
-  # preview the command syntax for each of the commands to be run (4 lines, like this)
-  #  for x in "$TRUE $FALSE y ... '' $TRUE $FALSE"; do
-  #    j_msg -5n "testing: [${x}] is $(status_color ${x})$(TrueFalse ${x})"
-  #    if [ "$(TrueFalse ${x})" = "True" ]; then right_status 0
-  #    else right_status 1; fi
-  #  done
-  # line 1 part 1 - for x in
-  _dh_cmd="${_ctl_color}  for${_Boff} ${_var_color}x${_Boff} ${_ctl_color}in${_Boff} "
-  # line 1 part 2 - "y n 0 1 z ... '' $TRUE $FALSE"; do
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$TRUE \$FALSE y n ... ''\"${_Boff}${_op_color};${_Boff} ${_ctl_color}do${_Boff}\n"
-  # line 2 part 1 -  j_msg -5n "testing: [${x}] is
-  _dh_cmd="${_dh_cmd}     ${_func_color}j_msg -5n${_Boff} ${_quote_color}\"testing: [\${x}] is \$(${_Boff}"
-  # line 2 part 2 - $(status_color ${x})
-  _dh_cmd="${_dh_cmd}${_func_color}status_color${_Boff} ${_var_color}\${x}${_Boff}${_quote_color})\$(${_Boff}"
-  # line 2 part 3 - $(TrueFalse ${x})"
-  _dh_cmd="${_dh_cmd}${_func_color}TrueFalse${_Boff} ${_var_color}\${x}${_Boff}${_quote_color})\"${_Boff}\n"
-  # line 3 part 1 - if [
-  _dh_cmd="${_dh_cmd}     ${_ctl_color}if [${_Boff}"
-  # line 3 part 2 - "$(TrueFalse ${x})"
-  _dh_cmd="${_dh_cmd}  ${_quote_color}\"\$(${_Boff}${_func_color}TrueFalse${_Boff} ${_var_color}\${x}${_Boff}${_quote_color})\"${_Boff} "
-  # line 3 part 3 - = "True" ];
-  _dh_cmd="${_dh_cmd}${_op_color}=${_Boff} ${_quote_color}\"True\"${_Boff} ${_ctl_color}]${_Boff}${_op_color};${_Boff} "
-  # line 3 part 4 - then right_status 0
-  _dh_cmd="${_dh_cmd}${_ctl_color}then${_Boff} ${_func_color}right_status${_Boff} ${_var_color}\$TRUE${_Boff}\n"
-  # line 4 part 1 - else right_status 1;
-  _dh_cmd="${_dh_cmd}   ${_ctl_color}else${_Boff} ${_func_color}right_status${_Boff} ${_data_color}1${_Boff}${_op_color};${_Boff} "
-  # line 4 part 2 - fi
-  _dh_cmd="${_dh_cmd}${_ctl_color}fi${_Boff}\n"
-  # line 5 - done
-  _dh_cmd="${_dh_cmd}${_ctl_color}  done${_Boff}"
-
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"
-  printf "\n"
-  j_msg -5 "  ${BYon}Summary of T/F tests with ${BGon}status_color${Boff}() and ${BGon}TrueFalse${Boff}() --"
-
-  # logic execution
-  for _dh_t in ${_dh_tests}; do
-    _dh_label=$(printf '%s' "${_dh_t}" | cut -d'|' -f1)
-    _dh_val=$(printf '%s' "${_dh_t}" | cut -d'|' -f2)
-    _dh_exp=$(printf '%s' "${_dh_t}" | cut -d'|' -f3)
-
-    # explicit translation of the literal '' placeholder to a true null value
-    [ "${_dh_val}" = "''" ] && _dh_val=""
-    # get the formatted output
-    _dh_out=$(TrueFalse "${_dh_val}")
-    # get the exit status from TrueFalse
-    _dh_status=$?
-
-    j_msg -5n "    ${BWon}testing: [${BCon}${_dh_label}${Boff}${BWon}] is $(status_color "${_dh_val}")${_dh_out}${Boff}"
-
-    # validate that the exit status matches our expectation for this value
-    if [ "$_dh_status" -eq "$_dh_exp" ] ; then
-      right_status 0
-    else
-      right_status 1
-      _dh_FAILED=$TRUE
-    fi
-  done
-
-  printf "\n"
-  j_msg -5n ""
-  smart_wrap_n 3 3 3 "" "Note: most shells evaluate null ('') as ${BRon}FALSE${Boff} and non-null as ${BGon}TRUE${Boff}"
-  printf "\n"
-
-  [ "$_dh_FAILED" = "$TRUE" ] && demo_bool_ret=1
-
-  unset -v _dh_cmd _dh_FAILED _dh_t _dh_label _dh_val _dh_exp _dh_out _dh_status _dh_tests _dh_PN
-  return $demo_bool_ret
-}
-# @usage _dh_demo_boolean
-# @args none
-# @rule demonstrating truth-testing and conversion helpers
-
-_dh_demo_terminal_io() # (POSIX) demonstrate terminal io, animation, box drawing
-{ demo_term_ret=0
-  _dh_FAILED=$FALSE
   _dh_cock="${BRon}-*-${Boff}"    # define a 3-char shuttlecock (stationary)
   _dh_r_cock="${BRon}--*${Boff}"  # define a 3-char shuttlecock (right bound)
   _dh_l_cock="${BRon}*--${Boff}"  # define a 3-char shuttlecock (left bound)
@@ -6282,12 +6379,18 @@ _dh_demo_terminal_io() # (POSIX) demonstrate terminal io, animation, box drawing
        _dh_i=$((_dh_i - 1))
     done
     _dh_cycle=$((_dh_cycle + 1))
-  done
+  done && \
   printf "\r"; j_msg -5n "shuttle zone: [                    ]"      # clear the zone again (done)
+  _dh_result=$?
   SCU   # show the cursor again after animation is over
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  printf '\n'   # close shuttle zone
+  j_msg -5mn "done shuttlecock test; result"
+  handle_result $_dh_result "" "failed shuttlecock test" || _dh_FAILED=$TRUE
   printf "\n"
 
+  [ "$_dh_FAILED"  ] && demo_ui_ret=$(( demo_ui_ret | 1 ))   # bit 0 = shuttlecock widget failure
+
+  _dh_FAILED=$FALSE   # reset for next test
   #-----[ part 2a: DEC Graphics (Box Drawing) ]---------------------------------
   _dh_text="DEC Graphics (SO/SI Method)"
   # build command string for preview
@@ -6304,139 +6407,13 @@ _dh_demo_terminal_io() # (POSIX) demonstrate terminal io, animation, box drawing
   _dh_cmd="${_func_color}box_esca${_Boff} ${_quote_color}\"${_dh_text}\"${_Boff}"
   printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# High-fidelity ESCon/B Box${_Boff}\n ${_dh_cmd}"
   # logic execution
-  box_esca "${_dh_text}"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  box_esca "${_dh_text}" ; _dh_result=$?
+  [ "$_dh_result" -eq 0 ] || _dh_FAILED=$TRUE
+  j_msg -5mn "done DEC Box drawing tests; result:"
+  handle_result $_dh_result "" "separator widget failed" || \
+    demo_ui_ret=$(( demo_ui_ret | 2 ))   # bit 1 = ui / DEC box widget failure
 
-  [ "$_dh_FAILED" = "$TRUE" ] && demo_term_ret=1
-  unset -v _dh_cmd _dh_FAILED _dh_i _dh_cycle _dh_cock _dh_wait
-  return $demo_term_ret
-}
-# @usage _dh_demo_terminal_io
-# @args none
-# @rule demonstrating cursor state and DEC graphics
-
-_dh_demo_environment() # (POSIX) demonstrate environment checks (isroot, checknotroot, checkboot, etc)
-{ demo_env_ret=0
-  _dh_FAILED=$FALSE
-
-  separator "demonstrate_header-${BUILD}" "(environment & privileges)"
-
-  #-----[ part 1: isroot - silent root privilege check ]-------------------------------------------------------------------
-  # construct the command preview string - isroot;  ... handle_result
-  # part 1 - isroot; ...
-  _dh_cmd="${_op_color}(${_Boff} ${_func_color}isroot${_Boff} ${_op_color});${_Boff} ... "
-  # [art 2 - handle_result
-  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# silent predicate check${_Boff}\n ${_dh_cmd}"
-  j_msg -5n "  Testing isroot (silent): "
-  # logic execution
-  isroot; _dh_result=$?
-  if [ "$(id -u)" -eq 0 ]; then  ## we really are root (basis for test of isroot()
-    [ "$_dh_result" -eq 0 ]
-    handle_result $? "yes root and returned 0" "yes root but did not return 0"
-  else
-    # If we ARE NOT root, isroot should have returned 1 (Failure)
-    [ "$_dh_result" -eq 1 ]
-    handle_result $? "not root and returned 1" "not root but did not return 1"
-  fi
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  #-----[ part 2: checkroot - gatekeeper root privilege check ]-------------------------------------------------------------------
-  # construct the command preview string - ( checkroot ); ... handle_result
-  # part 1 - ( checkroot ); ...
-  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checkroot${_Boff} ${_op_color});${_Boff} ... "
-  # part 2 - handle_result
-  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# root gatekeeper in subshell (exits if not root)${_Boff}\n ${_dh_cmd}"
-  j_msg -5n "  Testing checkroot gatekeeper "
-  # logic execution
-  ( checkroot ) >/dev/null 2>&1 ; _dh_result=$?
-  if isroot; then  ## we really are root (basis for test of checkroot()
-    [ "$_dh_result" -eq 0 ]
-    handle_result $? "yes root and returned 0" "yes root but did not return 0"
-  else
-    # If we ARE NOT root, isroot should have returned 1 (Failure)
-    [ "$_dh_result" -eq 1 ]
-    handle_result $? "not root and *exited* 1" "not root but did not exit 1"
-  fi
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-
-  #-----[ part 3: checknotroot - gatekeeper root privilege check ]-------------------------------------------------------------------
-  # construct the command preview string - ( checknotroot ); ... handle_result
-  # part 1 - ( checknotroot ); ...
-  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checknotroot${_Boff} ${_op_color});${_Boff} ... "
-  # part 2 - handle_result
-  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# user gatekeeper in subshell (exits if root)${_Boff}\n ${_dh_cmd}"
-  j_msg -5n "  Testing checknotroot gatekeeper: "
-  # logic execution
-  ( checknotroot ) >/dev/null 2>&1 ; _dh_result=$?
-  if ! isroot; then  ## we really are not root (basis for test of checknotroot()
-    [ "$_dh_result" -eq 0 ]
-    handle_result $? "not root and returned 0" "not root but did not return 0"
-  else
-    # If we ARE root, checknotroot should have returned 1 (Failure)
-    [ "$_dh_result" -eq 1 ]
-    handle_result $? "yes root and *exited* 1" "yes root but did not exit 1"
-  fi
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
-  # Note: In a real script, checkroot might exit; here we just observe.
-
-  #-----[ part 4: checkboot - boot mount check ]-----------------------------------------------------------------------
-  # construct the command preview string - ( checknotroot ); ... handle_result
-  # part 1 - ( checkboot ); ...
-  _dh_cmd="${_op_color}(${_Boff} ${_func_color}checkboot${_Boff} ${_op_color});${_Boff} ... "
-  # part 2 - handle_result
-  _dh_cmd="${_dh_cmd}${_func_color}handle_result${_Boff}${_Boff} "
-  _dh_cmt="${_cmt_color}# verifies mounted status of boot/efi targets via bitmask exit status${_Boff}\n"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_dh_cmt} ${_dh_cmd}"
-  j_msg -5n "  Testing checkboot gatekeeper: "
-  # logic execution - run checkboot; if it says fail, double-check
-  _dh_OK_msg="All defined boot targets are mounted"
-  _dh_FAIL_msg="One or more targets that should be is not mounted (Code: $_dh_result)"
-
-  ( checkboot ) >/dev/null 2>&1 ; _dh_result=$?
-  handle_result "$_dh_result" "${_dh_OK_msg}" "${_dh_FAIL_msg}"
-  if [ ! "$_dh_result" -eq 0 ]; then
-    # explain the failure code(s) using bitwise math
-    _dh_i=0
-    _dh_targets="/boot /efi /boot/efi"   # bitmask represents these in LSB->MSB order
-    for _dh_tgt in $_dh_targets; do
-      _dh_MOUNTPOINT=$FALSE
-      # check if bit _dh_i is set in the result mask
-      # (shift i bits right and check the LSB by bitwise AND w 1)
-      if [ "$(( (_dh_result >> _dh_i) & 1 ))" -eq 1 ]; then
-        # double-check checkboot's result using sys-util/util-linux's mountpoint
-        # (checks whether a directory or file is a mountpoint. -q = silently)
-        j_msg -5n "checkboot: ${BYon}${_dh_tgt}${Boff} should be but is ${BRon}not${Boff} mounted"
-        mountpoint -q "${_dh_tgt}" && _dh_MOUNTPOINT=$TRUE
-        if [ $_dh_MOUNTPOINT ] ; then
-            printf '%s' "(${BRon}it is${Boff})"
-            _dh_FAILED=$TRUE
-            right_status 1
-        else
-            printf '%s' "(${BGn}it is not${Boff})"
-            right_status 0
-        fi  # actually is mounted
-      fi  # bit i is checkboot failure report
-      _dh_i=$((_dh_i + 1))
-    done  # for _dh_tgt
-  fi  # check boot reports error?
-  # Note: we are NOT double-checking if checkboot says all ok
-
-  [ "$_dh_FAILED" ] && demo_env_ret=1
-  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_OK_msg _dh_FAIL_msg
-  unset -v _dh_result _dh_i _dh_targets _dh_tgt _dh_MOUNTPOINT
-  unset -v _dh_BOOT_REALITY
-  return $demo_env_ret
-}
-# @usage _dh_demo_environment
-# @args none
-# @rule demonstrating environment and privilege checks
-
-_dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
-{ demo_widg_ret=0
-  _dh_FAILED=$FALSE
+  _dh_FAILED=$FALSE  # reset for next test
   _dh_result=0
 
   _dh_46="Donaldson Emmons Seward Seymour Panther Couchsachraga Santanoni"
@@ -6459,10 +6436,14 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   _dh_cmd="${_dh_cmd} ${_cmt_color}# horizontal rule with title${_Boff}"
   printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"
   # Logic execution
+  j_msg -5p "testing separator widget"
   separator "DEMO" "(ui organization)"
-  [ "$?" -eq 0 ]
+  j_msg -5mn "done separator test; result:"
   handle_result $? "" "separator widget failed"
   [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  [ "$_dh_FAILED"  ] && demo_ui_ret=$(( demo_ui_ret | 4 ))   # bit 2 = separator widget failure
+  _dh_FAILED=$FALSE   #reset for next test
+  _dh_result=0
 
   #-----[ part 2: progress_inline - task status ]-----------------------------------------------------------------------
   # construct the command preview string - for loop below
@@ -6493,7 +6474,7 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   _dh_longest=$(get_longest ${_dh_46})
   _dh_offset=65   # empirically determined from progress_inline output (+10 after migration for unk reason)
   _dh_i=1         # index from first peak, not 0
-  _dh_wait=80     # millisecond loop wait time
+  _dh_wait=30     # millisecond loop wait time
   HCU  # hide the cursor until done tracking progress (distracting white block otherwise)
   for _dh_peak in $_dh_46; do
     # update progress bar
@@ -6511,9 +6492,11 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   done
   SCU  # cursor again (otherwise invisible and confusing on cli)
   progress_inline 46 46  # now that we finished w/o final newline, update the accurate % progress
-  [ "$?" -eq 0 ]; handle_result $? "reached 46 peaks" "progress_inline widget failed"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  [ "$?" -eq 0 ]; handle_result $? "reached 46 peaks" "progress_inline widget failed" || _dh_FAILED=$TRUE
   printf "\n"
+  [ "$_dh_FAILED"  ] && demo_ui_ret=$(( demo_ui_ret | 8 ))   # bit 3 = progress bar widget failure
+  _dh_FAILED=$FALSE   # reset for next test
+  _dh_result=0
 
   #-----[ part 3: u_box_msg ]---------------------------------------------------------------------------------------------
   # construct the command preview string -
@@ -6526,73 +6509,270 @@ _dh_demo_widgets() # (POSIX) demonstrate separator, progress bar, countdown)
   u_box_msg "$longone" $(( 8 * $(termwidth) / 10 )) '' "${BCon}" 4;   _dh_result=$?
   j_msg -5n "done running u_box_msg; result:"
   handle_result $_dh_result "" "" || _dh_FAILED=$TRUE
+  [ "$_dh_FAILED" ] && demo_ui_ret=$(( demo_ui_ret | 16 ))   # bit 4 = u_box_msg widget failure
+   _dh_FAILED=$FALSE   # reset for next test
 
   #-----[ part 4: sh_countdown - timed safety pause ]-------------------------------------------------------------------
   # construct the command preview string -
   # line 1 -    sh_countdown 3 "Safety pause before deployment";
-  _dh_cmd="   ${_func_color}sh_countdown${_Boff} ${_data_color}3${_Boff} "
+  _dh_wait=750   # ms to count down
+  _dh_cmd="   ${_func_color}milli_countdown${_Boff} ${_data_color}1250${_Boff} "
   _dh_cmd="${_dh_cmd}${_quote_color}\"Safety pause before deployment\"${_Boff}${_op_color};${_Boff}\n"
   # line 2 -    handle_result $?
   _dh_cmd="${_dh_cmd}   ${_func_color}handle_result${_Boff} ${_var_color}\$?${_Boff}"
   printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# interactive timer${_Boff}\n ${_dh_cmd}"
   # Logic execution
-  sh_countdown 3 "Safety pause before deployment"
-  [ "$?" -eq 0 ]; handle_result $? "pause complete" "countdown widget failed"
-  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  milli_countdown "$_dh_wait" "Safety pause before deployment"
+  [ "$?" -eq 0 ]; handle_result $? "pause complete" "countdown widget failed" || \
+    demo_ui_ret=$(( demo_ui_ret | 32 ))   # bit 5 = milli_countdown / u_box_msg failure
   printf "\n"
 
-  [ "$_dh_FAILED" ] && demo_widg_ret=1
   unset -v _dh_cmd _dh_FAILED _dh_46 _dh_longest _dh_offset _dh_i _dh_wait _dh_peak
-  return $demo_widg_ret
+  unset -v _dh_i _dh_cycle _dh_cock _dh_wait
+  return $demo_ui_ret
 }
-# @usage _dh_demo_widgets
+# @usage _dh_demo_ui_layout
 # @args none
-# @rule demonstrating established decorative and informative UI elements
+# @rule identifies the structural architecture of the joetoo header
+# @rule serves as the index for subsequent demonstration modules
 
-_dh_demo_emojis() # (POSIX) demonstrate emoji policy, emoji_safe, and right_status
-{ demo_emoji_ret=0
+_dh_demo_msg_log() # (POSIX) demonstrate script_header_joetoo severity integrated messaging/logging system
+{ demo_msg_log_ret=0; _dh_FAILED=$FALSE
+
+  separator "demonstrate_header-${BUILD}" "(Messaging / Logging)"
+    j_msg -5p "${BWon}Messaging / Logging${Boff}"
+    j_msg -5p "${Con}While highlightinging ${BGon}integrated messaging/logging${Boff}${Con} capabilities, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "DEBUG and QUIET environment variables"
+    printf "   "; j_msg -5m "verbosity, loglevel, and logFile environment variables"
+    printf "   "; j_msg -5m "CLR/EL, vt_init, SO/SO, ESC"
+    j_msg -5p "${Con}While highlightinging ${BGon}Box-drawing / UI widgets${Boff}${Con}, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "box_esca, box_shift, box_msg, u_box_msg, progress_inline"
+    j_msg -5m "${Con}earlier modules have demonstrated UI tools handle_result, right_status, and separator"
+    j_msg -5p "${Con}While highlighting its ${BGon}Layout engines / string utilities${Boff}${Con}, this module will demonstrate:${Boff}"
+    printf "   "; j_msg -5m "strip_ansi, _translate_escapes, get_longest, get_msg_len, repeat, pad, smart_wrap_n"
+    j_msg -5m "${Con}earlier modules have demonstrated get_longest() and repeat() as agents in fixed width column layout"
+    j_msg -5m "${Con}earlier modules have also demonstrated emoji generation with both precooked and dynamic assets"
+    printf '\n'
+
+
+  separator "demonstrate_header-${BUILD}" "(verbosity)"
+
+  # preview the command syntax
+  # Construct the "About to run" preview using the theme engine. it should like like this, but theme-colored:
+  #   j_msg -5 "${BYon}DEBUG is currently $(status_color $DEBUG)$(TrueFalse $DEBUG)${Boff}
+  # this involves complex nested expansions, so do it in three pieces we can maintain --
+  #   part 1 - j_msg -5 "${BYon}DEBUG is currently "
+  _dh_cmd="${_func_color}j_msg -5p${_Boff} ${_quote_color}\"${_var_color}\${BYon}${_quote_color}DEBUG is currently "
+  #   part 2 - $(status_color $DEBUG)
+  _dh_cmd="${_dh_cmd}\$(${_Boff}${_func_color}status_color${_Boff} ${_var_color}\$DEBUG${_Boff}${_quote_color})${_Boff}"
+  #   part 3 $(TrueFalse $DEBUG)${Boff}
+  _dh_cmd="${_dh_cmd}${_quote_color}\$(${_Boff}${_func_color}TrueFalse${_Boff}"   # note \$ is for subshell
+  _dh_cmd="${_dh_cmd} ${_var_color}\$DEBUG${_Boff}${_quote_color})${_Boff}"     # note ${_Boff}${_quote_color}in case not bold
+  _dh_cmd="${_dh_cmd}${_var_color}\${Boff}${_quote_color}\"${_Boff}"              # note \$DEBUG, \${Boff} displayed as a variables
+  #   also add administrative comment
+  _dh_cmt="${_cmt_color}# using two-pass column alignment and pad() utility${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n${_dh_cmd}"
+  j_msg -5mp  "${_dh_cmt}"
+  # execution logic - store current state to avoid side effects in the main script
+  _dh_oldv=${verbosity:-5}
+  # Set state for demonstration
+  DEBUG="$TRUE"; verbosity="$notice"
+  j_msg -5m "${BYon}DEBUG is currently $(status_color $DEBUG)$(TrueFalse $DEBUG)${Boff}"
+    verbosity=$_dh_oldv   # Restore state
+  printf "\n"
+  j_msg -5np "exporting LOGGING=\$TRUE"
+  export LOGGING=$TRUE; right_status $?
+  j_msg -5np "logFile: $logFile"
+
+# right_status $?
+  echo "" > $logFile  # zero out this test log
+
+  printf '\n'
+  _ml_varlist="bool.QUIET bool.DEBUG bool.LOGGING bool.INTERACTIVE verbosity loglevel logFile"
+  _ml_longest=$(get_longest $_ml_varlist)
+  display_vars "$_ml_longest" "$_ml_varlist"
+
+  separator "demonstrate_header-${BUILD}" "(severity/verbosity)"
+
+  # temporarily set system verbosity for demonstration
+  _dh_oldv=$verbosity
+  j_msg -5nm "setting DEBUG false and verbosity to notice [$notice]"
+  DEBUG=$FALSE && verbosity="${notice}"
+  right_status $?
+  j_msg -5m "\$DEBUG is $(status_color $DEBUG)$(TrueFalse $DEBUG)${_Boff}"
+  j_msg -3 "test error (this line was printed by j_msg -3 \"test error\")"
+  j_msg -5m "system verbosity is [${_data_color}${verbosity}${_Boff}]"
+  j_msg -5m "this corresponds to severity level ${_Boff}[${_data_color}$(get_severity ${verbosity})${_Boff}]"
+
+  # demonstrate verbosity and severity linkage with get_severity and globally defined severity levels
+  # --- Preview Construction for line 1 ---
+  # Goal: printf '%s\n' " crit is severity [$(j_msg -5mp "$crit")]"
+  _dh_cmd="  ${_cmd_color}printf${_Boff} ${_quote_color}'%s\\\n' "
+  _dh_cmd="${_dh_cmd}\"  crit is severity ${_Boff}${_Boff}[${_ctl_color}\$(${_Boff}${_cmd_color}j_msg ${_data_color}-5mp${_quote_color}"
+  _dh_cmd="${_dh_cmd} \"${_var_color}\$crit${_quote_color}\"${_ctl_color})${_Boff}]${_quote_color}\"${_Boff}\n"
+
+  # --- Preview Construction for line 2 ---
+  # Goal: j_msg -5mp "severity 2 is [$(get_severity 2)]"
+  _dh_cmd="${_dh_cmd}${_cmd_color}  j_msg -5p${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"  severity 2 is ${_Boff}[${_ctl_color}\$(${_func_color}get_severity${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_data_color}2${_Boff}${_ctl_color})${_Boff}]${_quote_color}\"${_Boff}\n"
+
+  # --- Display ---
+  _dh_cmt="${_cmt_color}# demonstrating nested expansion and function calls${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
+
+  # --- Logic Execution ---
+  printf '%s\n' "  crit is severity [$(j_msg -5mp "$crit")]"
+  j_msg -5mp "  severity 2 is [$(get_severity 2)]"
+
+  # demonstrate j_msg -p - debugging message (output if verbosity >= level)
+  _dh_cmd="${_func_color}j_msg -7m${_Boff} ${_quote_color}\"Raw debug data: \${_var}\"${_Boff}"
+  _dh_cmt="${_cmt_color}# if verbosity >= \${debug} (it is not, so expect no output)${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt} ${_dh_cmd}"
+  j_msg -7m "  Raw debug data: example_value"
+  # logic execution - and failure check
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  # demonstrate j_msg -p - debugging message (output if verbosity >= level)
+  _dh_cmd="${_func_color}DEBUG=\TRUE j_msg -7p${_Boff} ${_quote_color}\"Raw debug data: \${_var}\"${_Boff}"
+  _dh_cmt="${_cmt_color}# if verbosity >= \${debug} (it is not, but DEBUG is on, so expect output)${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt} ${_dh_cmd}"
+  DEBUG=$TRUE j_msg -7p"  Raw debug data: example_value"
+  # logic execution - and failure check
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  
+    # demonstrate j_msg -5 - debugging message (output if verbosity >= level)
+  _dh_cmd="${_func_color}j_msg -5m${_Boff} ${_quote_color}\"Debug message at level \${notice}\"${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_cmt_color}# if verbosity >= \${notice} (it is)${_Boff}\n ${_dh_cmd}"
+  # logic execution - and failure check
+  j_msg -5m "routine message at level ${notice}"
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  # demonstrate j_msg -5mn; logic test; right_status $? (conditional status linkage)
+  # case A: looking for a file that does not exist
+  _dh_file_bogus="/usr/sbin/script_header_joetoo_bogus"
+  # construct line 1 of the commands to be displayed
+  _dh_cmd=" ${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_bogus}\"${_Boff}\n"
+  # construct line 2 of the commands to be displayed (single-quote the line with escaped quotes
+  _dh_cmd="${_dh_cmd} ${_func_color}j_msg -5mn${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_quote_color}\"looking for \${_dh_header}\"${_Boff}"
+  # construct line 3 of the commands to be displayed - starting with the [ test
+  _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}"
+  # isolate the  '!' - copy/paste to test this block will choke otherwise
+  _dh_cmd="${_dh_cmd}"'!'
+  _dh_cmd="${_dh_cmd}${_Boff} ${_opt_color}-z${_Boff} "
+  # Add the find subshell
+  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header}"
+  _dh_cmd="${_dh_cmd} ${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\"${_Boff}"
+  # Close bracket and add right_status
+  _dh_cmd="${_dh_cmd} ${_ctl_color}]${_Boff} ${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff} "
+
+  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
+  # logic execution - and failure check
+  _dh_header="${_dh_file_bogus}"; j_msg -5mn "looking for ${_dh_header}"
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ]; right_status $?
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+
+  # case B: Looking for a file that does exist
+  _dh_file_real="/usr/sbin/script_header_joetoo"
+  # construct line 1 of the commands to be displayed
+  _dh_cmd="${_var_color}_dh_header${_Boff}=${_quote_color}\"${_dh_file_real}\"${_Boff}\n"
+  # construct line 2 of the commands to be displayed
+  _dh_cmd="${_dh_cmd} ${_func_color}j_msg -5mn${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"looking for \${_dh_header}\"${_Boff} "
+  _dh_cmd="${_dh_cmd}\"${_var_color}\${crit}${_Boff}\"\n"
+  # construct line 3 of the commands to be displayed - starting with the [ test
+  _dh_cmd="${_dh_cmd} ${_ctl_color}[${_Boff} ${_op_color}!${_Boff} ${_opt_color}-z${_Boff} "
+  # Add the find subshell
+  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_cmd_color}find${_Boff} \${_dh_header} "
+  _dh_cmd="${_dh_cmd}${_data_color}2${_Boff}${_op_color}>/dev/null)${_quote_color}\" "
+  # Close bracket and add right_status (note: j_msg -5m will add a newline)
+  _dh_cmd="${_dh_cmd}${_ctl_color}]${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff} "
+  _dh_cmt="${_cmt_color}# if verbosity >= \${crit}  (it is)${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
+  # logic execution - and failure check
+  _dh_header="${_dh_file_real}"; j_msg -5mn "looking for ${_dh_header}"
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+  [ ! -z "$(find ${_dh_header} 2>/dev/null)" ];   right_status $?
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  # demonstrate d_do - case A: simple command (execution if verbosity >= level)
+  # build command - d_do "printf '${BGon}Executed${Boff}'" "$crit" (theme-colored)
+  _dh_cmd="${_func_color} d_do${_Boff} ${_quote_color}\"printf '\$bin_confetti"
+  _dh_cmd="${_dh_cmd} \${BGon}Executed\${Boff}'\"${_Boff} \"${_var_color}\${crit}${_Boff}\""
+  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${_Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}  ${_dh_cmt}${_dh_cmd}"
+  # logic execution - and failure check
+  d_do "printf '${BGon} $bin_confetti Executed${Boff}\n'" "$crit"
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  # demonstrate d_do - case B: complex multi-part command (execution if verbosity >= level)
+  # build command d_do 'j_msg -5mp "      line 1.1"; j_msg -5mp "      line 1.2"' "$notice" (theme colored)
+  _dh_cmd="${_func_color} d_do${_Boff} ${_quote_color}'j_msg -5mp \"      line 1.1\"; j_msg -5mp \""
+  _dh_cmd="${_dh_cmd}      line 1.2\"'${_Boff} \"${_var_color}\${crit}${_Boff}\""
+  _dh_cmt="${_cmt_color}# if verbosity >= \"\$crit\" (it is)${Boff}\n"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_dh_cmt}${_dh_cmd}"
+  # logic execution - and failure check
+  d_do 'j_msg -5mp "   line 1.1"; j_msg -5mp "   line 1.2"' "$notice"
+  [ "$?" -eq 0 ] || _dh_FAILED=$TRUE
+
+  [ "$_dh_FAILED" = "$TRUE" ] && demo_debug_ret=1
+  # restore previous system verbosity
+  verbosity=$_dh_oldv
+  printf "\n"
+demo_emoji_ret=0
   _dh_FAILED=$FALSE
   _dh_result=0
 
   #-----[ part 1: show emoji policy state ]---------------------------------------------------------
   # construct the command preview string -
   # line 1 - printf 'EMOJI_CAPABLE=[ %s ] EMOJI_DISABLE=[ %s ]\n' "${EMOJI_CAPABLE}" "${EMOJI_DISABLE}"
-  _dh_cmd="   ${_func_color}printf${_Boff} ${_quote_color}\"EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\\\\n\"${_Boff} "
-  _dh_cmd="${_dh_cmd}${_var_color}\"\${EMOJI_CAPABLE}\" \"\${EMOJI_DISABLE}\"${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+  _dh_cmd="   ${_func_color}printf${_Boff} ${_quote_color}\"    EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\\\\n\"${_Boff} "
+  _dh_cmd="${_dh_cmd}${_op_color}\$(TrueFalse ${_quote_color}\"${_var_color}\${EMOJI_CAPABLE}${_quote_color}\"${_Boff}${_op_color})${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_op_color}\$(TrueFalse ${_quote_color}\"${_var_color}\${EMOJI_DISABLE}${_quote_color}\"${_Boff}${_op_color})${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}"
 
   # Logic execution
-  printf 'EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\n' "${EMOJI_CAPABLE:-}" "${EMOJI_DISABLE:-}"
+  printf '    EMOJI_CAPABLE=[ %s ]  EMOJI_DISABLE=[ %s ]\n' "$(TrueFalse "${EMOJI_CAPABLE:-}")" "$(TrueFalse "${EMOJI_DISABLE:-}")" || _dh_FAILED=$TRUE
   printf "\n"
 
   #-----[ part 2: basic emoji_safe() + right_status ]----------------------------------------------
   # construct the command preview string -
-  # line 1 - emoji_safe "$check_mark_button"; right_status $?
-  _dh_cmd="   ${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${check_mark_button}\"${_Boff}${_op_color};${_Boff} "
+  # line 1 -   j_msg -5mp "this is a dynmically rendered rocket: $(emoji_safe "$rocket")"; _dh_result=$?
+  _dh_cmd="   ${_func_color}j_msg ${_data_color}-5mp ${_quote_color}\"    This is a dynmically rendered rocket:"
+  _dh_cmd="${_dh_cmd} ${_op_color}\$(${_func_color}emoji_safe${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_quote_color}\"\${rocket}\"${_Boff}${_op_color});${_Boff} "
   _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}\n"
   # line 2 - emoji_safe "$cross_mark"; right_status $?
-  _dh_cmd="${_dh_cmd}   ${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${cross_mark}\"${_Boff}${_op_color};${_Boff} "
+  _dh_cmd="${_dh_cmd}    ${_func_color}printf '    This is a precooked trophy: %s'"
+  _dh_cmd="${_dh_cmd}${_Boff} ${_quote_color}\"\${bin_trophy}\"${_Boff}${_op_color};${_Boff} "
   _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}"
 
   # Logic execution
-  emoji_safe "$check_mark_button"; _dh_result=$?
-  right_status $_dh_result
-  printf "\n"
-  emoji_safe "$cross_mark"; _dh_result=$?
-  right_status $_dh_result
+  j_msg -5mpn "    this is a dynmically rendered rocket: $(emoji_safe "$rocket")"; right_status $? || _dh_FAILED=$TRUE
+  j_msg -5mpn "    This is a precooked trophy: $bin_trophy"; right_status $_dh_result || _dh_FAILED=$TRUE
   printf "\n"
 
   #-----[ part 3: emoji_safe() inside j_msg -5 ]-------------------------------------------------
   # construct the command preview string -
+  # line 1 -   idx_hammer=$(idx_of_emoji $hammer)
+  _dh_cmd="   idx_hammer=${_op_color}\$(${_func_color}idx_of_emoji ${_quote_color}\""
+  _dh_cmd="${_dh_cmd}${_var_color}\$hammer${_quote_color}\"${_Boff}${_op_color})${_Boff}"
+  printf "\n"; j_msg -5p "${BYon}About to run:${Boff}\n ${_dh_cmd}"
   # line 1 - j_msg -5 "$(emoji_safe "$hammer") Running a work-like task..."
-  _dh_cmd="   ${_func_color}j_msg -5${_Boff} "
-  _dh_cmd="${_dh_cmd}${_quote_color}\"\$(${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${hammer}\"${_quote_color}${_Boff})"
-  _dh_cmd="${_dh_cmd} Running a work-like task...\"${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff}\n ${_dh_cmd}"
+  _dh_cmd="    ${_func_color}j_msg ${_data_color}-5p -M ${_quote_color}\"${_var_color}\$idx_hammer${_quote_color}\"${_Boff} "
+  _dh_cmd="${_dh_cmd}${_quote_color}\"Running a work-like task...\"${_quote_color}${_Boff}"
+  j_msg -5mp "$_dh_cmd"
 
   # Logic execution
-  j_msg -5 "$(emoji_safe "$hammer") Running a work-like task..."
+  idx_hammer=$(idx_of_emoji $hammer)
+  j_msg -5p -M "$idx_hammer" "Running a work-like task..." | sed 's|^|   |'
   _dh_result=$?
   [ "$_dh_result" -eq 0 ] || _dh_FAILED=$TRUE
   printf "\n"
@@ -6600,28 +6780,32 @@ _dh_demo_emojis() # (POSIX) demonstrate emoji policy, emoji_safe, and right_stat
   #-----[ part 4: demonstrate EMOJI_DISABLE override ]---------------------------------------------
   # construct the command preview string -
   # line 1 - EMOJI_DISABLE="$TRUE"; emoji_safe "$check_mark_button"; right_status $?
-  _dh_cmd="   ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${TRUE}\"${_Boff}${_op_color};${_Boff} "
-  _dh_cmd="${_dh_cmd}${_func_color}emoji_safe${_Boff} ${_quote_color}\"\${check_mark_button}\"${_Boff}${_op_color};${_Boff} "
-  _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}\n"
-  # line 2 - EMOJI_DISABLE="$FALSE"
-  _dh_cmd="${_dh_cmd}   ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${FALSE}\"${_Boff}"
-  printf "\n"; j_msg -5 "${BYon}About to run:${Boff} ${_cmt_color}# EMOJI_DISABLE override${_Boff}\n ${_dh_cmd}"
+##  _dh_cmd="   ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${TRUE}\"${_Boff}${_op_color};${_Boff} "
+ # _dh_cmd="${_dh_cmd}${_cmd_color}printf${_Boff} ${_quote_color}\"\$bin_check_mark_button\"${_Boff}${_op_color};${_Boff} "
+ # _dh_cmd="${_dh_cmd}${_func_color}right_status${_Boff} ${_var_color}\$?${_Boff}\n"
+ # # line 2 - EMOJI_DISABLE="$FALSE"
+ # _dh_cmd="${_dh_cmd}    ${_var_color}EMOJI_DISABLE${_Boff}${_op_color}=${_Boff}${_quote_color}\"\${FALSE}\"${_Boff}"
+ # printf "\n"; j_msg -5p "${BYon}About to run:${Boff} ${_cmt_color}# EMOJI_DISABLE override${_Boff}\n ${_dh_cmd}"
 
-  # Logic execution
-  EMOJI_DISABLE="$TRUE"
-  emoji_safe "$check_mark_button"; _dh_result=$?
-  right_status $_dh_result
-  printf "\n"
-  EMOJI_DISABLE="$FALSE"
+  # Logic execution - use j_msg -p -M (to keep emoji prefix requested)
+  EMOJI_DISABLE="$TRUE" j_msg -5pn -M 0 "EMOJI_DISABLE true; test should not prefix with emoji"; right_status $?
+  EMOJI_DISABLE="$FALSE" j_msg -5pn -M 0 "EMOJI_DISABLE false; test should prefix with emoji"; right_status $?
 
-  [ "$_dh_FAILED" ] && demo_emoji_ret=1
-  unset -v _dh_cmd _dh_FAILED _dh_result
-  return $demo_emoji_ret
+  [ "$_dh_FAILED" ] && demo_msg_log_ret=1
+
+  j_msg -5p "printing logfile"
+  separator "_dh_demo_msg_log" "(logFile)"
+  cat $logFile
+
+  unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_result _dh_oldv _dh_oldV
+  unset -v _dh_file_bogus _dh_file_real _dh_header
+  unset -v _ml_varlist _ml_longest idx_hammer
+
+  return $demo_msg_log_ret
 }
-# @usage _dh_demo_emojis
 # @args none
-# @rule demonstrates emoji policy, emoji_safe(), and right_status integration
-
+# @rule identifies the structural architecture of the joetoo header
+# @rule serves as the index for subsequent demonstration modules
 
 demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of this header
 { dh_final_status=0   # clear all bits of this status "bitmask" variable
@@ -6629,18 +6813,19 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
   # begin output with separator
   separator "demonstrate_header-${BUILD}" "(demonstration)"
 
-  # execute sub-modules ( use a bitmask status "byte" to track overall status, indetail )
-  # var|(1<<i) means: var = (binary shift a 1 i bits to the left) then bitwise OR that number with var
+  # execute sub-modules ( use a bitmask status variable to track overall status, in detail )
+  # var|(1<<i) means: var = (binary shift a '1' i bits to the left) then bitwise OR that number with var
   # i.e. SET the ith most significant bit
   _dh_show_capabilities        || dh_final_status=$(( dh_final_status | ( 1 << 0 ) ))
-  _dh_demo_verbosity           || dh_final_status=$(( dh_final_status | ( 1 << 1 ) ))
-  _dh_demo_versions            || dh_final_status=$(( dh_final_status | ( 1 << 2 ) ))
-  _dh_demo_numeric             || dh_final_status=$(( dh_final_status | ( 1 << 3 ) ))
-  _dh_demo_debug_utils         || dh_final_status=$(( dh_final_status | ( 1 << 4 ) ))
-  _dh_demo_boolean             || dh_final_status=$(( dh_final_status | ( 1 << 5 ) ))
-  _dh_demo_terminal_io         || dh_final_status=$(( dh_final_status | ( 1 << 6 ) ))
-  _dh_demo_environment         || dh_final_status=$(( dh_final_status | ( 1 << 7 ) ))
-  _dh_demo_widgets             || dh_final_status=$(( dh_final_status | ( 1 << 8 ) ))
+  _dh_demo_foundation          || dh_final_status=$(( dh_final_status | ( 1 << 1 ) ))
+  _dh_demo_corelogic           || dh_final_status=$(( dh_final_status | ( 1 << 2 ) ))
+  _dh_demo_ui_layout           || dh_final_status=$(( dh_final_status | ( 1 << 3 ) ))
+  _dh_demo_msg_log             || dh_final_status=$(( dh_final_status | ( 1 << 4 ) ))
+
+#  _dh_demo_                     || dh_final_status=$(( dh_final_status | ( 1 << 5 ) ))
+#  _dh_demo_                     || dh_final_status=$(( dh_final_status | ( 1 << 6 ) ))
+#  _dh_demo_                     || dh_final_status=$(( dh_final_status | ( 1 << 7 ) ))
+#  _dh_demo_                     || dh_final_status=$(( dh_final_status | ( 1 << 8 ) ))
 
   #-----[ results summary ]------------------------------------------------------------------------------------
   # preview the command syntax
@@ -6662,14 +6847,15 @@ demonstrate_header() # (POSIX) describe, demonstrate, and test capabilities of t
 
   # list functions in order from LSB (bit 0) to MSB
   _dh_tests="_dh_show_capabilities"               # bit 0
-  _dh_tests="${_dh_tests} _dh_demo_verbosity"     # bit 1
-  _dh_tests="${_dh_tests} _dh_demo_versions"      # bit 2
-  _dh_tests="${_dh_tests} _dh_demo_numeric"       # bit 3
-  _dh_tests="${_dh_tests} _dh_demo_debug_utils"   # bit 4
-  _dh_tests="${_dh_tests} _dh_demo_boolean"       # bit 5
-  _dh_tests="${_dh_tests} _dh_demo_terminal_io"   # bit 6
-  _dh_tests="${_dh_tests} _dh_demo_environment"   # bit 7
-  _dh_tests="${_dh_tests} _dh_demo_widgets"       # bit 8
+  _dh_tests="${_dh_tests} _dh_demo_foundation"    # bit 1
+  _dh_tests="${_dh_tests} _dh_demo_corelogic"     # bit 2
+  _dh_tests="${_dh_tests} _dh_demo_ui_layout"     # bit 3
+  _dh_tests="${_dh_tests} _dh_demo_msg_log"       # bit 4
+
+#  _dh_tests="${_dh_tests} _dh_demo_boolean"       # bit 5
+#  _dh_tests="${_dh_tests} _dh_demo_terminal_io"   # bit 6
+#  _dh_tests="${_dh_tests} _dh_demo_environment"   # bit 7
+#  _dh_tests="${_dh_tests} _dh_demo_widgets"       # bit 8
   _dh_tests="${_dh_tests} _dh_summarization"      # bit 9
   _dh_longest=$(get_longest $_dh_tests)
   _dh_fw=$((_dh_longest + 1))
