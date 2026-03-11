@@ -101,15 +101,15 @@ varlist+=" BREAK control_window numdesktops sleepWait longWait typeWait timeout"
 varlist+=" bool.VERBOSE verbosity"
 
 # load custom configuration, if it exists
-notice_msg_n "sourcing config_file: ${config_file} ..."
+j_msg -${notice} -p -n "sourcing config_file: ${config_file} ..."
 [[ -f "${config_file}" ]] || die "${config_file} does not exist"
 source "${config_file}" || die "failed to source ${config_file}"
-right_status $?
+right_status $? ${notice}
 
-notice_msg_n "sourcing build_file: ${build_file} ..."
+j_msg -${notice} -p -n "sourcing build_file: ${build_file} ..."
 [[ -f "${build_file}" ]] || die "${build_file} does not exist"
 source "${build_file}" || die "failed to source ${build_file}"
-right_status $?
+right_status $? ${notice}
 
 # set these after sourcing config
 num_ssh_sessions="${#ssh_session_list[@]}"
@@ -139,13 +139,13 @@ current_window=""
 calculate_pixels() {
     local percentage=$1
     local total_dimension=$2
-    local percent_value=$(echo "$percentage" | cut -d'%' -f1)
-    echo $((total_dimension * percent_value / 100))
+    local percent_value=$(printf '%s\n' "$percentage" | cut -d'%' -f1)
+    printf '%s\n' "$((total_dimension * percent_value / 100))"
 }
 
 set_terminal_window_dimensions() {
     # set terminal dimensions in pixels based on percents from config
-    debug_msg "in ${FUNCNAME[0]}"
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
     ERROR="$FALSE"
     WINDOW_WIDTH=$(calculate_pixels "$width" "$SCREEN_WIDTH") || ERROR="$TRUE"
     WINDOW_HEIGHT=$(calculate_pixels "$height" "$SCREEN_HEIGHT") || ERROR="$TRUE"
@@ -157,27 +157,27 @@ set_terminal_window_dimensions() {
 
 close_windows() {
     local result=""
-    debug_msg "in ${FUNCNAME[0]} with arg(s) [$@]"
-    notice_msg "Now closing all terminal windows except control_window [${BMon}${control_window}${Boff}] ..."
+    j_msg -${debug} -p "in ${FUNCNAME[0]} with arg(s) [$@]"
+    j_msg -${notice} -p "Now closing all terminal windows except control_window [${BMon}${control_window}${Boff}] ..."
     # close all these windows
     for win in $(for x in "${window_list[@]}"; do echo "$x"; done | sort -n)
     do
         # use getwindowname to test for the continued existence of the window before running commands on them
         # if $win exists, the command succeeds and prints its name to stdout
         # if $win has been closed, the command will fail and write an error message to stderr
-        notice_msg_n "looking for window: [${BMon}${win}${Boff}]"
+        j_msg -${notice} -p -n "looking for window: [${BMon}${win}${Boff}]"
         xdotool getwindowname "$win" >/dev/null 2>&1 ; result=$?
-        handle_result "$?" "exists" "does not exist"   # don't use || return 1 (drive on)
+        handle_result "$?" "exists" "does not exist" ${notice}   # don't use || return 1 (drive on)
 
         [ ! "$result" -eq 0 ] && continue  # skips code below and continues w next iteration of loop
-        notice_msg_n "getting desktop for win: [${BMon}$win${Boff}]"
+        j_msg -${notice} -p -n "getting desktop for win: [${BMon}$win${Boff}]"
         desktop=$(xdotool get_desktop_for_window "$win" 2>/dev/null)
-        handle_result "$?" "${desktop}" "${desktop}"   # don't use || return 1 (drive on)
-        notice_msg_n "Examining window [${BMon}$win${Boff}] on desktop [${BMon}$desktop${Boff}]"
+        handle_result "$?" "${desktop}" "${desktop}" ${notice}   # don't use || return 1 (drive on)
+        j_msg -${notice} -p -n "Examining window [${BMon}$win${Boff}] on desktop [${BMon}$desktop${Boff}]"
         # control_window should be excluded from window_list, and the xprop check should not be
         # necessary since we are using top-level terminal application windows as the search scope
         # see versions prior to 0.1.8 for use of check here for control_window and use of xprop
-        echo_e_msg_n " (${BRon}closing${Boff})"
+        j_msg -${notice} -mp -n " (${BRon}closing${Boff})"
         # wmctrl -ic is equivalent to clicking the red "X" in the upper right corner of a window
         #  (sends the WM_DELETE_WINDOW protocol message, a polite request, which can be intercepted
         #   by the terminal window application (e.g. Konsole), which will generate a confirmation
@@ -187,25 +187,25 @@ close_windows() {
 #        wmctrl -ic "$win"
         xdotool windowkill "$win"
         poll_for_window_closed "$win"
-        handle_result "$?" "closed" "failed to close"
+        handle_result "$?" "closed" "failed to close" ${notice}
     done
     # move the active window to desktop 0, if it isn't already there
     if [[ "${current_desktop}" -eq 0 ]]
     then
-      notice_msg "control_window [${BMon}${control_window}${Boff}] is already on desktop 0; no action required"
+      j_msg -${notice} -p "control_window [${BMon}${control_window}${Boff}] is already on desktop 0; no action required"
     else
-      notice_msg_n "moving control_window [${BMon}${control_window}${Boff}] to desktop 0 ..."
+      j_msg -${notice} -p -n "moving control_window [${BMon}${control_window}${Boff}] to desktop 0 ..."
       xdotool set_desktop_for_window "${control_window}" 0
-      handle_result "$?" "desktop 0 set for ctrl" "failed to set_desktop_for_window 0 for ctrl" || return 1
+      handle_result "$?" "desktop 0 set for ctrl" "failed to set_desktop_for_window 0 for ctrl" ${notice} || return 1
     fi
     # now actually go to desktop 0 where we just sent the control window
-    notice_msg_n "re-setting to desktop 0"
+    j_msg -${notice} -p -n "re-setting to desktop 0"
     xdotool set_desktop 0
-    handle_result "$?" "desktop 0 set" "failed to setset_desktop 0" || return 1
+    handle_result "$?" "desktop 0 set" "failed to setset_desktop 0" ${notice} || return 1
 
-    notice_msg_n "activating and re-setting focus to control_window"
+    j_msg -${notice} -p -n "activating and re-setting focus to control_window"
     xdotool windowactivate --sync "${control_window}"
-    handle_result "$?" "activated and re-set ctrl" "failed to re-activate control_window" || return 1
+    handle_result "$?" "activated and re-set ctrl" "failed to re-activate control_window" ${notice} || return 1
     return 0
 }
 
@@ -220,7 +220,7 @@ poll_for_window_closed() {
     # return 1 if this timed out
     if [[ ! -z $(wmctrl -l | grep -q "$myWin") ]] ; then
         # myWin still not closed; timed out
-        error_msg "timed out waiting for myWin to close"
+        j_msg -${err} "timed out waiting for myWin to close"
         return 1
     else
         return 0
@@ -231,27 +231,27 @@ kill_pids() {
     # as a last resort, kill processes identified by ${myFilter}
     local myFilter="$1"
     myFilter_name="$(echo ${myFilter} | awk '{print $2}')"
-    notice_msg_n "identifying pids matching myFilter for [${BYon}${myFilter_name}${Boff}]"
+    j_msg -${notice} -p -n "identifying pids matching myFilter for [${BYon}${myFilter_name}${Boff}]"
     pids=($(eval "ps -aef | ${myFilter} | awk '{print \$2}'"))
-    handle_result "$?" "${#pids[@]} pids" "failed to id pids!" || return 1
+    handle_result "$?" "${#pids[@]} pids" "failed to id pids!" ${notice} || return 1
 
-    debug_msg "#pids: ${#pids[@]}"
-    notice_msg "Exterminating any rogue [${BYon}${myFilter_name}${Boff}] process..."
+    j_msg -${debug} -p "#pids: ${#pids[@]}"
+    j_msg -${notice} -p "Exterminating any rogue [${BYon}${myFilter_name}${Boff}] process..."
     if [[ -z "${pids[@]}" ]] ; then
-         notice_msg "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
+         j_msg -${notice} -p "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
     else
         elapsed=0
         round=1
-        debug_msg "elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]"
+        j_msg -${debug} -p "elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]"
         # floating point math here...
         while [[ ! -z "${pids[@]}" && "$( echo "$elapsed <= $timeout" | bc -l )" -eq 1 ]] ; do
-            debug_msg "round: ($round) elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]"
-            notice_msg "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
+            j_msg -${debug} -p "round: ($round) elapsed: [$elapsed] sleepWait: [$sleepWait] timeout: [$timeout]"
+            j_msg -${notice} -p "Found [${BMon}${#pids[@]}${Boff}] processes for myFilter [${BYon}${myFilter_name}${Boff}]"
             for x in "${pids[@]}"
             do
-                notice_msg_n "(${round}) ${BRon}killing${Boff} process x: [${BMon}${x}${Boff}]"
+                j_msg -${notice} -p -n "(${round}) ${BRon}killing${Boff} process x: [${BMon}${x}${Boff}]"
                 kill -9 "$x" 2>/dev/null
-                handle_result "$?" "killed" "kill failed!" || return 1
+                handle_result "$?" "killed" "kill failed!" ${notice} || return 1
             done # for
             sleep "$sleepWait"
             # floating point math again here...
@@ -270,25 +270,25 @@ dump_terminal_window_list() {
     local np_chars=26   # discount for non-visible characters in msg
     msg="${BYon}----------[ ${LBon}Current window list ${BYon}]"
     msg+="$( repeat '-' $(( $(termwidth) - ( ${#msg} + $ts_buffer -$np_chars ) )) )${Boff}"
-    notice_msg "${msg}"
+    j_msg -${notice} -p "${msg}"
     win_list_line=""
     for win in "${window_list[@]}"; do
         # print as many window ids on each line as will fit
-        debug_msg "#win_list_line: [${#win_list_line}] #win: [${#win}]"
-        debug_msg " sum: [$((${#win_list_line} + ${#win}))] termwidth: [$(termwidth)]"
+        j_msg -${debug} -p "#win_list_line: [${#win_list_line}] #win: [${#win}]"
+        j_msg -${debug} -p " sum: [$((${#win_list_line} + ${#win}))] termwidth: [$(termwidth)]"
         if [ $((${#win_list_line} + ${#win})) -lt $(( $(termwidth) - buffer )) ] ; then
             # this line is not full; append
-            debug_msg "comparison true (room for win)"
+            j_msg -${debug} -p "comparison true (room for win)"
             win_list_line+="$win "
         else
             # this line is already full; output this one, and then start a new one
-            debug_msg "comparison false (room for win)"
-            echo_msg "    ${win_list_line}"
+            j_msg -${debug} -p "comparison false (room for win)"
+            j_msg -${notice} -mp "    ${win_list_line}"
             win_list_line="$win"
         fi
         # output whatever is left in any remaining un-full line
     done
-    echo_msg "    ${win_list_line}"
+    j_msg -${notice} -mp "    ${win_list_line}"
     return 0
 }
 
@@ -306,10 +306,10 @@ close_windows_wrapper() {
     # run close_windows and repeat until there are no more open windows
     local round=0
     get_terminal_window_list || return 1
-    notice_msg "Currently tracking [${BMon}${#window_list[@]}${Boff}] terminal windows"
+    j_msg -${notice} -p "Currently tracking [${BMon}${#window_list[@]}${Boff}] terminal windows"
     d_do 'dump_terminal_window_list' "$debug"
     while [[ ! -z "${window_list[@]}" ]] ; do
-        notice_msg "round (${BMon}${round}${Boff}) closing ${#window_list[@]} terminal windows"
+        j_msg -${notice} -p "round (${BMon}${round}${Boff}) closing ${#window_list[@]} terminal windows"
         close_windows || return 1
         get_terminal_window_list || return 1
         ((round+=1))
@@ -318,24 +318,24 @@ close_windows_wrapper() {
 }
 
 #-----[ main script ]-----------------------------------------------
-debug_msg "now in main script"
-notice_msg_n "checking not root ..."
-checknotroot && right_status $? || die "failed checknotroot"
+j_msg -${debug} -p "now in main script"
+j_msg -${notice} -p -n "checking not root ..."
+checknotroot && right_status $? ${notice}|| die "failed checknotroot"
 validate_logfile || die "failed to validate logfile"
 
 separator "$(hostname)" "${PN}-${BUILD}"
-notice_msg "starting script"
+j_msg -${notice} -p "starting script"
 
 # identify the control window (used to activate this program)
-notice_msg_n "Getting ID of current (control) window"
+j_msg -${notice} -p -n "Getting ID of current (control) window"
 control_window=$(xdotool getactivewindow)
-handle_result "$?" "${control_window}" "failed to id control_window" || exit 1
+handle_result "$?" "${control_window}" "failed to id control_window" ${notice} || exit 1
 
-# identify the current desktop and notice_msg "starting script"
+# identify the current desktop and j_msg -${notice} -p "starting script"
 current_desktop=$(xdotool get_desktop_for_window "${control_window}")
-notice_msg "current_desktop: ${current_desktop}"
+j_msg -${notice} -p "current_desktop: ${current_desktop}"
 num_desktops=$(xdotool get_num_desktops)
-notice_msg "num_desktops: $num_desktops"
+j_msg -${notice} -p "num_desktops: $num_desktops"
 
 # run sequence
 show_config || die "failed show_config"
@@ -343,6 +343,6 @@ close_windows_wrapper || die "failed close_windows_wrapper"
 kill_pids "${xdotool_filter}"  || die "failed to kill_pids for filter [${BYon}${filter}${Boff}]"
 kill_pids "${ssh_filter}" || die "failed to kill_pids for filter [${BYon}${filter}${Boff}]"
 
-notice_msg "${BGon}Done${Boff}"
+j_msg -${notice} -p "${BGon}Done${Boff}"
 
-#debug_msg "${BMon}Debug Marker${Boff}"; exit 1
+#j_msg -${debug} -p "${BMon}Debug Marker${Boff}"; exit 1
