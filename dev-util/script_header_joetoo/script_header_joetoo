@@ -424,6 +424,15 @@ ACTIVE_UI_BOX_REGISTRY="
 31${US}uT_left_vH_hL${US}$uT_left_vH_hL${US}+
 "
 
+# define a set of unicode character ranges for use with _precook_unregistry (sanitation)
+INACTIVE_UNICODE_UNREGISTRY="
+1${US}FE00${US}FE0E${US}[VS]
+2${US}200C${US}200D${US}[ZW]
+3${US}200E${US}2069${US}[PUNC]
+4${US}FFF9${US}FFFB${US}[AN]
+5${US}2600${US}26FF${US}[LEGACY]
+"
+
 #-----[ raw values for emit bitmask definition ]-------------------------------------------------------------------
 
 # @note Messaging/Logging = semantic meaning + severity + destination
@@ -457,12 +466,10 @@ ACTIVE_UI_BOX_REGISTRY="
 # @note   110       severity labeling + forced print
 # @note   *01       always suppress (even if FORCE is set)
 # @note [9]      PREMOJI        - single-bit flat to turn on emoji prefix
-# @note [10-15]  PREMOJI_INDEX  - (6 bit index into ACTIVE_EMOJI_REGISTRY
 # @note   see list at ACTIVE_EMOJI_REGISTRY="..."
-# @note [16]     RESERVED (future)
-# @note [17]     PREFIX         - single-bit flag to turn on prefix
-# @note [18]     PREFIX_BOLD    - intensity
-# @note [19-21]  PREFIX_COLOR   - (3 bit RGB)(21:R, 20:G, 19:B)
+# @note [10]     PREFIX         - single-bit flag to turn on prefix
+# @note [11]     PREFIX_BOLD    - intensity
+# @note [12-14]  PREFIX_COLOR   - (3 bit RGB)(14:R, 13:G, 12:B)
 # @note   000 (0)   black normally, but here means severity-implied color
 # @note   001 (1)   blue
 # @note   010 (2)   green
@@ -471,8 +478,7 @@ ACTIVE_UI_BOX_REGISTRY="
 # @note   101 (5)   magenta
 # @note   110 (6)   yellow
 # @note   111 (7)   white
-# @note [22-23]  RESERVED (future)
-# @note [24-26]  SEVERITY (3 bits)
+# @note [15-17]  SEVERITY (3 bits)
 # @note   000 (0)   emerg
 # @note   001 (1)   alert
 # @note   010 (2)   crit
@@ -481,7 +487,8 @@ ACTIVE_UI_BOX_REGISTRY="
 # @note   101 (5)   notice
 # @note   110 (6)   info
 # @note   111 (7)   debug
-# @note [26-30]  RESERVED (future)
+# @note [18-25]  PREMOJI_INDEX  - (8 bit index into ACTIVE_EMOJI_REGISTRY
+# @note [27-30]  RESERVED (future)
 # @note [31]     DO NOT USE (sign bit)
 #
 
@@ -496,11 +503,11 @@ CONDITIONAL_OFFSET=6
 FORCE_OFFSET=7
 SILENCE_OFFSET=8
 PREMOJI_OFFSET=9
-PREMOJI_IDX_OFFSET=10
-PREFIX_OFFSET=17
-PREFIX_BOLD_OFFSET=18
-PREFIX_COLOR_OFFSET=19
-SEVERITY_OFFSET=24
+PREFIX_OFFSET=10
+PREFIX_BOLD_OFFSET=11
+PREFIX_COLOR_OFFSET=12
+SEVERITY_OFFSET=15
+PREMOJI_IDX_OFFSET=18
 
 # single-bit binary values
 STDOUT=$((1 << STDOUT_OFFSET))
@@ -518,7 +525,7 @@ PREFIX_BOLD=$((1<< PREFIX_BOLD_OFFSET ))
 
 # field length and base mask values for multi-bit fields
 PREFIX_COLOR_LEN=3
-PREMOJI_IDX_LEN=6
+PREMOJI_IDX_LEN=8
 SEVERITY_LEN=3
 PREFIX_COLOR_BASE_MASK=$(( (1 << PREFIX_COLOR_LEN) - 1 ))
 PREMOJI_IDX_BASE_MASK=$(( (1 << PREMOJI_IDX_LEN) - 1 ))
@@ -677,13 +684,13 @@ _precook_registry() # (POSIX) helper to precook the assets in one registry "$1"
     # assign e.g. bin_name="bin_hammer"
     bin_name="bin_${_pr_name}"
     # assign octal byte sequences for hex input
-    bin_val=$(emit_utf8_from_hex "$_pr_hex") || pr_ret=$(( pr_ret | 2 ))  # emit_utf8_from_hex failure
-#echo "pr DEBUG TRIPWIRE: bin_val [$bin_val]" >&2
+    oct_vals=$(emit_utf8_from_hex "$_pr_hex") || pr_ret=$(( pr_ret | 2 ))  # emit_utf8_from_hex failure
+#echo "pr DEBUG TRIPWIRE: oct_vals [$oct_vals]" >&2
 
     # assign interpreted octal bytes to the var e.g. bin_hammer=$(printf '%b' "\360\237\224\250")
-#    printf -v "$bin_name" '%b' "$bin_val"           # I love this, but it is not POSIX
+#    printf -v "$bin_name" '%b' "$oct_vals"           # I love this, but it is not POSIX
     # interpret octal escapes; store entire UTF-8 byte string in $1 (or printf %b failure
-    set -- "$(printf '%b' "$bin_val")" || pr_ret=$(( pr_ret | 4 ))
+    set -- "$(printf '%b' "$oct_vals")" || pr_ret=$(( pr_ret | 4 ))
     # assign only $1 (never $@) to avoid splitting or globbing, or eval failure
     eval "$bin_name=\$1" || pr_ret=$(( pr_ret | 8 ))    # pr_ret bit 3 = eval failure
 #echo "pr DEBUG TRIPWIRE: bin_name [$bin_name]" >&2
@@ -782,6 +789,84 @@ EOF
   return $pr_ret
 }
 
+_precook_unregistry() # (POSIX) precook the unicode characters in ranges needed to sanitize logs
+{ pu_ret=0
+  _pu_UNREGISTRY="$1"
+  # given _pu_UNREGISTRY of format: index${US}lower${US}upper${US}[trans]
+  # for each range precook characters between lower and upper
+  # and append SED_LOG_FILTER rules for each
+  while IFS= read -r _pu_entry; do
+    # strip the longest match for ${US}* from the right - leaving index
+    _pu_idx="${_pu_entry%%${US}*}"
+    # strip shortest match for *${US} from the left - removing index
+    _pu_rem="${_pu_entry#*${US}}"
+    # strip longest match for ${US}* from the right - leaving lower
+    _pu_lower="${_pu_rem%%${US}*}"
+    # strip shortest match for *${US} from the left - removing lower
+    _pu_rem="${_pu_rem#*${US}}"
+    # strip longest match for ${US}* from the rith - leaving upper
+    _pu_upper="${_pu_rem%%${US}*}"
+    # strip longest match for *${US} from the left - leaving ascii-art (trans)
+    _pu_trans="${_pu_entry##*${US}}"
+
+    # convert to decimal to iterate over range from lower to upper --
+    #   generate the binary character and append entry to SED_LOG_FILTER
+    if [ ! -z "$_pu_lower" ]; then
+      _pu_cp_dec=$((16#$_pu_lower))
+    else
+      _pu_cp_dec=0
+      pu_ret=$(( pu_ret | 1 ))  # bit 0 = malformed codepoint
+      continue
+    fi
+    if [ ! -z "$_pu_upper" ]; then
+      _pu_end_dec=$((16#$_pu_upper))
+    else
+      _pu_end_dec=0
+      pu_ret=$(( pu_ret | 1 ))  # bit 0 = malformed codepoint
+      continue
+    fi
+    # iterate
+    while [ "$_pu_cp_dec" -le "$_pu_end_dec" ]; do
+      # convert to hex to then get octal and cook that
+      _pu_cur_hex=$(printf '%x' "$_pu_cp_dec")
+      # assign octal byte sequences for hex input
+      _pu_oct_vals=$(emit_utf8_from_hex "\\U$_pu_cur_hex") || pu_ret=$(( pu_ret | 2 ))   # bit 1 = emit_utf8_from_hex assign failure
+
+      # assign interpreted octal bytes to the var e.g. bin_hammer=$(printf '%b' "\360\237\224\250")
+      # interpret octal escapes; store entire binary UTF-8 byte string in $1 (or printf %b failure
+      set -- "$(printf '%b' "$_pu_oct_vals")" || pu_ret=$(( pu_ret | 4 ))   # bit 2 = set bin_val failure
+      # assign only $1 (never $@) to avoid splitting or globbing, or eval failure
+      _pu_bin_val="$1"
+
+      # append rule: s/binary_emoji/text_translation/g;
+      SED_LOG_FILTER="${SED_LOG_FILTER}s/$_pu_bin_val/$_pu_trans/g; "
+      # increment codepoint counter
+      _pu_cp_dec=$(( _pu_cp_dec + 1 ))
+    done
+    # careful: POSIX heredoc must be at the left edge
+  done <<EOF
+$_pu_UNREGISTRY
+EOF
+
+  unset -v _pu_entry _pu_bin_val _pu_idx _pu_rem _pu_lower _pu_upper
+  unset -v _pu_trans _pu_cp_dec _pu_end _pu_cur_hex _pu_oct_vals _pu_UNREGISTRY
+  return $pu_ret
+}
+# @usage _precook_unregistry "<unregistry>"
+# @args  1: unregistry string defining unicode ranges to sanitize
+# @vars  SED_LOG_FILTER US
+# @ret   0 on success; non-zero bitmask on partial failure
+# @deps  emit_utf8_from_hex printf sed
+# @req   US must be defined as a field separator
+# @rule  operates only on explicit unicode ranges; no utf-8 heuristics
+# @rule  generates literal-byte sed rules; sed must not interpret escapes
+# @rule  must run after curated registry precooking
+# @note  unregistry entries define structural unicode to remove or replace
+# @note  this function replaces legacy sanitation steps 3 through 6
+# @note  generated rules are compile-time artifacts only
+# @warn  large ranges may increase sed script size and processing time
+# @ex    _precook_unregistry "$INACTIVE_UNICODE_UNREGISTRY"
+
 _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active" for optimizatoin
 { cua_ret=0
   # Note: all ascii control precooking moved up to _init_ascii_controls
@@ -800,63 +885,22 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
   #----[ pass 1: UI Box Drawing Registry ]------------------------------------
   _precook_registry "$ACTIVE_UI_BOX_REGISTRY" || cua_ret=1
 
+  #----[ add fall-back sanitize rules to the SED_LOG_FILTER ]---------------------------------------
+  _precook_unregistry "$INACTIVE_UNICODE_UNREGISTRY"
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\302-\364]/[char]/g"
+
   #----[ pass 2: Zero Width Registry ]----------------------------------------
+  # key ordering for the filter is written as:
+  #   1 - remove ANSI and ASCII controls (done in _init_ascii_controls)
+  #   2 - translate known emoji/ui-box grapheme clusters (done in _precook_registry)
+  #   3 - translate unsafe and unwanted/fallback ranges (done in _precook_unregistry)
+  #   4 - translate known zw characters not already found in grapheme clusters (must come last)
   _precook_registry "$ACTIVE_ZERO_WIDTH_REGISTRY" || cua_ret=1
   # note: ZW pass has to go last so the SED_LOG_FILTER has the combined
   # characters earlier in search pattern than the indifidual ZWs like VS16
   # (otherwise the ZWs get stripped first and the engine cannot recognize the
   #  byte sequences of the remnanats of multi-character grapheme somethingorothers
 
-
-  #----[ finish up the SED_LOG_FILTER ]---------------------------------------
-  # key ordering for the filter is written as:
-  #   1 - remove ANSI and ASCII controls (done in _init_ascii_controls)
-  #   2 - translate known emoji/ui-box/zw grapheme clusters (done in _precook_registry)
-  #   3 - translate remaining valid UTF-8 sequences with multi-byte catch-alls [emoji][sym][char]
-  #   4 - remove remaining zero-width unicode characters (not in registry) (what hex range?)
-  #   5 - remove orphaned continuation bytes (0x80-0xBF)
-  #   6 - normalize orphaned lead bytes (0xC2-0xF4) to [unk]
-  # ordering is important, to prevent SED_LOG_FILTER from over-achieving "fall-back" rules
-
-  # step 3 - translate remaining valid UTF-8 sequences with multi-byte catch-alls [emoji][sym][char]
-  # write "fall-back" rules for SED_LOG_FILTER; use semicolon separator
-  # 4-byte (emojis, etc) (use octal for POSIX portability)
-  _catch_all="s/[\360-\367][\200-\277][\200-\277][\200-\277]/[emoji]/g"
-
-# 3-byte (special symbols/cjk)
-  _catch_all="${_catch_all}; s/[\340-\357][\200-\277][\200-\277]/[sym]/g"
-  # 2-byte (latin extended/greek)
-  _catch_all="${_catch_all}; s/[\302-\337][\200-\277]/[char]/g"
-  # Append to the end of filter
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; ${_catch_all}"
-
-  # step 4 - remove remaining zero-width characters (not in registry)
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\341][\240][\216]//g"        # MVS (U+180E)
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\342][\201][\241-\244]//g"   # invisible operators (U+2061-U+2064)
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\357][\277][\271-\273]//g"   # annotation characters (U+FFF9-U+FFFB)
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\363][\240][\204-\207][\200-\257]//g"  # VS Supplement
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\360][\223][\220][\260-\277]//g"       # Hieroglyph controls
-
-  # step 5 - remove orphaned lead and/or continuation bytes left behind when
-  # unrecognized multi-character emoji had their trailing VS16 removed from a grapheme cluster
-  # (remove orphaned continuation bytes (0x80-0xBF)(200-277 octal)
-  # (note: this rule equates to if (byte & 0b11000000 == 0b10000000) remove it
-  #  or another way: if the two MSB bits are 10, remove it
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\200-\277]//g"
-
-  #   6 - normalize orphaned lead bytes (0xC2-0xF4) to [unk]
-  # after continuation bytes are removed there will still be orphaned lead bytes
-  # but rather than remove them, translate to a marker instead
-  # (use [unk] to differentiate from [char] above. note: lead bytes are -
-  #  110xxxxx (2-byte) or 1110xxxx (3-byte) or 11110xxx (4-byte)
-  #  so they range from 1100 0000 (0xc2) to 1111 1111
-  #  but 0xc0 and c1 are forbidden because they would produce "overlong" encodings
-  #  for characters that should only be one byte (1100 000[01] => means just use the
-  #  the 6-bit payload of the continuation byte, so just use the six in the lead byte instead)
-  #  and 0xf5 to ff are forbidden because [with the 4 x continuation bytes implied]
-  #  they would encode to characters beyond the maximum Unicode limit of U+10FFFF)
-  #  -- so the full range for lead bytes is 0xc2-0xf4 (302-364 octal)
-#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\302-\364]/[char]/g"
 
   unset -v _cua_idx _cua_rem _cua_name _cua_hex
   unset -v _cua_entry _cua_trans _cua_octal _cua_bin
@@ -2899,24 +2943,24 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
       esac
     fi  # index is zero
     # look up the name via the authority; if found, resolve the binary variable
-#    echo "looking up name of emoji $premoji_idx"
     _name=$(name_of_emoji "$premoji_idx")
- #   echo "result: $?"
- #   echo "_name: $_name"
     if [ $? -eq 0 ]; then
- #     echo "_name: _name"
       eval "_cooked=\$bin_${_name}"
       if [ "$_cooked" ]; then
         # apply padding: space + emoji + space (4 columns total)
         # but only space-pad the right if the left_most character of prefix_symbol is also a space
-        case "$prefix_symbol" in
-          " "*) premoji_str=" ${_cooked}" ;;
-             *) premoji_str=" ${_cooked} " ;;
-        esac
-      fi
+#echo "prefix_symbol: $prefix_symbol"
+        if [ "$_PREFIX" -eq 1 ]; then
+          case "$prefix_symbol" in
+            " "*) premoji_str=" ${_cooked}" ;;
+               *) premoji_str=" ${_cooked} " ;;
+          esac
+        else
+          premoji_str=" ${_cooked} "
+        fi  # _PREFIX
+      fi  # cooked ?
     else
         :
-#       echo "name was not found (or name_of_emoji inappropriately exited with status other than 0"
     fi  # name found?
   fi  # PREMOJI
 
@@ -3006,7 +3050,7 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
 # @rule  _PREFIX_COLOR (3-bits) specifies an RGB color _PREFIX_BOLD adds intensity
 # @rule  _PREFIX_COLOR=0 uses severity color; nonzero overrides
 # @rule  _PREMOJI enables selection of an emoji prefix
-# @rule  _PREMOJI_IDX (6-bits) specifies index number in ACTIVE_EMOJI_REGISTRY
+# @rule  _PREMOJI_IDX (8-bits) specifies index number in ACTIVE_EMOJI_REGISTRY
 # @rule  _PREMOJI_IDX=0 uses severity to select index number in ACTIVE_EMOJI_REGISTRY
 # @rule  _SEVERITY (3 bits) controls prefix symbol, color, and filtering behavior
 # @note  emit runs in a subshell to isolate positional parameters and avoid
@@ -3140,9 +3184,10 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
                  _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~(PREFIX | PREFIX_BOLD | SEVERITY_MASK | CONDITIONAL | PREFIX_COLOR_MASK) )) ;;
               T) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | TIMESTAMP )) ;;      # T = timestamp ON [N/A for lm bitmask]
               t) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~TIMESTAMP )) ;;     # t = timestamp OFF [N/A for lm bitmask]
-              M) # override PREFIX with selected emoji: set binary PREMOJI switch and 5-bit index (0-63) [shift for arg] [N/A for lm bitmask]
+              M) # override PREFIX with selected emoji: set binary PREMOJI switch and 8-bit index (0-255) [shift for arg] [N/A for lm bitmask]
                 if [ -z "$_pmo_cluster" ]; then
-                  if isint "$2" && [ "$2" -ge 0 ] && [ "$2" -le 63 ] ; then
+                  # upper end of range for 8-bit index is 255 (2^n -1) (or ((1<<n) -1) = PREMOJI_IDX_BASE_MASK
+                  if isint "$2" && [ "$2" -ge 0 ] && [ "$2" -le "$PREMOJI_IDX_BASE_MASK" ] ; then
                     # integer in range can be severity argument for -M
                     _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
                   else
@@ -3153,7 +3198,7 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
                 else
                   _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
                 fi
-                # clear both PREMOJI and existing 5-bits
+                # clear both PREMOJI and existing 8-bits
                 _pmo_sm_bitmask=$(( ( _pmo_sm_bitmask & ~( PREMOJI | PREMOJI_IDX_MASK ) ) ))
                 # SET both with bitwise OR PREMOJI and shifted Index
                 _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREMOJI | ((_pmo_idx & PREMOJI_IDX_BASE_MASK) << PREMOJI_IDX_OFFSET) )) ;;
@@ -3173,7 +3218,7 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
   unset -v _pmo_sm_bold _pmo_sm_cond _pmo_sm_col _pmo_val _pmo_premoji_default
 }
 # @usage _parse_msg_options <initial_bitmask> [options...]
-# @opts -[0-7] severity; -C <0-7>/c color; -B/b bold; -M <0-63>/m emoji; -T/t timestamp
+# @opts -[0-7] severity; -C <0-7>/c color; -B/b bold; -M <0-255>/m emoji; -T/t timestamp
 # @cont -P/p prefix; -e/E interpret; -N/n newline; -u unconditional; -h help
 # @args 1: initial_bitmask; 2+: options (supports clustering)
 # @ret 0: success, 100: help request; sets pmo_sm_bitmask/pmo_shift
@@ -3197,9 +3242,13 @@ j_msg() # (POSIX) universal messaging entry point
   # lm bitmask is used, does NOT include PREFIX/BOLD/COLOR, also b/c it is for the
   # log only,the lm bitmask does NOT include INTERPRET (logs are sanitized)
   _jm_lm_bitmask=$(( CONDITIONAL | ( $notice << SEVERITY_OFFSET ) ))
+
+  # apply environment for logging to set default state of timestamp, but CLI can override
+  if [ "$LOGGING" ]; then
+    _jm_sm_base=$(( _jm_sm_base | LOG | TIMESTAMP ))   # timestamp default-on
+  fi
   # hand off to helper _parse_msg_options
-  #   sets bitmask according to severity policy and options set by caller
-  #   sets global pmo_bitmask and pmo_shift
+  #   sets bitmask according to severity policy and options set by caller  #   sets global pmo_bitmask and pmo_shift
   #   returns 100 if option -h received
   _parse_msg_options "$_jm_sm_base" "$@"
   case $? in   # handle signal that option -h was received
@@ -3208,7 +3257,7 @@ j_msg() # (POSIX) universal messaging entry point
       printf '  -0-7 ......: set severity (0:emerg, 1:alert, 2:crit, 3:err, 4:warn, 5:note, 6:info, 7:debug)\n'
       printf '  -C <0-7>|c : set/override prefix color index (0-7) or clear (c)\n'
       printf '  -B | -b ...: force (B) or suppress (b) bold prefix\n'
-      printf '  -M <0-63>|m: override prefix with emoji index (0-63) or disable emoji (m)\n'
+      printf '  -M <0-255>|m: override prefix with emoji index (0-255) or disable emoji (m)\n'
       printf '  -e | -E ...: enable (e) or disable (E) backslash escape interpretation\n'
       printf '  -N | -n ...: force newline (N) or suppress trailing newline (n)\n'
       printf '  -p | -P ...: suppress (p) or force (P) standard UI prefix symbol\n'
@@ -3227,8 +3276,8 @@ j_msg() # (POSIX) universal messaging entry point
   _jm_i=$#; while [ "$_jm_i" -gt 0 ]; do [ -n "$1" ] && set -- "$@" "$1"; shift; _jm_i=$((_jm_i - 1)); done
   # combine remainin#   usage: _parse_msg_options <initial_bitmask> [options...]
   _jm_msg="$*"
-  # apply stage of global environment variables
-  [ "$LOGGING" ] && _jm_sm_bitmask=$(( _jm_sm_bitmask | LOG | TIMESTAMP ))
+  # apply stage of global environment variables ( but don't force timestamp )
+  [ "$LOGGING" ] && _jm_sm_bitmask=$(( _jm_sm_bitmask | LOG ))
   [ "$DEBUG" ]   && _jm_sm_bitmask=$(( _jm_sm_bitmask | FORCE ))
   [ "$QUIET" ]   && _jm_sm_bitmask=$(( _jm_sm_bitmask | SILENCE ))
 
@@ -3291,7 +3340,7 @@ j_msg() # (POSIX) universal messaging entry point
 # @args $1: (optional) clustered or discrete bitmask override options
 # @args $2+: message string (fragments are joined)
 # @opts -0..7: severity policy; -C <0-7>/c: color override; -B/b: bold override
-# @opts -M <0-63>/m: emoji index override; -e/E: interpret escapes; -N/n: newline policy
+# @opts -M <0-255>/m: emoji index override; -e/E: interpret escapes; -N/n: newline policy
 # @opts -p/P: prefix policy; -t/T: timestamp policy; -u: unconditional; -h: usage
 # @ret 0 on success, 100 for help, or return code of emit
 # @deps _parse_msg_options, emit, get_msg_len, termwidth, smart_wrap_n, _maybe_smart_wrap_n
@@ -3426,25 +3475,14 @@ right_status()  # (POSIX) right-margin indicator of status $1, per severity $2
       fi
     ' "$_rs_lvl"
   fi
-  # cannot just use j_msg to build bitmask and get emit to print status
-  #   b/c policy dictates j_msg applies TIMESTAMP in logging
-  # so right_status must build its own bitmask for emit (no PREFIX, no TIMESTAMP, YES NEWLINE)
-  # use the severity-appropriate destination (STDOUT/STDERR)
-  [ "$_rs_lvl" -le 4 ] && _rs_dest=$STDERR || _rs_dest=$STDOUT
-  # load bitmask as described above
-  _rs_bitmask=$(( _rs_dest | NEWLINE | CONDITIONAL | ( _rs_lvl << SEVERITY_OFFSET ) ))
-  # apply global envinoment to bitmask so emit can apply policies (standard j_msg logic, but NO TIMESTAMP)
-  [ "$LOGGING" ] && _rs_bitmask=$(( _rs_bitmask | LOG ))
-  [ "$DEBUG" ]   && _rs_bitmask=$(( _rs_bitmask | FORCE ))
-  [ "$QUIET" ]   && _rs_bitmask=$(( _rs_bitmask | SILENCE ))
-  # verify that logging works
-  if [ "$LOGGING" ]; then  # dummy-log to /dev/null to test emit logging ability
-    if ! emit "$((_rs_bitmask | LOG))" "$_rs_msg" >/dev/null 2>&1; then
-      rs_ret=$(( rs_ret | (1 << 4) ))   # bit 4 = logging failure
-    fi
+  # verify logging works
+  if [ "$LOGGING" ]; then
+    : >>"$logFile" 2>/dev/null || rs_ret=$(( rs_ret | (1 << 4) ))
   fi
-  # call emit (not j_msg)
-  emit "$_rs_bitmask" "$_rs_msg"
+
+  # call j_msg with -m -p flags to supress prefix, -t to supress timestamp; -N force newline; _rs_lvl for severity
+  j_msg -${_rs_lvl} -m -p -t -N "$_rs_msg"
+
   [ $? -eq 0 ] || rs_ret=$(( rs_ret | ( 1 << 7 ) ))   # bit 7 = internal emit failure
   unset -v _rs_status _rs_lvl _rs_msg _rs_tw _rs_width _rs_move _rs_CUF_OK _rs_bitmask _rs_dest; return $rs_ret ; }
 # @usage right_status <status_code> [severity_level] || <fail-action>
@@ -4088,8 +4126,8 @@ wipe_device() # (LINUX) use dd to fill target device $1 with random data
 
   # build _wd_msg, in readable lines, to explain and prompt
   printf '\n'
-  j_msg -${notice} "${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}"
-  j_msg -${notice} "${BCon}(you can safely skip this step if you have done it before)${Boff}"
+  j_msg -${notice} -p "${BYon}about to run ${BBon}[${Boff}${_func_color}$_wd_my_cmd${BBon}]${Boff}"
+  j_msg -${notice} -p "${BCon}(you can safely skip this step if you have done it before)${Boff}"
   _wd_msg="${BWon}Continue? (y: yes; s: skip; n: exit program)${Boff} "
   if [ "$INTERACTIVE" = "$TRUE" ]; then
     yns_prompt "$_wd_msg"
@@ -4325,7 +4363,7 @@ _unlock_device() {
 
     case "$_ud_method" in
         "prompt")
-            j_msg -${info} "About to run cryptsetup luksOpen ${_ud_device} ${edev} with passphrase provided ..."
+            j_msg -${info} -m "About to run cryptsetup luksOpen ${_ud_device} ${edev} with passphrase provided ..."
 #           this is no longer a f-ing "indented" heredoc '-' in <<-EOF tells it to ignore leading TABs (not spaces)
 #           cryptsetup luksOpen "${_ud_device}" "${_ud_edev}" <<-EOF  # can only be indented with tab characters
 cryptsetup luksOpen "${_ud_device}" "${edev}" <<EOF
@@ -4346,7 +4384,7 @@ EOF
             # Use cryptsetup option for key file -d <mount_point><keyfile> and -S <key slot #>
             # unmount the passdevice when we are done with it
             _ud_keyfile="${crypt_keydev_mountpoint%/}/${crypt_keyfile#/}"  # ensure exactly one slash between mount point and keyfile
-            j_msg -${info} "About to run cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${_ud_device} ${edev} "
+            j_msg -${info} -m "About to run cryptsetup -d ${_ud_keyfile} -S 1 luksOpen ${_ud_device} ${edev} "
             cryptsetup -d "${_ud_keyfile}" -S 1 luksOpen "${_ud_device}" "${edev}"
             _ud_result=$?
             j_msg -${info} -n "unlock result:"
@@ -5665,21 +5703,21 @@ run_sequence() # (POSIX) run command sequence; $1=status_file, $2=start, $3=stop
       [Yy]* )
         # start with a separator for every step
         separator "$PN" "(step [$_rs_step]: $_rs_desc)"
-        j_msg -p -M $idx_hammer "${BCon}Executing step [${Mon}$_rs_step${BCon}]: ${BYon}${_rs_clean_cmd}${Boff}"
+        j_msg -${notice} -p -M $idx_hammer "${BCon}Executing step [${Mon}$_rs_step${BCon}]: ${BYon}${_rs_clean_cmd}${Boff}"
         # eval expands variables inside the string
         eval "$_rs_cmd"; _rs_result=$?
         ### don't die - let the calling script decide what to do based on return
         ### handle_result $_rs_result || die "failed to execute step [$_rs_step]: $_rs_clean_cmd"
         # display/log result and set bit in rs_ret status binary bitmask
-        j_msg -n -p "${BWon}step [${Mon}$_rs_step${BWon}] result:"
-        handle_result $_rs_result '' "failed with exit code [$_rs_result]" || \
+        j_msg -${notice} -n -p "${BWon}step [${Mon}$_rs_step${BWon}] result:"
+        handle_result $_rs_result '' "failed with exit code [$_rs_result]" ${notice} || \
             rs_ret=$(( rs_ret | 1 << _rs_step )) ;;
       [Ss]* )
         _rs_msg="${BYon}Skipping step [${_data_color}${_rs_step}${BYon}]:"
         _rs_msg="${_rs_msg} ${_op_color}${_rs_desc}${BYon} as instructed${Boff}"
-        j_msg -p "$_rs_msg" ;;
+        j_msg -${notice} -p "$_rs_msg" ;;
       * )
-        j_msg -p "${BRon}Aborting sequence, as instructed${Boff}"
+        j_msg -${notice} -p "${BRon}Aborting sequence, as instructed${Boff}"
         rs_ret=1; break ;;
     esac
     # use 1-indexed modular increment to wrap _rs_step back to 1 at num_cmds
@@ -5689,8 +5727,7 @@ run_sequence() # (POSIX) run command sequence; $1=status_file, $2=start, $3=stop
     # store the pointer to the command that is actually "up" next (not the loop counter)
     j_msg -${info} -n -m "writing step (next up) to status_file =>"
     printf '%s\n' "$_rs_step" > "$status_file"
-    # demote handle_result to info severity with d_do ... "$info"
-    handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" "$info" || rs_ret=1
+#    handle_result $? "$_rs_step" "failed to write step [$_rs_step] to status_file [$status_file]" ${info} || rs_ret=1
   done
   unset -v _rs_status_file _rs_step _rs_cmd _rs_result _rs_entry _rs_desc
   unset -v _rs_response _rs_clean_cmd _rs_start _rs_stop _rs_msg _rs_result
