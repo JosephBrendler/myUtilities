@@ -279,11 +279,14 @@ ACTIVE_ZERO_WIDTH_REGISTRY="
 15${US}RLI${US}$RLI${US}[RLI]
 16${US}FSI${US}$FSI${US}[FSI]
 17${US}PDI${US}$PDI${US}[PDI]
-18${US}FITZ_1_2${US}$FITZ_1_2${US}[SKIN1]
-19${US}FITZ_3${US}$FITZ_3${US}[SKIN2]
-20${US}FITZ_4${US}$FITZ_4${US}[SKIN3]
-21${US}FITZ_5${US}$FITZ_5${US}[SKIN4]
-22${US}FITZ_6${US}$FITZ_6${US}[SKIN5]
+18${US}BOM${US}$BOM${US}[BOM]
+19${US}LRM${US}$LRM${US}[LRM]
+20${US}RLM${US}$RLM${US}[RLM]
+21${US}FITZ_1_2${US}$FITZ_1_2${US}[SKIN1]
+22${US}FITZ_3${US}$FITZ_3${US}[SKIN2]
+23${US}FITZ_4${US}$FITZ_4${US}[SKIN3]
+24${US}FITZ_5${US}$FITZ_5${US}[SKIN4]
+25${US}FITZ_6${US}$FITZ_6${US}[SKIN5]
 "
 
 # active emoji registry
@@ -453,8 +456,8 @@ ACTIVE_UI_BOX_REGISTRY="
 # @note   010       forced print (ignore verbosity)
 # @note   110       severity labeling + forced print
 # @note   *01       always suppress (even if FORCE is set)
-# @note [9]      EMOJI          - single-bit flat to turn on emoji prefix
-# @note [10-15]  EMOJI_INDEX    - (6 bit index into ACTIVE_EMOJI_REGISTRY
+# @note [9]      PREMOJI        - single-bit flat to turn on emoji prefix
+# @note [10-15]  PREMOJI_INDEX  - (6 bit index into ACTIVE_EMOJI_REGISTRY
 # @note   see list at ACTIVE_EMOJI_REGISTRY="..."
 # @note [16]     RESERVED (future)
 # @note [17]     PREFIX         - single-bit flag to turn on prefix
@@ -804,15 +807,56 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
   # (otherwise the ZWs get stripped first and the engine cannot recognize the
   #  byte sequences of the remnanats of multi-character grapheme somethingorothers
 
+
+  #----[ finish up the SED_LOG_FILTER ]---------------------------------------
+  # key ordering for the filter is written as:
+  #   1 - remove ANSI and ASCII controls (done in _init_ascii_controls)
+  #   2 - translate known emoji/ui-box/zw grapheme clusters (done in _precook_registry)
+  #   3 - translate remaining valid UTF-8 sequences with multi-byte catch-alls [emoji][sym][char]
+  #   4 - remove remaining zero-width unicode characters (not in registry) (what hex range?)
+  #   5 - remove orphaned continuation bytes (0x80-0xBF)
+  #   6 - normalize orphaned lead bytes (0xC2-0xF4) to [unk]
+  # ordering is important, to prevent SED_LOG_FILTER from over-achieving "fall-back" rules
+
+  # step 3 - translate remaining valid UTF-8 sequences with multi-byte catch-alls [emoji][sym][char]
   # write "fall-back" rules for SED_LOG_FILTER; use semicolon separator
-  # 4-byte (emojis, etc)
-  _catch_all="s/[\xf0-\xf7][\x80-\xbf][\x80-\xbf][\x80-\xbf]/[emoji]/g"
-  # 3-byte (special symbols/cjk)
-  _catch_all="${_catch_all}; s/[\xe0-\xef][\x80-\xbf][\x80-\xbf]/[sym]/g"
+  # 4-byte (emojis, etc) (use octal for POSIX portability)
+  _catch_all="s/[\360-\367][\200-\277][\200-\277][\200-\277]/[emoji]/g"
+
+# 3-byte (special symbols/cjk)
+  _catch_all="${_catch_all}; s/[\340-\357][\200-\277][\200-\277]/[sym]/g"
   # 2-byte (latin extended/greek)
-  _catch_all="${_catch_all}; s/[\xc2-\xdf][\x80-\xbf]/[char]/g"
+  _catch_all="${_catch_all}; s/[\302-\337][\200-\277]/[char]/g"
   # Append to the end of filter
   SED_LOG_FILTER="${SED_LOG_FILTER}; ${_catch_all}"
+
+  # step 4 - remove remaining zero-width characters (not in registry)
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\341][\240][\216]//g"        # MVS (U+180E)
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\342][\201][\241-\244]//g"   # invisible operators (U+2061-U+2064)
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\357][\277][\271-\273]//g"   # annotation characters (U+FFF9-U+FFFB)
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\363][\240][\204-\207][\200-\257]//g"  # VS Supplement
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\360][\223][\220][\260-\277]//g"       # Hieroglyph controls
+
+  # step 5 - remove orphaned lead and/or continuation bytes left behind when
+  # unrecognized multi-character emoji had their trailing VS16 removed from a grapheme cluster
+  # (remove orphaned continuation bytes (0x80-0xBF)(200-277 octal)
+  # (note: this rule equates to if (byte & 0b11000000 == 0b10000000) remove it
+  #  or another way: if the two MSB bits are 10, remove it
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\200-\277]//g"
+
+  #   6 - normalize orphaned lead bytes (0xC2-0xF4) to [unk]
+  # after continuation bytes are removed there will still be orphaned lead bytes
+  # but rather than remove them, translate to a marker instead
+  # (use [unk] to differentiate from [char] above. note: lead bytes are -
+  #  110xxxxx (2-byte) or 1110xxxx (3-byte) or 11110xxx (4-byte)
+  #  so they range from 1100 0000 (0xc2) to 1111 1111
+  #  but 0xc0 and c1 are forbidden because they would produce "overlong" encodings
+  #  for characters that should only be one byte (1100 000[01] => means just use the
+  #  the 6-bit payload of the continuation byte, so just use the six in the lead byte instead)
+  #  and 0xf5 to ff are forbidden because [with the 4 x continuation bytes implied]
+  #  they would encode to characters beyond the maximum Unicode limit of U+10FFFF)
+  #  -- so the full range for lead bytes is 0xc2-0xf4 (302-364 octal)
+#  SED_LOG_FILTER="${SED_LOG_FILTER}; s/[\302-\364]/[char]/g"
 
   unset -v _cua_idx _cua_rem _cua_name _cua_hex
   unset -v _cua_entry _cua_trans _cua_octal _cua_bin
@@ -2753,7 +2797,17 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   fi
 
   # early exit if _LOG is requested but logFile is not writable
-  if [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ]; then j_msg -${err}  "Error: logFile is not writable"; exit 1 ; fi
+  # replacing this (it is a recursion trap)!!! -->
+  #  if [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ]; then j_msg -${err}  "Error: logFile is not writable"; exit 1 ; fi
+  if [ "$_LOG" -eq 1 ] && [ ! -w "$logFile" ]; then
+     # change of mission: abort what j_msg requested, and print an error message instead
+     _LOG=0; _TIMESTAMP=0; _LOG_OK="$FALSE"; _PRINT_OK="$TRUE"
+     _PREFIX=1; _PREFIX_BOLD=1; _PREMOJI=1; _NEWLINE=1;
+     _SEVERITY=${err}; _PREFIX_COLOR=0
+     # emit already shifted out the bitmask, leaving only message - so replace that
+     set -- "Error: logFile is not writable"
+     emit_ret=1
+  fi
 
   # non-zero bold/color value means prefix, yes
   # determine prefix color (severity-implied or user override)
@@ -2854,7 +2908,11 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
       eval "_cooked=\$bin_${_name}"
       if [ "$_cooked" ]; then
         # apply padding: space + emoji + space (4 columns total)
-        premoji_str=" ${_cooked} "
+        # but only space-pad the right if the left_most character of prefix_symbol is also a space
+        case "$prefix_symbol" in
+          " "*) premoji_str=" ${_cooked}" ;;
+             *) premoji_str=" ${_cooked} " ;;
+        esac
       fi
     else
         :
@@ -2869,31 +2927,18 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   # build the full screen output string (do for log below)
   out="${premoji_str}${prefix}${msg}"
 
-#  d_do '
-#      echo "After _PREFIX - block"
-#      echo "_PREFIX......: [$_PREFIX]"
-#      echo "_PREMOJI.....: [$_PREMOJI]"
-#      echo "premoji_idx..: $premoji_idx"
-#      echo "premoji_str..: $premoji_str"
-#      echo "_LOG.........: [$_LOG]"
-#      echo "_SEVERITY....: [$_SEVERITY]"
-##      severity_mark=$(get_severity "$_SEVERITY")
-#      echo "severity_mark: $severity_mark"
-#      echo "log_prefix...: $log_prefix"
-#      echo "out.........: $out"
-#  ' "$debug"
-
   # choose printf format based on _INTERPRET
   if [ "$_INTERPRET" -eq 1 ]; then fmt='%b'; else fmt='%s'; fi
+
   # modify printf format for newline, if needed
   if [ "$_NEWLINE" -eq 1 ]; then out_fmt="$fmt\n"; else out_fmt="$fmt"; fi
 
-  # emit to stdout (if _STDOUT), with _NEWLINE, if selected and enabled
+  # emit to stdout (if _STDOUT is enabled)
   if [ "$_PRINT_OK" ] && [ "$_STDOUT" -eq 1 ]; then
     printf "$out_fmt" "$out"
   fi
 
-  # mirror to stderr (if _STDERR) if enabled
+  # emit to stderr (if _STDERR is enabled)
   if [ "$_PRINT_OK" ] && [ "$_STDERR" -eq 1 ]; then
     printf "$out_fmt" "$out" >&2
   fi
