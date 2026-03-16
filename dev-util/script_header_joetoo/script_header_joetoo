@@ -2582,6 +2582,258 @@ show_result() # (POSIX) show the result of vercomp comparison, in english
 # @args $1 integer code from vercomp (0, 1, or 2)
 # @ret colorized mathematical operator string (=, >, <)
 
+_radix_convert() # (POSIX) convert input radix from input base to output base with bc
+{ rc_ret=0; _rc_result=0
+  _rc_float_num=$1
+  _rc_ibase=${2:-10}
+  if ! isint "$_rc_ibase"; then die "_radix_convert requires decimal int ibase"; fi
+  _rc_obase=${3:-10}
+  if ! isint "$_rc_obase"; then die "_radix_convert requires decimal int obase"; fi
+  _rc_scale=${4:-10}
+  if ! isint "$_rc_scale"; then die "_radix_convert requires decimal int scale"; fi
+  # normalize hex input to uppercase if ibase=16
+  if [ "$_rc_ibase" -eq 16 ]; then
+    _rc_float_num=$(printf '%s' "$_rc_float_num" | tr 'a-f' 'A-F')
+  fi
+  # now call bc to do the math
+ _rc_result=$(printf '%s\n' "scale=${_rc_scale};
+     obase=${_rc_obase};
+     ibase=${_rc_ibase};
+     ${_rc_float_num}" | bc 2>/dev/null)
+  rc_ret=$?
+  # output only if successful
+  [ $rc_ret -eq 0 ] && printf '%s\n' "$_rc_result"
+  unset -v _rc_float_num _rc_ibase _rc_obase _rc_scale _rc_result
+  return $rc_ret
+}
+# @usage _radix_convert <radix> [<ibase>] [<obase>] [<scale>]
+# @args  1: radix (may include radix point)
+# @args  2: ibase (decimal integer)
+# @args  3: obase (decimal integer)
+# @args  4: scale (decimal integer)
+# @ret   0: success (emits converted value)
+# @ret   1+: bc or shell error (emits nothing)
+# @rule  ibase and obase must be expressed as decimal integers
+# @ex    _radix_convert 10.01 10 16 10  ==> A.028F5
+
+_radix_validate() # (POSIX) validate number string for a given base
+{ rvn_ret=0
+  _rvn_num=$1; _rvn_base=$2
+
+  # base must be a decimal integer
+  if ! isint "$_rvn_base"; then return 1; fi
+
+  # select a validation pattern for this base
+  case "$_rvn_base" in
+    2)  _rvn_pattern='*[!01.]*' ;;
+    8)  _rvn_pattern='*[!0-7.]*' ;;
+    10) _rvn_pattern='*[!0-9.]*' ;;
+    16) _rvn_pattern='*[!0-9A-Fa-f.]*' ;;
+    *)  return 2 ;;  # unsupported base
+  esac
+
+  # empty string is invalid
+  [ -z "$_rvn_num" ] && return 3
+
+  # reject a lone radix point
+  [ "$_rvn_num" = "." ] && return 4
+
+  # only one radix point allowed
+  case "$_rvn_num" in *.*.*) return 5 ;; esac
+
+  # pattern-match invalid characters
+  case "$_rvn_num" in
+    $_rvn_pattern) rvn_ret=6 ;;
+  esac
+
+  unset -v _rvn_num _rvn_base _rvn_pattern
+  return $rvn_ret
+}
+# @usage _radix_validate <number> <ibase>
+# @args  1: number (may include radix point)
+# @args  2: ibase (decimal integer: 2, 8, 10, 16)
+# @ret   0: valid number for the given base
+# @ret   1: invalid (non-int) base
+# @ret   2: invalid (unsupported) base
+# @ret   3: invalid number (null)
+# @ret   4: invalid number (lone radix point)
+# @ret   5: invalid number (too many radix points)
+# @ret   6: invalid number (invalid characters)
+# @rule  only one radix point allowed
+# @rule  digits must match the allowed set for the base
+# @ex    _radix_validate 1010.01 2   # => 0 (valid)
+# @ex    _radix_validate 19 8        # => 6 (invalid number)
+# @ex    _radix_validate A.F2 16     # => 0 (valid)
+# @ex    _radix_validate A.F2 15     # => 2 (unsupported base)
+# @ex    _radix_validate A.F2        # => 1 (invalid [null] base)
+
+# global definitions of scale and supported bases for base conversion (bc) math
+# To Do: move to front sectin of header
+bin=2
+oct=8
+dec=10
+hex=16
+scale=10
+
+b2o() # (POSIX) binary to octal
+{ bo_ret=0; _bo_float=$1
+  if ! _radix_validate "$_bo_float" "${bin}"; then return $?; fi
+  _bo_out=$(_radix_convert "$_bo_float" "${bin}" "${oct}" "${scale}" 2>/dev/null)
+  bo_ret=$?
+  [ $bo_ret -eq 0 ] && printf '%s\n' "$_bo_out"
+  unset -v _bo_float _bo_out; return $bo_ret ; }
+# @usage b2o <number>
+# @args  <number>  binary number (may include radix point)
+# @ret   0     success (emits converted octal value)
+# @ret   1-6   validation error from _radix_validate
+# @ret   7+    conversion error from _radix_convert
+# @note  validates input using _radix_validate
+# @note  performs conversion using _radix_convert
+
+b2d() # (POSIX) binary to decimal
+{ bd_ret=0; _bd_float=$1
+  if ! _radix_validate "$_bd_float" "${bin}"; then return $?; fi
+  _bd_out=$(_radix_convert "$_bd_float" "${bin}" "${dec}" "${scale}" 2>/dev/null)
+  bd_ret=$?
+  [ $bd_ret -eq 0 ] && printf '%s\n' "$_bd_out"
+  unset -v _bd_float _bd_out; return $bd_ret ; }
+# @usage b2d <number>
+# @args  <number>  binary number (may include radix point)
+# @ret   0     success (emits converted decimal value)
+# @ret   1-6   validation error from _radix_validate
+# @ret   7+    conversion error from _radix_convert
+
+b2h() # (POSIX) binary to hex
+{ bh_ret=0; _bh_float=$1
+  if ! _radix_validate "$_bh_float" "${bin}"; then return $?; fi
+  _bh_out=$(_radix_convert "$_bh_float" "${bin}" "${hex}" "${scale}" 2>/dev/null)
+  bh_ret=$?
+  [ $bh_ret -eq 0 ] && printf '%s\n' "$_bh_out"
+  unset -v _bh_float _bh_out; return $bh_ret ; }
+# @usage b2h <number>
+# @args  <number>  binary number (may include radix point)
+# @ret   0     success (emits converted hex value)
+# @ret   1-6   validation error from _radix_validate
+# @ret   7+    conversion error from _radix_convert
+
+o2b() # (POSIX) octal to binary
+{ ob_ret=0; _ob_float=$1
+  if ! _radix_validate "$_ob_float" "${oct}"; then return $?; fi
+  _ob_out=$(_radix_convert "$_ob_float" "${oct}" "${bin}" "${scale}" 2>/dev/null)
+  ob_ret=$?
+  [ $ob_ret -eq 0 ] && printf '%s\n' "$_ob_out"
+  unset -v _ob_float _ob_out; return $ob_ret ; }
+# @usage o2b <number>
+# @args  <number>  octal number (may include radix point)
+# @ret   0     success (emits converted binary value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+o2d() # (POSIX) octal to decimal
+{ od_ret=0; _od_float=$1
+  if ! _radix_validate "$_od_float" "${oct}"; then return $?; fi
+  _od_out=$(_radix_convert "$_od_float" "${oct}" "${dec}" "${scale}" 2>/dev/null)
+  od_ret=$?
+  [ $od_ret -eq 0 ] && printf '%s\n' "$_od_out"
+  unset -v _od_float _od_out; return $od_ret ; }
+# @usage o2d <number>
+# @args  <number>  octal number (may include radix point)
+# @ret   0     success (emits converted decimal value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+o2h() # (POSIX) octal to hex
+{ oh_ret=0; _oh_float=$1
+  if ! _radix_validate "$_oh_float" "${oct}"; then return $?; fi
+  _oh_out=$(_radix_convert "$_oh_float" "${oct}" "${hex}" "${scale}" 2>/dev/null)
+  oh_ret=$?
+  [ $oh_ret -eq 0 ] && printf '%s\n' "$_oh_out"
+  unset -v _oh_float _oh_out; return $oh_ret ; }
+# @usage o2h <number>
+# @args  <number>  octal number (may include radix point)
+# @ret   0     success (emits converted hex value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+d2b() # (POSIX) decimal to binary
+{ db_ret=0; _db_float=$1
+  if ! _radix_validate "$_db_float" "${dec}"; then return $?; fi
+  _db_out=$(_radix_convert "$_db_float" "${dec}" "${bin}" "${scale}" 2>/dev/null)
+  db_ret=$?
+  [ $db_ret -eq 0 ] && printf '%s\n' "$_db_out"
+  unset -v _db_float _db_out; return $db_ret ; }
+# @usage d2b <number>
+# @args  <number>  decimal number (may include radix point)
+# @ret   0     success (emits converted binary value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+d2o() # (POSIX) decimal to octal
+{ do_ret=0; _do_float=$1
+  if ! _radix_validate "$_do_float" "${dec}"; then return $?; fi
+  _do_out=$(_radix_convert "$_do_float" "${dec}" "${oct}" "${scale}" 2>/dev/null)
+  do_ret=$?
+  [ $do_ret -eq 0 ] && printf '%s\n' "$_do_out"
+  unset -v _do_float _do_out; return $do_ret ; }
+# @usage d2o <number>
+# @args  <number>  decimal number (may include radix point)
+# @ret   0     success (emits converted octal value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+d2h() # (POSIX) decimal to hex
+{ dh_ret=0; _dh_float=$1
+  if ! _radix_validate "$_dh_float" "${dec}"; then return $?; fi
+  _dh_out=$(_radix_convert "$_dh_float" "${dec}" "${hex}" "${scale}" 2>/dev/null)
+  dh_ret=$?
+  [ $dh_ret -eq 0 ] && printf '%s\n' "$_dh_out"
+  unset -v _dh_float _dh_out; return $dh_ret ; }
+# @usage d2h <number>
+# @args  <number>  decimal number (may include radix point)
+# @ret   0     success (emits converted hex value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+h2b() # (POSIX) hex to binary
+{ hb_ret=0; _hb_float=$1
+  if ! _radix_validate "$_hb_float" "${hex}"; then return $?; fi
+  _hb_out=$(_radix_convert "$_hb_float" "${hex}" "${bin}" "${scale}" 2>/dev/null)
+  hb_ret=$?
+  [ $hb_ret -eq 0 ] && printf '%s\n' "$_hb_out"
+  unset -v _hb_float _hb_out; return $hb_ret ; }
+# @usage h2b <number>
+# @args  <number>  hex number (may include radix point)
+# @ret   0     success (emits converted binary value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+h2o() # (POSIX) hex to octal
+{ ho_ret=0; _ho_float=$1
+  if ! _radix_validate "$_ho_float" "${hex}"; then return $?; fi
+  _ho_out=$(_radix_convert "$_ho_float" "${hex}" "${oct}" "${scale}" 2>/dev/null)
+  ho_ret=$?
+  [ $ho_ret -eq 0 ] && printf '%s\n' "$_ho_out"
+  unset -v _ho_float _ho_out; return $ho_ret ; }
+# @usage h2o <number>
+# @args  <number>  hex number (may include radix point)
+# @ret   0     success (emits converted octal value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+h2d() # (POSIX) hex to decimal
+{ hd_ret=0; _hd_float=$1
+  if ! _radix_validate "$_hd_float" "${hex}"; then return $?; fi
+  _hd_out=$(_radix_convert "$_hd_float" "${hex}" "${dec}" "${scale}" 2>/dev/null)
+  hd_ret=$?
+  [ $hd_ret -eq 0 ] && printf '%s\n' "$_hd_out"
+  unset -v _hd_float _hd_out; return $hd_ret ; }
+# @usage h2d <number>
+# @args  <number>  hex number (may include radix point)
+# @ret   0     success (emits converted decimal value)
+# @ret   1-6   validation error
+# @ret   7+    conversion error
+
+
 my_date() # (POSIX) echo date string (DDD MM dd hh:mm:ss TZ yyyy)
 { _date_string=$(date "+%a %b %d %H:%M:%S %Z %Y"); printf '%s\n' "$_date_string" ; unset -v _date_string; }
 # @usage my_date

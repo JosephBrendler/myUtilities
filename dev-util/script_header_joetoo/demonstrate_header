@@ -467,7 +467,10 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
 
   j_msg -${notice} -p "${BYon}Demonstrating Numeric Validation Utilities --${Boff}"
 
-  _dh_tests="isint|123|0 isint|abc|1 isfloat_posix|3.14|0 isfloat_posix|123|1 ishexint|0xAF|0 ishexint|123|1 isnumeric|42.5|0 isnumeric|0xCC|0 isnumeric|xyz|1"
+  _dh_tests="isint|123|0 isint|abc|1 isfloat_posix|3.14|0 isfloat_posix|123|1 ishexint|0xAF|0"
+  _dh_tests="${_dh_tests} ishexint|123|1 isnumeric|42.5|0 isnumeric|0xCC|0 isnumeric|xyz|1"
+#  _dh_tests="${_dh_tests} b2d|1110011|115 d2b|115|1110011 b2h|11001000|C8 h2b|c8|11001000"
+#  _dh_tests="${_dh_tests} b2o|11010111|327 o2d|327|215 d2h|215|D7 h2b|d7|11010111"
   _dh_sep=" "; _dh_sep_len=${#_dh_sep}; _dh_min=2
   # note: as of 20260313  echo $_dh_tests | wc -w  returns: 9
   # (i.e. there are 9 tests in the _dh_tests string)
@@ -523,9 +526,13 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
   # second pass: execution and aligned table print
   _dh_t_count=0
   for _dh_t in ${_dh_tests}; do
-    _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1)
-    _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2)
-    _dh_exp=$(echo "${_dh_t}" | cut -d'|' -f3)
+    _dh_test=${_dh_t%%|*}   # strip longest match for |* from right - leaving test
+    _dh_rem=${_dh_t#*|}     # strip shortest match for *| from left - leaving remainder minus test
+    _dh_val=${_dh_rem%%|*}  # strip longest match for |* from right of remainder - leaving val
+    _dh_exp=${_dh_t##*|}    # strip longest match for *| from the left - leaving exp
+#    _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1)
+#    _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2)
+#    _dh_exp=$(echo "${_dh_t}" | cut -d'|' -f3)
 
     ${_dh_test} "${_dh_val}" >/dev/null 2>&1
     _dh_result=$?
@@ -581,6 +588,129 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
   handle_result $_dh_result  "" "error, result code: [$_dh_result]" ${notice}
   # math verification: dbh-conversion 2#1111111111 d ==> decimal: 1023
 
+  #-----[ section 1b - numeric base conversion ]-------------------------------------------------
+  _dh_cmt="${_cmt_color}# numeric base conversion tests${_Boff}"
+  j_msg -${notice} -p "${BYon}About to run:${Boff}   ${_dh_cmt}"
+  _dh_cmd="${_func_color}b2d ${_quote_color}\"1110011\"${_Boff}"
+  _dh_cmd="${_dh_cmd}${_op_color};${_Boff} ${_func_color}d2b${_Boff} ${_quote_color}\"115\" ...${_Boff}"
+  _dh_cmd="${_dh_cmd} ${_cmt_color}   # using two-pass column alignment and pad() utility${_Boff}"
+  j_msg -${notice} -mp "   ${_dh_cmd}\n"
+
+  j_msg -${notice} -p "${BYon}Demonstrating Numeric Base Conversion Functions --${Boff}"
+
+  _dh_tests="b2d|1110011|115 d2b|115|1110011 b2h|11001000|C8 h2b|C8|11001000"
+  _dh_tests="${_dh_tests} b2o|11010111|327 o2d|327|215 d2h|215|D7 h2b|d7|11010111"
+  _dh_sep=" "; _dh_sep_len=${#_dh_sep}; _dh_min=2
+  # note: as of 20260313  echo $_dh_tests | wc -w  returns: 8
+  # (i.e. there are 8 tests in the new _dh_tests string)
+  # so reserve 10 bits of demo_core_ret bitmask for these results (one in reserve)
+
+  # first pass: calculate max lengths (including exp string length in this section)
+  j_msg -${info} -m "running first pass to determine longest test and value strings"
+  _dh_max_test_len=0; _dh_max_val_len=0; _dh_max_exp_len=0
+  for _dh_t in ${_dh_tests}; do
+    _dh_test=${_dh_t%%|*}   # strip longest match for |* from right - leaving test
+    _dh_rem=${_dh_t#*|}     # strip shortest match for *| from left - leaving remainder minus test
+    _dh_val=${_dh_rem%%|*}  # strip longest match for |* from right of remainder - leaving val
+    _dh_exp=${_dh_t##*|}    # strip longest match for *| from the left - leaving exp
+    # use if-then vs []&& b/c the latter returns fail status if the last comparison is not >
+    # if-then keeps the comparison status interna
+    if [ "${#_dh_test}" -gt "$_dh_max_test_len" ]; then _dh_max_test_len=${#_dh_test}; fi
+    if [ "${#_dh_val}" -gt "$_dh_max_val_len" ]; then _dh_max_val_len=${#_dh_val}; fi
+    if [ "${#_dh_exp}" -gt "$_dh_max_exp_len" ]; then _dh_max_exp_len=${#_dh_exp}; fi
+  done
+  _dh_status=$?
+  j_msg -${info} -m -n "done; result: "
+  handle_result $_dh_status "max test_len: [$_dh_max_test_len] max val_len: [$_dh_max_val_len]" "error loop exit status: [$_dh_status]" ${info}
+
+  j_msg -${debug} -m "_dh_max_test_len:  $_dh_max_test_len"
+  j_msg -${debug} -m "_dh_max_val_len: $_dh_max_val_len"
+  j_msg -${debug} -m "_dh_max_exp_len: $_dh_max_exp_len"
+
+  # set fixed widths
+  _dh_opening="Testing"; _dh_open_len=${#_dh_opening}
+#  j_msg -${debug} -m "_dh_open_len: $_dh_open_len"
+#  j_msg -${debug} -m "_dh_sep_len: $_dh_sep_len"
+  _dh_test_total_sep=$(( _dh_sep_len * 2 ))
+#  j_msg -${debug} -m "_dh_test_total_sep: $_dh_test_total_sep"
+  _dh_col_test=$(( $_dh_open_len + $_dh_max_test_len + $_dh_test_total_sep + $_dh_min ))  #  "Testing isnumeric "
+  _dh_col_val=$(( $_dh_max_val_len + $_dh_sep_len + $_dh_min ))  #  "'0xAF' "
+  _dh_col_TF=9    #  "[False] " - permanently known emprically ([+F+a+l+s+e+]+.+.+)
+#  j_msg -${debug} -m "_dh_col_test: $_dh_col_test"
+#  j_msg -${debug} -m "_dh_col_val: $_dh_col_val"
+#  j_msg -${debug} -m "_dh_col_TF: $_dh_col_TF"
+
+  # second pass: execution and aligned table print (start count after reserved bit 9)
+  _dh_t_count=10
+  for _dh_t in ${_dh_tests}; do
+    _dh_test=${_dh_t%%|*}   # strip longest match for |* from right - leaving test
+    _dh_rem=${_dh_t#*|}     # strip shortest match for *| from left - leaving remainder minus test
+    _dh_val=${_dh_rem%%|*}  # strip longest match for |* from right of remainder - leaving val
+    _dh_exp=${_dh_t##*|}    # strip longest match for *| from the left - leaving exp
+#    _dh_test=$(echo "${_dh_t}" | cut -d'|' -f1)
+#    _dh_val=$(echo "${_dh_t}" | cut -d'|' -f2)
+#    _dh_exp=$(echo "${_dh_t}" | cut -d'|' -f3)
+
+    # collect the output as result in this section
+    _dh_result=$(${_dh_test} "${_dh_val}" 2>/dev/null)
+
+    # determine True/False state for visual coloring
+    case "$_dh_result" in
+        "$_dh_exp" ) _dh_RESULT_BOOL=$TRUE ;;
+        * ) _dh_RESULT_BOOL=$FALSE ;;
+    esac
+    _dh_bool_str="$(TrueFalse $_dh_RESULT_BOOL)"
+    _dh_bool_color="$(status_color $_dh_RESULT_BOOL)"
+
+    # determine if actual result matches expected result
+    # (note: use != rather than -ne in this section w/ string results)
+    if [ "${_dh_result}" != "${_dh_exp}" ]; then
+       _dh_pass_fail="${BRon}FAIL${Boff}"
+       demo_core_ret=$(( demo_core_ret | ( 1 <<  _dh_t_count ) ))   # bits 0-9 reserved for _dh_tests results
+    else
+       _dh_pass_fail="${BGon}PASS${Boff}"
+    fi
+
+    # column 1: test function name
+    _dh_col1_text="Testing $_dh_test "
+    j_msg -${notice} -mn "Testing ${BCon}${_dh_test}${Boff} "
+    # force min pad 0 on this column
+    _dh_pad=$(pad "${_dh_col1_text} " "$((_dh_sep_len * 3))" "0" "$BCon" "." "$_dh_col_test")
+    j_msg -mp -n "$_dh_pad"
+
+    # column 2: value segment
+    _dh_v_label="'${_dh_val}'"
+    j_msg -mp -n "'${BMon}${_dh_val}${Boff}' "
+    _dh_pad=$(pad "$_dh_v_label" "$_dh_sep_len" "$_dh_min" "$BCon" "." "$_dh_col_val")
+    j_msg -mp -n "$_dh_pad"
+
+    # column 3: status segment (coloring bracketed string correctly)
+    # (for this section, PASS/FAIL rather than True/False for status)
+    j_msg -mp -n " [${_dh_bool_color}${_dh_pass_fail}${Boff}] "
+    _dh_pad=$(pad " [${_dh_bool_str}]" "$_dh_sep_len" "$_dh_min" "$BCon" "." "$_dh_col_TF")
+    j_msg -mp -n "$_dh_pad"
+
+    # additional pad for col-34 separation
+    _dh_pad2=$(repeat "." $(( _dh_max_exp_len - ${#_dh_exp} )) )
+
+    # column 4: raw return and final judgement
+    # (for this section, no extra PASS/FAIL since it is done already)
+    j_msg -mp -n "${BCon}${_dh_pad2}${Boff}"
+    j_msg -mp " (ret:${_dh_bool_color}${_dh_result}${Boff}|${BWon}${_dh_exp}${Boff}:exp)"
+
+    # increment test counter
+    _dh_t_count=$(( _dh_t_count + 1 ))
+  done
+  printf "\n"
+
+  # uncomment for bitmast "testing"
+#  demo_core_ret=$(( demo_core_ret | ( 1 <<  19 ) ))   # use bit 19 (reserved) for mask testing
+
+  j_msg -${notice} -np "done numeric validation; overall result:"
+  _dh_result=$(( demo_core_ret & 523776 ))    # mask bits 10-19 to check result ( 9 reserved)
+  handle_result $_dh_result  "" "error, result code: [$_dh_result]" ${notice}
+  # math verification: b2d 1111111111000000000 ==> 523776
+
 #-----[ section 2 - version comparison ]-------------------------------------------------
   separator "demonstrate_header-${BUILD}" "(version comparison)"
 
@@ -599,8 +729,8 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
 
   # execute the actual demonstration
   # as of 20260313 there are 5 elements in _dh_vtest string
-  # (so use bits 10-14 and reserve bit 15)
-  _dh_t_count=10   # continue after reserved bit 9
+  # (so use bits 20-24 and reserve bit 25)
+  _dh_t_count=20   # continue after reserved bit 19
   for _dh_vtest in "1 1" "2 1" "1 2" "1.2.0 1.2.1" "1.2.0-r1 1.2.0"; do
     _dh_v1=${_dh_vtest% *}  # strip the shortest match for " *" from the right - leaving v1
     _dh_v2=${_dh_vtest#* }  # strip the shortest match for "* " from the left - leaving v2
@@ -616,12 +746,12 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
   printf "\n"
 
   # uncomment for bitmast "testing"
-#  demo_core_ret=$(( demo_core_ret | ( 1 <<  15 ) ))   # use bit 15 (reserved) for mask testing
+#  demo_core_ret=$(( demo_core_ret | ( 1 <<  25 ) ))   # use bit 25 (reserved) for mask testing
 
   j_msg -${notice} -p -n "done version comparison; result:"
-  _dh_result=$(( demo_core_ret & 64512 ))    # mask bits 10-15 to check result ( 15 reserved)
+  _dh_result=$(( demo_core_ret & 66060288 ))    # mask bits 20-25 to check result ( 25 reserved)
   handle_result $_dh_result  "" "error, result code: [$_dh_result]" ${notice}
-  # (math verification: dbh-conversion 2#1111110000000000 d ==> decimal: 64512) | 2^6=64 and echo $(( 63 << 10 ) ==> 64512
+  # (math verification: b2d 11111100000000000000000000 ==> decimal: 66060288) | 2^6=64 and echo $(( 63 << 20 )) ==> 66060288
 
 #-----[ section 3 - environment validation ]-------------------------------------------------
   separator "demonstrate_header-${BUILD}" "(environment & privileges)"
@@ -645,7 +775,7 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
     [ "$_dh_result" -eq 1 ]
     handle_result $? "not root and returned 1" "not root but did not return 1" ${notice}
   fi
-  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  16 ) ))   # bit 16 = isroot failure
+  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  26 ) ))   # bit 26 = isroot failure
 
 
   #-----[ part 2: checkroot - gatekeeper root privilege check ]-------------------------------------------------------------------
@@ -667,7 +797,7 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
     [ "$_dh_result" -eq 1 ]
     handle_result $? "not root and *exited* 1" "not root but did not exit 1" ${notice}
   fi
-  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  17 ) ))   # bit 17 = checkroot failure
+  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  27 ) ))   # bit 27 = checkroot failure
 
   #-----[ part 3: checknotroot - gatekeeper root privilege check ]-------------------------------------------------------------------
   # construct the command preview string - ( checknotroot ); ... handle_result
@@ -691,7 +821,7 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
     handle_result $? "yes root and *exited* 1" "yes root but did not exit 1" ${notice}
   fi
   # Note: In a real script, checkroot might exit; here we just observe.
-  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  18 ) ))   # bit 18 = checknotroot failure
+  [ "$?" -eq 0 ] || demo_core_ret=$(( demo_core_ret | ( 1 <<  28 ) ))   # bit 28 = checknotroot failure
 
   #-----[ part 4: checkboot - boot mount check ]-----------------------------------------------------------------------
   # construct the command preview string - ( checknotroot ); ... handle_result
@@ -750,7 +880,7 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
       _dh_i=$((_dh_i + 1))
     done
   else
-    demo_core_ret=$(( demo_core_ret | ( 1 << 19 ) ))   # bit 19 = checkboot failure
+    demo_core_ret=$(( demo_core_ret | ( 1 << 29 ) ))   # bit 29 = checkboot failure
     # test does not match expectation -- if result is non-zero explain it
     for _dh_tgt in $_dh_targets; do
       # did exp and result agree on this device?
@@ -774,15 +904,12 @@ _dh_demo_corelogic() # (POSIX) demonstrate script_header_joetoo core logic
   fi  # agree/disagree on overall result
 
     # uncomment for bitmast "testing"
-#  demo_core_ret=$(( demo_core_ret | ( 1 <<  20 ) ))   # use bit 20 (reserved) for mask testing
+#  demo_core_ret=$(( demo_core_ret | ( 1 <<  30 ) ))   # use bit 30 (reserved) for mask testing
 
   j_msg -${notice} -p -n "done environment checks; result:"
-  _dh_result=$(( demo_core_ret & 2031616 ))    # mask bits 16-20 to check result (20 reserved)
+  _dh_result=$(( demo_core_ret & 2080374784 ))    # mask bits 26-30 to check result (20 reserved)
   handle_result $_dh_result  "" "error, result code: [$_dh_result]" ${notice}
-  # (math verification: dbh-conversion 2#111110000000000000000 d ==> decimal: 2031616) | 2^5=32 and echo $(( 31 << 16 ) ==> 2031616
-
-  [ "$_dh_FAILED" ] && demo_core_ret=$(( demo_core_ret | 4 ))   # bit 2 = environment checks failed
-  handle_result $(( demo_core_ret & 4 ))  # mask bit 2 to check result
+  # (math verification: b2d 1111100000000000000000000000000 ==> 2080374784 ) | 2^5=32 and echo $(( 31 << 26 )) ==> 2080374784
 
   unset -v _dh_cmd _dh_cmt _dh_FAILED _dh_OK_msg _dh_FAIL_msg
   unset -v _dh_result _dh_i _dh_targets _dh_tgt _dh_MOUNTPOINT
