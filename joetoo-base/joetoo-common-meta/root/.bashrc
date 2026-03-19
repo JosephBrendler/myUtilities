@@ -46,7 +46,6 @@ alias tl='tail -n50'
 #-----[ script "headers" ]------------------------------------------------------------
 source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_extended
-source /usr/sbin/script_header_joetoo_unicode
 source /usr/sbin/bashrc_aliases_include_joe_brendler
 
 #-----[ consolidate history from all sessions ]---------------------------------------
