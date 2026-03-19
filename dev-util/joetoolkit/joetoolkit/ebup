@@ -16,12 +16,12 @@ archived_ebuilds_dir="/home/${user}/archived_ebuilds"
 
 #-----[ variables ]--------------------------------------------------
 
-to_be_archived_ebuild_version=""   # oldest (to-be-archived) version string (to be determined)
+to_be_archived_ebuild=""   # oldest (to-be-archived) version string (to be determined)
 latest_ebuild_version=""           # latest version string (to be determined)
 new_ebuild_version=""              # new version string (to be calculated)
 output_ebuild_filename=""          # filename for the new version's ebuild
 
-declare -a ebuild_versions         # indexed array of version strings
+declare -a ebuild_files         # indexed array of version strings
 
 current_version_numbers=( 0 0 0 )  # array of digits constituting the parts (major minor patch) of current version number
 new_version_numbers=()             # array to hold new version's digits, when calculated
@@ -42,7 +42,8 @@ usage() {
     exit 1
 }
 
-load-ebuild_versions() {
+load-ebuild_files() {
+    local _lef_ret=0
     # check SOURCE_DIR
     if [[ "$SOURCE_DIR" == "." ]] ; then
         j_msg -${notice} -p -n "updating SOURCE_DIR [$SOURCE_DIR]"
@@ -70,49 +71,49 @@ load-ebuild_versions() {
     fi
     # if we get here, SOURCE_DIR is set to something that exists
 
-    # load the ebuild_versions array
+    # load the ebuild_files array (of filenames) using process substitution
     # load array of version numbers for ebuilds matching the name of SOURCE_DIR
+    # (which is an absolute path now, who use ${SOURCE_DIRR##*/} to "basename" it
+    #  for find, so it will match against -printf '%f' outputs)
     # use \0 as newline delimter for whitespace-safe handling of filenames
-    # subsititutions strip the package name and .ebuild extension to leave just the version number
     # sort -rV puts them in reverse version order , -z tells sort to use the \0 delimiter
-    readarray -d $'\0' ebuild_versions < <(
-        find ./ -maxdepth 1 -name "${SOURCE_DIR}*.ebuild" -printf '%f\0' |
-        sed -z "s|^${SOURCE_DIR}-|| ; s|.ebuild$||" |
+    readarray -d $'\0' ebuild_files < <(
+        find ./ -maxdepth 1 -name "${SOURCE_DIR##*/}*.ebuild" -printf '%f\0' |
+#        sed -z "s|^${SOURCE_DIR}-|| ; s|.ebuild$||" |
         sort -rVz
     )
-    result=$?
-    j_msg -${debug} -p "#: [$#ebuild_versions[@]}] ebuild_versions: [${ebuild_versions[*]}]"
+    _lef_ret=$?
+    j_msg -${debug} -p "#: [${#ebuild_files[@]}]; ebuild_files: [${ebuild_files[*]}]"
 
     # return to old_dir
-    j_msg -${notice} -p -n "moving back to old_dir [$old_dir]"
+    j_msg -${notice} -m -n "moving back to old_dir [$old_dir]"
     cd "$old_dir" || die "failed to cd to old_dir"
     right_status $TRUE ${notice}
-
-    return $result
+    return $_lef_ret
 }
 
 get-current-version() {
     j_msg -${debug} -p "in ${FUNCNAME[0]}"
-    # put the latest version number string into latest_ebuild_version variable
-    local result=""
-    j_msg -${debug} -p "ebuild_versions #: ${#ebuild_versions[@]}"
+    # put the latest ebuild file name into _gcv_latest_ebuild variable
+    local _gcv_ret=0 _gcv_latest_ebuild=""
+    j_msg -${debug} -p "ebuild_files #: [${#ebuild_files[@]}]"
     # identify the latest version (sort -r puts it at array index 0)
-    if [ ${#ebuild_versions[@]} -eq 0 ] ; then
+    if [ ${#ebuild_files[@]} -eq 0 ] ; then
         # there are no ebuilds matching SOURCE_DIR,
         # so current ebuild version = 0.0.0 [i.e. none]
         j_msg -${notice} -p "no ebuilds matching SOURCE_DIR [${SOURCE_DIR}] found"
         j_msg -${notice} -m " so current ebuild version = 0.0.0 [i.e. none]"
     else
-        latest_ebuild_version="${ebuild_versions[0]}"
-        j_msg -${debug} -p "latest_ebuild_version: [$latest_ebuild_version]"
+        _gcv_latest_ebuild="${ebuild_files[0]}"
+        j_msg -${notice} -p "${Bon}latest ebuild: [$_gcv_latest_ebuild]"
         # ignore any revision number that may be part of the current version number
         # final substitution sed -z 's|-r.*$|| removes such a trailing revision number
         # (ok here, b/c the new version just bumps patch, minor, or major // never rev)
-        latest_ebuild_version=$(printf '%s\n' "$latest_ebuild_version" | sed -z 's|-r.*$||' )
-        j_msg -${notice} -p "current version: [${latest_ebuild_version}]"
+        latest_ebuild_version=$(printf '%s\n' "$_gcv_latest_ebuild" | sed -z 's|-r.*$||; s|.*-||' )
+        j_msg -${notice} -p "${Bon}current version${Boff}: [${latest_ebuild_version}]"
         # split version into ( major minor patch )
         IFS='.' read -ra current_version_numbers <<< "$latest_ebuild_version"
-        result=$?
+        _gcv_ret=$?
          # bash/ksh/zsh non-portable idiom: $'...'
          #(ANSI-C Quoting): tells shel to interpret backslash-escaped chars as literal control chars
 #        IFS=$' \t\n'
@@ -122,36 +123,38 @@ get-current-version() {
     j_msg -${notice} -m "  current major: ${current_version_numbers[0]}"
     j_msg -${notice} -m "  current minor: ${current_version_numbers[1]}"
     j_msg -${notice} -m "  current patch: ${current_version_numbers[2]}"
-    return $result
+    return $_gcv_ret
 }
 
-get-archive-version() {
-    local _gav_count="${#ebuild_versions[@]}"
-    local _gav_idx=$(( _gav_count - 1 ))  # index of the oldest version
-    # put the oldest (to-be-archived) version number string into to_be_archived_ebuild_version variable
-    j_msg -${debug} -p "ebuild_versions #: ${#ebuild_versions[@]}"
+get-archive-ebuild() {
+    local _gae_ret=0
+    local _gae_count="${#ebuild_files[@]}"
+    local _gae_idx=$(( _gae_count - 1 ))  # index of the oldest version
+    # put the oldest (to-be-archived) version number string into to_be_archived_ebuild variable
+    j_msg -${debug} -p "ebuild_files #: ${#ebuild_files[@]}"
     # identify the latest version
-    if [ "${#ebuild_versions[@]}" -le 1 ] ; then
+    if [ "${#ebuild_files[@]}" -le 1 ] ; then
         # if there are no ebuilds matching SOURCE_DIR, or
         # if there is only 1, then there is nothing to archive
-        case "${#ebuild_versions[@]}" in
+        case "${#ebuild_files[@]}" in
             0 ) j_msg -${notice} -m "no ebuilds matching SOURCE_DIR [${SOURCE_DIR}] found" ;;
             1 ) j_msg -${notice} -m "not archiving the only ebuild present" ;;
             * ) j_msg -${err} -p "Error: this cannot happen"; return 1 ;;
         esac
-        to_be_archived_ebuild_version="none"
+        to_be_archived_ebuild="none"
     else
-        to_be_archived_ebuild_version="${ebuild_versions[_gav_idx]}" || die "failed to assign to_be_archived_ebuild_version="
-        j_msg -${notice} -m "archive version: [${to_be_archived_ebuild_version}]"
+        to_be_archived_ebuild="${ebuild_files[_gae_idx]}"
+        _gae_ret=$?
+        j_msg -${notice} -p "${Mon}archive ebuild${Boff}: [${to_be_archived_ebuild}]"
     fi
-    return 0
+    return $_gae_ret
 }
 
 calculate-new-version() {
     # increment the version number appropriately
-    local result=""
-    local UPGR="$1"
-    case "${UPGR}" in
+    local _cnv_ret=0
+    local _cnv_upgr="$1"
+    case "${_cnv_upgr}" in
         "major" )
             # increment major number and reset minor patch number to 0
             new_version_numbers[0]="$(( ${current_version_numbers[0]} + 1 ))"
@@ -170,87 +173,110 @@ calculate-new-version() {
             new_version_numbers[1]="${current_version_numbers[1]}"
             new_version_numbers[2]="$(( ${current_version_numbers[2]} + 1 ))"
             ;;
-        * )  j_msg -${err} -p "invalid UPGRADE type [${UPGR}]" && exit ;;
+        * )  j_msg -${err} -p "invalid UPGRADE type [${_cnv_upgr}]" && exit ;;
     esac
-    j_msg -${notice} -p "  new major: ${new_version_numbers[0]}"
-    j_msg -${notice} -p "  new minor: ${new_version_numbers[1]}"
-    j_msg -${notice} -p "  new patch: ${new_version_numbers[2]}"
+    j_msg -${notice} -m "  new major: ${new_version_numbers[0]}"
+    j_msg -${notice} -m "  new minor: ${new_version_numbers[1]}"
+    j_msg -${notice} -m "  new patch: ${new_version_numbers[2]}"
     new_ebuild_version="${new_version_numbers[0]}.${new_version_numbers[1]}.${new_version_numbers[2]}"
-    result=$?
-    j_msg -${notice} -p "new version: ${new_ebuild_version}"
-    return $result
+    _cnv_ret=$?
+    j_msg -${notice} -p "${Gon}new version${Boff}: ${new_ebuild_version}"
+    return $_cnv_ret
 }
 
-archive-old-version() {
+archive-old-ebuild() {
+    local _aoe_ret=0
     # move the oldest version to the archived_ebuilds_dir
-    local msg=""
-    archive_ebuild_filename="${SOURCE_DIR}-${to_be_archived_ebuild_version}.ebuild"
+    local _aoe_msg=""
+    # packages have same basename at the ebuild directory in which they reside
+    # (SOURCE_DIR is an absolute path so use it to prefix the "basenamed" ebuild filename
+    #  with ${SOURCE_DIR%%/}/ to ensure proper handling of /)
+    archive_ebuild_filename="${SOURCE_DIR%%/}/${to_be_archived_ebuild}"
 
     # ensure the archive directory exists before attempting mv
     [ -d "${archived_ebuilds_dir}" ] || mkdir -p "${archived_ebuilds_dir}" || die "failed to create archive directory"
+    j_msg -${debug} -p "to_be_archived_ebuild: $to_be_archived_ebuild"
+    j_msg -${debug} -p "archive_ebuild_filename: $archive_ebuild_filename"
 
-    if [[ "${to_be_archived_ebuild_version}" == "none" ]] ; then
+    if [[ "${to_be_archived_ebuild}" == "none" ]] ; then
         j_msg -${debug} -p "no ebuild to archive"
     elif [ -f "${archive_ebuild_filename}" ] ; then
+        _aoe_msg="${BYon}About to run command:\n${Boff}"
+        _aoe_msg+="    ${BGon}mv  ${archive_ebuild_filename} "
+        _aoe_msg+="${archived_ebuilds_dir%/}/${Boff}"
+        j_msg -${notice} -p "$_aoe_msg"
+        _aoe_msg="${BYon}Please confirm ( ${BWon}y|Y[es]; "
+        _aoe_msg+=" s|S[kip]; n|N[o] (abort) ${BYon})${Boff}"
         response=""
-        msg="${BYon}About to run command:\n${Boff}"
-        msg+="    ${BGon}mv  ${archive_ebuild_filename} "
-        msg+="${archived_ebuilds_dir%/}/${Boff}"
-        j_msg -${notice} -p "$msg"
-        msg="${BYon}Please confirm ( ${BWon}y|Y[es]; "
-        msg+=" s|S[kip]; n|N[o] (abort) ${BYon})${Boff}"
-        yns_prompt "${msg}"
+        yns_prompt "${_aoe_msg}"
         case "$response" in
-            [yY]*) mv "${archive_ebuild_filename}" "${archived_ebuilds_dir%/}/" || \
-                     die "failed to archive old ebuild" ;;
+            [yY]*) mv "${archive_ebuild_filename}" "${archived_ebuilds_dir%/}/"
+                   _aoe_ret=$? ;;
             [sS]*) j_msg -${notice} -p "${BMon}Skipping archive as instructed${Boff}" ;;
-            [nN]*) j_msg -${err} -p "Aborting as instructed" ; return 1;;
-            *) j_msg -${err} -p "Invalid response [$response]" ; return 1;;
+            [nN]*) j_msg -${err} -p "Aborting as instructed" ; _aoe_ret=11;;
+            *) j_msg -${err} -p "Invalid response [$response]" ; _aoe_ret=12;;
         esac
     else
         j_msg -${err} -p "Error: ebuild [${archive_ebuild_filename}] not found"
-        return 1
+        _aoe_ret=13
     fi
-    return 0
+    return $_aoe_ret
 }
 
 create-new-ebuild() {
-    current_ebuild_filename="${SOURCE_DIR}-${latest_ebuild_version}.ebuild"
-    output_ebuild_filename="${SOURCE_DIR}-${new_ebuild_version}.ebuild"
-    local msg="${BYon}About to run command:\n${Boff}"
-    msg+="    ${BGon}cp ${current_ebuild_filename} ${output_ebuild_filename}${Boff}"
-    j_msg -${notice} -p "${msg}"
+    # (SOURCE_DIR is an absolute path so use it to prefix the "basenamed" ebuild filename
+    #  with ${SOURCE_DIR%%/}/ to ensure proper handling of /)
+    # ebuilds reside in directories with the same basename, so use ${SOURCE_DIR##*/}
+    #   to prefix the new version number, in naming the new ebuild file
+    current_ebuild_filename="${SOURCE_DIR%%/}/${ebuild_files[0]}"
+    output_ebuild_filename="${SOURCE_DIR%%/}/${SOURCE_DIR##*/}-${new_ebuild_version}.ebuild"
+    maybe_dump_ebuilds
+    j_msg -${debug} -p "current_ebuild_filename: $current_ebuild_filename"
+    j_msg -${debug} -p "output_ebuild_filename: $output_ebuild_filename"
+    local _cne_msg="${BYon}About to run command:\n${Boff}"
+    _cne_msg+="    ${BGon}cp ${current_ebuild_filename} ${output_ebuild_filename}${Boff}"
+    j_msg -${notice} -p "${_cne_msg}"
     confirm_continue_or_exit
     cp "${current_ebuild_filename}" "${output_ebuild_filename}"
     return $?
 }
 
 edit-new-ebuild() {
+    local _ene_ret=0
+    local _ene_msg="${BYon}Ready to edit new ebuild "
+    _ene_msg+="[${BMon}${output_ebuild_filename}${BYon}]?${Boff}"
     response=""
-    local msg="${BYon}Ready to edit new ebuild "
-    msg+="[${BMon}${output_ebuild_filename}${BYon}]?${Boff}"
-    yns_prompt "$msg"
+    yns_prompt "$_ene_msg"
     case ${response:0:1} in
-        [yY] ) nano "${output_ebuild_filename}" ; result=$? ;;
-        [sS] ) j_msg -${notice} -p "${BMon}Skipping edit as instructed${Boff}" ; result=0 ;;
+        [yY] ) nano "${output_ebuild_filename}" ; _ene_ret=$? ;;
+        [sS] ) j_msg -${notice} -p "${BMon}Skipping edit as instructed${Boff}" ; ret=0 ;;
         [nN] ) j_msg -${err} -p "Aborting as instructed" ; return 1;;
         *    ) j_msg -${err} -p "Invalid response [$response]" ; return 1;;
     esac
-    return $result
+    return $_ene_ret
 }
 
 pkgdev_manifest_new-ebuild() {
+    local _pmn_ret=0
+    local _pmn_msg="${BYon}Ready to run pkgdev manifest -f for the new ebuild "
+    _pmn_msg+="[${BMon}${output_ebuild_filename}${BYon}]?${Boff}"
     response=""
-    local msg="${BYon}Ready to run pkgdev manifest -f for the new ebuild "
-    msg+="[${BMon}${output_ebuild_filename}${BYon}]?${Boff}"
-    yns_prompt "$msg"
+    yns_prompt "$_pmn_msg"
     case "$response" in
-        [yY]*) pkgdev manifest -f "${output_ebuild_filename}" ; result=$? ;;
-        [sS]*) j_msg -${notice} -p "${BMon}Skipping edit as instructed${Boff}" ; result=0 ;;
+        [yY]*) pkgdev manifest -f "${output_ebuild_filename}" ; _pmn_ret=$? ;;
+        [sS]*) j_msg -${notice} -p "${BMon}Skipping edit as instructed${Boff}" ; ret=0 ;;
         [nN]*) j_msg -${err} -p "Aborting as instructed" ; return 1;;
         *) j_msg -${err} -p "Invalid response [$response]" ; return 1;;
     esac
-    return $result
+    return $_pmn_ret
+}
+
+maybe_dump_ebuilds() {
+    # dump contents of ${ebuild_files[@]} if debugging ((verbosity >= ${debug}))
+    local _de_i
+    for (( _de_i=0; _de_i<${#ebuild_files[@]}; _de_i++ )); do
+        j_msg -${debug} -p $(printf 'ebuild_files[%d]: [%s]\n' "$_de_i" "${ebuild_files[_de_i]}")
+    done
 }
 
 debug_marker() {
@@ -282,13 +308,13 @@ fi
 
 separator "$(hostname)" "${PN}-${BUILD}"
 
-load-ebuild_versions || die "failed to load-ebuild_versions"
+load-ebuild_files || die "failed to load-ebuild_files"
 get-current-version || die "failed to get-current-version"
-get-archive-version || die "failed to get-archive-version"
-
-archive-old-version || die "failed to archive-old-version"
-
 calculate-new-version "${UPGRADE}" || die "failed to calculate-new-version ${UPGRADE}"
+get-archive-ebuild || die "failed to get-archive-ebuild"
+
+archive-old-ebuild || die "failed to archive-old-ebuild"
+
 
 create-new-ebuild || die "failed to create-new-ebuild"
 
@@ -296,7 +322,7 @@ edit-new-ebuild || die "failed to edit-new-ebuild"
 
 pkgdev_manifest_new-ebuild || die "failed to pkgdev_manifest_new-ebuild"
 
-j_msg -${notice} -p -n "moving back to old_dir [$old_dir]"
+j_msg -${notice} -m -n "moving back to old_dir [$old_dir]"
 cd "$old_dir" || die "failed to cd to old_dir"
 right_status $TRUE ${notice}
 
