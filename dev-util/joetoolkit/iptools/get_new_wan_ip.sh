@@ -1,5 +1,6 @@
 #!/bin/bash
-# Joe Brendler, 30 Jan 19
+#
+# Joe Brendler 30 Jan 19 (c) 2014-3795
 #
 # I used to do this by hacking into my router and digging out the wan ip
 # version 1 (2014) used python request, supplying username and password for

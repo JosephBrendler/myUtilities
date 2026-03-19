@@ -4,39 +4,42 @@
 # list dnsmasq dns querries for domains not entered in dns_whitelist
 #
 source /usr/sbin/script_header_joetoo
-BUILD="0.0.2 (20181023)"
+
+#BUILD="0.0.2 (20181023)"
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.3 (20260315)"; fi
+
 WHITELIST="/var/log/dns_whitelist"
 LOGFILE="/var/log/dnsmasq.log"
-verbosity=5
-
-# note sed makes space-delimitted structure predictable
-pipe=" | grep from | /bin/sed 's/\ */\ /' | cut -d' '  -f7 | sort -h | uniq -c | sort -h"
-build_pipe()
-{
-  local _lines
-  readarray -t _lines < <(grep -v "^${W0}#" "${WHITELIST}")
-  for (( i=0; i<${#_lines[@]}; i++ )); do
-    debug_msg "$i:  ${_lines[i]}"
-  # ignore commented or blank lines; otherwise add to piped "grep -v" chain
-  [ ! -z $(echo $line | tr -d '[:space:]') ] && pipe+=" | grep -v \"${line}\""
-  let i++
-done < ${WHITELIST}
-
-}
+[ -z "$verbosity" ] && verbosity=${notice}
 
 #---[ main script ]-------------------------
 separator "not_on_dns_whitelist.sh ${BUILD}"
 checkroot
-build_pipe
+
+# build grep chain safely - instead of old build_pipe()
+whitelist_filter=("grep -v brendler")
+while IFS= read -r line; do
+    # skip lines that are empty (${line// } removes spaces) or comments
+    [[ -z "${line// }" || "$line" =~ ^${W0}# ]] && continue
+    whitelist_filter+=( "| grep -v $line" )
+done < "$WHITELIST"
+
 [ "$#" -gt "0" ] && LOGFILE="$1"
-info_msg "LOGFILE: $LOGFILE"
+j_msg -${info} -m "LOGFILE: $LOGFILE"
 
 #if the logfile contains "old_logs/", use zcat
-[ $( echo `expr match "$LOGFILE" 'old_logs/'`) -ne "0" ] && \
-   loc_cmd="zcat" || loc_cmd="cat"
+if [ $( echo `expr match "$LOGFILE" 'old_logs/'`) -ne "0" ]; then
+  _loc_cmd=("zcat")
+else
+  _loc_cmd=("cat")
+fi
 
-info_msg "pipe: $pipe"
-echo
-info_msg "cmd: ${loc_cmd} ${LOGFILE} ${pipe}"
-echo
-eval "${loc_cmd} ${LOGFILE} ${pipe}"
+cmd=( "${_loc_cmd}" "$LOGFILE" )
+# now run the pipeline safely
+"${cmd[@]}" |
+  grep 'query\[' |
+  awk '{print $7}' |
+  sort -h |
+  uniq -c |
+  sort -rh |
+  grep -v -e "brendler" -f "$WHITELIST"

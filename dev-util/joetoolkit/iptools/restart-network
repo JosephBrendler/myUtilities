@@ -1,7 +1,12 @@
 #!/bin/bash
 
-sudo /etc/init.d/net.eth0 stop
-sudo /etc/init.d/net.wlan0 stop
+source /usr/sbin/script_header_joetoo
+
+interfaces=(eth0 eth1 wlan0 wlan1)
+
+for iface in ${interfaces[@]}; do
+  [ -d "/sys/class/net/$iface" ] && sudo /etc/init.d/net.$iface stop
+done
 sudo /etc/init.d/dhcpcd stop
 #sudo rm -f /var/lib/dhcpcd/eth0.lease*
 #sudo rm -f /var/lib/dhcpcd/wlan0-Elrond.lease*
@@ -13,25 +18,27 @@ sudo find /var/ -name '*.ra'
 sudo find /var/ -name '*.ra' -delete
 sudo find /var/ -name '*.dhcp6'
 sudo find /var/ -name '*.dhcp6' -delete
-sudo /etc/init.d/net.eth0 restart
-sleep 2
-sudo /etc/init.d/net.wlan0 restart
-sleep 2
+for iface in ${interfaces[@]}; do
+  [ -d "/sys/class/net/$iface" ] && sudo /etc/init.d/net.$iface restart
+  sleep 2
+done
 sudo /etc/init.d/dhcpcd start
 sleep 10
-cat /etc/resolv.conf
-echo
-echo "running ip -6 route ..."
+sudo cat /etc/resolv.conf
+j_msg -${notice} -p "\nrunning ip -6 route ..."
 ip -6 route
-echo
 #echo "running ping -c3 fd00:0:62::1"
 #ping -c3 fd00:0:62::1
-echo "running ping -c3 fd62:6262:6262::17"
-ping -c3 fd62:6262:6262::17
+j_msg -${notice} -p -n "\nre-running ping -c2 -W2 fd62:6262:6262::17"
+ping -c2 -W2 fd62:6262:6262::17 >/dev/null 2>&1
+handle_result $? "" "" ${notice}
 if [ -x /etc/local.d/99-ula-ndp-fix.start ] ; then
-  echo "restarting static NDP fix ..."
-  /etc/local.d/99-ula-ndp-fix.start
+  j_msg -${notice} -p "restarting static NDP fix ..."
+  sudo /etc/local.d/99-ula-ndp-fix.start
+  j_msg -${notice} -p -n "static NDP restart done; result:"
+  handle_result $? "" "" ${notice}
   sleep 1
-  echo "re-running ping -c3 fd62:6262:6262::17"
-  ping -c3 fd62:6262:6262::17
+  j_msg -${notice} -p -n "re-running ping -c2 -W2 fd62:6262:6262::17"
+  ping -c2 -W2 fd62:6262:6262::17 >/dev/null 2>&1
+  handle_result $? "" "" ${notice}
 fi

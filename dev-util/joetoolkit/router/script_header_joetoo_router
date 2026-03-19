@@ -1,0 +1,193 @@
+#!/bin/bash
+#
+#  script_header_joetoo_router  -  joe brendler (c) 2026 -7756
+#
+#  common functions required by scripts supporting my router/dns/firewall/vpn
+#  note: *client support functions belong in script_header_joetoo (if POSIX) or _bash
+#
+
+ingest_ip_array_from_logfile() {
+j_msg -${debug} -p "in ${FUNCNAME[0]}"
+  local grep_cmd="grep" filter_parts=() ia_ret=0
+  # If logfile ends in .gz, use zgrep
+  j_msg -${debug} -p "logfile: $logfile"
+  [[ "${logfile}" == *.gz ]] && grep_cmd="zgrep"
+  j_msg -${debug} -p "grep_cmd $grep_cmd"
+    # -t removes trailing newlines from each element
+   readarray -t hit_list < <(
+      "$grep_cmd" "${selector}" "${logfile}" |  # default selector is "REJECT" and logfile is "/var/log/shor>
+      awk "{print \$${ip_field_num}}" |        # pipe to cut to pick the correct space-delimited field
+      cut -d= -f2 |                            # pipe to cut to select the assigned value
+      sort | uniq -c |                         # pipe to sort | uniq -c (count of each sorted line)
+      sort -nr |                               # pipe to sort -nr (human-readable, reverse order)
+      sed "s|^ *||" )                          # remove leading spaces from each line
+
+    j_msg -${debug} -p "filter_parts ..: [${filter_parts[@]}]"
+    j_msg -${debug} -p "#hit_list .....: [${#hit_list[@]}]"
+    j_msg -${debug} -p "hit_list ......: [${hit_list[@]}]"
+return $ia_ret
+}
+
+
+ingest_ip_array() {
+    local ia_ret=0
+    local filter_func="$1"
+
+    if ! declare -F "$filter_func" >/dev/null; then
+        j_msg -${error} -p "ingest_ip_array: unknown filter function '$filter_func'"
+        return 1
+    fi
+
+    readarray -t hit_list < <(
+        "$filter_func" \
+        | sort \
+        | uniq -c \
+        | sort -nr \
+        | sed 's/^ *//'
+    )
+}
+
+resolve_ip_identity() {
+    local ip="$1"
+    local org="" city="" country="" ptr="" result=""
+    #----[ whois (multi-registry) ]-----------------------------------------------------------
+    for server in whois.arin.net whois.ripe.net whois.apnic.net whois.lacnic.net whois.afrinic.net; do
+        org=$(whois -h "$server" "$ip" 2>/dev/null | \
+              awk -F: '/(OrgName|Organization)/ {print $2; exit}' | \
+              sed 's/^ *//')
+        [[ -n "$org" ]] && break
+        [[ -n "$org" ]] && break
+    done
+    #----[ PTR fallback ]---------------------------------------------------------------------
+    if [[ -z "$org" ]]; then
+        ptr=$(host "$ip" 2>/dev/null | awk '/pointer/ {print $5}')
+        [[ -n "$ptr" ]] && org="$ptr"
+    fi
+    #----[ geo lookup ]-----------------------------------------------------------------------
+    result=$(curl -s "http://ip-api.com/json/$ip?fields=country,city,org")
+    city=$(echo "$result" | jq -r '.city // empty')
+    country=$(echo "$result" | jq -r '.country // empty')
+    #----[ final fallback ]-------------------------------------------------------------------
+    [[ -z "$org" ]] && org="Unknown"
+    [[ -z "$city" ]] && city="Unknown"
+    [[ -z "$country" ]] && country="Unknown"
+    printf "%s|%s|%s" "$org" "$city" "$country"
+}
+
+
+resolve_ip_threat() {
+    local ip="$1"
+    local threat="clean"
+    local details=""
+
+    #----[ ipinfo privacy flags ]------------------------------------------------------------
+    local info=$(curl -s "https://ipinfo.io/$ip/json")
+    local vpn=$(echo "$info" | jq -r '.privacy.vpn // empty')
+    local proxy=$(echo "$info" | jq -r '.privacy.proxy // empty')
+    local tor=$(echo "$info" | jq -r '.privacy.tor // empty')
+    local hosting=$(echo "$info" | jq -r '.privacy.hosting // empty')
+
+    if [[ "$tor" == "true" ]]; then
+        threat="tor"
+        details="TOR exit node"
+        echo "$threat|$details"
+        return
+    fi
+
+    if [[ "$vpn" == "true" ]]; then
+        threat="vpn"
+        details="VPN service"
+    fi
+
+    if [[ "$proxy" == "true" ]]; then
+        threat="proxy"
+        details="Proxy service"
+    fi
+
+    if [[ "$hosting" == "true" ]]; then
+        threat="hosting"
+        details="Cloud provider / hosting"
+    fi
+
+    #----[ OTX (AlienVault) ]-----------------------------------------------------------------
+    local otx=$(curl -s "https://otx.alienvault.com/api/v1/indicators/IPv4/$ip/general")
+    local pulses=$(echo "$otx" | jq '.pulse_info.count')
+
+    if [[ "$pulses" -gt 0 ]]; then
+        threat="malicious"
+        details="Listed in AlienVault OTX ($pulses pulses)"
+    fi
+
+    echo "$threat|$details"
+}
+
+identify_ip_hits() {
+j_msg -${debug} -p "in ${FUNCNAME[0]}"
+local i ih_ret=0
+local result="" city="" country=""
+local msg="" count=0 ip=""
+for ((i=0; i<${#hit_list[@]}; i++))
+do
+  set ${hit_list[i]}
+  count=$1;  ip=$2
+  msg="${LBon}${count}${Boff} ${BMon}${selector}${Boff}s on ${BYon}${ip}${Boff}"
+  # concatenate next line with look up the ip in whois database
+
+  # use resolve_ip_identity to get data using a tiered "fall-back" heirarchy
+  identity_data=$(resolve_ip_identity "$ip")
+  org=$(echo "$identity_data" | cut -d'|' -f1)
+  city=$(echo "$identity_data" | cut -d'|' -f2)
+  country=$(echo "$identity_data" | cut -d'|' -f3)
+
+  # use resolve_ip_threat to get open source threat intelligence
+  threat_data=$(resolve_ip_threat "$ip")
+  threat=$(echo "$threat_data" | cut -d'|' -f1)
+  details=$(echo "$threat_data" | cut -d'|' -f2)
+
+  j_msg -${notice} -p "${BBon}[${BMon}${count}${BBon}]${BYon} hits from ${BWon}${ip} ${BYon}--${Boff}"
+  j_msg -${notice} -m " ${Con}${org}${Boff} [ ${BYon}${city}, ${country}${Boff} ]"
+
+  if [[ "$threat" != "clean" ]]; then
+    j_msg -${notice} -mp "    ${RBon}THREAT INFO: ${threat}${Boff} (${details})"
+  fi
+
+done
+return $ih_ret
+}
+
+identify_foreign_ip_hits() {
+j_msg -${debug} -p "in ${FUNCNAME[0]}"
+local i ih_ret=0
+local result="" city="" country=""
+local msg="" count=0 ip=""
+for ((i=0; i<${#hit_list[@]}; i++))
+do
+  set ${hit_list[i]}
+  count=$1;  ip=$2
+  msg="${LBon}${count}${Boff} ${BMon}${selector}${Boff}s on ${BYon}${ip}${Boff}"
+  # concatenate next line with look up the ip in whois database
+
+  # use resolve_ip_identity to get data using a tiered "fall-back" heirarchy
+  identity_data=$(resolve_ip_identity "$ip")
+  org=$(echo "$identity_data" | cut -d'|' -f1)
+  city=$(echo "$identity_data" | cut -d'|' -f2)
+  country=$(echo "$identity_data" | cut -d'|' -f3)
+
+  # include only if country is not USA (skip to next otherwise)
+  if [[ "$country" == "United States" ]]; then continue; fi
+
+  # use resolve_ip_threat to get open source threat intelligence
+  threat_data=$(resolve_ip_threat "$ip")
+  threat=$(echo "$threat_data" | cut -d'|' -f1)
+  details=$(echo "$threat_data" | cut -d'|' -f2)
+
+  j_msg -${notice} -p "${BBon}[${BMon}${count}${BBon}]${BYon} hits from ${BWon}${ip} ${BYon}--${Boff}"
+  j_msg -${notice} -m " ${Con}${org}${Boff} [ ${BYon}${city}, ${country}${Boff} ]"
+
+  if [[ "$threat" != "clean" ]]; then
+    j_msg -${notice} -mp "    ${RBon}THREAT INFO: ${threat}${Boff} (${details})"
+  fi
+
+done
+return $ih_ret
+}

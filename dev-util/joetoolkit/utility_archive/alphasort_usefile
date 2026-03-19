@@ -1,0 +1,130 @@
+#!/bin/bash
+#
+#  now incorporated into script_header_joetoo (POSIX)
+#
+
+source /usr/sbin/script_header_joetoo
+#
+
+_sort_useflag_line()
+{ sul_ret=0
+  # first entry on the line is the package name
+  _sul_pkg="$1"; shift
+  # in a use_expand variable, the second entry would contain a colon
+  case "$1" in *:*) _sul_pkg="${_sul_pkg} $1" ; shift ;; esac
+#  j_msg -${debug} -p "_sul_pkg: $_sul_pkg"
+  # sort words, ignore case, (do this in two blocks in subshell,
+  #   to get activated USE first, then "-USE"
+  # then, use paste -sd' ' - (serial, space-delim, from stdin)
+  #   to reassemble the newline-separated sorted words into one line,
+  #   (equivalent to | tr '\n' ' ' | sed 's/ *$//'
+  _sul_sorted=$(
+    {
+      # enabled flags first
+      for _sul_flag in "$@"; do
+        case "$_sul_flag" in
+          -*) : ;;
+          *) printf '%s\n' "$_sul_flag" ;;
+        esac
+      done | sort -f
+      # disabled flags second
+      for _sul_flag in "$@"; do
+        case "$_sul_flag" in
+          -*) printf '%s\n' "$_sul_flag" ;;
+        esac
+      done | sort -f
+    } | paste -sd' ' -
+  )
+#  j_msg -${debug} -p "_sul_sorted: $_sul_sorted"
+  # emit only if non-zero length
+  [ ! -z "$_sul_sorted" ] && printf '%s %s\n' "$_sul_pkg" "$_sul_sorted"
+  unset -v _sul_sorted _sul_pkg _sul_flag
+  return $sul_ret
+}
+
+alphasort_usefile() # (POSIX) sort alphabetic, the lines and USE flags within lines of a package.use file
+{ au_ret=0
+  SORTLINES=$FALSE
+  BLANKLINES=$TRUE
+  COMMENTS=$TRUE
+  _au_opt=""
+  # parse options
+  while [ $# -gt 0 ]; do
+    case $1 in
+      "") die "usage: alphasort_usefile [-l] <useFile>"; return 1;;
+      -h)
+         j_msg -${notice} -p "usage: alphasort_usefile [-l] <useFile>"
+         j_msg -${notice} -m "  -B|b - enable|disable blank lines"
+         j_msg -${notice} -m "  -C|c - enable|disable comments"
+         j_msg -${notice} -m "  -S|s - enable|disable line-sorting"
+         return 0
+         ;;
+      -*)
+        _au_opt=${1#*-}  # strip leading -
+        # iterate and action option flags
+        while [ ! -z "$_au_opt" ]; do
+          # strip leading char and reassign the rest
+          _au_char="${_au_opt%${_au_opt#?}}"   # assign left_most char
+          _au_opt="${_au_opt#?}"               # assign remainder
+          case "$_au_char" in
+            b) BLANKLINES=$FALSE ;;
+            B) BLANKLINES=$TRUE ;;
+            c) COMMENTS=$FALSE ;;
+            C) COMMENTS=$TRUE ;;
+            s) SORTLINES=$FALSE ;;
+            S) SORTLINES=$TRUE ;;
+            h)
+              j_msg -${notice} -p "usage: alphasort_usefile [-l] <useFile>"
+              j_msg -${notice} -m "  -B|b - enable|disable blank lines"
+              j_msg -${notice} -m "  -C|c - enable|disable comments"
+              j_msg -${notice} -m "  -S|s - enable|disable line-sorting"
+              return 0
+              ;;
+            *) die "invalid option [$_au_char]; \nusage: alphasort_usefile [-l] <useFile>"; return 1 ;;
+          esac
+        done
+        shift
+        ;;
+      *)
+        # first non-option is the filename
+        _au_useFile="$1"
+        shift
+        break
+        ;;
+    esac
+  done
+  _au_filter="cat"
+  [ "$SORTLINES" ]    && _au_filter="${_au_filter} | sort"
+  [ ! "$BLANKLINES" ] && _au_filter="${_au_filter} | grep -v '^${W0}$'"
+  [ ! "$COMMENTS" ]   && _au_filter="${_au_filter} | grep -v '^${W0}#'"
+  if [ ! -f "$_au_useFile" ]; then j_msg -${err} "Error argument [$1] is not a file" ; exit 1; fi
+#  j_msg -${debug} -p "_au_useFile: $_au_useFile"
+  # iterate through lines of input file
+  while IFS= read -r _au_line; do
+    # trim leading whitespace
+    _au_trimmed=${_au_line#"${_au_line%%[![:space:]]*}"}
+
+    # Skip blank or comment lines
+    case "$_au_trimmed" in
+      "") # blank line
+        if [ "$BLANKLINES" ]; then
+          printf '%s\n' ""  # print if requested
+        fi
+        continue   # skip to next line
+        ;;
+      "#"*)
+        if [ "$COMMENTS" ]; then
+          printf '%s\n' "${_au_line}"  # print the comment line if requested
+        fi
+        continue   # skip to next line
+        ;;
+    esac
+#    j_msg -${debug} -p "_au_line: $_au_line"
+    # split into words safely (w/o globbing)
+    set -f; set -- $_au_line; set +f
+    _sort_useflag_line "$@"
+    # sort outputlines and strip blank lines and comments
+  done < "$_au_useFile" | eval "${_au_filter}"
+  unset -v _au_useFile _au_line _au_filter _au_trimmed _au_char _au_opt
+  return $au_ret
+}

@@ -8,26 +8,21 @@
 #   rev 5 Oct 2023 - incorporated count_distcc_jobs into a continuous watch
 source /usr/sbin/script_header_joetoo
 
+# if BUILD file exists, source it
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0"; fi
 # ---[ Define local variables ]-----------------------------------
-BUILD="0.1 (20231005)"
-
-ROOT_UID=0       # Only users with $UID 0 have root privileges
-
-# Error message used by script
-E_NOTROOT="Must be root to run this script."
-E_BAD_ARGS="Improperly formatted command line argument."
 
 #tempfile="/home/joe/tempfileforcountdistccjobs"
 tempfile="/var/tmp/tempfileforcountdistccjobs"
 
 # TODO - load array to accomodate more than one log file
-distcc_log=$(echo $( ls /var/log/distcc/ | grep distcc ))
+distcc_log=$(find /var/log/distcc/ -maxdepth 1 -mindepth 1 -type f -iname '*distcc*')
 
 # ---[ function blocks ]------------------------------------------
 
 filter_log()
 {
-cat ${distcc_log} | grep COMPILE_OK | cut -d')' -f2 | cut -d':' -f2 | sort -h \
+grep 'COMPILE_OK' ${distcc_log} | cut -d')' -f2 | cut -d':' -f2 | sort -h \
                   | uniq -c | sed 's/^\ *//g' > ${tempfile}
 }
 
@@ -37,7 +32,7 @@ HCU
 while read line
 do
     var=$( nslookup $( echo $line | cut -d' ' -f2 ) | grep name | cut -d"=" -f2 | cut -d" " -f2 )
-    echo -en "$( echo -e $line | cut -d' ' -f1)\t $( echo -e $line | cut -d' ' -f2)\t$(echo ${var%.})"
+    j_msg -${notice} -p -n "$( echo -e $line | cut -d' ' -f1)\t $( echo -e $line | cut -d' ' -f2)\t$(echo ${var%.})"
     echo
 done < "${tempfile}"
 SCU
@@ -50,7 +45,7 @@ get_log_file()
     # if there is no such file, assume logging to syslog (messages)
     [ -z "${distcc_log}" ] && distcc_log="/var/log/messages" \
         || distcc_log="/var/log/distcc/"${distcc_log}
-    message "${LBon}Analyzing log file [${BWon}${distcc_log}${LBon}]${Boff}"
+    j_msg -${notice} -p "${LBon}Analyzing log file [${BWon}${distcc_log}${LBon}]${Boff}"
 
 #    echo -en "\n"$BGon"* "$BBon"Enter distcc log filename ("$distcc_log") : "$Boff
 #    read reply

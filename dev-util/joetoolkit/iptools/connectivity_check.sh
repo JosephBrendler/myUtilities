@@ -5,7 +5,7 @@ source /usr/sbin/script_header_joetoo
 # ensure a ping failure in output4[...]=$(ping ...| grep 'packets') returns *ping exit status
 set -o pipefail
 
-PN=$(basename $0)
+PN=${0##*/}   # like =$(basename $0) but w/o the subshell or function call
 
 declare -A results4
 declare -A results6
@@ -19,13 +19,13 @@ nodes=(nuthuvia gmki92 sandbox raspicm46401 lcsp6402 rock5c6403 elrond google.co
 longest=$(get_longest ${nodes[@]})
 
 usage() {
-  j_msg "${BRon}Usage:${Boff}${Gon} connectivity_check.sh [node[@]|-h] [count] [wait]"
-  j_msg "\$1 can be -h : print this message, or it can be a quoted node list"
-  j_msg "\$2 can be \"\" or a ping count (defaault = 3)"
-  j_msg "\$3 can be \"\" or a wait time (sec to wait for each, default = 2)"
-  j_msg "the script will run ping -4/6 -c${count} -W${wait} $node -"
-  j_msg -p "   for both ipv4 and ipv6 - for each node in the nodelist"
-  j_msg "${BYon}Example:${Boff} ${Gon}connectivity_check.sh ${BYon}\"elrond github.com\" ${BMon}1 1${Boff}"
+  j_msg -${notice} -p "${BRon}Usage:${Boff}${Gon} connectivity_check.sh [node[@]|-h] [count] [wait]"
+  j_msg -${notice} -m "\$1 can be -h : print this message, or it can be a quoted node list"
+  j_msg -${notice} -m "\$2 can be \"\" or a ping count (defaault = 3)"
+  j_msg -${notice} -m "\$3 can be \"\" or a wait time (sec to wait for each, default = 2)"
+  j_msg -${notice} -m "the script will run ping -4/6 -c${count} -W${wait} $node -"
+  j_msg -${notice} -m "   for both ipv4 and ipv6 - for each node in the nodelist"
+  j_msg -${notice} -m "${BYon}Example:${Boff} ${Gon}connectivity_check.sh ${BYon}\"elrond github.com\" ${BMon}1 1${Boff}"
   exit 1
 }
 show_result() {
@@ -40,10 +40,10 @@ show_result() {
   # check for at least one received packet, and thus don't take "cmd didnt crash" as success
   if [ $result -eq 0 ]  && [ "$rx" -gt 0 ]; then
     bremoji $face_beam
-    j_msg -n -p "${BGon} Success${Boff}"
+    j_msg -n -mp "${BGon} Success${Boff}"
   else
     bremoji $no_entry
-    j_msg -n -p "${BRon} Failed ${Boff}"
+    j_msg -n -mp "${BRon} Failed ${Boff}"
   fi
   elapsed_color="${BMon}"
   (( elapsed < 9 )) && elapsed_color="${BRon}"
@@ -51,7 +51,7 @@ show_result() {
   (( elapsed < 3 )) && elapsed_color="${BGon}"
   msg=" ${BBon}[ ${Con}${tx}/${rx} (${pct}) ${BMon}${sec} ${Boff}s ${BBon}]"
   msg+=" (${elapsed_color}$elapsed${BBon})${Boff}"
-  j_msg -n -p "$msg"
+  j_msg -n -mp "$msg"
 }
 
 getip4() {
@@ -85,24 +85,24 @@ for node in "${nodes[@]}"; do
   target="$node"
   [[ "$node" != *.** ]] && target="${node}.brendler"
   # check IPv4 connectivity
-  j_msg -n "${BYon}pinging ${BCon}-4 ${BMon}${node}${Boff} "
+  j_msg -n -p "${BYon}pinging ${BCon}-4 ${BMon}${node}${Boff} "
   start=$SECONDS
   output4["$node"]=$(ping -4 -c"${count}" -W"${wait}" "$node" 2>/dev/null | grep 'packets')
   results4["$node"]=$?
   # provide debug output - ping result line and use getent to report preferred address
-  j_msg -7 "\n(debug) output4: ${output4["$node"]}"
-  j_msg -7 "Preferred ipv4 addr: $(getip4 "$node")"
+  j_msg -${debug} -p "\n(debug) output4: ${output4["$node"]}"
+  j_msg -${debug} -p "Preferred ipv4 addr: $(getip4 "$node")"
   end=$SECONDS
   elapsed4["$node"]=$(( end - start ))
   show_result "${results4["$node"]}" "${output4["$node"]}" "${elapsed4["$node"]}"; printf '\n'
   # check IPv6 connectivity
-  j_msg -n "${BYon}pinging ${BCon}-6 ${BMon}${target}${Boff} "
+  j_msg -n -p "${BYon}pinging ${BCon}-6 ${BMon}${target}${Boff} "
   start=$SECONDS
   output6["$node"]=$(ping -6 -c"${count}" -W"${wait}" "$target" 2>/dev/null | grep 'packets')
   results6["$node"]=$?
   # provide debug output - ping result line and use getent to report preferred address
-  j_msg -7 "\n(debug) output6: ${output6["$node"]}"
-  j_msg -7 "Preferred ipv6 addr: $(getip6 "$node")"
+  j_msg -${debug} -p "\n(debug) output6: ${output6["$node"]}"
+  j_msg -${debug} -p "Preferred ipv6 addr: $(getip6 "$node")"
   end=$SECONDS
   elapsed6["$node"]=$(( end - start ))
   show_result "${results6["$node"]}" "${output6["$node"]}" "${elapsed6["$node"]}"; printf '\n'

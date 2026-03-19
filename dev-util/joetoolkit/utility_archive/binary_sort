@@ -1,0 +1,70 @@
+#!/bin/bash
+# bs - implements simple binary search for target ($2) in list ($1)
+  source /usr/sbin/script_header_joetoo
+
+bs()
+{
+  [ -z "$1" ] && { echo "error null input list \$1"; exit  1; }
+  [ -z "$2" ] && { echo "error null target \$2"; exit  1; }
+
+  # return the index number of the entry in the list, or -1 if not found
+  let "result=-1"
+  search_list=$1
+  target=$2
+  _wc_1=$(echo $search_list | wc -w)
+  start=${3:-0}
+  end=${4:-${_wc_1}}
+  let "depth+=1"
+  if [[ $depth -gt ${#range[@]} ]]
+  then
+    j_msg -${notice} -p "Something is wrong here -- depth [$depth] exceeds range [${limit}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+
+  j_msg -${info} -p " depth=[$depth]"
+  j_msg -${info} -p " start=[$start]"
+  j_msg -${info} -p "   end=[$end]"
+
+  diff=$(( $end - $start ))
+  middle=$(( $start + $(( $diff / 2 )) ))
+  j_msg -${debug} -p "  diff=[$diff]"
+  ## guarantee to look at both start and end before giving up
+#  [[ $diff -eq 1 ]] && $((middle+=$(( $depth % 2 )) ))
+  [[ $diff -eq 1 ]] && let "middle+=$(( ${depth} % 2 ))"
+  j_msg -${debug} -p "new middle=[$middle]"
+  j_msg -${debug} -p ">> [${range[middle]}] <<"
+  if [[ "${range[middle]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else
+    [[ $start -eq $end ]] && return 1
+    if [[ "${range[middle]}" > "${target}" ]]
+    then
+      j_msg -${debug} -p "candidate [${range[middle]}] is GREATER than target [${target}] -- search lower half next"
+      bs $search_list $target $start $middle
+    else
+      j_msg -${debug} -p "candidate [${range[middle]}] is LESS than target [${target}] -- search upper half next"
+      bs $search_list $target $middle $end
+    fi
+  fi
+  j_msg -${info} -p "about to exit at depth [$depth], result is [$result]"
+  return 0
+}
+
+#----[ main script - alphabetize the list, then search it ]---------------
+
+let "depth=1"
+let "result=-1"
+range=($(cat $1 | sort -udb))
+limit=${#range[@]}
+j_msg -${notice} -p "${BYon}Looking for ${BWon}$2 ${BYon}in ${BWon}$1 ${BYon}--${Boff}"
+j_msg -${notice} -p "  ${BYon}searching among ${BWon}${#range[@]} ${BYon}candidate entries...${Boff}"
+echo
+tgt=$2
+bs $range $tgt 0 ${#range[@]}
+j_msg -${info} -p "just got back from doing bs, result is $result"
+[[ ${result} -gt 0 ]] && \
+  j_msg -${notice} -p "${BGon}Found ${range[result]} at line ${BWon}${result}${BGon} of ${1}${Boff}" || \
+  j_msg -${err} "${BRon}Not found${Boff}"
+echo
+j_msg -${info} -p "(had to go to depth $depth to figure that out)"

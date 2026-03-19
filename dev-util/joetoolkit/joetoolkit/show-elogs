@@ -1,53 +1,47 @@
 #!/bin/bash
 
+source /usr/sbin/script_header_joetoo
+
 # show most recent elogs in /var/log/portage/elog/
 
 # Author: Joe Brendler 23 Jan 2011
 #  rev 20 Mar 11 -- added latest & today options
 #      01 Oct 12 -- added paged output option
 #      17 Aug 14 -- bugfix: tmp_elog_summary constrained to ELOG_DIR
-#Define local variables
-E_BAD_ARGS=66    # improper command line argument usage exit error
-E_BAD_OPT=63     # bad option exit error
-BOLDon="\033[1m"
-BOLDoff="\033[0m"   # escape sequences - use with "echo -e"
-BLUEon="\E[34m"
-LBLUEon="\E[36m"
-YELLOWon="\E[33m"
-GREENon="\E[32m"
-REDon="\E[31m"
+#      17 Mar 26 -- refactor for j_msg, etc
 
 # set default option flags
-LATEST="no"
-TODAY="no"
+LATEST="$FALSE"
+TODAY="$FALSE"
+PAGED="$FALSE"
 
 # change if you store elogs elsewhere; must end in /
 ELOG_DIR="/var/log/portage/elog/"
 
 # function blocks
-useage()
+usage()
 {
-   echo -e $GREENon$BOLDon"Useage: show-elog [option]"$BOLDoff
-   echo "  Option -h  | --help     display this text"
-   echo "         -l  | --latest   display elogs for latest emerge operations only"
-   echo "         -t  | --today    display elogs for today's emerge operations only"
-   echo "         -p  | --paged    display elogs with paged (less) output"
-   echo
-   echo "  Note: User will be shown dates of emerge operations for which elog files exist"
-   echo "      and be prompted for input.  Response can be any string filter.  Resulting"
-   echo "      output will be the names and contents of all matching filenames. Default"
-   echo "      is the most recent date found."
-   echo
-   echo "  Example:"
-   echo -e $GREENon$BOLDon"  Enter date ["20110123"]:"$BOLDoff" 2009<enter>"
-   echo "      will generate output of names and contents of all files with filename"
-   echo '      matching "2009"'
-   echo
-   echo "  Note: You can use show-elogs in a non-interactive fashion by piping it the"
-   echo "      input for its filter prompt.  You can also generate a paged display of"
-   echo "      its output by piping it to less.  For example:"
-   echo "         # echo 'portage' | show-elogs | less"
-   echo "      to generate a paged display of elogs pertaining to the portage package."
+   j_msg -${notice} -p "${BGon}usage: show-elog [option]${Boff}"
+   j_msg -${notice} -m "  Option -h  | --help     display this text"
+   j_msg -${notice} -m "         -l  | --latest   display elogs for latest emerge operations only"
+   j_msg -${notice} -m "         -t  | --today    display elogs for today's emerge operations only"
+   j_msg -${notice} -m "         -p  | --paged    display elogs with paged (less) output"
+   j_msg -${notice} -m
+   j_msg -${notice} -m "  Note: User will be shown dates of emerge operations for which elog files exist"
+   j_msg -${notice} -m "      and be prompted for input.  Response can be any string filter.  Resulting"
+   j_msg -${notice} -m "      output will be the names and contents of all matching filenames. Default"
+   j_msg -${notice} -m "      is the most recent date found."
+   j_msg -${notice} -m
+   j_msg -${notice} -m "  Example:"
+   j_msg -${notice} -p "${BGon}  Enter date ["20110123"]:${Boff} 2009<enter>"
+   j_msg -${notice} -m "      will generate output of names and contents of all files with filename"
+   j_msg -${notice} -m '      matching "2009"'
+   j_msg -${notice} -m
+   j_msg -${notice} -m "  Note: You can use show-elogs in a non-interactive fashion by piping it the"
+   j_msg -${notice} -m "      input for its filter prompt.  You can also generate a paged display of"
+   j_msg -${notice} -m "      its output by piping it to less.  For example:"
+   j_msg -${notice} -m "         # echo 'portage' | show-elogs | less"
+   j_msg -${notice} -m "      to generate a paged display of elogs pertaining to the portage package."
 }
 
 find_elog_dates ()
@@ -55,16 +49,16 @@ find_elog_dates ()
 # display dates for emerge operations for which elog files exist
 # options: -v verbose (default) | -q silent
 # returns: latest date found in format +%Y%m%d as found in filenames
-[ ! "$1" = "-q" ] && echo -e $YELLOWon$BOLDon"Note: elogs exist for emerge operations run on the following dates (oldest first):"$BOLDoff
-[ ! "$1" = "-q" ] && echo -en $LBLUEon$BOLDon
+[ ! "$1" = "-q" ] && j_msg -${notice} -p "${BYon}Note: elogs exist for emerge operations run on the following dates (oldest first):${Boff}"
+[ ! "$1" = "-q" ] && j_msg -${notice} -mp -n "${Con}"  # turn on this color for all date selectors
 j=1
-for x in $(ls $ELOG_DIR | cut -d":" -f 3 | cut -d"-" -f 1 | sort -nu); do
-   [ ! "$1" = "-q" ] && echo -en "   "$x
+for x in $(find "$ELOG_DIR" -maxdepth 1 -mindepth 1 -type f -not -iname 'summary*' | grep -v 'keep' | cut -d":" -f 3 | cut -d"-" -f 1 | sort -nu); do
+   [ ! "$1" = "-q" ] && j_msg -${notice} -mp -n "   "$x
    let "rem = $(expr $j % 7)"
-   [ $rem -eq  0 ] && [ ! "$1" = "-q" ] && echo
+   [ $rem -eq  0 ] && [ ! "$1" = "-q" ] && printf '\n'
    let "j = $j + 1"
 done
-[ ! "$1" = "-q" ] && echo -e $BOLDoff
+[ ! "$1" = "-q" ] && j_msg -${notice} -mp "${Boff}"
 answer="$x"  # returns latest date found for variable assignment
 }
 
@@ -73,50 +67,50 @@ answer="$x"  # returns latest date found for variable assignment
 
 # process command line argument (must be one of the following)
 [ ! -z "$1" ] && case $1 in
-    "-h" | "--help"    ) useage ; exit 0  ;;
-    "-l" | "--latest"  ) LATEST="yes" ;;
-    "-t" | "--today"   ) TODAY="yes" ;;
-    "-p" | "--paged"   ) PAGED="yes" ;;
-    *                  ) useage; exit 1 ;;
+    "-h" | "--help"    ) usage ; exit 0  ;;
+    "-l" | "--latest"  ) LATEST="$TRUE" ;;
+    "-t" | "--today"   ) TODAY="$TRUE" ;;
+    "-p" | "--paged"   ) PAGED="$TRUE" ;;
+    *                  ) usage; exit 1 ;;
 esac
 
 answer=""
-if [ "$TODAY" = "yes" ]
+if [ "$TODAY" ]
 then
     answer="$(date -u +%Y%m%d)"
-elif [ "$LATEST" = "yes" ]
+elif [ "$LATEST" ]
 then
     find_elog_dates -q  # quietly sets answer to latest date
 else
     # prompt user to select date; default to latest
     find_elog_dates -v  # verbosely lists all elog dates
-    echo
-    echo -en $GREENon$BOLDon"Enter date ["$answer"]:"
+    printf '\n'
+    j_msg -${notice} -p -n "${BGon}Enter date ["$answer"]:"
     read reply
     [ ! -z $reply ] && answer=$reply
 fi
 # create output file and display selected elogs
-[ "${ELOG_DIR:(-1)}" == "/" ] || ELOG_DIR="${ELOG_DIR}/"  # add trailing "/" if missing
-[ -e "${ELOG_DIR}tmp_elog_summary" ] && rm ${ELOG_DIR}tmp_elog_summary
-echo > ${ELOG_DIR}tmp_elog_summary
-echo -e $GREENon$BOLDon"*  "$YELLOWon"Found the following elogs for filter: "$REDon$answer >> ${ELOG_DIR}tmp_elog_summary
-echo >> ${ELOG_DIR}tmp_elog_summary
+tmp_elog_summary_file="${ELOG_DIR%/}/tmp_elog_summary"
+[ -e "$tmp_elog_summary_file" ] && rm "$tmp_elog_summary_file"
+printf '%s' "${BGon} * " > "$tmp_elog_summary_file"
+printf '%s' "${BYon}Found the following elogs for filter: ${BRon}$answer" >> "${ELOG_DIR%?}/tmp_elog_summary"
+printf '\n' >> "$tmp_elog_summary_file"
 
-for i in $(ls $ELOG_DIR | grep $answer); do
+for i in $(find $ELOG_DIR -maxdepth 1 -mindepth 1 -type f -iname "*${answer}*" -printf '%f\n'); do
 
-   echo -en $GREENon$BOLDon"* "$YELLOWon ${i%%$answer*}$REDon$answer$YELLOWon${i##*$answer} $BOLDoff >> ${ELOG_DIR}tmp_elog_summary
-   echo >> ${ELOG_DIR}tmp_elog_summary
-   cat $ELOG_DIR$i >> ${ELOG_DIR}tmp_elog_summary
+   printf '%s'  "${BGon} * ${BYon} ${i%%$answer*}${BRon}${answer}${BYon}${i##*$answer} ${Boff}" >> "$tmp_elog_summary_file"
+   printf '\n' >> "$tmp_elog_summary_file"
+   cat "${ELOG_DIR%/}/${i}" >> "$tmp_elog_summary_file"
 done
 
-if [ "$PAGED" = "yes" ]
+if [ "$PAGED" ]
 then
-   less ${ELOG_DIR}tmp_elog_summary
+   less "$tmp_elog_summary_file"
 else
-   cat ${ELOG_DIR}tmp_elog_summary
+   cat "$tmp_elog_summary_file" | sed 's|^|   |'
 fi
 
 # clean up
-[ -e "${ELOG_DIR}tmp_elog_summary" ] && rm ${ELOG_DIR}tmp_elog_summary
+[ -e "$tmp_elog_summary_file" ] && rm "$tmp_elog_summary_file"
 exit 0
 

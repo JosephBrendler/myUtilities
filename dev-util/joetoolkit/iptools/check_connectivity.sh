@@ -1,18 +1,25 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
-source /usr/sbin/script_header_joetoo_unicode
+
+PN=${0##*/}   # basename
+
 _fam=""
-_action="ping"
-# if family is specified, use it
-case "$1" in "4"|"6") _fam="-$1"; shift;; "-4"|"-6") _fam="$1"; shift;; esac
+_action=(ping)
+
+usage() { j_msg -${err} "usage: $PN [-[4|6]] [<target>]"; exit 1; }
+
+# if family is specified, use it ; ignore $2 - maybe use below after shift
+case "$1" in
+   "-h") usage;;
+   "4"|"6") _fam="-$1"; shift;;
+   "-4"|"-6") _fam="$1"; shift;;
+esac
+
 # if target is specified, use it
 target="${1:-elrond.brendler}"
-[ ! -z "$_fam" ] && _action="$_action $_fam"
-message_n "$_action ${LBon}${target}${Boff} "
-eval "$_action -c3 -W5 ${target}" >/dev/null 2>&1;
-if [ $? -eq 0 ]; then
-  bremoji "$face_beam"; echo -e -n " (${Gon}success!${Boff})"; result=0
-else
-  bremoji "$no_entry"; echo -e -n " (${Ron}failure!${Boff})"; result=1
-fi;
-right_status "$result"
+[ ! -z "$_fam" ] && _action+=("$_fam")
+_action+=("-c1" "-W2" "$target")
+j_msg -${notice} -p -n "${BYon}$_action${Boff} ${Con}${target}${Boff} "
+#"$_action" -c1 -W2 "${target}" >/dev/null 2>&1
+"${_action[@]}" >/dev/null 2>&1
+handle_result $? "$bin_face_beam success!" "$bin_no_entry failure!" ${notice}

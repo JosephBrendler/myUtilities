@@ -2,16 +2,22 @@
 # show-toolchain   Joe Brendler 3 Octover 2023
 #
 source /usr/sbin/script_header_joetoo
-BUILD=0.0.1
-VERBOSE=$TRUE
-verbosity=3
+
+PN=${0##*/}
+
+#BUILD=0.0.1
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.2"; fi
 
 # PORTDIR, PKGDIR, DISTDIR must be evaluated in this order if e.g. PKGDIR=${PORTDIR}/packages
 #eval $( grep ^PORTDIR /etc/portage/make.conf )
 #eval $( grep ^PKGDIR /etc/portage/make.conf )
 # source make.conf b/c we can't do it this way for systems that set e.g. PORTDIR="${ROOT}var/db/repos/gentoo"
-d_message_n "sourcing make.conf to set PORTDIR, PKGDIR ..." 1
-source /etc/portage/make.conf ; d_right_status $? 1
+j_msg -${notice} -p -n "sourcing make.conf in a subshell, to set PORTDIR ..."
+PORTDIR=$(source /etc/portage/make.conf ; echo "$PORTDIR")
+handle_result $? "$PORTDIR" "" ${notice}
+j_msg -${notice} -p -n "sourcing make.conf in a subshell, to set PKGDIR ..."
+PKGDIR=$(source /etc/portage/make.conf ; echo "$PKGDIR")
+handle_result $? "$PKGDIR" "" ${notice}
 
 #key_packages=(
 #'sys-libs/glibc'
@@ -22,18 +28,33 @@ source /etc/portage/make.conf ; d_right_status $? 1
 #'sys-devel/gcc-config'
 #)
 
-message "running eix-update..."
-eix-update; right_status "$?"
+j_msg -${notice} -p "running eix-update..."
+eix-update >/dev/null 2>&1; right_status "$?" ${notice}
 
-message "current toolchain info follows..."
-#for ((i=0; i<${#key_packages[@]}; i++))
-#do
-#  eix -Ic ${key_packages[i]}
-#done
+j_msg -${notice} -p  "current gcc toolchain info follows..."
+readarray -t tools < <(eix -Ic | grep -E 'sys-libs/glibc|sys-devel/binutils|sys-devel/gcc|sys-kernel/linux-headers')
+for tool in "${tools[@]}"; do
+  # format: [I] sys-devel/binutils (2.46.0(2.46){gpkg}@03/11/2026): Tools necessary to build programs
+  rem=${tool#* }    # strip shortest match for '* ' from left [I] - leaving remainder
+  atom=${rem%% *}   # strip longest match for ' *' from right - leaving atom
+  rem=${rem#* }     # strip shortest match for '* ' from left (atom) - leaving remainder
+  ver_str=${rem#(*} # strip shortest match for '(*' from left (() - leaving remainder
+  version=${ver_str%%[({]*}  # strip longest match for '(*' from right - leaving version
+  j_msg -${notice} -m "${Gon}${atom} ${BCon}${version}${Boff}"
+done
+j_msg -${notice} -mp  ""
 
-eix-update && \
-  eix -Ic | \
-    grep 'sys-libs/glibc\|sys-devel/binutils\|sys-devel\/gcc\|sys-kernel/linux-headers'
+j_msg -${notice} -p  "current llvm toolchain info follows..."
+readarray -t tools < <(eix -Ic | grep -E 'llvm-core')
+for tool in "${tools[@]}"; do
+  # format: [I] sys-devel/binutils (2.46.0(2.46){gpkg}@03/11/2026): Tools necessary to build programs
+  rem=${tool#* }    # strip shortest match for '* ' from left [I] - leaving remainder
+  atom=${rem%% *}   # strip longest match for ' *' from right - leaving atom
+  rem=${rem#* }     # strip shortest match for '* ' from left (atom) - leaving remainder
+  ver_str=${rem#(*} # strip shortest match for '(*' from left (() - leaving remainder
+  version=${ver_str%%[({]*}  # strip longest match for '(*' from right - leaving version
+  j_msg -${notice} -m "${Gon}${atom} ${BCon}${version}${Boff}"
+done
+j_msg -${notice} -mp  ""
 
-echo
-message "all done"
+j_msg -${notice} -p  "all done"

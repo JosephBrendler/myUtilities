@@ -1,0 +1,68 @@
+#!/bin/bash
+# display_foreign_connections
+# Joe Brendler   11 October 2014 (c) 2014-49878
+#
+
+source /usr/sbin/script_header_joetoo
+
+#-----[ variables ]---------------------------------------------------------------------
+
+PN=${0##*/}   # basename
+
+#BUILD="0.1.1 20170116"
+
+if [ -f /etc/joetoolkit/BUILD ]; . /etc/joetoolkit/BUILD; else BUILD="0.1.2 20260315"; fi
+
+tempfile="/home/joe/tempfile"
+#default_logfile="/var/log/firewall.log"
+#wayback_logfile="/var/log/old_logs/firewall.log*"
+#default_logfile="/var/log/syslog"
+#wayback_logfile="/var/log/old_logs/syslog*"
+default_logfile="/var/log/shorewall-run.log"
+wayback_logfile="/var/log/old_logs/shorewall-run.logs*"
+
+if [[ -z $1 ]]
+then
+  logfile=$default_logfile
+  grep_cmd="grep"
+else
+  logfile=$wayback_logfile
+  grep_cmd="zgrep"
+fi
+j_msg -${notice} -p "Using logfile $logfile"
+
+#-----[ functions ]---------------------------------------------------------------------
+
+
+# build foreign_connection filter
+fc_filter() {
+  # only look at records for accepted connections to or from the 'net' zone
+  #   otherwise you'll see "false positives" from loc2fw or vpn2fw ACCEPTs of nat
+  #   traffic corresponding to REJECTED fw2net traffic, etc
+  $grep_cmd -h ACCEPT $logfile | \
+    grep '\-net' | \
+    grep -v 'MAC= ' | \
+    grep -v 'SPT=53' | \
+    awk '{
+      for(i=1;i<=NF;i++)
+        if ($i ~ /^DST=/) {
+          ip=substr($i,5)
+          print ip
+        }
+    }'
+}
+#    | awk '{                      # awk script
+#        for(i=1;i<=NF;i++)        # look at each word in line (NF == last)
+#            if ($i ~ /^DST=/) {   # select words matching DST= (destination addr)
+#                ip=substr($i,5)   # extract the addr as "ip"
+#                print ip          # print that
+#            }                     # end of if {...}
+#    }'                            # end of awk script
+
+#-----[ main script ]---------------------------------------------------------------------
+separator "${PN}-${BUILD}"
+
+# repeated DST IPs (excluding known-good resolvers)
+j_msg -${notice} -p "foreign connections"
+ingest_ip_array fc_filter
+identify_foreign_ip_hits

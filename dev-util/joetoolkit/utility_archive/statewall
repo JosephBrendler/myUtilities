@@ -1,0 +1,196 @@
+#!/bin/bash
+
+# stateful firewall script.
+# Joe Brendler 10 Dec 08
+#   rev 18 Jun 09 (for ssh/web server, non-router)
+#
+#   expanded from Daniel Robbins' tutorial on stateful firewall design
+#      http://www.gentoo.org/doc/en/articles/linux-24-stateful-fw-design.xml
+#   and Mike Frysinger's Home Router Guide
+#      http://www.gentoo.org/doc/en/home-router-howto.xml
+
+# Basic Script Constant definitions:
+ROOT_UID=0
+E_NOTROOT=67
+BOLDon="\033[1m"
+BOLDoff="\033[0m"
+REDon="\E[31m"
+BLUEon="\E[34m"
+GREENon="\E[32m"
+
+# Define functions:
+configure()
+{
+  # Interface definitions:
+  # WAN (connection to the Internet)
+  WAN="enp1s12"
+  LAN="enp1s7"
+  DMZ="enp1s8"	# for future development
+
+  # If you're a router (and thus should forward IP packets between interfaces),
+  # you want ROUTER="yes"; otherwise, ROUTER="no"
+  ROUTER="yes"
+  #ROUTER="no"
+
+  # Change this next line to the static IP of your WAN interface for static SNAT, or
+  # "dynamic" if you have a dynamic IP.  If you don't need any NAT, set NAT to "" to
+  # disable it.
+  NAT="dynamic"
+
+  # Change this next line so it lists all your network interfaces, including lo
+  INTERFACES="lo enp1s12 enp1s7 enp1s8"
+
+  # Change this line so that it lists the assigned numbers or symbolic names (from
+  # /etc/services) of all the services that you'd like to provide to the general
+  # public. If you don't want any services enabled, set it to ""
+  PUB_TCP_SERVICES=""
+  PUB_UDP_SERVICES="9006"
+
+  # Change this line so that it lists the assigned numbers or symbolic names (from
+  # /etc/services) of all the services that you'd like to provide to your LAN.
+  # If you don't want any services enabled, set it to ""
+  LAN_TCP_SERVICES="ssh http https rsync 9006 53 5353 12921 5666 3632"
+  LAN_UDP_SERVICES="ssh http https rsync 9006 53 5353 12921 5666 3632"
+}
+
+useage()
+{
+echo -e $GREENon"Useage: statewall [ start | open | shut ]"$BOLDoff
+}
+
+setup_nat()
+{
+        if [ "$ROUTER" = "yes" ]
+        then
+                # We're a router of some kind, enable IP forwarding
+                echo 1 > /proc/sys/net/ipv4/ip_forward
+                if [ "$NAT" = "dynamic" ]
+                then
+                # Dynamic IP address, use masquerading
+                echo "Enabling masquerading (dynamic ip)..."
+                        iptables -t nat -A POSTROUTING -o ${WAN} -j MASQUERADE
+                elif [ "$NAT" != "" ]
+                then
+                        # Static IP, use SNAT
+                        echo "Enabling SNAT (static ip)..."
+                        iptables -t nat -A POSTROUTING -o ${WAN} -j SNAT --to ${UPIP}
+                fi
+        fi
+}
+
+flush_iptables()
+{
+	echo "Flushing iptables..."
+	iptables -F
+	iptables -t nat -F
+}
+
+fn_open()
+{
+        echo "Opening firewall..."
+        flush_iptables
+        iptables -P INPUT ACCEPT
+        iptables -P OUTPUT ACCEPT
+        iptables -P FORWARD ACCEPT
+	# call function to setup nat or snat
+	setup_nat
+	/etc/init.d/iptables save
+}
+
+fn_shut()
+{
+	echo "Shutting firewall..."
+        flush_iptables
+	iptables -P INPUT DROP
+        iptables -P OUTPUT DROP
+        iptables -P FORWARD DROP
+        # Turn off NAT/masquerading, if any
+        iptables -t nat -F POSTROUTING
+	/etc/init.d/iptables save
+}
+
+fn_start()
+{
+        flush_iptables
+        echo "Starting firewall..."
+	# Set Default policy to DROP
+        iptables -P INPUT DROP
+	# Enable access from non-WAN interfaces
+        iptables -I INPUT ! -i ${WAN} -j ACCEPT
+	# Enable access from WAN for packets with ESTABLISHED or RELATED state
+        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+        # Enable public access to certain services
+        for x in ${PUB_TCP_SERVICES}
+        do
+		echo "Accepting "${x}" from WAN via tcp..."
+                iptables -A INPUT -p tcp -i ${WAN} --dport ${x} -m state --state NEW -j ACCEPT
+        done
+
+        for x in ${PUB_UDP_SERVICES}
+        do
+		echo "Accepting "${x}" from WAN via udp..."
+                iptables -A INPUT -p udp -i ${WAN} --dport ${x} -m state --state NEW -j ACCEPT
+        done
+
+	# Disable access from the WAN otherwise
+        iptables -A INPUT -p tcp -i ${WAN} -j REJECT --reject-with tcp-reset
+        iptables -A INPUT -p udp -i ${WAN} -j REJECT --reject-with icmp-port-unreachable
+
+        # Enable lan access to certain services
+        for x in ${LAN_TCP_SERVICES}
+        do
+		echo "Accepting "${x}" from LAN via tcp..."
+                iptables -A INPUT -p tcp -i ${LAN} --dport ${x} -m state --state NEW -j ACCEPT
+        done
+
+        for x in ${LAN_UDP_SERVICES}
+        do
+		echo "Accepting "${x}" from LAN via udp..."
+                iptables -A INPUT -p udp -i ${LAN} --dport ${x} -m state --state NEW -j ACCEPT
+        done
+
+        # Explicitly disable ECN
+        if [ -e /proc/sys/net/ipv4/tcp_ecn ]
+        then
+                echo 0 > /proc/sys/net/ipv4/tcp_ecn
+        fi
+
+        # Disable spoofing on all interfaces
+        for x in ${INTERFACES}
+        do
+                echo 1 > /proc/sys/net/ipv4/conf/${x}/rp_filter
+        done
+
+	# Set up rules for forwarding
+	iptables -I FORWARD -i ${LAN} -s 192.168.61.0/24 -d 192.168.61.0/24 -j DROP
+	iptables -A FORWARD -i ${DMZ} -s 192.168.62.0/24 -d 192.168.62.0/24 -j DROP
+	iptables -A FORWARD -i ${LAN} -s 192.168.61.0/24 -j ACCEPT
+	iptables -A FORWARD -i ${DMZ} -s 192.168.62.0/24 -j ACCEPT
+	iptables -A FORWARD -i ${WAN} -d 192.168.32.0/24 -j ACCEPT
+
+	# Call function to setup nat or snat
+	setup_nat
+	/etc/init.d/iptables save
+}
+
+checkroot()
+{
+  if [ "$UID" -ne "$ROOT_UID" ]
+  then
+  	echo -e $REDon$BOLDon"Must be root to run this script."$BOLDoff
+  	exit $E_NOTROOT
+  fi
+}
+
+# Begin main script...
+checkroot
+configure
+case $1 in
+  "start" ) fn_open; fn_start;;
+  "open"  ) fn_open;;
+  "shut"  ) fn_shut;;
+  *       ) useage;;
+esac
+
+

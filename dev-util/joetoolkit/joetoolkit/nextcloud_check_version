@@ -1,76 +1,75 @@
 #!/bin/bash
-source /usr/sbin/script_header_joetoo
-program="nextcould_check_version"
-BUILD=0
-VERBOSE=$TRUE
-verbosity=0
+# joetoo_cli_example - template app for joetoo CLI (c) Joe Brendler 2026-7789
 
-emerged_version_list=()
-version=""
+script_header_installed_dir="/usr/sbin"
+#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
+# source script_header
+header="${script_header_installed_dir%/}/script_header_joetoo"
 
-#-----[ functions ]------------------------------------------------------
+echo "header: $header"
 
-usage() {
-  E_message "Error: invalid cmdline options [$@]"
-  message "usage:  nextcould_check_version <options>"
-  message "options:"
-  message "  -[v|V] increase verbosity"
-  message "  -[q|Q] decrease verbosity"
-  exit
-}
+if [ -f "$header" ]; then . "$header"; else printf '%s' "failed to source header; cannot continue"; exit 1; fi
+printf '%s' "Checking for header commands to confirm sourcing"
+if command -v toc >/dev/null 2>&1 && command -v run_sequence >/dev/null 2>&1 ; then
+handle_result $? ; else printf '%s\n' "Failed; header not sourced; cannot continue"; exit 1; fi
 
-process_cmdline() {
-  while [ $# -gt 0 ]
-  do
-    # option ok w or w/o '-' or '--'
-    option=$( echo $1 | sed 's/^-//' | sed 's/^-//' )
-    case ${option} in
-       [vV] | verbose ) let verbosity++ ;;
-       [qQ] | quiet   ) let verbosity-- ;;
-       *              ) process_compound_option "$option" ;;
-    esac
-    shift
-  done
-}
+#-----[ variables ]----------------------------------------------------
 
-process_compound_option() {
-  myargs=$1
-  while [ -n "${myargs}" ]
-  do
-    #handle first char
-    case ${myargs:0:1} in
-       [vV] ) [ ! VERBOSE ] && VERBOSE=$TRUE; let verbosity++ ;;
-       [qQ] ) let verbosity--; [ verbosity -le 0 ] && VERBOSE=$FALSE ;;
-       *    ) usage "${myargs}" ;;
-    esac
-    #strip first char from myargs (i.e. "shift")
-    myargs=${myargs:1}
-  done
-}
+# NOTE: varlist variables are initialized by app_configure() and displayed by show_config();
+# the basic set of varlist variables is defined in script_header_joetoo and can be extended
+# either in the using script or in its .conf files.
+# An example is provided in the joetoo_cli_example script and in the template joetoo_cli_example.conf
+#
+# BREAK tells display_vars to add a newline spacer in its output
+# $LOCALIZED exemplifies use of the joetoo pseudo-boolean data type for POSIX scripts
+# $EXAMPLE and $DEFAULTS are pseudo-booleans defined in joetoo_cli_example_local.cmdline_arg_handler
+# $INITIALIZED_ME and $SOURCED_ME exemplify use of the joetoo yn data type
+# Note how each is named and how these types are prefixed in the varlist, to inform initialize_vars
+# and display_vars how to handle them.
+# $longone is a long string defined in script_header_joetoo to test and illustrate smart wrapping
+# by the smart_wrap_n() function. its name is prefixed "lv." in this localized extension of varlist
+# to indicate (long variable), so display_vars will use smart_wrap_n() to display the content of
+# $longone (which is long-one btw, not long-gone)
+#
+# CAVEAT: varlist is instantiated when script_header_joetoo is sourced (above), so it IS safe to add
+# variable names to it in a "variables" section at the top of your main script, but note that
+# the standard joetoo cli script layout calls app_configure() after that --
+# so anything you add to varlist before app_configure will be over-written when app_configure
+# calls initialize_var. which sets all bool. to $FALSE, all yn. to "no" and all others to ""
+#
+# Bottom line: you can append variable names to varlist at the top of your script, but if you do, you
+# ALSO need to reassign them AFTER app_configure runs. Thus it is "easier" to just append
+# variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
+# initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
+LOCALIZED=$FALSE; INITIALIZED_ME="no"
+varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
 
-display_config() {
-  echo -e ${BYon}"Congiguration:"${Boff}
-  echo -e ${LBon}"VERBOSE................: "$(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}
-  echo -e ${LBon}"verbosity..............: "${Boff}${verbosity}
-}
+#-----[ functions ]----------------------------------------------------
 
-get_webapp_installed_version(){
+# note: this is based on the "mini" version (joetoo_cli_example_mini) is a template for scripts
+#  wherein the tasks do not require seqencing and interactive oversight.
+#  Thus, they can be coded directly into the scripts main body, or its
+#  internal functions, or both, as illustrated in this template
+# As such this "mini" version does not have or need an
+#   initialize_command_sequence() function
+
+get_webapp_installed_version() {
   if [ -z "$(find /var/www/localhost/htdocs/myCloud/ 2>/dev/null)" ]
   then
-    E_message "nextcloud has not been installed by webapp-config"
+    j_msg -${err} "nextcloud has not been installed by webapp-config"
     exit
   else
     webapp_installed_version=$(basename $(find /var/www/localhost/htdocs/myCloud/ -maxdepth 1 -iname '.webapp-nextcloud*') | \
       sed 's/\.webapp-nextcloud-//')
-    message "webapp_installed_version: ${webapp_installed_version}"
+    j_msg -${notice} -p "webapp_installed_version: ${webapp_installed_version}"
   fi
 }
 
 get_emerged_versions() {
   ev_string="$(eix-update -q && eix -eIc nextcloud)"
-  d_message "ev_string: ${ev_string}" 2
+  j_msg -${debug} -p "ev_string: ${ev_string}"
   ev_string_l="${ev_string#*\(}"
-  d_message "ev_string_l: ${ev_string_l}" 2
+  j_msg -${debug} -p "ev_string_l: ${ev_string_l}"
   ev_string_lr="${ev_string_l%)*}"
 #  emerged_versions=$(echo ${answer} | awk -F[\(\)] '{print $3,$5,$7 }' )
   cut=""; version=""
@@ -78,62 +77,88 @@ get_emerged_versions() {
 #  while [ -n "${ev_string_lr}" ]
   while [[ "${ev_string_lr}" ==  *"("* ]]
   do
-    d_message "ev_string_lr: ${ev_string_lr}" 2
+    j_msg -${debug} -p "ev_string_lr: ${ev_string_lr}"
     # cut out the first parenthetically enclosed version
     cut="${ev_string_lr#*\(}"
-    d_message "  cut: ${cut}" 3
+    j_msg -${debug} -p "  cut: ${cut}"
     version="${cut%%)*}"
-    d_message "  version: ${version}" 2
+    j_msg -${debug} -p "  version: ${version}"
     emerged_version_list+=("${version}")
     msg="  emerged_version_list: [${emerged_version_list[@]}]"
-    d_message "${msg}" 2
+    j_msg -${debug} -p "${msg}"
     # re-set ev_string_lr to the remainder
     ev_string_lr="${cut#*)}"
- done
-msg="emerged_version_list: [${emerged_version_list[@]}]"
-message "${msg}"
-
+  done
+  msg="emerged_version_list: [${emerged_version_list[@]}]"
+  j_msg -${notice} -p "${msg}"
 }
 
-# supercede script_header's built-in d_message
-#d_message () { echo "1: $1"; echo "2: $2"; [[ $VERBOSE ]] && [[ $2 -le $verbosity ]] && message "$1" ; }
-d_message () { [[ $VERBOSE ]] && [[ $2 -le $verbosity ]] && message "$1" ; }
 
 check_emerged_versions() {
-  for ((i=0; i<${#emerged_version_list[@]}; i++))
+  for (( i=0; i<${#emerged_version_list[@]}; i++ ))
   do
     myver="${emerged_version_list[$i]}"
     vercomp ${myver} ${webapp_installed_version} ; result=$?
-    echo -e "${BGon} * ${BWon}(emerged version) ${myver} $(show_result ${result}) ${BWon}${webapp_installed_version} (webapp-installed version)${Boff}"
+    j_msg -${notice} -p "${BWon}(emerged version) ${myver} $(show_result ${result}) ${BWon}${webapp_installed_version} (webapp-installed version)${Boff}"
     case ${result} in
-      2 ) message "${BRon}  version $myver should be removed${Boff}" ;; # 2 is <
-      0 ) message "${BWon}  version $myver is current; no action required${Boff}" ;; # 0 is =
-      1 ) message "${BYon}  version $myver is newer ; please run ${BGon}nextcloud_upgrade ${myver}${Boff}" ; maybe_do_upgrade "${myver}" ;; # 1 is >
-      * ) E_message "  error: bad version comparison"; exit ;;
+      2 ) j_msg -${notice} -p "${BRon}  version $myver should be removed${Boff}" ;; # 2 is <
+      0 ) j_msg -${notice} -p "${BWon}  version $myver is current; no action required${Boff}" ;; # 0 is =
+      1 ) j_msg -${notice} -p "${BYon}  version $myver is newer ; please run ${BGon}nextcloud_upgrade ${myver}${Boff}" ; maybe_do_upgrade "${myver}" ;; # 1 is >
+      * ) j_msg -${err} "  error: bad version comparison"; exit ;;
     esac
   done
 }
 
+
 maybe_do_upgrade() {
   myver="$1"
   answer=""
-  prompt "${BYon}  would you like to run ${BRon}# ${BGon}nextcloud_upgrade ${myver}${BYon} now?${Boff}"
+  yn_prompt "${BYon}  would you like to run ${BRon}# ${BGon}nextcloud_upgrade ${myver}${BYon} now?${Boff}"
   case ${answer:0:1} in
     [yY] ) eval "nextcloud_upgrade ${myver}" ;;
-    [nN] ) message "${BRon}Not${Boff} running nextcloud_upgrade; user declined" ;;
-    *    ) E_message "error; bad response to upgrade question" ;;
+    [nN] ) j_msg -${notice} -p "${BRon}Not${Boff} running nextcloud_upgrade; user declined" ;;
+    *    ) j_msg -${err} "error; bad response to upgrade question" ;;
   esac
 }
 
 
-#-----[ main script ]--------------------------------------------
-separator "${program}-${BUILD}"
-#checkroot
-process_cmdline $@
-display_config
+#-----[ main script ]----------------------------------------------------
+
+app_configure || die "failed to app_configure"
+
+# re-assign varlist variables appended at the top of the script and thus
+# over-written by app_configure
+j_msg -${debug} -n -m "(re)assigning LOCALIZED"
+LOCALIZED=$TRUE
+handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED" "$debug"
+j_msg -${debug} -n -m "(re)assigning INITIALIZED_ME"
+INITIALIZED_ME="yes"
+handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$debug"
+
+
+d_do show_config "$debug"  # show config prior to processing cmdline only at info/debug verbosity
+j_msg -${debug} -m "(BEFORE process_cmdline)"
+
+# note that without a defined command sequence and  the use of run_sequence
+# the INTERACTIVE, RESUME envinronment variables and their corresponding
+# command line flags (-r|--resume, -i|--interactive, -[0-9]* are all meaningless
+process_cmdline "$@" || die "failed to process_cmdline"
+
+d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
+j_msg -${info} -m "(AFTER process_cmdline)"
+
+# instead of calling run_sequence for interactive oversight of complex
+# processes, simple tasks can be coded directly, right here
+
 
 get_webapp_installed_version
 
 get_emerged_versions
 
 check_emerged_versions
+
+result=$?
+separator "$PN-$BUILD" "(Done)"
+j_msg -n -p -M $idx_package "$PN complete. Results:"
+handle_result $result "" "" "$notice"
+exit $result

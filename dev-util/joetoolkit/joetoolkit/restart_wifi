@@ -2,7 +2,11 @@
 #kill -9 $(ps -e | grep wpa | awk '{print $1}')
 source /usr/sbin/script_header_joetoo
 
-BUILD="171112"
+PN=${0##*/}   #  like =$(basename $0) but w/o subshell and function call
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+[ -z $verbosity ] && verbosity=${notice}  # assign default if null; allow calling program to dictate
 
 short_wait=".5"
 long_wait="10"
@@ -25,15 +29,15 @@ wpa_state_wait()
   search_filter="state"
   search_condition="COMPLETED"
   wpa_state=""; count=0
-  debug_msg "(debug) search_filter = $search_filter"
-  debug_msg "(debug) search_condition = $search_condition"
-  message "Waiting for ${search_filter} to match [ ${search_condition} ]."
+  j_msg -${debug} -p "(debug) search_filter = $search_filter"
+  j_msg -${debug} -p "(debug) search_condition = $search_condition"
+  j_msg -${notice} -p "Waiting for ${search_filter} to match [ ${search_condition} ]."
   SCP && HCU       # save cursor position, and hide the cursor
   while [ "${wpa_state}" != "${search_condition}" ]
   do
     let "count+=1"
     wpa_state=$(wpa_cli status | grep -i ${search_filter} | cut -d'=' -f2)
-    RCP && echo -e "  ${LBon}Cycle [${BWon}${count}${LBon}] Current state: ${BYon}${wpa_state}${Boff}          "
+    RCP && j_msg -${notice} -mp "  ${LBon}Cycle [${BWon}${count}${LBon}] Current state: ${BYon}${wpa_state}${Boff}          "
     sleep 1
   done
   SCU  # show cursor again
@@ -46,17 +50,17 @@ wpa_ip_wait()
   search_condition1=""          # blank
   search_condition2="169.254"   # LL_V4
   wpa_state=""; count=1
-  debug_msg "(debug) search_filter = $search_filter"
-  debug_msg "(debug) search_condition1 = $search_condition1"
-  debug_msg "(debug) search_condition2 = $search_condition2"
-  echo -e "${BGon}*${Boff} waiting for ${search_filter} to NOT match [ ${search_condition1} ] or [ ${search_condition2} ]."
+  j_msg -${debug} -p "(debug) search_filter = $search_filter"
+  j_msg -${debug} -p "(debug) search_condition1 = $search_condition1"
+  j_msg -${debug} -p "(debug) search_condition2 = $search_condition2"
+  j_msg -${notice} -mp "${BGon}*${Boff} waiting for ${search_filter} to NOT match [ ${search_condition1} ] or [ ${search_condition2} ]."
   SCP && HCU
   while [ "${wpa_state}" == "${search_condition1}" ] || [ "${wpa_state}" == "${search_condition2}" ]; do
-    [ "${wpa_state}" == "${search_condition1}" ] && debug_msg "while condition is true; matched [ $search_condition1 ]"
-    [ "${wpa_state}" == "${search_condition2}" ] && debug_msg "while condition is true; matched [ $search_condition2 ]"
+    [ "${wpa_state}" == "${search_condition1}" ] && j_msg -${debug} -p "while condition is true; matched [ $search_condition1 ]"
+    [ "${wpa_state}" == "${search_condition2}" ] && j_msg -${debug} -p "while condition is true; matched [ $search_condition2 ]"
     let "count+=1"
     wpa_state=$(wpa_cli status | grep -i ${search_filter} | cut -d'=' -f2 | cut -d'.' -f1,2)
-    RCP && echo -e "  ${LBon}Cycle [${BWon}${count}${LBon}] Current state: ${BYon}${wpa_state}${Boff}           "
+    RCP && j_msg -${notice} -mp "  ${LBon}Cycle [${BWon}${count}${LBon}] Current state: ${BYon}${wpa_state}${Boff}           "
     sleep 1
   done
   SCU
@@ -71,45 +75,45 @@ CLR && CUP 1 1
 echo
 separator "restart_wifi-${INTERFACE}-${BUILD}"
 
-message_n "stopping wpa_supplicant..."
+j_msg -${notice} -p -n "stopping wpa_supplicant..."
 killall wpa_supplicant
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 sleep $short_wait
 
-message_n "stopping dhcpcd..."
+j_msg -${notice} -p -n "stopping dhcpcd..."
 killall dhcpcd
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 sleep $short_wait
 
-message_n "stopping ${INTERFACE}..."
+j_msg -${notice} -p -n "stopping ${INTERFACE}..."
 ifconfig ${INTERFACE} down
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 sleep $short_wait
 
-message_n "unblocking wireless with rfkill..."
+j_msg -${notice} -p -n "unblocking wireless with rfkill..."
 rfkill unblock $(rfkill list | grep -i wireless | cut -d':' -f1)
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 sleep $short_wait
 
-message_n "starting ${INTERFACE}..."
+j_msg -${notice} -p -n "starting ${INTERFACE}..."
 ifconfig ${INTERFACE} up
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 sleep $short_wait
 
-message_n "starting wpa_supplicant..."
+j_msg -${notice} -p -n "starting wpa_supplicant..."
 wpa_supplicant -D${DRIVER} -i${INTERFACE} -c /etc/wpa_supplicant/wpa_supplicant.conf -B > /dev/null
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 
 # wait for wpa_cli to return state=COMPLETED
 wpa_state_wait
 sleep $short_wait; sleep $short_wait; sleep $short_wait
 
-message_n "starting dhcpcd for ${INTERFACE}..."
+j_msg -${notice} -p -n "starting dhcpcd for ${INTERFACE}..."
 dhcpcd ${INTERFACE} -t $dhcpcd_timeout > /dev/null
-result=$? && right_status $result
+result=$? && right_status $result ${notice}
 
 # wait for wpa_cli to return a non blank, non LL_V4 address
 wpa_ip_wait
 
-message "done; results below:"
+j_msg -${notice} -p "done; results below:"
 ifconfig ${INTERFACE}

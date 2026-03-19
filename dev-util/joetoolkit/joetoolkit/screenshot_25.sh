@@ -1,11 +1,11 @@
 #!/bin/bash
-  
+#
+# screenshot_25.sh - use xwd to capture a screenshot
+#
 FOLDER="$HOME/screenshots/"
-  
-if [ ! -d "${FOLDER}" ]; then
-  mkdir ${FOLDER}
-fi
-  
+
+[ ! -d "${FOLDER}" ] && mkdir "${FOLDER}"
+
 DATE=$(date +%Y-%m-%d@%H.%M.%S)
 FNAME="${FOLDER}screenshot-${DATE}.png"
 C=0
@@ -13,9 +13,9 @@ while [ -f "${FNAME}" ] ; do
     FNAME="${FOLDER}screenshot-${DATE}.${C}.png"
     let C++
 done
-  
-touch ${FNAME}
-  
+
+touch "${FNAME}"
+
 if [ "$1" != "window" ]; then
   if xwd -root | magick - "${FNAME}"; then
     notify-send "Desktop screenshot saved!" "Desktop screenshot was saved as:\n ${FNAME}"
@@ -29,4 +29,3 @@ else
     notify-send "Window screenshot could not be saved!" "There was an error."
   fi
 fi
-

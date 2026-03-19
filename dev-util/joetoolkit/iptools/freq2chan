@@ -1,31 +1,55 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
-source /usr/sbin/script_header_joetoo_extended
 
-frequencies=(0 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 2484)
-
-useage() {
-  E_message "Useage: freq2chan <freq>"
-  E_message "  where <freq> is one of:"
-  E_message "     2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 2484"
+usage() {
+  j_msg -${err} "Usage: freq2chan <freq_mhz>"
+  j_msg -${err} "  Where <freq_mhz> is a center frequency in one of these bands:"
+  j_msg -${err} "    2.4 GHz : 2412 - 2484 MHz (Channels 1-14)   5MHz spacing"
+  j_msg -${err} "    5.0 GHz : 5160 - 5885 MHz (Channels 32-177) 5MHz spacing"
+  j_msg -${err} "    6.0 GHz : 5945 - 7105 MHz (Channels 1-233)  5MHz spacing"
+  j_msg -${err} "    60  GHz : 58320 - 70200 MHz (Channels 1-6)  "
 }
 
-test() {
-for ((i=0; i<${#frequencies[@]}; i++))
-do
-  echo $i: ${frequencies[i]}
-done
-}
-
-[ $# -ne 1 ] && useage && exit 1
-[ $1 -gt 2484 ] && useage && exit 1
-[ $1 -lt 2412 ] && useage && exit 1
+[ $# -ne 1 ] && usage && exit 1
 
 freq=$1
-#bs() is a recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@
-#     (after 3 shifts)
-VERBOSE=$FALSE; verbosity=0
-result=0; depth=0
-message_n "Looking up the channel for frequency ${freq}..."
-bs  ${freq} 1 ${#frequencies[@]} ${frequencies[@]}; right_status $?
-message "Frequency ${freq} is channel: $result"
+result=0
+
+# identifying band and calculating channel via IEEE 802.11 formulas
+case $freq in
+    #----[ 2.4 GHz Band ]---------------------------------
+    2484) result=14 ;; # special case for Channel 14
+    24[1-7][27]) result=$(( (freq - 2407) / 5 )) ;;  # 5MHz spacing
+
+    #----[ 5 GHz Band ]---------------------------------
+    5[0-9][0-9][05]) result=$(( (freq - 5000) / 5 )) ;;  # 5MHz spacing
+
+    #----[ 6 GHz Band (WiFi 6E/7) ]---------------------------------
+    [567][0-9][0-9][05])
+        # formula for 6GHz starts at 5940MHz (Ch 1 = 5945)
+        if [ "$freq" -ge 5945 ] && [ "$freq" -le 7105 ]; then
+            result=$(( (freq - 5940) / 5 ))  # 5MHz spacing
+        else
+            j_msg -${err} "Out of range for 6GHz band." && exit 1
+        fi ;;
+
+    #----[ 60 GHz Band (WiGig / 802.11ad/ay) ]---------------------------------
+    # these are typically represented in MHz (e.g., 58320) for script consistency
+    58320|60480|62640|64800|66960|69120)
+        # 60 GHz uses wide 2160 MHz (2.16 GHz) spacing
+        case $freq in
+            58320) result=1 ;;
+            60480) result=2 ;;
+            62640) result=3 ;;
+            64800) result=4 ;;
+            66960) result=5 ;;
+            69120) result=6 ;;
+        esac ;;
+
+    *)
+        j_msg -${err} "Frequency $freq is not a standard WiFi center frequency."
+        usage && exit 1 ;;
+esac
+
+j_msg -${notice} -p "Frequency ${freq} MHz corresponds to Channel: ${result}"
+

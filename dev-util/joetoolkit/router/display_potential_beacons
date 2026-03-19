@@ -1,0 +1,141 @@
+#!/bin/bash
+# display_potential_beacons
+# Joe Brendler   16 January 2017
+#
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_router
+
+# BUILD="0.1.1 20170116"
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.1.2 20260315"; fi
+
+# A malware beacon is usually:
+#   outbound (internal-fw, fw-net), and may match --
+#     small packets (tiny periodic UDP/TCP messages)
+#     sow frequency but regular
+#     destination is unusual (rare ASN, odd port, cloud IP with no business purpose)
+#     protocol is unexpected (DNS, HTTPS, ICMP, or custom high ports)
+#     originates from a host that normally doesnt talk to the internet
+
+tempfile="/home/joe/tempfile"
+#default_logfile="/var/log/firewall.log"
+#wayback_logfile="/var/log/old_logs/firewall.log*"
+#default_logfile="/var/log/syslog"
+#wayback_logfile="/var/log/old_logs/syslog*"
+default_logfile="/var/log/shorewall-run.log"
+wayback_logfile="/var/log/old_logs/shorewall-run.logs*"
+
+if [[ -z $1 ]]
+then
+  logfile=$default_logfile
+  grep_cmd="grep"
+else
+  logfile=$wayback_logfile
+  grep_cmd="zgrep"
+fi
+j_msg -${notice} -p "Using logfile $logfile"
+
+#!/usr/bin/env bash
+
+logfile="${1:-"${default_logfile}"}"
+
+# Internal-origin zones
+ZONES=(loc dmz vpn)
+
+# known-good DNS/DoT/DoH resolvers to ignore
+GOOD_DNS=(
+  9.9.9.9
+  149.112.112.112
+  2620:fe::fe
+  2620:fe::9
+  1.1.1.1
+  1.0.0.1
+  2606:4700:4700::1111
+  2606:4700:4700::1001
+  8.8.8.8
+  8.8.4.4
+)
+
+# build regexes
+ZONE_REGEX="$(printf '%s-net|' "${ZONES[@]}")"
+ZONE_REGEX="${ZONE_REGEX%|}"
+
+GOOD_DNS_REGEX="$(printf '%s|' "${GOOD_DNS[@]}")"
+GOOD_DNS_REGEX="${GOOD_DNS_REGEX%|}"
+
+# suspicious ports (common C2)
+# (note: in [3-6][0-9]{4}, {4} means "4 of the preceding token", so 30000-69999
+SUSPECT_PORTS='(53|80|123|443|8080|8443|[3-6][0-9]{4})'
+
+# beacon-like packet sizes (40 - 120)
+SMALL_LEN='LEN=([4-9][0-9]|1[01][0-9]|120)\b'
+
+#-----[ functions ]--------------------------------------------------------------------
+
+
+#beacon_filter() {
+#    $grep_cmd -h '' "$logfile" \
+#    | grep -E "${ZONE_REGEX}.*ACCEPT" \  # look in my zones for ACCEPT
+#    | grep -E "DPT=(${SUSPECT_PORTS})" \ # suspect ports only
+#    | grep -vE "DST=(${GOOD_DNS_REGEX})" \   # exclude good DNS addresses
+#    | grep -vE 'DST=(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' \ # exclude local ipv4 adddrs
+#    | grep -vE 'DST=(fd|fc)[0-9a-fA-F]:' \   # exclude local ipv6 addrs
+#    | awk '{                      # awk script
+#        for(i=1;i<=NF;i++)        # look at each word in line (NF == last)
+#            if ($i ~ /^DST=/) {   # select words matching DST= (destination addr)
+#                ip=substr($i,5)   # extract the addr as "ip"
+#                print ip          # print that
+#            }                     # end of if {...}
+#    }'                            # end of awk script
+#}
+beacon_filter() {
+    $grep_cmd -h '' "$logfile" \
+    | grep -E "${ZONE_REGEX}.*ACCEPT" \
+    | grep -E "DPT=(${SUSPECT_PORTS})" \
+    | grep -vE "DST=(${GOOD_DNS_REGEX})" \
+    | grep -vE 'DST=(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' \
+    | grep -vE 'DST=(fd|fc)[0-9a-fA-F]:' \
+    | awk '{
+        for(i=1;i<=NF;i++)
+            if ($i ~ /^DST=/) {
+                ip=substr($i,5)
+                print ip
+            }
+    }'
+}
+
+
+old_beacon_filter() {
+    $grep_cmd -h '' "$logfile" \
+    | grep -E "DPT=(${SUSPECT_PORTS})" \
+    | awk '{for(i=1;i<=NF;i++) if($i ~ /^DST=/) print substr($i,5)}'
+}
+
+#-----[ main script ]--------------------------------------------------------------------
+#checkroot
+separator "${PN}-${BUILD}"
+
+# outbound ACCEPTs (zone - net)
+j_msg -${info} -m "Outbound ACCEPTs (zone - net)"
+j_msg -${info} -m "$($grep_cmd -E "${ZONE_REGEX}.*ACCEPT" "$logfile")"
+
+# policy ACCEPTs (~ chains [supplemental created by shorewall for policy-matches])
+j_msg -${info} -m "Policy ACCEPTs (~ chains)"
+j_msg -${info} -m "$($grep_cmd -E "${ZONE_REGEX}~.*ACCEPT" "$logfile")"
+
+# small packets (LEN=40 - 120)
+j_msg -${info} -m "Small packets (LEN=40 - 120)"
+j_msg -${info} -m "$($grep_cmd -E "${SMALL_LEN}" "$logfile" | grep -E "${ZONE_REGEX}")"
+
+# suspicious destination ports
+j_msg -${info} -m "Suspicious destination ports"
+j_msg -${info} -m "$($grep_cmd -E "DPT=${SUSPECT_PORTS}" "$logfile" | grep -E "${ZONE_REGEX}")"
+
+# DNS anomalies (UDP - port 53)
+j_msg -${info} -m "DNS anomalies (UDP - port 53)"
+j_msg -${info} -m "$($grep_cmd -E 'PROTO=UDP.*DPT=53' "$logfile" | grep -E "${ZONE_REGEX}")"
+
+# repeated DST IPs (excluding known-good resolvers)
+j_msg -${notice} -p "Top repeated DST IPs (potential beacon endpoints)"
+ingest_ip_array beacon_filter
+identify_ip_hits

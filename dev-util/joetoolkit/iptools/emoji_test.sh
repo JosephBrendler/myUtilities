@@ -1,5 +1,7 @@
 #!/bin/bash
-
+#
+#   edit with ' LC_ALL=en_US.utf8 nano emoji_test.sh '   to actually see the emoji in the editor
+#
 # Define emoji and a fallback text for TTY
 EMOJI="✨"
 TEXT_FALLBACK="[OK]"

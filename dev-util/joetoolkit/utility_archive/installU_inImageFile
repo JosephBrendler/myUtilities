@@ -1,0 +1,82 @@
+#!/bin/bash
+# installU -- install a domU tarball and extract it
+# Joe Brendler -- unk date
+# rev 11 Nov 14 -- overhaul
+# TODO: 1 - ensure target domU is not running, mount image at target, do copy as below, then umount target
+#       2 - sanity checks (root user, in a linux sources directory not the symlink)
+
+source /usr/local/sbin/script_header_joe_brendler
+
+#---[ local variables ]-------------------------------------------------------
+BUILD="0.0.2 (20141109)"
+image_dir="/home/joe/xen/xen.images"
+target="/mnt/xen/gentoo"
+kernel_image_dir="/root/build/domU_kernel_images"
+distrib_boot_dir="/root/build/domU/tmp/distrib/boot"
+DEBUG="false"
+#DEBUG="true"
+image_list=(
+'euler'
+'gauss'
+)
+
+# gentoo_pv_kernel_image
+
+#---[ main script ]-----------------------------------------------------------
+separator "installU-${BUILD}"
+checkroot
+
+# identify current working version to be installed
+#indx=`expr index "$PWD" "-"`
+#version=${PWD:${indx}}
+#version_number=${version:0:$(($(expr index "$version" "-")-1))}
+version_number=$(file /usr/src/linux | cut -d'-' -f2)
+message "preparing to install gentoo_pv_kernel_image-${version_number} in listed images..."
+
+message "stopping xendomains if needed"
+/etc/init.d/xendomains stop
+
+for (( i=0; i<${#image_list[@]}; i++))
+do
+  message "image_list[${i}] = ${image_list[i]}"
+
+  message "mounting ${image_dir}/${image_list[i]}/xenU.${image_list[i]}.img on ${target}"
+  mount ${image_dir}/${image_list[i]}/xenU.${image_list[i]}.img ${target}/
+
+  message "copying ~/build/domU/tmp/distrib/gentoo_pv_kernel_image-${version_number}.tar.bz2 to ${target}/"
+  cp -v ~/build/domU/tmp/distrib/gentoo_pv_kernel_image-${version_number}.tar.bz2 ${target}/
+
+  [ "${DEBUG}" == "true" ] && message "changing directory to: [ ${target} ]"
+  old_dir=${PWD}
+  cd ${target}
+  [ "${DEBUG}" == "true" ] && message "confirming present working directory: [ ${PWD} ]"
+
+  tar xvpjf gentoo_pv_kernel_image-${version_number}.tar.bz2   #extract
+#  tar tvpjf gentoo_pv_kernel_image-${version_number}.tar.bz2   #test - list contents
+
+  [ "${DEBUG}" == "true" ] && message "changing directory to: [ ${old_dir} ]"
+  cd ${old_dir}
+  [ "${DEBUG}" == "true" ] && message "confirming present working directory: [ ${PWD} ]"
+
+  echo
+  msg="${BGon}Installed gentoo_pv_kernel_image-${version_number} to target: "
+  msg+=" ${image_dir}/${image_list[i]}/xenU.${image_list[i]}.img${Boff}"
+  message "${msg}"
+
+  message "unmounting ${target}"
+  umount ${target}
+done
+
+message "Installing Vm kernel for xen pv configs"
+cp -av ${distrib_boot_dir}/* ${kernel_image_dir}/
+
+message "Updateing symlink to Vm kernel for xen pv configs"
+
+cd ${kernel_image_dir}
+ln -snf vmlinuz-${version_number}-gentoo vmlinuz
+cd ${old_dir}
+
+message "Listing contents of ${kernel_image_dir}"
+ls -al ${kernel_image_dir}/
+
+message "${BRon}Note: you may want to restart xendomains with ${BGon}/etc/init.d/xendomains start${Boff}"

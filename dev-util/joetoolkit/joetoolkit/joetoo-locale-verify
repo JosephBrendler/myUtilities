@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# joetoo-locale-verify: validates baseline locale configuration
+#
+
+. /usr/sbin/script_header_joetoo
+
+PN=${0##*/}     # basename
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+separoator "$(hostname)" "${PN}-${BUILD}"
+
+# check if the canonical Locale is actually generated
+j_msg -${notice} -p "${BYon}Checking if the canonical Locale is actually generated${Boff}"
+_out=$(locale  | grep '^LANG='); _locale=${_out##*=}
+j_msg -${notice} -m -n "${BCon}done; result:${Boff}"
+[ "$_locale" = "en_US.UTF-8" ]
+handle_result $? "ok: $_locale" "err: $_locale" ${notice}
+
+# verify system-wide environment (env.d)
+j_msg -${notice} -p "${BYon}Checking system-wide environment --${Boff}"
+_env_list="LANG LC_COLLATE LC_CTYPE"
+set -f; set -- $_env_list; set +f
+_longest=$(get_longest "$@")
+for x in "$@"; do
+  _entry=$(grep "${W0}${x}=" /etc/env.d/02locale | awk '{print $1}')
+  _var=${_entry%%=*}; _val=$(printf '%s' "${_entry##*=}" | sed 's|"||g')
+  _pad=$(repeat '.' $(( _longest + 2 - ${#_var} )) )
+  j_msg -${notice} -m -n "${BCon}$x ${_pad}: ${Boff}"
+  case "$_var" in
+    LANG) [ "$_val" = "en_US.UTF-8" ] ; handle_result $? "ok: $_val" "err: $_val" ${notice} ;;
+    LC_COLLATE) [ "$_val" = "C" ] ; handle_result $? "ok: $_val" "err: $_val" ${notice} ;;
+    LC_CTYPE) [ "$_val" = "C" ] ; handle_result $? "ok: $_val" "err: $_val" ${notice} ;;
+    *) j_msg -mp -n "${BRon}invalid _entry"; right_status 1 ${notice} ;;
+  esac
+done
+
+# check portage build-time flags (L10N / LINGUAS)
+# (check the effective USE flags for glibc to see if L10N/LINGUAS applied
+#  with portageq has_version <eroot> <category/package> )
+j_msg -${notice} -p "${BYon}Checking portage build-time flags L10N --${Boff}"
+if portageq has_version / sys-libs/glibc; then
+#  _L10N="en en-US"
+#  _LINGUAS="en en_US"
+  _list="L10N LINGUAS"
+#  set -f; set -- "$_L10N" "$_LINGUAS"; set +f
+  _longest=$(get_longest $_list)
+
+  for _var in $_list; do
+    _out=$(emerge --info sys-libs/glibc | grep "$_var")
+    # if this is the USE= assignment, then verify it contains the _var
+    if [ "${_out%%=*}" = "USE" ]; then
+      _val=$(eval "$_out"; eval "printf '%s' \"\$$_var\"")
+      _pad=$(repeat '.' $(( _longest + 2 - ${#_var} )) )
+      j_msg -${notice} -m -n "${BCon}$_var ${_pad}: ${Boff}"
+     case "$_var" in
+        # note L10N uses a hyphen - per IETF (BCP 47)
+        L10N) [ "$_val" = "en en-US" ] ; handle_result $? "ok: $_val" "err: $_val" ${notice} ;;
+        # note LINGUAS uses an underscore - per legacy gettext
+        LINGUAS) [ "$_val" = "en en_US" ] ; handle_result $? "ok: $_val" "err: $_val" ${notice} ;;
+        *) j_msg -${err} -mp -n "${BRon}invalid portage build-time _entry"; right_status 1 ${err} ;;
+      esac
+    elif [ "${_out%%:*}" = "Unset" ]; then
+      # in is not the USE; see if it is the Unset: line or just not defined
+      # this is a problem for modern L10N, but expected for legacy LINGUAS
+      if [ "$_var" = "L10N" ]; then _clr="${BRon}"; else _clr="${Boff}"; fi
+      _pad=$(repeat '.' $(( _longest + 2 - ${#_var} )) )
+      j_msg -${notice} -m "${BCon}$_var ${_pad}: ${_clr} explicitly Unset${Boff}"
+    else
+      # this is a problem for modern L10N, but expected for legacy LINGUAS
+      if [ "$_var" = "L10N" ]; then _clr="${BRon}"; else _clr="${Boff}"; fi
+      _pad=$(repeat '.' $(( _longest + 2 - ${#_var} )) )
+      j_msg -${notice} -m "${BCon}$_var ${_pad}: ${_clr} undefined state${Boff}"
+    fi  # use, unset, ...
+  done
+else
+    j_msg -${err} "portageq has_version / sys-libs/glibc failed"
+fi
+
+# final character map check
+# (verifies if the current shell actually respects the LC_CTYPE=C baseline)
+j_msg -${notice} -p "${BYon}Checking if the current shell respects the LC_CTYPE=C baseline${Boff}"
+current_ctype=$(locale | grep "LC_CTYPE=" | cut -d= -f2 | tr -d '"')
+j_msg -${notice} -m -n "${BCon}done; result: ${Boff}"
+[ "$current_ctype" = "C" ] || [ "$current_ctype" = "POSIX" ]
+handle_result $? "ok: $current_ctype" "err: $current_ctype" ${notice}
