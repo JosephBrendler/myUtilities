@@ -32,26 +32,26 @@ isfloat_regex() # regex (non-POSIX) test if $1 is a floating point number; retur
 
 map()           # linearly map input number from input range to output range
 { # trap non-numeric input
-! isfloat $1 && error_msg "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
-! isfloat $2 && error_msg "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
-! isfloat $3 && error_msg "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
-! isfloat $4 && error_msg "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
-! isfloat $5 && error_msg "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
+! isfloat $1 && j_msg -${err} "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
+! isfloat $2 && j_msg -${err} "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
+! isfloat $3 && j_msg -${err} "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
+! isfloat $4 && j_msg -${err} "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
+! isfloat $5 && j_msg -${err} "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
 [ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
  map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
  scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
 # trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
 (( $(echo "$map_val < $from_lower" | bc -l) )) || \
     (( $(echo "$map_val > $from_upper" | bc -l) )) && \
-    error_msg "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
+    j_msg -${err} "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
 # trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
-#[ $to_upper -lt $to_lower ] && error_msg "invalid input range [ $to_upper - $to_lower ]" && return 1
-#[ $from_upper -lt $from_lower ] && error_msg "invalid input range [ $from_upper - $from_lower ]" && return 1
+#[ $to_upper -lt $to_lower ] && j_msg -${err} "invalid input range [ $to_upper - $to_lower ]" && return 1
+#[ $from_upper -lt $from_lower ] && j_msg -${err} "invalid input range [ $from_upper - $from_lower ]" && return 1
 # initialize result variable
 result=999999
 # calculate scaling factor
  from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
- to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l) 
+ to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l)
  from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
  map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
 # ratio > 1 means scaling up to a "wider" range (even if lower numbers)
@@ -112,7 +112,7 @@ list_unused_disks()    # list block devices with no active mountpoint
 progress() # show progress arrow (visualize $1 of $2 steps complete)
 { # intended to be called in each iteration of some monitored process
   # e.g. # for x in $(seq 0 250); do progress $x 250; sleep .1; done
-  [ $# -ne 2 ] && { error_msg "${BRon}Error: step and total required${Boff}"; return 1; }
+  [ $# -ne 2 ] && { j_msg -${err} "${BRon}Error: step and total required${Boff}"; return 1; }
   # use these common variables for width/height if they exist, else call function
   # (should exist already, if user called progress_init() first)
   _p_tw=${COLUMNS:-$(termwidth)}; _p_th=${LINES:-$(termheight)}
@@ -158,20 +158,20 @@ bs()                   # recursive binary search for $1 target(s) from $2 start(
     info_msg_n "search_list: ["
     info_echo_msg_n "${search_list[@]}"
     info_echo_msg "]"
-    message "search_list length is [${#search_list[@]}]"
+    j_msg -${notice} -p  "search_list length is [${#search_list[@]}]"
   fi
   let "result=-1"
   if [[ $depth -gt ${#search_list[@]} ]]
   then
-    error_msg "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
+    j_msg -${err} "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
     return 1  # can't go deeper than the length of the list
   fi
   diff=$(( $end - $start ))
   middle=$(( $start + $(( $diff / 2 )) ))
   ## guarantee to look at both start and end before giving up
   if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
-  debug_msg " depth=[$depth]";  debug_msg " start=[$start]";  debug_msg "   end=[$end]";  debug_msg "middle=[$middle]"
-  debug_msg ">> [${search_list[${middle}]}] <<"
+  j_msg -${debug} -p " depth=[$depth]";  j_msg -${debug} -p " start=[$start]";  j_msg -${debug} -p "   end=[$end]";  j_msg -${debug} -p "middle=[$middle]"
+  j_msg -${debug} -p ">> [${search_list[${middle}]}] <<"
   if [[ "${search_list[${middle}]}" == "${target}" ]]; then
     result=$middle   # equal
   else  # not yet equal, so search either the upper or lower half of the remaining range
@@ -181,28 +181,102 @@ bs()                   # recursive binary search for $1 target(s) from $2 start(
       [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
       # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
       if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then
-         debug_msg "both diff=1 cases examined. not found"
+         j_msg -${debug} -p "both diff=1 cases examined. not found"
          return 1
       else
-         debug_msg "DIFF1 flags not yet both true"
+         j_msg -${debug} -p "DIFF1 flags not yet both true"
       fi
-      debug_msg "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next"
+      j_msg -${debug} -p "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next"
       bs $target $start $middle ${search_list[@]}
     else   # found element is less than target (search upper half next)
       [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
       # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
       if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then
-        debug_msg "both diff=1 cases examined. not found"
+        j_msg -${debug} -p "both diff=1 cases examined. not found"
         return 1
       else
-        debug_msg "DIFF1 flags not yet both true"
+        j_msg -${debug} -p "DIFF1 flags not yet both true"
       fi
-      debug_msg "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next"
+      j_msg -${debug} -p "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next"
       bs $target $middle $end ${search_list[@]}
     fi
   fi
-  debug_msg "about to return from depth [$depth]"
-  [ $depth -eq 0 ] && debug_msg "result: [$result]"
+  j_msg -${debug} -p "about to return from depth [$depth]"
+  [ $depth -eq 0 ] && j_msg -${debug} -p "result: [$result]"
   let "depth-=1";  return 0
 }
 
+bs_2() # (BASH) binary recursive search of array named by $1 for tartet $2 between start $3 and end $4
+{
+  # return the index number of the entry in the list, or -1 if not found
+
+  # read the global array referred to by local name "range" and recursively refine search start/end
+  [ -z "$1" ] && die "error null input rangge array name \$1"
+  [ -z "$2" ] && die "error null target \$2"
+
+  local -n range="$1"           # name reference to the array to search
+  local target="$2"             # string target sought
+  local start=${3:-0}           # int index start of new search range
+  local end=${4:-${#range[@]}}  # int index end of new search range
+  (( depth += 1 ))              # global recursive depth
+  ! isint $start && die "bs() requires integer start index number"
+  ! isint $end && die "bs() requires integer end index number"
+  if (( depth > ${#range[@]} ))
+  then
+    j_msg -${notice} -p "Something is wrong here -- recursive depth [$depth] exceeds range [${limit}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+
+  j_msg -${debug} -p " depth=[$depth]"
+  j_msg -${debug} -p " start=[$start]"
+  j_msg -${debug} -p "   end=[$end]"
+
+  diff=$(( end - start ))
+  middle=$(( start + ( diff / 2 ) ))
+  j_msg -${debug} -p "  diff=[$diff]"
+  ## guarantee to look at both start and end before giving up
+#  [[ $diff -eq 1 ]] && (( middle += (depth % 2) )) # this form is equivalent
+  [[ $diff -eq 1 ]] && middle=$(( middle + (depth % 2) ))
+  j_msg -${debug} -p "new middle=[$middle]"
+  j_msg -${debug} -p ">> [${range[middle]}] <<"
+  if [[ "${range[middle]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else
+    (( start == end )) && return 1
+    # is the string in range[middle] lexicographically greater than the string in target?
+    if [[ "${range[middle]}" > "${target}" ]]
+    then
+      j_msg -${debug} -p "candidate [${range[middle]}] is GREATER than target [${target}] -- search lower half next"
+      # recurse with the oritinal array name ($1)
+      bs_2 "$1" "$target" $start $middle
+    else
+      j_msg -${debug} -p "candidate [${range[middle]}] is LESS than target [${target}] -- search upper half next"
+      # recurse with the oritinal array name ($1)
+      bs_2 "$1" "$target" $middle $end
+    fi
+  fi
+  j_msg -${debug} -p "about to exit at depth [$depth], result is [$result]"
+  return 0
+}
+# @usage  bs2 <array_name> <target> [<start>] [<end>]
+# @args   $1  name of global array to search (string, required)
+# @append  must be an indexed array visible in caller's scope
+# @args   $2  target string to search for (required)
+# @args   $3  start index (integer, optional, default 0)
+# @args   $4  end index (integer, optional, default array length)
+# @vars   depth   global recursion depth counter (integer)
+# @vars   result  global search result index, or -1 if not found
+# @ret    exit 0 on completion; exit 1 on structural error
+# @ret    sets global 'result' to index of match or -1 if not found
+# @deps   requires Bash 4.3+ for nameref (local -n)
+# @req    array named by $1 must be sorted lexicographically
+# @req    caller must initialize: depth=0; result=-1
+# @rule   $1 must be the literal array name, not a nameref variable,
+# @append and recursive calls must pass "$1" unchanged to avoid
+# @append circular name-reference errors
+# @rule   end index is treated as an exclusive upper bound
+# @note   bs2 performs lexicographic (ASCII) comparisons only
+# @note   array elements must be simple strings without newlines
+# @ex     readarray -t items < <(sort -u file.txt)
+# @cont      depth=0; result=-1; bs2 items "needle"; echo "$result"

@@ -58,6 +58,10 @@ toc() # table of contents (this fn just calls summarize_header
 # @rule @warn provides administrative warning for user or maintainer
 # @rule @ex provides a usage example
 # @rule @cont identifies a continuation of the previous metadata tag
+# @cont       that should be presented on the next line, as formatted
+# @rule @append identifies a continuation of the previous metadata tag
+# @append  that should be appended to the current line and smart-wrapped
+# @append at the appropriate indentation
 
 # @note =====[ Section 0: Global Instructions ]===========================================
 # @note
@@ -342,6 +346,17 @@ ACTIVE_EMOJI_REGISTRY="
 49${US}warning${US}$warning${US}[WARNING]
 50${US}construction${US}$construction${US}[CONSTRUCTION]
 51${US}sparkles${US}$sparkles${US}[SPARKLES]
+52${US}heart_red${US}$heart_red${US}[heart_red]
+53${US}heart_pink${US}$heart_pink${US}[heart_pink]
+54${US}heart_orange${US}$heart_orange${US}[heart_orange]
+55${US}heart_yellow${US}$heart_yellow${US}[heart_yellow]
+56${US}heart_green${US}$heart_green${US}[heart_green]
+57${US}heart_blue${US}$heart_blue${US}[heart_blue]
+58${US}heart_lightblue${US}$heart_lightblue${US}[heart_lightblue]
+59${US}heart_purple${US}$heart_purple${US}[heart_purple]
+60${US}heart_brown${US}$heart_brown${US}[heart_brown]
+61${US}heart_black${US}$heart_black${US}[heart_black]
+62${US}heart_white${US}$heart_white${US}[heart_white]
 "
 
 idx_of_emoji() # (POSIX) returns the registry index of a named emoji
@@ -669,7 +684,7 @@ _precook_registry() # (POSIX) helper to precook the assets in one registry "$1"
            case "$_tmp" in [0-9A-Fa-f]*) _tmp="${_tmp#?}";; esac              # check/strip optional digit 6
            ;;
         *)
-            echo "DEBUG: setting _VALID false because _tmp [$_tmp] is not valid"
+#            echo "DEBUG: setting _VALID false because _tmp [$_tmp] is not valid"
             _VALID="$FALSE"
             break
             ;;
@@ -1856,6 +1871,13 @@ checkshell() # reset colors if this shell is not interactive
 
 # @note =====[ Section 4: String & Layout Utilities ]===============================================================
 
+debug_marker() # (POSIX) print a debug trace marker and exit/return cleanly
+{ # place command "debug_marker" in code to be a "pretty" breakpoint
+  # note: close double-quotes, single-quote the !, then re-open double quotes, else bash interprets ! as history expansion
+  j_msg -${notice} -M $idx_heart_red -p "${Ron}D${BRon}e${Yon}b${BYon}u${Gon}g${BGon}_${BCon}M${Bon}a${BBon}r${Mon}k${BMon}e${Won}r${BWon}"'!'"${Boff} ${bin_explosion}"
+  leave
+}
+
 strip_ansi() # (POSIX) Strip ANSI escape sequences from stdin
 { # Works with standard sed to remove color/UI codes for clean logging
  sed "s/${CSI}[0-9;]*[mK]//g" ; }
@@ -2513,6 +2535,160 @@ print_center() # (POSIX) print text $2 centered on row $1
 # @deps termwidth CUP
 # @rule calculates column based on termwidth and raw string length
 # @note does not currently account for ANSI length; use for raw text
+
+_sort_useflag_line() # (POSIX) helper for alphasort_usefile - sort one line of a package.use file
+{ sul_ret=0
+  # first entry on the line is the package name
+  _sul_pkg="$1"; shift
+  # in a use_expand variable, the second entry would contain a colon
+  case "$1" in *:*) _sul_pkg="${_sul_pkg} $1" ; shift ;; esac
+#  j_msg -${debug} -p "_sul_pkg: $_sul_pkg"
+  # sort words, ignore case, (do this in two blocks in subshell,
+  #   to get activated USE first, then "-USE"
+  # then, use paste -sd' ' - (serial, space-delim, from stdin)
+  #   to reassemble the newline-separated sorted words into one line,
+  #   (equivalent to | tr '\n' ' ' | sed 's/ *$//'
+  _sul_sorted=$(
+    {
+      # enabled flags first
+      for _sul_flag in "$@"; do
+        case "$_sul_flag" in
+          -*) : ;;
+          *) printf '%s\n' "$_sul_flag" ;;
+        esac
+      done | sort -f
+      # disabled flags second
+      for _sul_flag in "$@"; do
+        case "$_sul_flag" in
+          -*) printf '%s\n' "$_sul_flag" ;;
+        esac
+      done | sort -f
+    } | paste -sd' ' -
+  )
+#  j_msg -${debug} -p "_sul_sorted: $_sul_sorted"
+  # emit only if non-zero length
+  [ ! -z "$_sul_sorted" ] && printf '%s %s\n' "$_sul_pkg" "$_sul_sorted"
+  unset -v _sul_sorted _sul_pkg _sul_flag
+  return $sul_ret
+}
+# @usage _sort_useflag_line <pkg> [useflag...]
+# @args  <pkg> is the package atom; remaining args are USE flags
+# @ret   emits a single sorted line: "<pkg> <sorted-useflags>"
+# @deps  requires POSIX sort(1) and paste(1)
+# @req   caller must split the input line into words before calling
+# @rule  enabled USE flags sort first, then disabled flags (those starting with '-')
+# @cont  both groups are sorted alphabetically, case-insensitive
+# @rule  output is emitted only if at least one USE flag is present
+# @note  this function prevents glob expansion by assuming the caller used "set -f"
+# @note  paste -sd' ' - is used to reassemble newline-sorted flags into one line
+# @ex    _sort_useflag_line app-editors/vim python ruby -gtk -perl
+# @ex    emits: "app-editors/vim python ruby -gtk -perl"
+
+alphasort_usefile() # (POSIX) sort alphabetic, the lines and USE flags within lines of a package.use file
+{ au_ret=0
+  SORTLINES=$FALSE
+  BLANKLINES=$TRUE
+  COMMENTS=$TRUE
+  _au_opt=""
+  # parse options
+  while [ $# -gt 0 ]; do
+    case $1 in
+      "") die "usage: alphasort_usefile [-l] <useFile>"; return 1;;
+      -h)
+         j_msg -${notice} -p "usage: alphasort_usefile [-l] <useFile>"
+         j_msg -${notice} -m "  -B|b - enable|disable blank lines"
+         j_msg -${notice} -m "  -C|c - enable|disable comments"
+         j_msg -${notice} -m "  -S|s - enable|disable line-sorting"
+         return 0
+         ;;
+      -*)
+        _au_opt=${1#*-}  # strip leading -
+        # iterate and action option flags
+        while [ ! -z "$_au_opt" ]; do
+          # strip leading char and reassign the rest
+          _au_char="${_au_opt%${_au_opt#?}}"   # assign left_most char
+          _au_opt="${_au_opt#?}"               # assign remainder
+          case "$_au_char" in
+            b) BLANKLINES=$FALSE ;;
+            B) BLANKLINES=$TRUE ;;
+            c) COMMENTS=$FALSE ;;
+            C) COMMENTS=$TRUE ;;
+            s) SORTLINES=$FALSE ;;
+            S) SORTLINES=$TRUE ;;
+            h)
+              j_msg -${notice} -p "usage: alphasort_usefile [-l] <useFile>"
+              j_msg -${notice} -m "  -B|b - enable|disable blank lines"
+              j_msg -${notice} -m "  -C|c - enable|disable comments"
+              j_msg -${notice} -m "  -S|s - enable|disable line-sorting"
+              return 0
+              ;;
+            *) die "invalid option [$_au_char]; \nusage: alphasort_usefile [-l] <useFile>"; return 1 ;;
+          esac
+        done
+        shift
+        ;;
+      *)
+        # first non-option is the filename
+        _au_useFile="$1"
+        shift
+        break
+        ;;
+    esac
+  done
+  _au_filter="cat"
+  [ "$SORTLINES" ]    && _au_filter="${_au_filter} | sort"
+  [ ! "$BLANKLINES" ] && _au_filter="${_au_filter} | grep -v '^${W0}$'" 
+  [ ! "$COMMENTS" ]   && _au_filter="${_au_filter} | grep -v '^${W0}#'"
+  if [ ! -f "$_au_useFile" ]; then j_msg -${err} "Error argument [$1] is not a file" ; exit 1; fi
+#  j_msg -${debug} -p "_au_useFile: $_au_useFile"
+  # iterate through lines of input file
+  while IFS= read -r _au_line; do
+    # trim leading whitespace
+    _au_trimmed=${_au_line#"${_au_line%%[![:space:]]*}"}
+
+    # Skip blank or comment lines
+    case "$_au_trimmed" in
+      "") # blank line
+        if [ "$BLANKLINES" ]; then
+          printf '%s\n' ""  # print if requested
+        fi
+        continue   # skip to next line
+        ;;
+      "#"*)
+        if [ "$COMMENTS" ]; then
+          printf '%s\n' "${_au_line}"  # print the comment line if requested
+        fi
+        continue   # skip to next line
+        ;;
+    esac
+#    j_msg -${debug} -p "_au_line: $_au_line"
+    # split into words safely (w/o globbing)
+    set -f; set -- $_au_line; set +f
+    _sort_useflag_line "$@"
+    # sort outputlines and strip blank lines and comments
+  done < "$_au_useFile" | eval "${_au_filter}"
+  unset -v _au_useFile _au_line _au_filter _au_trimmed _au_char _au_opt
+  return $au_ret
+}
+# @usage alphasort_usefile [-bBcCsS] <useFile>
+# @opts  -B|b enable|disable printing blank lines
+# @cont  -C|c enable|disable printing comment lines
+# @cont  -S|s enable|disable line sorting
+# @args  <useFile> is a package.use-style file to process
+# @vars  W0 defines the whitespace-matching class for blank/comment detection
+# @ret   emits sorted and filtered package.use lines to stdout
+# @deps  requires POSIX sort(1), grep(1), paste(1)
+# @req   caller must ensure <useFile> exists and is readable
+# @rule  USE flags within each line are sorted by _sort_useflag_line()
+# @cont  enabled flags first, then disabled flags, each group alphabetically
+# @rule  line-level sorting is optional and controlled by -s/-S
+# @rule  blank/comment filtering is controlled by -b/-B and -c/-C
+# @note  wildcard expansion is prevented via "set -f" before splitting lines
+# @note  dynamic filter pipeline is constructed safely and applied via eval
+# @warn  do not pass untrusted input to option flags; only single-letter flags allowed
+# @ex    alphasort_usefile -cbS /etc/portage/package.use/80joetoo_common
+# @ex    emits sorted, no-blank, no-comment output
+
 
 # @note =====[ Section 5: Logic & Conversion ]======================================================================
 
