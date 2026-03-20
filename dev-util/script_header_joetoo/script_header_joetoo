@@ -16,20 +16,16 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
   # result=1; [ "$result" ] && echo true || echo false  {status 1 == failure; but this will return "true"}
   # to test an exit status, use [ "$result" -eq 0 ]
 
-# primary guard against recursive or excessive sourcing of this header file (use function check)
-if type j_msg &>/dev/null; then return; fi
-# secondary guard against recursive or excessive sourcing of this header file
-[ "$JOETOO_ENVIRONMENT_ALREADY_SOURCED" ] && return
-JOETOO_ENVIRONMENT_ALREADY_SOURCED=$TRUE
 
-# smart-load - if cache exists and is newer than ( -nt ) this header, source it and exit early
-# (doing the -nt check with the thing that might not exist on the right is safer for test logic)
-# (this is over-kill defensive programming given the [ -f "$_joetoo_cache" ] && precedes it)
-if [ -f "$_joetoo_cache" ] && [ ! "/usr/sbin/script_header_joetoo" -nt "$_joetoo_cache" ]; then
-    . "$_joetoo_cache"
-    # ensure the functions are still loaded (subshells lose functions but keep env vars)
-    if type j_msg >/dev/null 2>&1; then return 0; fi
+# allow a 'FORCE_RELOAD' variable to bypass anti-recursion guards
+if [ -z "$JOETOO_FORCE_RELOAD" ]; then
+  # primary guard against recursive or excessive sourcing of this header file (use function check)
+  if type j_msg &>/dev/null; then return; fi
+  # secondary guard against recursive or excessive sourcing of this header file
+  [ "$JOETOO_ENVIRONMENT_ALREADY_SOURCED" ] && return
 fi
+ # if here, sourcing is underway, set this true
+JOETOO_ENVIRONMENT_ALREADY_SOURCED=$TRUE
 
 toc() # table of contents (this fn just calls summarize_header
 { summarize_header; printf "\n"
@@ -121,7 +117,6 @@ else
   # Fallback to home dir or /tmp if user sourcing header is not root
   logFile="${HOME:-/tmp}/script_header_joetoo.log"
 fi
-fix_logfile  # one-shot force-fix ensure users default logFile is owned and writable by them
 
 #  Error message used by various scripts
 E_NOTROOT="Must be root to run this script"
@@ -3152,7 +3147,7 @@ my_short_date() # (POSIX) echo shorter date string (yyyymmdd-timehack)
 initialize_vars() # initialize values for vars in $@; incl bool. lv. (info severity)
 { iv_ret=0; _iv_result=0; [ $# -lt 1 ] && return $(( 1 << 8 ))   # bit 8 = no argument passed
   _iv_parmlist=""
-  # list all persistent environment variables here for protection
+  # list (for exclusion) all persistent environment variables here
   _iv_env_vars="logFile loglevel verbosity VERBOSE QUIET DEBUG"
   _iv_env_vars="${_iv_env_vars} LOGGING INTERACTIVE RESUME"
   _iv_env_vars="${_iv_env_vars} EMOJI_CAPABLE EMOJI_DISABLE"
@@ -5294,64 +5289,48 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 3 ) ))   # bit 3 = logFile assignment failure
   _c_FLAGGED=$FALSE  # reset for next test
 
-  # if it exists already, rotate it (with sudo, in a subshell)
-  if [ -f "$logFile" ]; then
-    # shift existing archives (delete the oldest, move others up)
-    # use sudo sh -c "..." so we only need to call sudo once if needed for $user
-    # (note: with " outside, the ' inside is just a literal single-quote
-    #  char - interpreted AFTER expansion)
-    j_msg -${info} -n -m "rotating existing logFile(s)"
-    sudo sh -c "
-      [ -f '${logFile}.2' ] && mv -f '${logFile}.2' '${logFile}.3'
-      [ -f '${logFile}.1' ] && mv -f '${logFile}.1' '${logFile}.2'
-      mv -f '$logFile' '${logFile}.1'
-      touch '$logFile'
-      chown '${user}:${user}' '$logFile'
-    " >/dev/null 2>&1
-    handle_result $? "rotated" "error rotating logFile" "$info" || _c_FLAGGED=$TRUE
-    [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 4 ) ))   # bit 4 = logFile rotation failure
-    _c_FLAGGED=$FALSE  # reset for next test
-  else
+  # ensure a logFile exists - probably just a default at this point
+  if [ ! -f "$logFile" ]; then
     # create it and set permissoins
-    j_msg -${info} -n -m "creating logFile"
+    j_msg -${info} -n -m "creating default logFile"
     sudo sh -c "
       touch '$logFile'
       chown '${user}:${user}' '$logFile'
     " >/dev/null 2>&1
-    handle_result $? "created" "error rotating logFile" "$info"|| _c_FLAGGED=$TRUE
-    [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 5 ) ))   # bit 5 = logFile creation failure
+    handle_result $? "created" "error creating default logFile" "$info"|| _c_FLAGGED=$TRUE
+    [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 4 ) ))   # bit 4 = logFile creation failure
     _c_FLAGGED=$FALSE  # reset for next test
   fi
 
   # NOTE: *** Initialize LOGGING, INTERACTIVE, and verbosity BEFORE sourcing config, so that
-  # the config file can override these defaults ***
+  # the config file can override these defaults (doing so after would over-write users intent) ***
 
   # set QUIET to default $FALSE only if unset; - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning QUIET if unset; result:"
   : "${QUIET:=$FALSE}";   export QUIET
   handle_result $? "$(TrueFalse $QUIET)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 6 ) ))   # bit 6 = QUIET init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 5 ) ))   # bit 5 = QUIET init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # set DEBUG to default $FALSE only if unset; - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning DEBUG if unset; result"
   : "${DEBUG:=$FALSE}";   export DEBUG
   handle_result $? "$(TrueFalse $DEBUG)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 7 ) ))   # bit 7 = DEBUG init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 6 ) ))   # bit 6 = DEBUG init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # initialize LOGGING - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning default LOGGING"
   export LOGGING="$TRUE"
   handle_result $? "$(TrueFalse $LOGGING)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 8 ) ))   # bit 8 = LOGGING init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 7 ) ))   # bit 7 = LOGGING init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # initialize INTERACTIVE - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning default INTERACTIVE"
   export INTERACTIVE=$TRUE
   handle_result $? "$(TrueFalse $INTERACTIVE)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 9 ) ))   # bit 9 = INTERACTIVE init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 8 ) ))   # bit 8 = INTERACTIVE init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # set default verbosity if not set externally
@@ -5362,7 +5341,7 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   else
     handle_result 0 "already set: $verbosity" '' "$info"
   fi
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 10 ) ))   # bit 10 = verbosity init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 9 ) ))   # bit 9 = verbosity init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # set default loglevel if not set externally
@@ -5373,21 +5352,21 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   else
     handle_result 0 "already set: $loglevel" '' "$info"
   fi
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 11 ) ))   # bit 11 = loglevel init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 10 ) ))   # bit 10 = loglevel init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # initialize EMOJI_CAPABLE - is set automatically, redo that after initialization
   j_msg -${info} -n -m "running is_utf8_terminal to assign EMOJI_CAPABLE"
   is_utf8_terminal && export EMOJI_CAPABLE="$TRUE"
   handle_result $? "$(TrueFalse $EMOJI_CAPABLE)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 12 ) ))   # bit 12 = EMOJI_CAPABLE init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 11 ) ))   # bit 11 = EMOJI_CAPABLE init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # initialize EMOJI_DISABLE - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning defalut user setting for EMOJI_DISABLE"
   export EMOJI_DISABLE="$FALSE"
   handle_result $? "$(TrueFalse $EMOJI_DISABLE)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 13 ) ))   # bit 13 = EMOJI_DISABLE init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 12 ) ))   # bit 12 = EMOJI_DISABLE init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # tier 1 - global configuration
@@ -5396,21 +5375,21 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   config_dir="/etc/${PN}"
   handle_result $? "$config_dir" "error assigning config_dir" "$info" || _c_FLAGGED=$TRUE
   validate_dir "$config_dir"   # does its own announce/act/report-results
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 14 ) ))   # bit 14 = config_dir init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 13 ) ))   # bit 13 = config_dir init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # BUILD="string" should be located in config_dir
   j_msg -${info} -n -m "sourcing BUILD variable assignment"
   . "${config_dir}/BUILD"
   handle_result $? "$BUILD" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 15 ) ))   # bit 15 = BUILD init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 14 ) ))   # bit 14 = BUILD init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # initialize RESUME - can be overridden by sourced config below (and cmdline)
   j_msg -${info} -n -m "assigning default RESUME"
   export RESUME=$FALSE
   handle_result $? "$(TrueFalse $RESUME)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 16 ) ))   # bit 16 = RESUME init failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 15 ) ))   # bit 15 = RESUME init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # if the package has a config file at /etc/$PN configure it here
@@ -5419,23 +5398,14 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   validate_dir "/etc/${PN}"
   # match config files or links in the directory only (no subdirectories)
 
-  # Start with the base directory
-  _c_find_args="/etc/${PN}"                             # search target
-  _c_find_args="$_c_find_args -maxdepth 1"                  # top level only (no subdirectories)
-  _c_find_args="$_c_find_args -mindepth 1"                  # exclude the dir itself
-  _c_find_args="$_c_find_args '('"                           # start type group
-  _c_find_args="$_c_find_args -type f"                      # look for files
-  _c_find_args="$_c_find_args -o"                           # OR
-  _c_find_args="$_c_find_args -type l"                      # look for symlinks
-  _c_find_args="$_c_find_args ')'"                           # end type group
-  _c_find_args="$_c_find_args -name '*.conf'"               # matching *.conf
-  # this find command produces output that is <newline>-delimited lines
-
-#possible non-eval alternative for short lists
-#set -- "find" "/etc/${PN}/" "-maxdepth" "1" "-mindepth" "1"
-#set -- "$@" "(" "-type" "f" "-o" "-type" "l" ")"
-#set -- "$@" "-name" '*.conf'
-
+  # use set to put arguments for find command in positional parameters
+  # find files and links in but not in subdirectories of /etc/${PN}/
+  # matching the name *.conf -- the while loop (fed by <<EOF heredoc
+  # technique) will load all of them. this is a non-eval alternative for short lists
+  # (note: don't include find command here - put it in the subshell invocation below)
+  set -- "/etc/${PN}/" "-maxdepth" "1" "-mindepth" "1"
+  set -- "$@" "(" "-type" "f" "-o" "-type" "l" ")"
+  set -- "$@" "-name" '*.conf'
 
   # read output of find with a while loop (Do NOT quote $_c_find_args here so it splits into arguments)
   # IFS= means do NOT separate the output line into words (guards against file names with whitespace)
@@ -5458,8 +5428,6 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
       # if it changed, immediately (re)validate logFile to ensure ownership and writability
       if [ ! "$_c_logFile" = "$logFile" ]; then
         LOGGING=$FALSE handle_result $_c_c_result "${_c_file%%*/} sourced" "" "$info" || _c_FLAGGED=$TRUE
-        _c_NEWLOGFILE="$TRUE"
-        validate_logfile
       else
         handle_result $_c_c_result "${_c_file%%*/} sourced" "" "$info" || _c_FLAGGED=$TRUE
       fi
@@ -5467,14 +5435,19 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
       j_msg -${warn} "skipping unreadable or broken symlink [$_c_file]"
     fi
   done <<EOF
-$(eval "find $_c_find_args")
+$(find "$@")
 EOF
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 17 ) ))   # bit 17 = config file sourcing failure
+# this is the non-eval alternative for short lists mentioned above
+
+# alternative to go with _c_find_args formulation above
+#$(eval "find $_c_find_args")
+#EOF
+
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 16 ) ))   # bit 16 = config file sourcing failure
   _c_FLAGGED=$FALSE  # reset for next test
 
-# possible non-eval alternative for short lists
-#$("$@")
-#EOF
+  validate_logfile || ac_ret=$(( ac_ret | ( 1 << 17 ) ))   # bit 17 = validate_logfile failure
+  rotate_logfile   || ac_ret=$(( ac_ret | ( 1 << 18 ) ))   # bit 18 = rotate_logfile failure
 
   # config file is sourced and final logFile assignment should be validated (reset LOGGING)
   LOGGING="$_env_LOGGING"
@@ -5490,7 +5463,7 @@ EOF
    handle_result $? "$app_customization_root" "error assigning app_customization_root" "$info" || _c_FLAGGED=$TRUE
   j_msg -${info} -m "validating app_customization_root [${Mon}$app_customization_root${Boff}]"
   validate_dir "$app_customization_root"
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 18 ) ))   # bit 18 = app_customization_root assignment failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 19 ) ))   # bit 19 = app_customization_root assignment failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # assign and validate status_file
@@ -5500,7 +5473,7 @@ EOF
   [ -z "$status_file" ] && status_file="${HOME}/.config/${PN}.status"
    handle_result $? "$status_file" '' "$info" || _c_FLAGGED=$TRUE
   validate_file "$status_file"   # note this also validates the directory
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 19 ) ))   # bit 19 = status_file assignment failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 20 ) ))   # bit 20 = status_file assignment failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # tier 3 - application customization and extension
@@ -5515,7 +5488,7 @@ EOF
   _c_handler="${local_cmdline_arg_handler:-"none found"}"
   # =${var##*/} is =$(basename $var) but w/o subshell and function call
   handle_result $_c_result "${_c_handler##*/}" "error" "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 20 ) ))   # bit 20 = local_cmdline_arg_handler find failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 21 ) ))   # bit 21 = local_cmdline_arg_handler find failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   if [ -f "$local_cmdline_arg_handler" ]; then
@@ -5523,7 +5496,7 @@ EOF
     . "$local_cmdline_arg_handler"
     handle_result $? "sourced" "error sourcing local_cmdline_arg_handler" "$info" || _c_FLAGGED=$TRUE
   fi
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 21 ) ))   # bit 21 = local_cmdline_arg_handler sourcing failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 22 ) ))   # bit 22 = local_cmdline_arg_handler sourcing failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # use POSIX method of indirect variable assignment to display the existence of local handlers
@@ -5547,7 +5520,7 @@ EOF
     j_msg -${info} -n -m "command_sequence initialization status"
     handle_result $_c_result '' '' "$info" || _c_FLAGGED=$TRUE
   fi
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 22 ) ))   # bit 22 = command_sequence initialization failure
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 23 ) ))   # bit 23 = command_sequence initialization failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # final sanity checks
@@ -5560,18 +5533,29 @@ EOF
   return $ac_ret
 }
 # @usage app_configure
-# @vars PN, BUILD, user, logFile, status_file, config_dir, verbosity, INTERACTIVE, RESUME
-# @vars num_cmds, starting_step, stopping_step, varlist, FALSE, TRUE
-# @deps separator, initialize_vars, j_msg -${notice}, j_msg -${notice} -n, handle_result, j_msg -${notice}, j_msg -${notice} -n
-# @deps handle_result, sourcing, check_dir, check_file, process_cmdline, initialize_command_sequence
+# @vars PN, BUILD, user, logFile, status_file, config_dir, verbosity, INTERACTIVE
+# @append RESUME, num_cmds, starting_step, stopping_step, varlist, FALSE, TRUE
+# @deps separator, initialize_vars, j_msg, handle_result, validate_dir, rotate_logfile
+# @append validate_logfile, validate_file, initialize_command_sequence
+# @ret 0 on success; or a 24-bit bitmask (ac_ret) on failure:
+# @cont Bits 0-4: var_init(0), PN(1), user(2), logFile_assign(3), logFile_create(4)
+# @cont Bits 5-9: QUIET(5), DEBUG(6), LOGGING(7), INTERACTIVE(8), verbosity(9)
+# @cont Bits 10-14: loglevel(10), EMOJI_CAP(11), EMOJI_DIS(12), config_dir(13), BUILD(14)
+# @cont Bits 15-19: RESUME(15), config_loop(16), log_val(17), log_rot(18), custom_root(19)
+# @cont Bits 20-23: status_file(20), local_handler_find(21), local_handler_source(22)
+# @append cmd_seq_init(23)
+# @req Global variables TRUE and FALSE must be defined (0 and "" respectively)
 # @rule initializes and validates the entire script environment before execution
-# @ret 0 on success; 1 if _c_FLAGGED is set during configuration
-# @rule PN is package name and should be assigned = $(basename "$0") or ${0##*/} to identify the calling script
-# @rule POSIX assignment 'BUILD="string"' should reside in "${app_customization_root%/}/BUILD"
-# @rule app_customization_root may contain *local.cmdline_arg_handler extension file
-# @cont which can contain handle_local_arg(), handle_local_compound_arg(), and handle_local_usage()
+# @rule PN identifies the calling script; assigned via ${0##*/} if not set
+# @rule sources all *.conf files in /etc/${PN} using positional parameter
+# @append expansion to avoid eval risks
+# @rule post-config logic enforces logFile validation and rotation using sudo
+# @rule POSIX assignment 'BUILD="string"' should reside in /etc/${PN}/BUILD
+# @rule app_customization_root may contain *local.cmdline_arg_handler
+# @cont which can define handle_local_arg, handle_local_compound_arg, and
+# @append handle_local_usage
 
-usage()                # explain default usage; mod with local "usage module"
+usage() # (POSIX) explain default usage; extensible with local "usage module"
 {
   N="${num_cmds}"
   separator "${PN}-${BUILD}" "(usage)"
@@ -5651,6 +5635,44 @@ validate_dir()  # validate or create a directory $1
 # @deps j_msg -${err}, j_msg -${notice} -n, right_status, handle_result, sudo, mkdir
 # @rule ensures a directory exists, creating it with sudo -p if necessary
 # @ret 0 if directory exists or was successfully created; 1 otherwise
+
+rotate_logfile()
+{ rl_ret=0
+  # NOTE: assumes logFile has been validated - otherwise turn off LOGGING
+   # if it exists already, rotate it (with sudo, in a subshell)
+  if [ -f "$logFile" ]; then
+    # shift existing archives (delete the oldest, move others up)
+    # use sudo sh -c "..." so we only need to call sudo once if needed for $user
+    # (note: with " outside, the ' inside is just a literal single-quote
+    #  char - interpreted AFTER expansion)
+    j_msg -${info} -n -m "rotating existing logFile(s)"
+    sudo sh -c "
+      [ -f '${logFile}.2' ] && mv -f '${logFile}.2' '${logFile}.3'
+      [ -f '${logFile}.1' ] && mv -f '${logFile}.1' '${logFile}.2'
+      mv -f '$logFile' '${logFile}.1'
+      touch '$logFile'
+      chown '${user}:${user}' '$logFile'
+    " >/dev/null 2>&1
+    handle_result $? "rotated" "error rotating logFile" "$info" || \
+      rl_ret=$(( rl_ret | 1 ))   # bit 0 = logFile rotation failure
+  else
+    # create it and set permissoins
+    j_msg -${info} -n -m "creating logFile"
+    sudo sh -c "
+      touch '$logFile'
+      chown '${user}:${user}' '$logFile'
+    " >/dev/null 2>&1
+    handle_result $? "created" "error rotating logFile" "$info" || \
+      rl_ret=$(( rl_ret | 2 ))   # bit 1 = logFile creation failure
+  fi
+#  unset -v _tbd_nothing_yet
+  return $rl_ret
+}
+# @usage rotate_logfile
+# @vars logFile
+# @deps sudo, mv, touch, chown, j_msg, handle_result
+# @req logFile must be validated before LOGGING j_msg/right_status
+# @append use can work, incl. here
 
 validate_logfile()  # validate existence and ownership of logFile
 { _logFile_owner_uid=""; _logFile_group_gid=""
