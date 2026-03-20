@@ -11,6 +11,7 @@ rollup_file="/home/${user}/script/elrond_configs_rollup"
 #target="${user}@gmki91:/home/${user}/"
 target="${win_user}@joelaptop:C:/Users/${win_user}/Desktop/"
 logFile="/home/${user}/router_health_check.data"
+validate_logfile
 internal_dns_target="gmki91"
 external_dns_target="google.com"
 LOGGING=$TRUE

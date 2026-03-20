@@ -11,6 +11,7 @@ PN=${0##*/}    # like =$(basename 0) but w/o subshell and function call
 #-----[ variables ]-----------------------------------------
 user="joe"
 logFile="/var/log/${PN}.log"
+validate_logfile
 
 [ -z $verbosity ] && verbosity=2
 
