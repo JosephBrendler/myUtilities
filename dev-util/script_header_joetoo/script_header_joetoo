@@ -115,10 +115,12 @@ else
   logFile="${HOME:-/tmp}/script_header_joetoo.log"
 fi
 
-# use id -un to assign a default value for the global $user variable
+# POSIX does not mandate the use of the $USER variable, so
+#   use id -un to assign a default value for the global $user variable
 #   this is a global variable calling scripts SHOULD define themselves,
 #   so this is really just a safeguard - not a mandate on where to log
-user=$(id -un)
+# ensure $user is defined even in sterile environments
+user=${USER:-$(id -un)}
 
 #  Error message used by various scripts
 E_NOTROOT="Must be root to run this script"
@@ -943,16 +945,13 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
 { cen_ret=0
   # this encompasses the heavy-lifting (slow part) of the header-loading process
   # once run, the data it generates can be cached (as done below)
-
-  # call the _precook_ui_assets function to pre-bake the set of emojis considered "active"
+  # ** call the _precook_ui_assets function to pre-bake the set of emojis considered "active"
   # (this is primarily to enable binary optimization of the real-time log-filering that emit has to do
   #  to provide clean log output when EMOJI_CAPABLE is true and EMOJI_DISABLE is not)
-  _precook_ui_assets || _cen_ret=$?
+  _precook_ui_assets || cen_ret=1
   # order matters - this call must precede the variable assignments depending on the availability
-  # of values set by it (e.g. ESC, so CSI can be set below and then all the colors
-  # depending on that
-
-  # dump the 'bin_', 'idx_', and 'SED_LOG_FILTER' state to cache
+  # of values set by it (e.g. ESC, so CSI can be set below and then all the colors depending on that
+  # ** dump the 'bin_', 'idx_', and 'SED_LOG_FILTER' state to cache
   # this captures the binary literals exactly as processed
   #  set | grep -E '^(bin_|idx_|SED_LOG_FILTER=)' > "$_joetoo_cache"
   # dont want scripts sourcing the file while it is being written (which could happen w above)
@@ -964,40 +963,115 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
     set | grep -E '^(bin_|idx_)[a-zA-Z0-9_]*='
     # then SED_LOG_FILTER (heavy filter)
     set | grep -E '^SED_LOG_FILTER='
-  } > "$_joetoo_cache.tmp" && mv "$_joetoo_cache.tmp" "$_joetoo_cache"
-
-  if [ $? -eq 0 ]; then
-    j_msg -${debug} "successfully updated asset cache: [$_joetoo_cache]"
-  else
-    j_msg -${crit} "Critical: Failed to write asset cache:  [$_joetoo_cache]"
-    cen_ret=2
-  fi
-
+  } > "${_joetoo_cache}.tmp" || cen_ret=2
+  # distribute to memory cache/tmp and persistent store
+  # (locations determined in block below function)
+  if [ $cen_ret -eq 0 ]; then
+    # update memory/tmp "volatile" cache (atomic)
+    # (use cp then mv so the .tmp source survives for the store update)
+    cp "${_joetoo_cache}.tmp" "${_joetoo_cache}.swap" || cen_ret=3
+    if [ $cen_ret -eq 0 ]; then
+       mv "${_joetoo_cache}.swap" "$_joetoo_cache" || cen_ret=4
+    fi  # cp cache -> cache.swap ok
+    # update persistent disk store (atomic)
+    # (use ${_joetoo_store%/*} - parameter expansion dirname)
+    if [ $cen_ret -eq 0 ] && [ ! -z "$_joetoo_store" ] && [ -w "${_joetoo_store%/*}" ]; then
+      mv "${_joetoo_cache}.tmp" "${_joetoo_store}" || cen_ret=5
+    fi
+    [ -f "${_joetoo_cache}.tmp" ] && rm -f "${_joetoo_cache}.tmp"  # cleanup the master temp file (if it still exists)
+    [ -f "${_joetoo_cache}.swap" ] && rm -f "${_joetoo_cache}.swap"  # cleanup the temp swap file (if it still exists)
+  fi  # set ok
+  case "$cen_ret" in
+    0) j_msg -${debug} "successfully updated ui asset cache: [$_joetoo_cache]" ;;
+    1) j_msg -${err} "error: failed to _precook_ui_assets" ;;
+    2) j_msg -${err} "error: failed to (set) ui asset cache:  [${_joetoo_cache}.tmp]" ;;
+    3) j_msg -${err} "error: failed to (cp) ui asset cache:  [${_joetoo_cache}.swap]" ;;
+    4) j_msg -${err} "error: failed to (mv) ui asset cache:  [${_joetoo_cache}]" ;;
+    5) j_msg -${warn} "warning: failed to save (cp) ui asset store:  [${_joetoo_store}]" ;;
+    *) j_msg -${err} "error: invalid exit status in _cook_everything_now" ;;
+  esac
   return $cen_ret
 }
 # @usage _cook_everything_now
-# @vars _joetoo_cache: path to the asset cache file
+# @vars _joetoo_cache: memory/tmp path for high-speed runtime access
+# @vars _joetoo_store: disk path for boot-time/initramfs persistence
 # @vars bin_*: binary literal registries to be cached
 # @vars idx_*: index registries to be cached
 # @vars SED_LOG_FILTER: regex filter string for log cleaning
-# @ret 0 on success, 2 on cache write failure
-# @deps _precook_ui_assets, j_msg, mv, grep, set
-# @req _joetoo_cache must be a writable path
+# @ret 0: success, 1-4: specified cache failure modes 5: persistent store fail warn
+# @deps _precook_ui_assets, j_msg, mv, cp, grep, set
+# @rule updates both RAM and Disk stores simultaneously to ensure consistency
+# @cont (these must be writable paths)
 # @rule uses { ... } grouping to order output without subshell overhead
 # @rule performs atomic update via tmp file and mv to prevent race conditions
-# @note captures binary literals exactly as processed for real-time optimization
+# @note memory cache and persistent disk store retain binary literals for optimization
+# @cont cache supports real-time io performance; store eliminates re-cook at boot
+# @append in use cases such as initramfs, where the persistent store can be
+# @append retrieved to populate the cache its own environment
 # @note essential for performance when EMOJI_CAPABLE is true
-# define cache location
-if [ -d /dev/shm ]; then
-  _joetoo_cache="/dev/shm/.joetoo_cache_$USER"; else _joetoo_cache="/tmp/.joetoo_cache_$USER"; fi
 
-# if cache exists and is newer than the header, just load it
-# otherwise, call _cook_everything_now to the heavy lifting and save it
-if [ -f "$_joetoo_cache" ] && [ "$_joetoo_cache" -nt "/usr/sbin/script_header_joetoo" ]; then
-    . "$_joetoo_cache"
-else
-    _cook_everything_now
-fi
+_hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
+{ hua_ret=0
+  # define cache and store locations
+  # cache - prefer a memory-backed location if avaiable, else use /tmp
+  if [ -d /dev/shm ]; then
+    _joetoo_cache="/dev/shm/.joetoo_ui_asset_cache_${user}"
+  else
+    _joetoo_cache="/tmp/.joetoo_ui_asset_cache_${user}"
+  fi
+  # store - use this as standardized location
+  _joetoo_store="/var/lib/joetoo/.joetoo_ui_asset_store"
+  # ensure the directory exists and is searchable (755)
+  if [ ! -w "${_joetoo_store%/*}" ]; then
+    sudo mkdir -p "${_joetoo_store%/*}" || hua_ret=1   # bit 0 = _joetoo_store mkdir fail
+    sudo chmod 755 "${_joetoo_store%/*}" || hua_ret=$(( hua_ret + 2 ))
+  fi                                           # bit 1 = _joetoo_store chown fail
+  # ensure the store file itself (if it exists) is world-readable
+  if [ -f "$_joetoo_store" ] && [ ! -r "$_joetoo_store" ]; then
+    sudo chmod 644 "$_joetoo_store" || hua_ret=$(( hua_ret + 4 ))   # bit 2 = chmod 644 fail
+  fi
+  # define the source of truth (this header itself)
+  _joetoo_header="${script_header_installed_dir%/}/script_header_joetoo"
+  # "hydration" strategy - if cache exists and is newer than the header, use it
+  if [ -f "$_joetoo_cache" ] && [ "$_joetoo_cache" -nt "$_joetoo_header" ]; then
+      # tier 1 - memory cache is fresh, so load it immediately
+      . "$_joetoo_cache"  || hua_ret=$(( hua_ret + 8 ))   # bit 3 = _joetoo_cache source fail
+  elif [ -f "$_joetoo_store" ] && [ "$_joetoo_store" -nt "$_joetoo_header" ]; then
+      # tier 2 memory cache is stale/gone, but fresh persistent store is available,
+      # so populate a new cache from the store, and source it
+      cp "$_joetoo_store" "$_joetoo_cache" || hua_ret=$(( hua_ret + 16 ))   # bit 4 = _joetoo_store cp fail
+      if [ $(( hua_ret & 16 )) -eq 0 ] ; then . "$_joetoo_cache" || hua_ret=$(( hua_ret + 32 )) ; fi # cp ok
+  else                                        # bit 5 = _joetoo_cache from store source fail
+      # tier 3 - nothing is fresh; do the heavy lifting
+      _cook_everything_now ||  hua_ret=$(( hua_ret + 64 ))   # bit 6 = _cook_everything_now failure
+      . "$_joetoo_cache" || hua_ret=$(( hua_ret + 128 ))   # bit 7 = _joetoo_cache from cook source fail
+  fi  # cache exists and is -nt header
+
+  return $hua_ret
+}
+# @usage _hydrate_ui_assets
+# @ret bitmask: 1:mkdir_fail, 2:chmod_dir_fail, 4:chmod_store_fail,
+# @append 8:cache_src_fail, 16:cp_fail, 32:store_src_fail,
+# @append 64:cook_fail, 128:final_src_fail
+# @rule Tiered recovery: memory/tmp -> disk -> cook
+# @note failures in bits 5+ (value 32+) indicate the UI
+# @append log-filtering will be disabled or degraded
+
+# invoke the function defined just above
+_hydrate_ui_assets
+_hua_status=$?
+# provide _hydrate_ui_assets failure mode output if necessary
+# (note the use of POSIX equivalent to (( ( var & n 0 == 0 )) && ... )
+[ ! $(( _hua_status & 1  ))  -eq 0 ] && j_msg -${warn} "failed to make directory ${_joetoo_store%/*}"
+[ ! $(( _hua_status & 2  ))  -eq 0 ] && j_msg -${warn} "failed to set ownership for directory ${_joetoo_store%/*}"
+[ ! $(( _hua_status & 4  ))  -eq 0 ] && j_msg -${warn} "failed to make cache world-readable"
+[ ! $(( _hua_status & 8  ))  -eq 0 ] && j_msg -${warn} "failed to source ui assets from existing cache"
+[ ! $(( _hua_status & 16 ))  -eq 0 ] && j_msg -${warn} "failed to cp existing ui asset store to cache"
+[ ! $(( _hua_status & 32 ))  -eq 0 ] && j_msg -${warn} "failed to source ui assets from existing store"
+[ ! $(( _hua_status & 64 ))  -eq 0 ] && \
+  { j_msg -${err} "failed to _cook_everything_now; setting EMOJI_CAPABLE=\$FALSE";
+    EMOJI_CAPABLE="$FALSE" ; }
+[ ! $(( _hua_status & 128 ))  -eq 0 ] && die "failed to source ui assets after cooking"
 
 # order matters - this function must precede the variable assignments depending
 #   on its availability (like longone= )
@@ -5200,7 +5274,7 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
 
   # identify and assign user name
   j_msg -${info} -n -m "assigning user"
-  user=$(whoami)
+  user=${user:-$(id -un)}  # defined atop header; so, here again just in case
   handle_result $? "$user" '' "$info" || _c_FLAGGED=$TRUE
   [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 2 ) ))   # bit 2 = user assignment failure
   _c_FLAGGED=$FALSE  # reset for next test
@@ -5609,40 +5683,58 @@ validate_logfile()  # validate existence and ownership of logFile
       esac
   else
       handle_result 0 "found" "not found" "$info"
-      j_msg -${info} -nm "checking logFile ownership"
-      _logFile_owner_uid=$(ls -n "${logFile}" | awk '{print $3}')
-      _logFile_group_gid=$(ls -n "${logFile}" | awk '{print $4}')
-      _user_uid=$(id -u "${user}")
-      _user_gid=$(id -g "${user}")
-      _vl_msg="${_logFile_owner_uid}:${_logFile_group_gid}"
-      if [ "$_vl_msg" = "${_user_uid}:${_user_gid}" ]; then
-          handle_result 0 "$_vl_msg" "$_vl_msg" "$info"
+      j_msg -${notice} -nm "checking if logFile is writable by user [$user]"
+      # instead of checking if the file ownership matches the current user
+      # just ckeck if it is writable by the current user
+      if [ -w "$logFile" ]; then
+          # the file is writable - done here; all good
+          handle_result 0 "yes" "no" "$notice"
           LOGGING="$_env_LOGGING"
+          return 0
       else
-          handle_result 1 "$_vl_msg" "$_vl_msg" "$info"
-          _vl_msg="bad ownership on logFile [${logFile}]\n"
-          _vl_msg="${_vl_msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
-          j_msg -${err} "${_vl_msg}"
-          yn_prompt "${BYon}Would you like me to do that for you now?"
-          case "$answer" in
-            [yY]*)
-              if fix_logfile; then
-                LOGGING="$_env_LOGGING"
-                unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
-                return 0
-              else
-                LOGGING="$_env_LOGGING"
-                unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
-                return 1
-              fi
-              ;;
-            *)
-              LOGGING="$_env_LOGGING"
-              unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
-              return 1
-              ;;
-          esac
-      fi # ownership
+          # not writable - figure out what can be done about that
+          handle_result 1 "yes" "no" "$notice"
+          j_msg -${err} "logFile [${logFile}] is not writable by user [$user]\n"
+          # check ownership
+          j_msg -${notice} -m -n "checking logFile ownership"
+          _logFile_owner_uid=$(ls -n "${logFile}" | awk '{print $3}')
+          _logFile_group_gid=$(ls -n "${logFile}" | awk '{print $4}')
+          _vl_msg="${_logFile_owner_uid}:${_logFile_group_gid}"
+          j_msg -${notice} -mp " (${Con}${_vl_msg}${Boff})"
+          # determine if user is owner
+          _user_uid=$(id -u "${user}")
+          _user_gid=$(id -g "${user}")
+          if [ "$_vl_msg" != "${_user_uid}:${_user_gid}" ]; then
+              # user is not the owner (e.g. joe trying to write root-owned logFile
+              j_msg -${err} "logFile owned by UID [$_logFile_owner_uid], not by user [$user], UID [$_user_uid]"
+              _vl_msg="${_vl_msg}${BRon}Please run (as root) ${BGon}chown ${user}:${user} ${logFile}${Boff}"
+              j_msg -${err} "${_vl_msg}"
+              yn_prompt "${BYon}Would you like me to do that for you now?"
+          else
+              # user is already the owner (but maybe permissions restricted to root)
+              _vl_msg="${_vl_msg}${BRon}Please run (as root) ${BGon}chmod +w ${logFile}${Boff}"
+              j_msg -${err} "${_vl_msg}"
+              yn_prompt "${BYon}Would you like me to do that for you now?"
+          fi  # ownership
+      fi # writability
+      case "$answer" in
+        [yY]*)
+          if fix_logfile; then
+            LOGGING="$_env_LOGGING"
+            unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
+            return 0
+          else
+            LOGGING="$_env_LOGGING"
+            unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
+            return 1
+          fi
+          ;;
+        *)
+          LOGGING="$_env_LOGGING"
+          unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
+          return 1
+          ;;
+      esac
   fi # existence
   LOGGING="$_env_LOGGING"
   unset -v _env_LOGGING _logFile_owner_uid _logFile_group_gid _user_uid _user_gid _vl_msg
@@ -5663,12 +5755,15 @@ fix_logfile() #(POSIX) minimalist validation of logfile
 {
     # create file if missing
     if [ ! -f "$logFile" ]; then
-        sudo sh -c "touch '$logFile' && chown '$user:$user' '$logFile'"
+        _fl_fix_cmd="touch '$logFile' && chown '$user:$user' '$logFile'"
+        _fl_fix_cmd="${_fl_fix_cmd} && chmod 644 '$logFile'"
+        sudo sh -c "$_fl_fix_cmd"
         return $?
     fi
-    # fix ownership if needed
+    # fix ownership and permission if needed
     if [ ! -w "$logFile" ]; then
-        sudo sh -c "chown '$user:$user' '$logFile'"
+        _fl_fix_cmd="chown '$user:$user' '$logFile' && chmod 644 '$logFile'"
+        sudo sh -c "$_fl_fix_cmd"
         return $?
     fi
     return 0
