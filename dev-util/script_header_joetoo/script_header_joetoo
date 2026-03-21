@@ -970,9 +970,9 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
        mv "${_joetoo_cache}.swap" "$_joetoo_cache" || cen_ret=4
     fi  # cp cache -> cache.swap ok
     # update persistent disk store (atomic)
-    # (use ${_joetoo_store%/*} - parameter expansion dirname)
-    if [ $cen_ret -eq 0 ] && [ ! -z "$_joetoo_store" ] && [ -w "${_joetoo_store%/*}" ]; then
-      mv "${_joetoo_cache}.tmp" "${_joetoo_store}" || cen_ret=5
+    # (use ${joetoo_store%/*} - parameter expansion dirname)
+    if [ $cen_ret -eq 0 ] && [ ! -z "$joetoo_store" ] && [ -w "${joetoo_store%/*}" ]; then
+      mv "${_joetoo_cache}.tmp" "${joetoo_store}" || cen_ret=5
     fi
     [ -f "${_joetoo_cache}.tmp" ] && rm -f "${_joetoo_cache}.tmp"  # cleanup the master temp file (if it still exists)
     [ -f "${_joetoo_cache}.swap" ] && rm -f "${_joetoo_cache}.swap"  # cleanup the temp swap file (if it still exists)
@@ -983,14 +983,14 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
     2) j_msg -${err} "error: failed to (set) ui asset cache:  [${_joetoo_cache}.tmp]" ;;
     3) j_msg -${err} "error: failed to (cp) ui asset cache:  [${_joetoo_cache}.swap]" ;;
     4) j_msg -${err} "error: failed to (mv) ui asset cache:  [${_joetoo_cache}]" ;;
-    5) j_msg -${warn} "warning: failed to save (cp) ui asset store:  [${_joetoo_store}]" ;;
+    5) j_msg -${warn} "warning: failed to save (cp) ui asset store:  [${joetoo_store}]" ;;
     *) j_msg -${err} "error: invalid exit status in _cook_everything_now" ;;
   esac
   return $cen_ret
 }
 # @usage _cook_everything_now
 # @vars _joetoo_cache: memory/tmp path for high-speed runtime access
-# @vars _joetoo_store: disk path for boot-time/initramfs persistence
+# @vars joetoo_store: disk path for boot-time/initramfs persistence
 # @vars bin_*: binary literal registries to be cached
 # @vars idx_*: index registries to be cached
 # @vars SED_LOG_FILTER: regex filter string for log cleaning
@@ -1009,46 +1009,54 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
 _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
 { hua_ret=0
   # define cache and store locations
+  # store - use this standardized location
+  joetoo_store="/var/lib/joetoo/.joetoo_ui_asset_store"  # note: global scope
+  _store_dir="${joetoo_store%/*}"
   # cache - prefer a memory-backed location if avaiable, else use /tmp
   if [ -d /dev/shm ]; then
     _joetoo_cache="/dev/shm/.joetoo_ui_asset_cache_${user}"
   else
     _joetoo_cache="/tmp/.joetoo_ui_asset_cache_${user}"
   fi
-  # store - use this as standardized location
-  _joetoo_store="/var/lib/joetoo/.joetoo_ui_asset_store"
+
   # ensure the directory exists and is searchable (755)
-  if [ ! -w "${_joetoo_store%/*}" ]; then
-    sudo mkdir -p "${_joetoo_store%/*}" || hua_ret=1   # bit 0 = _joetoo_store mkdir fail
-    sudo chmod 755 "${_joetoo_store%/*}" || hua_ret=$(( hua_ret + 2 ))
-  fi                                           # bit 1 = _joetoo_store chown fail
+  #  * pre-check * if root access is needed to setup the store directory
+  if [ ! -d "$_store_dir" ] || [ ! -w "$_store_dir" ]; then
+    # inform the user WHY they are about to see a password prompt
+    # (which, for ssh connections would otherwise look like
+    #  pki authentication is not being used and the sshd is asking for
+    #  the password). so be clear about why this is about to happen
+    printf "*** >>> [sudo] Accessing %s (sudo password may be required) <<< ***\n" "$_store_dir"
+    # combined sudo call for efficiency
+    sudo sh -c "mkdir -p '$_store_dir' && chmod 755 '$_store_dir'" >/dev/null 2>&1 || hua_ret=1   # bit 0 = joetoo_store mkdir/chmod fail
+  fi
   # ensure the store file itself (if it exists) is world-readable
-  if [ -f "$_joetoo_store" ] && [ ! -r "$_joetoo_store" ]; then
-    sudo chmod 644 "$_joetoo_store" || hua_ret=$(( hua_ret + 4 ))   # bit 2 = chmod 644 fail
+  if [ -f "$joetoo_store" ] && [ ! -r "$joetoo_store" ]; then
+    sudo chmod 644 "$joetoo_store" || hua_ret=$(( hua_ret + 2 ))   # bit 1 = chmod 644 fail
   fi
   # define the source of truth (this header itself)
   _joetoo_header="${script_header_installed_dir%/}/script_header_joetoo"
   # "hydration" strategy - if cache exists and is newer than the header, use it
   if [ -f "$_joetoo_cache" ] && [ "$_joetoo_cache" -nt "$_joetoo_header" ]; then
       # tier 1 - memory cache is fresh, so load it immediately
-      . "$_joetoo_cache"  || hua_ret=$(( hua_ret + 8 ))   # bit 3 = _joetoo_cache source fail
-  elif [ -f "$_joetoo_store" ] && [ "$_joetoo_store" -nt "$_joetoo_header" ]; then
+      . "$_joetoo_cache"  || hua_ret=$(( hua_ret + 4 ))   # bit 2 = _joetoo_cache source fail
+  elif [ -f "$joetoo_store" ] && [ "$joetoo_store" -nt "$_joetoo_header" ]; then
       # tier 2 memory cache is stale/gone, but fresh persistent store is available,
       # so populate a new cache from the store, and source it
-      cp "$_joetoo_store" "$_joetoo_cache" || hua_ret=$(( hua_ret + 16 ))   # bit 4 = _joetoo_store cp fail
-      if [ $(( hua_ret & 16 )) -eq 0 ] ; then . "$_joetoo_cache" || hua_ret=$(( hua_ret + 32 )) ; fi # cp ok
-  else                                        # bit 5 = _joetoo_cache from store source fail
+      cp "$joetoo_store" "$_joetoo_cache" || hua_ret=$(( hua_ret + 8 ))   # bit 3 = joetoo_store cp fail
+      if [ $(( hua_ret & 8 )) -eq 0 ] ; then . "$_joetoo_cache" || hua_ret=$(( hua_ret + 16 )) ; fi # cp ok
+  else                                        # bit 4 = _joetoo_cache from store source fail
       # tier 3 - nothing is fresh; do the heavy lifting
-      _cook_everything_now ||  hua_ret=$(( hua_ret + 64 ))   # bit 6 = _cook_everything_now failure
-      . "$_joetoo_cache" || hua_ret=$(( hua_ret + 128 ))   # bit 7 = _joetoo_cache from cook source fail
+      _cook_everything_now ||  hua_ret=$(( hua_ret + 32 ))   # bit 5 = _cook_everything_now failure
+      . "$_joetoo_cache" || hua_ret=$(( hua_ret + 64 ))   # bit 6 = _joetoo_cache from cook source fail
   fi  # cache exists and is -nt header
-
+  unset -v _store_dir joetoo_store _joetoo_cache
   return $hua_ret
 }
 # @usage _hydrate_ui_assets
-# @ret bitmask: 1:mkdir_fail, 2:chmod_dir_fail, 4:chmod_store_fail,
-# @append 8:cache_src_fail, 16:cp_fail, 32:store_src_fail,
-# @append 64:cook_fail, 128:final_src_fail
+# @ret bitmask: 1:mkdir/chmod 755 store_dir fail, 2:chmod 644 store fail,
+# @append 4:cache_src_fail, 8:cp store->cache fail, 16:store src fail,
+# @append 32:cook_fail, 64:final_src_fail
 # @rule Tiered recovery: memory/tmp -> disk -> cook
 # @note failures in bits 5+ (value 32+) indicate the UI
 # @append log-filtering will be disabled or degraded
@@ -1058,16 +1066,15 @@ _hydrate_ui_assets
 _hua_status=$?
 # provide _hydrate_ui_assets failure mode output if necessary
 # (note the use of POSIX equivalent to (( ( var & n 0 == 0 )) && ... )
-[ ! $(( _hua_status & 1  ))  -eq 0 ] && j_msg -${warn} "failed to make directory ${_joetoo_store%/*}"
-[ ! $(( _hua_status & 2  ))  -eq 0 ] && j_msg -${warn} "failed to set ownership for directory ${_joetoo_store%/*}"
-[ ! $(( _hua_status & 4  ))  -eq 0 ] && j_msg -${warn} "failed to make cache world-readable"
-[ ! $(( _hua_status & 8  ))  -eq 0 ] && j_msg -${warn} "failed to source ui assets from existing cache"
-[ ! $(( _hua_status & 16 ))  -eq 0 ] && j_msg -${warn} "failed to cp existing ui asset store to cache"
-[ ! $(( _hua_status & 32 ))  -eq 0 ] && j_msg -${warn} "failed to source ui assets from existing store"
-[ ! $(( _hua_status & 64 ))  -eq 0 ] && \
-  { j_msg -${err} "failed to _cook_everything_now; setting EMOJI_CAPABLE=\$FALSE";
+[ ! $(( _hua_status & 1  )) -eq 0 ] && j_msg -${warn} "failed to setup /var/lib/joetoo directory"
+[ ! $(( _hua_status & 2  )) -eq 0 ] && j_msg -${warn} "failed to make store file world-readable"
+[ ! $(( _hua_status & 4  )) -eq 0 ] && j_msg -${warn} "failed to source ui assets from existing cache"
+[ ! $(( _hua_status & 8  )) -eq 0 ] && j_msg -${warn} "failed to cp store to cache"
+[ ! $(( _hua_status & 16 )) -eq 0 ] && j_msg -${warn} "failed to source ui assets from store"
+[ ! $(( _hua_status & 32 )) -eq 0 ] && \
+  { j_msg -${err} "failed to _cook_everything_now; disabling UI features"
     EMOJI_CAPABLE="$FALSE" ; }
-[ ! $(( _hua_status & 128 ))  -eq 0 ] && die "failed to source ui assets after cooking"
+[ ! $(( _hua_status & 64 )) -eq 0 ] && die "Critical: failed to source ui assets after cooking"
 
 # order matters - this function must precede the variable assignments depending
 #   on its availability (like longone= )
