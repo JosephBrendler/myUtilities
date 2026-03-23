@@ -4422,3 +4422,66 @@ utf8_char_width() # (POSIX) calculate the column-width of a multi-byte utf-8 cha
 # @note   performs minimal UTF-8 decode to obtain codepoint
 # @note   no external commands; POSIX-compliant
 
+post_neolithic_detect_terminal() {
+    [ -n "$TMUX" ] && echo "tmux" && return    # tmux overrides everything
+    [ -n "$STY" ] && echo "screen" && return    # screen
+    [ -n "$WT_SESSION" ] && echo "windows-terminal" && return    # Windows Terminal
+    [ "$TERM_PROGRAM" = "iTerm.app" ] && echo "iterm2" && return    # iTerm2
+    [ "$TERM_PROGRAM" = "Apple_Terminal" ] && echo "apple-terminal" && return    # Apple Terminal
+    [ "$TERM_PROGRAM" = "WezTerm" ] && echo "wezterm" && return    # WezTerm
+    [ -n "$VTE_VERSION" ] && echo "vte" && return    # GNOME / VTE-based terminals
+    [ "$TERM" = "xterm-kitty" ] && echo "kitty" && return    # Kitty
+    case "$TERM" in alacritty* ) echo "alacritty"; return ;; esac    # Alacritty
+    case "$TERM" in xterm* ) echo "xterm"; return ;; esac    # xterm
+    case "$TERM" in linux ) echo "linux-console"; return ;; esac    # Linux console
+    echo "unknown"    # Fallback
+}
+
+
+# moved this here so it can be used below (and in app_configure when called by sourcing scripts)
+post_neolithic_is_utf8_terminal()  # (POSIX) returnn 0 if terminal can print utf-8, 1 otherwise
+{ # use detect_terminal to enable inferrence of utf-8 support
+  # GNOME Terminal ...... Yes     2 Full color emoji
+  # iTerm2 .............. Yes     2 Excellent emoji support
+  # Apple Terminal ...... Yes     2 Good emoji support
+  # Windows Terminal .... Yes     2 Full emoji support
+  # Alacritty ........... Partial 2 No fallback fonts
+  # Kitty ............... Yes     2 Excellent emoji support
+  # WezTerm ............. Yes     2 Excellent emoji support
+  # xterm ............... No      1 Emoji broken or missing
+  # urxvt ............... No      1 No emoji support
+  # Linux console (tty1)  No      1 No emoji support
+  # tmux ................ Inherit - Depends on outer terminal
+  # screen .............  No      1 No emoji
+  # 
+  case "$(detect_terminal)" in
+    iterm2|apple-terminal|vte|kitty|wezterm|windows-terminal)
+      printf '%s' "1" ;;   # emoji capable
+    alacritty)
+      printf '%s' "1" ;;   # partial but acceptable
+    tmux)
+      # tmux inherits from outer terminal
+      # so check again without tmux
+      if [ -n "$TMUX" ]; then
+        TMUX_SAVED="$TMUX"
+        unset TMUX
+        cap=$(is_utf8_terminal)
+        TMUX="$TMUX_SAVED"
+        printf '%s' "$cap"
+      else
+        printf '%s' "0"
+      fi
+      ;;
+    xterm|screen|linux-console|unknown)
+      printf '%s' "0" ;;   # no emoji support
+  esac
+}
+
+pre_cambrian__is_utf8_terminal()  # (POSIX) returnn 0 if terminal can print utf-8, 1 otherwise
+{ # FLAW - this will always return success since the tested and expected pattern
+  #   are identical in either printf success or failure case
+  # UTF-8 bytes for U+2713 CHECK MARK, expressed as octal escapes
+  # but written in a way editors won't reinterpret
+  _u=$(printf '\342\234\223')
+  [ "$_u" = "$(printf '\342\234\223')" ]
+}

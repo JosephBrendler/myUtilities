@@ -5,6 +5,17 @@
 #         24 June 2025 - legacy header v1.0.0 moved to /usr/sbin/ and consolidated as script_header_joetoo v0.1.0
 #         10-28 January 2026 - major update, reorganization in v0.2.0
 
+# @note =====[ Section 0: Global Instructions ]===========================================
+# @ note
+# @ note use set -u to provide "nounset" protection for the parent script/shell and all subsequent functions
+# ensure these variables have a bound state
+# (else bash will complain after set -u is active when sourcing this header in your login shell)
+#: "${PROMPT_DIRTRIM:=}"
+#: "${PROMPT_COMMAND:=}"
+#: "${BASH_COMPLETION:=}"
+#: "${BASH_COMPLETION_VERSINFO:=}"
+#set -u
+# as of 20260128 - not quite ready for this yet
 
 # pseudo-boolean values for most shells which have none
 TRUE=0    # will evaluate to be logically true in a boolean operation
@@ -15,17 +26,24 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
   # play with test function:
   # result=1; [ "$result" ] && echo true || echo false  {status 1 == failure; but this will return "true"}
   # to test an exit status, use [ "$result" -eq 0 ]
+  # VAR=$TRUE or VAR=$FALSE; [ $VAR ] && echo true || echo false ; will always work as expected
 
 
-# allow a 'FORCE_RELOAD' variable to bypass anti-recursion guards
+# allow a 'FORCE_RELOAD' variable - set $TRUE to bypass anti-recursion guards
+# note: to also force a "recook" of ui assets, remove
+#   /dev/shm/.joetoo_ui_asset_cache_${user} and
+#   /var/lib/joetoo/.joetoo_ui_asset_store, set JOETOO_FORCE_RELOAD=$TRUE, and then source this file
 if [ -z "$JOETOO_FORCE_RELOAD" ]; then
   # primary guard against recursive or excessive sourcing of this header file (use function check)
-  if type j_msg &>/dev/null; then return; fi
+  # use command -v to check for function defined by header (more portable/faster POSIX than using type)
+  if command -v emit &>/dev/null; then return; fi
   # secondary guard against recursive or excessive sourcing of this header file
   [ "$JOETOO_ENVIRONMENT_ALREADY_SOURCED" ] && return
 fi
- # if here, sourcing is underway, set this true
-JOETOO_ENVIRONMENT_ALREADY_SOURCED=$TRUE
+
+ # if here, past the guards, sourcing is underway, set this false
+JOETOO_ENVIRONMENT_ALREADY_SOURCED=$FLASE
+
 
 toc() # table of contents (this fn just calls summarize_header
 { summarize_header; printf "\n"
@@ -70,17 +88,9 @@ toc() # table of contents (this fn just calls summarize_header
 # @append  that should be appended to the current line and smart-wrapped
 # @append at the appropriate indentation
 
-# @note =====[ Section 0: Global Instructions ]===========================================
-# @note
-# @note use set -u to provide "nounset" protection for the parent script/shell and all subsequent functions
-# ensure these variables have a bound state
-# (else bash will complain after set -u is active when sourcing this header in your login shell)
-#: "${PROMPT_DIRTRIM:=}"
-#: "${PROMPT_COMMAND:=}"
-#: "${BASH_COMPLETION:=}"
-#: "${BASH_COMPLETION_VERSINFO:=}"
-#set -u
-# as of 20260128 - not quite ready for this yet
+j_msg()  # DUMMY assignment of j_msg until it is acutually defined in section 2, after foundation is set
+{ printf '[init] %s\n' "$*" >&2 ; }
+
 
 # @note =====[ Section 1: Global Variables  ]=============================================
 # @vars SCRIPT_ENV: script paths and environment state (logFile, verbosity, TRUE/FALSE)
@@ -181,19 +191,46 @@ else  # VERBOSE is set - override if inconsistent IAW verbosity
   esac
 fi
 
-# moved this here so it can be used below (and in app_configure when called by sourcing scripts)
-is_utf8_terminal()  # (POSIX) returnn 0 if terminal can print utf-8, 1 otherwise
-{ # UTF-8 bytes for U+2713 CHECK MARK, expressed as octal escapes
-  # but written in a way editors won't reinterpret
-  _u=$(printf '\342\234\223')
-  [ "$_u" = "$(printf '\342\234\223')" ]
+is_utf8_terminal()
+{ iut_ret=1
+# (POSIX) return 0 if terminal can print utf-8, 1 otherwise
+
+  # this is the only possible "early out" -hardware console / initramfs check
+  # do not accept screen.linux or tmux.linux as evidence of no UTF-8 support, because it
+  # could be remotely attached from e.g. Konsole or Windows terminal, which are fully UTF-8 capable
+  if [ "$TERM" = "linux" ]; then return 1; fi
+
+  # check locale variables
+  # According to POSIX, the precedence is LC_ALL -> LC_CTYPE -> LANG
+  # We check them in that specific order of override
+  _iut_lc_all="$LC_ALL"
+  _iut_lc_ctype="$LC_CTYPE"
+  _iut_lang="$LANG"
+
+  # concatenate these variables and examine if ANY of them is
+  case "${_iut_lc_all}${_iut_lc_ctype}${_iut_lang}" in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*) iut_ret=0 ;;  # return 0 if UTF-8 in any major locale variable
+    C|POSIX|"")  iut_ret=1 ;;                    # If specifically set to C/POSIX, treat as non-UTF-8
+    *) printf '%s' "invalid locale in is_utf8_terminal" ; iut_ret=1 ;;
+  esac
+
+  unset _iut_lc_all _iut_lc_ctype _iut_lang
+  return $iut_ret
 }
+# @usage is_utf8_terminal
+# @ret 0 if utf-8 capable, 1 otherwise
+# @vars LC_ALL LC_CTYPE LANG TERM iut_ret
+# @rule do not strip screen./tmux. prefixes from TERM as they may be
+# @append attached to utf-8 capable remote hosts
+# @rule return 1 immediately if TERM is purely 'linux' to protect
+# @append hardware console rendering
+# @note used by foundational logic below, to set UNICODE_CAPABLE global
 
 # determine if the user's terminal supports utf-8
-# and ensure EMOJI_CAPABLE is defined accordingly
-EMOJI_CAPABLE="$FALSE"  # this is set automatically accordint to system capability
-is_utf8_terminal && EMOJI_CAPABLE="$TRUE"
-EMOJI_DISABLE="$FALSE"  # this can be set manually by a user .conf, to opt out of emojis
+# and ensure UNICODE_CAPABLE is defined accordingly
+UNICODE_CAPABLE="$FALSE"  # this is set automatically accordint to system capability
+is_utf8_terminal && UNICODE_CAPABLE="$TRUE"
+UNICODE_DISABLE="$FALSE"  # this can be set manually by a user .conf, to opt out of emojis
 
 #-----[ initialize ascii control characters for UI ]------------------------------------
 
@@ -215,7 +252,9 @@ _init_ascii_controls() # (POSIX) precook the set of emoji considered most "activ
   SI=$(printf  '\017')  # h:0x0F, d:15;  Shift In (switch back to G0 character set)
 
   # consolidate initial rules   ansi                 controls                           escapes
-  SED_LOG_FILTER="s/${ESC}\[[0-9;]*[mK]//g; s/[${SO}${SI}${BEL}${ESC}]//g; s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g; "
+#  SED_LOG_FILTER="s/${ESC}\[[0-9;]*[mK]//g; s/[${SO}${SI}${BEL}${ESC}]//g; s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g; "
+  # note : ${ESC}\[ is redundant - ESC followed by ESC (needs to be ${ESC}[ then the char class [...]
+  SED_LOG_FILTER="s/${ESC}[[0-9;]*[mK]//g; s/[${SO}${SI}${BEL}${ESC}]//g; s/[${BS}${HT}${LF}${VT}${FF}${CR}${DEL}]/ /g; "
   # note: _precook_ui_assets uses _precook_registry and _precook_unregistry to appends rules for each registry/unregistry
   return $iac_ret
 }
@@ -943,7 +982,7 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
   # once run, the data it generates can be cached (as done below)
   # ** call the _precook_ui_assets function to pre-bake the set of emojis considered "active"
   # (this is primarily to enable binary optimization of the real-time log-filering that emit has to do
-  #  to provide clean log output when EMOJI_CAPABLE is true and EMOJI_DISABLE is not)
+  #  to provide clean log output when UNICODE_CAPABLE is true and UNICODE_DISABLE is not)
   _precook_ui_assets || cen_ret=1
   # order matters - this call must precede the variable assignments depending on the availability
   # of values set by it (e.g. ESC, so CSI can be set below and then all the colors depending on that
@@ -1004,7 +1043,7 @@ _cook_everything_now() # (POSIX) conditionalize and control the need to run _pre
 # @cont cache supports real-time io performance; store eliminates re-cook at boot
 # @append in use cases such as initramfs, where the persistent store can be
 # @append retrieved to populate the cache its own environment
-# @note essential for performance when EMOJI_CAPABLE is true
+# @note essential for performance when UNICODE_CAPABLE is true
 
 _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
 { hua_ret=0
@@ -1073,14 +1112,14 @@ _hua_status=$?
 [ ! $(( _hua_status & 16 )) -eq 0 ] && j_msg -${warn} "failed to source ui assets from store"
 [ ! $(( _hua_status & 32 )) -eq 0 ] && \
   { j_msg -${err} "failed to _cook_everything_now; disabling UI features"
-    EMOJI_CAPABLE="$FALSE" ; }
+    UNICODE_CAPABLE="$FALSE" ; }
 [ ! $(( _hua_status & 64 )) -eq 0 ] && die "Critical: failed to source ui assets after cooking"
 
 # order matters - this function must precede the variable assignments depending
 #   on its availability (like longone= )
 emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
 { [ ! $# -eq 1 ] && die "one arg allowed/required"
-  [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ] || return 0
+  [ "$UNICODE_CAPABLE" ] && [ ! "$UNICODE_DISABLE" ] || return 0
   _es_hex="$1"
   _es_oct=$(emit_utf8_from_hex "$_es_hex")
   LC_CTYPE=en_US.utf8 printf '%b' "$_es_oct"
@@ -1088,8 +1127,8 @@ emoji_safe() # (POSIX) use u_echo() to display one unicode char $1
 }
 # @usage emoji_safe <hex_codepoint>
 # @args $1: hex codepoint for a single emoji
-# @vars EMOJI_CAPABLE: global flag; must be TRUE to enable output
-# @vars EMOJI_DISABLE: global flag; if TRUE, suppresses output
+# @vars UNICODE_CAPABLE: global flag; must be TRUE to enable output
+# @vars UNICODE_DISABLE: global flag; if TRUE, suppresses output
 # @ret emits binary UTF-8 character to stdout if enabled; otherwise null
 # @deps emit_utf8_from_hex, printf
 
@@ -3157,7 +3196,7 @@ initialize_vars() # initialize values for vars in $@; incl bool. lv. (info sever
   # list (for exclusion) all persistent environment variables here
   _iv_env_vars="logFile loglevel verbosity VERBOSE QUIET DEBUG"
   _iv_env_vars="${_iv_env_vars} LOGGING INTERACTIVE RESUME"
-  _iv_env_vars="${_iv_env_vars} EMOJI_CAPABLE EMOJI_DISABLE"
+  _iv_env_vars="${_iv_env_vars} UNICODE_CAPABLE UNICODE_DISABLE"
   _iv_env_vars="${_iv_env_vars} PN BUILD user status_file config_dir config_files"
   _iv_env_vars="${_iv_env_vars} app_customization_root rlv.local_cmdline_arg_handler"
   _iv_env_vars="${_iv_env_vars} BREAK"  # this may be reduncant to special case handling, but safer
@@ -3383,6 +3422,12 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
 #### uncomment for debugging
 #d_do _view_mask "$mask" "$debug"
 
+  # emit as ARBITER for graceful degredation of prefix usage depending on unicode environment (capable/disable)
+  # (if unicode is unavailable, convert PREMOJI intent to PREFIX intent)
+  if [ ! "$UNICODE_CAPABLE" ] || [ "$UNICODE_DISABLE" ]; then
+    [ "$_PREMOJI" -eq 1 ] && { _PREFIX=1; _PREMOJI=0; }
+  fi
+
   # explicitly disable logging if _LOG bit is not set
   if [ "$_LOG" -eq 0 ]; then _LOG_OK="$FALSE"; fi
 
@@ -3456,16 +3501,7 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
     5|6)     prefix_symbol=" * " ;; # "normal"
     7)       prefix_symbol=" - " ;; # debug
   esac
-#    d_do '
-#        echo "Prior to _PREFIX - _LOG - _SEVERITY block"
-#        echo "_PREFIX......: [$_PREFIX]"
-#        echo "_LOG.........: [$_LOG]"
-#        echo "_SEVERITY....: [$_SEVERITY]"
-#        severity_mark=$(get_severity "$_SEVERITY")
-#        echo "severity_mark: $severity_mark"
-#        echo "log_prefix...: $log_prefix"
-#    ' "$debug"
-  # build prefix symbol (null prefix synbol if color=black) (for logging, append severity marking)
+  # build prefix symbol (null prefix synbol if color=black) (for logging)
   if [ "$_PREFIX" -eq 1 ]; then
     prefix="${prefix_color}${prefix_symbol}${Boff}"
     if [ "$_LOG" -eq 1 ]; then
@@ -3478,10 +3514,6 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
   else
     prefix=""; log_prefix=""
   fi
-  # get severity mark - include that in log_prefix whether the symbol is included or not
-  severity_mark=$(get_severity "$_SEVERITY")
-  #   assemble ansi-free clean prefix for logging
-  log_prefix="${log_prefix} (${severity_mark})"
 
   premoji_str=""  # default: no emoji prefix
   # if no explicit emoji was requested, check if severity implies one
@@ -3506,7 +3538,6 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
       if [ "$_cooked" ]; then
         # apply padding: space + emoji + space (4 columns total)
         # but only space-pad the right if the left_most character of prefix_symbol is also a space
-#echo "prefix_symbol: $prefix_symbol"
         if [ "$_PREFIX" -eq 1 ]; then
           case "$prefix_symbol" in
             " "*) premoji_str=" ${_cooked}" ;;
@@ -3521,8 +3552,17 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
     fi  # name found?
   fi  # PREMOJI
 
-  # prepend timestamp (for LOG only) and space only if there actaully is content in ts
-  log_prefix="${ts}${ts:+ }${log_prefix}"
+  # assemble and prepend log metadata timestamp and severity; space only if there actaully is content in ts
+  # (and only if this is not a suppressed-prefix/timestamp call - like right_status)
+
+  if [ "$_TIMESTAMP" -eq 1 ] || [ "$_PREFIX" -eq 1 ]; then
+    _sev_mark=$(get_severity "$_SEVERITY")
+    # combine timestamp (if exists) + severity mark (space only if there actaully is content in ts)
+    _log_meta="${ts}${ts:+ }(${_sev_mark})"
+    # prepend this meta-block to the log_prefix
+    log_prefix="${_log_meta}${log_prefix:+ }${log_prefix}"
+  fi
+
   # build the message body
   msg="$*"  # all remaining positional parameters, after bitmask was shifted
   # build the full screen output string (do for log below)
@@ -3669,8 +3709,8 @@ _view_mask() # (POSIX) (debug utility to extract and view bitmask bit settings
   printf '%s\n' "INTERACTIVE: $(TrueFalse $INTERACTIVE)"
   printf '%s\n' "QUIET: $(TrueFalse $QUIET)"
   printf '%s\n' "DEBUG: $(TrueFalse $DEBUG)"
-  printf '%s\n' "EMOJI_CAPABLE: $(TrueFalse $EMOJI_CAPABLE)"
-  printf '%s\n' "EMOJI_DISABLE: $(TrueFalse $EMOJI_DISABLE)"
+  printf '%s\n' "UNICODE_CAPABLE: $(TrueFalse $UNICODE_CAPABLE)"
+  printf '%s\n' "UNICODE_DISABLE: $(TrueFalse $UNICODE_DISABLE)"
   printf '%s\n' "verbosity: $verbosity"
   printf '%s\n' "loglevel: $loglevel"
   printf '%s\n' "logFile: $logFile"
@@ -3679,11 +3719,11 @@ _view_mask() # (POSIX) (debug utility to extract and view bitmask bit settings
   unset -v _vm_SILENCE _vm_PREFIX _vm_PREFIX_BOLD _vm_PREFIX_COLOR _vm_SEVERITY _vm_PREMOJI _vm_mask _vn_args
 }
 
-_parse_msg_options() # (POSIX) standardized policy engine with -c color override
+_parse_msg_options() # (POSIX) standardized policy parsing engine with subractive overrides
 { _pmo_sm_bitmask="$1"; shift; _pmo_shift=0;    _pmo_premoji_default=0
   # initialize the premoji defaults based on environment variable capable/disabled state
   # (note: user's -m option flag can still override to disable on command line
-  if [ $EMOJI_CAPABLE ] && [ ! $EMOJI_DISABLE ] ; then
+  if [ $UNICODE_CAPABLE ] && [ ! $UNICODE_DISABLE ] ; then
     _pmo_premoji_default=$PREMOJI
     # apply ("add") the policy/environment default to the starting bitmask
     _pmo_sm_bitmask=$(( _pmo_sm_bitmask | _pmo_premoji_default ))
@@ -3698,8 +3738,8 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
       -[0-7a-zA-Z]*)                                                 # handle compound argument like -${notice}Ben
           _pmo_cluster="${1#-}"                                      # strip '-'
           while [ -n "$_pmo_cluster" ]; do                           # iterate chars fo compound arg
-            _pmo_char=${_pmo_cluster%"${_pmo_cluster#?}"}            # posix forkless left_most char
-            _pmo_cluster=${_pmo_cluster#?}                           # posix forkless remainder
+            _pmo_char=${_pmo_cluster%"${_pmo_cluster#?}"}            # left_most char
+            _pmo_cluster=${_pmo_cluster#?}                           # remainder
             case "$_pmo_char" in
               h) unset -v _pmo_sm_bitmask _pmo_lm_bitmask _pmo_shift;
                  return 100 ;;    # trigger caller to emit a one-line help/usage message
@@ -3731,34 +3771,35 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
               c) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX_COLOR_MASK )) ;;  # CLEAR color to zero (no argument)
               B) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREFIX_BOLD )) ;;    # set bold (dont need to clear b/c ( 1 | 1 = 1 )[N/A for lm bitmask]
               b) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX_BOLD )) ;;   # clear binary PREFIX_BOLD switch (disable bold prefix)
-              e) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | INTERPRET )) ;;      # interpret (like echo -e) [N/A for lm bitmask]
+              e) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | INTERPRET )) ;;      # interpret (like echo -e)
               E) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~INTERPRET )) ;;     # force-override INTERPRET to OFF (disable backslash interpretation)
               N) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | NEWLINE )) ;;        # force-override NEWLINE to ON
-              n) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~NEWLINE )) ;;       # -n meals clear NEWLINE (like echo -n) [N/A for lm bitmask]
-              P) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREFIX )) ;;         # set PREFIX (*, !, !! per severity) [N/A for lm bitmask]
-              p) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX )) ;;        # clear PREFIX [N/A for lm bitmask]
-              u) # "set unconditional" = clear CONDITIONAL and severity-related bits [N/A for lm bitmask]
+              n) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~NEWLINE )) ;;       # -n meals clear NEWLINE (like echo -n)
+              P) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREFIX )) ;;         # set PREFIX (*, !, !! per severity)
+              p) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREFIX )) ;;        # clear PREFIX (emit will arbitrate graceful degradation if PREMOJi is set)
+              u) # "set unconditional" = clear CONDITIONAL and severity-related bits
                  _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~(PREFIX | PREFIX_BOLD | SEVERITY_MASK | CONDITIONAL | PREFIX_COLOR_MASK) )) ;;
-              T) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | TIMESTAMP )) ;;      # T = timestamp ON [N/A for lm bitmask]
-              t) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~TIMESTAMP )) ;;     # t = timestamp OFF [N/A for lm bitmask]
-              M) # override PREFIX with selected emoji: set binary PREMOJI switch and 8-bit index (0-255) [shift for arg] [N/A for lm bitmask]
-                if [ -z "$_pmo_cluster" ]; then
-                  # upper end of range for 8-bit index is 255 (2^n -1) (or ((1<<n) -1) = PREMOJI_IDX_BASE_MASK
-                  if isint "$2" && [ "$2" -ge 0 ] && [ "$2" -le "$PREMOJI_IDX_BASE_MASK" ] ; then
-                    # integer in range can be severity argument for -M
-                    _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
-                  else
-                    # its not a number in range! - dont shift.
-                    # Default to 0 (severity-driven) and move on.
-                    _pmo_idx=0
-                  fi
-                else
-                  _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
-                fi
-                # clear both PREMOJI and existing 8-bits
-                _pmo_sm_bitmask=$(( ( _pmo_sm_bitmask & ~( PREMOJI | PREMOJI_IDX_MASK ) ) ))
-                # SET both with bitwise OR PREMOJI and shifted Index
-                _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREMOJI | ((_pmo_idx & PREMOJI_IDX_BASE_MASK) << PREMOJI_IDX_OFFSET) )) ;;
+              T) _pmo_sm_bitmask=$(( _pmo_sm_bitmask | TIMESTAMP )) ;;      # T = timestamp ON
+              t) _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~TIMESTAMP )) ;;     # t = timestamp OFF
+              M)
+                 # (if capable) override PREFIX with selected emoji: set binary PREMOJI switch and 8-bit index (0-255) [shift for arg]
+                   if [ -z "$_pmo_cluster" ]; then
+                     # upper end of range for 8-bit index is 255 (2^n -1) (or ((1<<n) -1) = PREMOJI_IDX_BASE_MASK
+                     if isint "$2" && [ "$2" -ge 0 ] && [ "$2" -le "$PREMOJI_IDX_BASE_MASK" ] ; then
+                       # integer in range can be severity argument for -M
+                       _pmo_idx="$2"; shift; _pmo_shift=$(( _pmo_shift + 1 ))
+                     else
+                       # its not a number in range! - dont shift.
+                       # Default to 0 (severity-driven) and move on.
+                       _pmo_idx=0
+                     fi # index in-range supplied?
+                   else
+                     _pmo_idx="$_pmo_cluster"; _pmo_cluster=""
+                   fi  # -z $_pmo_cluster? (remainder of current arg is null - look for follow-on index arg)
+                   # clear both PREMOJI and existing 8-bits
+                   _pmo_sm_bitmask=$(( ( _pmo_sm_bitmask & ~( PREMOJI | PREMOJI_IDX_MASK ) ) ))
+                   # SET both with bitwise OR PREMOJI and shifted Index
+                   _pmo_sm_bitmask=$(( _pmo_sm_bitmask | PREMOJI | ((_pmo_idx & PREMOJI_IDX_BASE_MASK) << PREMOJI_IDX_OFFSET) )) ;;
               m) # explicit opt-out to disable emoji prefix
                 _pmo_premoji_default=0                                      # kill the default so severity logic doesn't re-enable it
                 _pmo_sm_bitmask=$(( _pmo_sm_bitmask & ~PREMOJI )) ;;        # clear binary PREMOJI switch (disable emoji prefix)
@@ -3779,10 +3820,12 @@ _parse_msg_options() # (POSIX) standardized policy engine with -c color override
 # @cont -P/p prefix; -e/E interpret; -N/n newline; -u unconditional; -h help
 # @args 1: initial_bitmask; 2+: options (supports clustering)
 # @ret 0: success, 100: help request; sets pmo_sm_bitmask/pmo_shift
-# @vars pmo_sm_bitmask pmo_shift (modified); EMOJI_CAPABLE EMOJI_DISABLE (req)
+# @vars pmo_sm_bitmask pmo_shift (modified); UNICODE_CAPABLE UNICODE_DISABLE (req)
 # @deps die
 # @rule consumes options until '--' or non-option; 'h' triggers immediate return 100
 # @note internal logic engine for j_msg policy enforcement
+# @note _parse_msg_options encodes users "intent" for policy in the bitmask
+# @append and emit is the final arbiter 
 
 j_msg() # (POSIX) universal messaging entry point
 { jm_ret=0
@@ -3912,7 +3955,7 @@ j_msg() # (POSIX) universal messaging entry point
 # @cont   * and emit remains a high-performance, low-latency stream-pusher
 # @note the -m|M flags (like others) will force the associated bit(s) as directed.
 # @append totally logical for -m, but note that -M will force use of emoji prefix
-# @append EVEN IF EMOJI_DISABLE=$TRUE -- this essentially overriedes the override
+# @append EVEN IF UNICODE_DISABLE=$TRUE -- this essentially overriedes the override
 # @append (you have been warned ;D )
 # @note handles policy-based messaging with automatic terminal wrapping and log sanitization
 
@@ -3992,8 +4035,9 @@ right_status()  # (POSIX) right-margin indicator of status $1, per severity $2
   # choose ascii or emoji messages per policy - use _rs_width to know how far from right margin to print status
   # presently _rs_width=7 in all cases [ Ok ], [ !! ], [ <2-col-emoju> ] are all 6 cols
   #   plus 1 col to ensure a character ON the right margin does now result it terminal adding extra newline
+  #   (include guard against unset $bin_unicode_chars)
   if [ "$_rs_status" -eq 0 ]; then
-    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+    if [ "$UNICODE_CAPABLE" ] && [ ! "$UNICODE_DISABLE" ] && [ "$bin_check_mark_button" ]; then
       [ -z "$bin_check_mark_button" ] && rs_ret=$(( rs_ret | (1 << 3) ))   # bit 3 = emoji failed to render (precook error)
       _rs_msg="${BBon}[ ${Boff}${bin_check_mark_button} ${BBon}]${Boff}"
       _rs_width=7
@@ -4002,7 +4046,7 @@ right_status()  # (POSIX) right-margin indicator of status $1, per severity $2
       _rs_width=7
     fi
   else
-    if [ "$EMOJI_CAPABLE" ] && [ ! "$EMOJI_DISABLE" ]; then
+    if [ "$UNICODE_CAPABLE" ] && [ ! "$UNICODE_DISABLE" ] && [ "$bin_cross_mark" ]; then
       [ -z "$bin_cross_mark" ] && rs_ret=$(( rs_ret | (1 << 3) ))   # bit 3 = emoji failed to render (precook error)
       _rs_msg="${BBon}[ ${Boff}${bin_cross_mark} ${BBon}]${Boff}"
       _rs_width=7
@@ -4044,7 +4088,7 @@ right_status()  # (POSIX) right-margin indicator of status $1, per severity $2
   unset -v _rs_status _rs_lvl _rs_msg _rs_tw _rs_width _rs_move _rs_CUF_OK _rs_bitmask _rs_dest; return $rs_ret ; }
 # @usage right_status <status_code> [severity_level] || <fail-action>
 # @args $1 integer status code (0=Ok, nonzero=failure); $2 severity level (default=notice)
-# @vars LOGGING, DEBUG, QUIET, EMOJI_CAPABLE, EMOJI_DISABLE
+# @vars LOGGING, DEBUG, QUIET, UNICODE_CAPABLE, UNICODE_DISABLE
 # @deps j_msg emit termwidth CUF isint emoji_safe d_do
 # @ret 0 on success; bitmask on any failure
 # @cont bit 0 (1) - action failed
@@ -5242,7 +5286,7 @@ unlock_luks_devices()
 varlist="PN BUILD user logFile status_file config_dir config_files verbosity loglevel"
 varlist="${varlist} num_cmds starting_step stopping_step BREAK"
 varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG"
-varlist="${varlist} bool.EMOJI_CAPABLE bool.EMOJI_DISABLE"
+varlist="${varlist} bool.UNICODE_CAPABLE bool.UNICODE_DISABLE"
 varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
 varlist="${varlist} bool.handle_local_usage_EXISTS"
 varlist="${varlist} app_customization_root rlv.local_cmdline_arg_handler"
@@ -5362,18 +5406,18 @@ app_configure() # (POSIX) initialize, set defaults, load config files, define cm
   [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 10 ) ))   # bit 10 = loglevel init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
-  # initialize EMOJI_CAPABLE - is set automatically, redo that after initialization
-  j_msg -${info} -n -m "running is_utf8_terminal to assign EMOJI_CAPABLE"
-  is_utf8_terminal && export EMOJI_CAPABLE="$TRUE"
-  handle_result $? "$(TrueFalse $EMOJI_CAPABLE)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 11 ) ))   # bit 11 = EMOJI_CAPABLE init failure
+  # initialize UNICODE_CAPABLE - is set automatically, redo that after initialization
+  j_msg -${info} -n -m "running is_utf8_terminal to assign UNICODE_CAPABLE"
+  is_utf8_terminal && export UNICODE_CAPABLE="$TRUE"
+  handle_result $? "$(TrueFalse $UNICODE_CAPABLE)" '' "$info" || _c_FLAGGED=$TRUE
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 11 ) ))   # bit 11 = UNICODE_CAPABLE init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
-  # initialize EMOJI_DISABLE - can be overridden by sourced config below (and cmdline)
-  j_msg -${info} -n -m "assigning defalut user setting for EMOJI_DISABLE"
-  export EMOJI_DISABLE="$FALSE"
-  handle_result $? "$(TrueFalse $EMOJI_DISABLE)" '' "$info" || _c_FLAGGED=$TRUE
-  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 12 ) ))   # bit 12 = EMOJI_DISABLE init failure
+  # initialize UNICODE_DISABLE - can be overridden by sourced config below (and cmdline)
+  j_msg -${info} -n -m "assigning defalut user setting for UNICODE_DISABLE"
+  export UNICODE_DISABLE="$FALSE"
+  handle_result $? "$(TrueFalse $UNICODE_DISABLE)" '' "$info" || _c_FLAGGED=$TRUE
+  [ "$_c_FLAGGED" ] && ac_ret=0$(( ac_ret | ( 1 << 12 ) ))   # bit 12 = UNICODE_DISABLE init failure
   _c_FLAGGED=$FALSE  # reset for next test
 
   # tier 1 - global configuration
@@ -6633,3 +6677,6 @@ summarize_header() # (POSIX) list functions and notes in installed headers
 # load the compatibility header (wrappers to redirect calls to
 #    legacy functions to new capability
 . ${script_header_installed_dir%/}/script_header_joetoo_compat
+
+ # if here, sourcing is complete
+JOETOO_ENVIRONMENT_ALREADY_SOURCED=$TRUE
