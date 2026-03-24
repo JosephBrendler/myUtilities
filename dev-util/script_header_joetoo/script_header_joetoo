@@ -191,40 +191,131 @@ else  # VERBOSE is set - override if inconsistent IAW verbosity
   esac
 fi
 
-is_utf8_terminal()
+is_utf8_terminal()   # (POSIX) return 0 if terminal can print utf-8, 1 otherwise
 { iut_ret=1
-# (POSIX) return 0 if terminal can print utf-8, 1 otherwise
+  # careful - this runs every time the header is loaded. dont be too verbose
+  if [ "$DEBUG" ] || [ "$verbosity" -ge 7 ]; then
+    printf "%s\n" "TERM: $TERM"
+    printf "%s\n" "SSH_TTY: $SSH_TTY"
+    printf "%s\n" "SSH_CLIENT: $SSH_CLIENT"
+    printf "%s\n" "STY: $STY"
+    printf "%s\n" "DISPLAY: $DISPLAY"
+    printf "%s\n" "WAYLAND_DISPLAY: $WAYLAND_DISPLAY"
+    printf "%s\n" "\$(tty): $(tty)"
+    printf "%s\n" "LC_ALL: $LC_ALL"
+    printf "%s\n" "LC_CTYPE: $LC_CTYPE"
+    printf "%s\n" "LANG: $LANG"
+  fi
 
-  # this is the only possible "early out" -hardware console / initramfs check
-  # do not accept screen.linux or tmux.linux as evidence of no UTF-8 support, because it
-  # could be remotely attached from e.g. Konsole or Windows terminal, which are fully UTF-8 capable
-  if [ "$TERM" = "linux" ]; then return 1; fi
-
-  # check locale variables
-  # According to POSIX, the precedence is LC_ALL -> LC_CTYPE -> LANG
-  # We check them in that specific order of override
-  _iut_lc_all="$LC_ALL"
-  _iut_lc_ctype="$LC_CTYPE"
-  _iut_lang="$LANG"
-
-  # concatenate these variables and examine if ANY of them is
-  case "${_iut_lc_all}${_iut_lc_ctype}${_iut_lang}" in
-    *UTF-8*|*utf8*|*UTF8*|*utf-8*) iut_ret=0 ;;  # return 0 if UTF-8 in any major locale variable
-    C|POSIX|"")  iut_ret=1 ;;                    # If specifically set to C/POSIX, treat as non-UTF-8
-    *) printf '%s' "invalid locale in is_utf8_terminal" ; iut_ret=1 ;;
+  # tier 1 - use tty command (mandatory in POSIX) to assess for hardware "veto" (not capable)
+  _iut_tty=$(tty 2>/dev/null)
+  case "$_iut_tty" in
+    /dev/tty[0-9]*)
+#      j_msg -${debug} -p "conclusion: tty [$_iut_tty] is not unicode-capable"
+      return 1 ;; # Physical console is a Hard No.
   esac
 
-  unset _iut_lc_all _iut_lc_ctype _iut_lang
+  # tier 2 - examine $TERM variable for possible software/protocol "veto" (not capable)
+  case "$TERM" in
+    linux)
+#      j_msg -${debug} -p "conclusion: TERM [$TERM] is not unicode-capable"
+      return 1 ;; # Absolute protocol limit.
+  esac
+
+#  j_msg -${debug} -p "setting baseline _iut_score = 0"
+  _iut_score=0
+
+  # tier 3(a) examine TERM further, to adjust confidence in unicode capability
+  # Protocol Hints
+  case "$TERM" in
+    xterm*|konsole*|alacritty*|rxvt*|tmux*)  # X normally means unicode support
+      _iut_score=$((_iut_score + 3)) ;;
+#      j_msg -${debug} -p "strong TERM [$TERM] evidence; adjusted _iut_score + 3 to [$_iut_score]" ;;
+    screen.linux*)                           # screen running on linux console (normally NOT unicode)
+      _iut_score=$((_iut_score - 5)) ;;
+#      j_msg -${debug} -p "negative TERM [$TERM] evidence; adjusted _iut_score - 5 to [$_iut_score]" ;;
+    screen*)                                 # screen from other than console (normally unicode)
+      _iut_score=$((_iut_score + 2)) ;;
+#      j_msg -${debug} -p "medium TERM [$TERM] evidence; adjusted _iut_score + 2 to [$_iut_score]" ;;
+    dumb*)                                   # dumb/legacy hardware terminal (NOT capable)
+#      j_msg -${debug} -p "conclusion: TERM [$TERM] is not unicode-capable"
+      return 1 ;; # Hard No for 'dumb'
+  esac
+
+  # tier 3(b) examine other environment variables, to adjust confidence in unicode capability
+  [ "$DISPLAY" ] || [ "$WAYLAND_DISPLAY" ] && {
+    _iut_score=$((_iut_score + 3)) ; }
+#    j_msg -${debug} -p "strong DISPLAY evidence [DISPLAY: $DISPLAY | WAYLAND: $WAYLAND_DISPLAY]; adjusted _iut_score + 3 to [$_iut_score]" ; }
+  [ "$SSH_TTY" ] || [ "$SSH_CLIENT" ] && {
+    _iut_score=$((_iut_score + 2)) ; }
+#    j_msg -${debug} -p "medium SSH evidence [TTY: $SSH_TTY | CLIENT: $SSH_CLIENT]; adjusted _iut_score + 2 to [$_iut_score]" ; }
+
+  # tier 3(c) if in screen (STY), look for sshd in transport process tree ancestry
+  if [ "$STY" ]; then
+    _iut_be_pid=$(echo "$STY" | cut -d. -f1)  # pid of back end (first part of e.g. 1459228.tty1.yorsqui)
+    # use lsof to find the "parent" PTY device by looking at what the backend has open
+    # ( /dev/pts/ or /dev/tty entries in the backend's file descriptors in /proc/$PID/fd/ )
+    _iut_parent_pts=$(ls -l /proc/"${_iut_be_pid}"/fd | grep -E 'pts|tty' | awk '{print $NF}' | sed 's|/dev/||')
+    if [ "$_iut_parent_pts" ]; then
+      # find the screen frontend sitting on that PTY - use [s]creen to avoid matching my own grep
+      _iut_my_fe=$(ps -t "$_iut_parent_pts" -o pid=,args= | grep "[s]creen.*-" | awk '{print $1}')
+      if [ "$_iut_my_fe" ]; then
+        # look for "sshd(" in the process tree of the front-end linked to the current back-end
+        if pstree -s -p "$_iut_my_fe" 2>/dev/null | grep -q "sshd("; then
+          # the use of ssh to this screen session is evidence but not certainty that this terminal should be capable
+          _iut_score=$((_iut_score + 6))
+#          j_msg -${debug} -p "strong SSH evidence [fe PID: $_iut_my_fe]; adjusted _iut_score + 6 to [$_iut_score]"
+        fi
+      fi
+    fi
+  fi
+
+  # tier 4 examine locale, to adjust confidence in unicode capability
+  case " ${LC_ALL} ${LC_CTYPE} ${LANG} " in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*)
+      _iut_score=$((_iut_score + 2)) ;;
+#      j_msg -${debug} -p "medium locale evidence [ ${LC_ALL} ${LC_CTYPE} ${LANG} ]; adjusted _iut_score + 2 to [$_iut_score]" ;;
+    *C*|*POSIX*)
+      _iut_score=$((_iut_score - 2)) ;;
+#      j_msg -${debug} -p "negative locale evidence [ ${LC_ALL} ${LC_CTYPE} ${LANG} ]; adjusted _iut_score - 2 to [$_iut_score]" ;;
+  esac
+
+  # final evaluation
+#  j_msg -${debug} -p "final score for confidence in terminal unicode capability [$_iut_score]"
+
+  if [ "$_iut_score" -gt 0 ]; then
+    _iut_msg="CAPABLE $bin_trophy"
+    _iut_args="-M $idx_check_mark_button -p"
+    iut_ret=0
+  else
+    _iut_msg="NOT_CAPABLE"
+    _iut_args="-m"
+    iut_ret=1
+  fi
+  if [ "$DEBUG" ] || [ "$verbosity" -ge 7 ]; then
+    j_msg -${info} "${_iut_args}" "${_iut_msg}"
+  fi
+
+  unset _iut_tty _iut_score _iut_args _iut_msg
   return $iut_ret
 }
 # @usage is_utf8_terminal
-# @ret 0 if utf-8 capable, 1 otherwise
-# @vars LC_ALL LC_CTYPE LANG TERM iut_ret
-# @rule do not strip screen./tmux. prefixes from TERM as they may be
-# @append attached to utf-8 capable remote hosts
-# @rule return 1 immediately if TERM is purely 'linux' to protect
-# @append hardware console rendering
-# @note used by foundational logic below, to set UNICODE_CAPABLE global
+# @ret 0 if terminal is likely UTF‑8 capable, 1 otherwise
+# @vars TERM LC_ALL LC_CTYPE LANG STY SSH_TTY SSH_CLIENT DISPLAY WAYLAND_DISPLAY
+# @deps j_msg tty ps pstree ls awk sed cut grep
+# @rule return 1 immediately for hardware consoles (/dev/ttyN) or TERM=linux
+# @rule do not strip screen./tmux. prefixes from TERM
+# @rule uses multi‑tier scoring model to infer capability from environment evidence
+# @append and assess confidence in unicode capability; net positive score returns 0
+# @rule in screen (STY), map backend PID via /proc FD to find frontend PTY
+# @append then check frontend process ancestry for sshd to verify remote transport
+# @note screen destroys outer terminal identity, so capability must be inferred
+# @note SSH_* variables are only present for regular user
+# @note STY‑based process‑tree analysis provides best‑effort detection of SSH attachment
+# @note +6 SSH score vs -5 screen.linux score allows LANG to be tie-breaker in screen
+# @warn terminal capability inference is probabilistic; user override may still be needed
+# @note mandatory for foundational logic setting UNICODE_CAPABLE global
+# @ex if is_utf8_terminal; then  j_msg -${info} -M $idx_check_mark_button -p "CAPABLE $bin_trophy"; fi
 
 # determine if the user's terminal supports utf-8
 # and ensure UNICODE_CAPABLE is defined accordingly
