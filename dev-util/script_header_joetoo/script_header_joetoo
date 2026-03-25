@@ -251,24 +251,56 @@ is_utf8_terminal()   # (POSIX) return 0 if terminal can print utf-8, 1 otherwise
 #    j_msg -${debug} -p "medium SSH evidence [TTY: $SSH_TTY | CLIENT: $SSH_CLIENT]; adjusted _iut_score + 2 to [$_iut_score]" ; }
 
   # tier 3(c) if in screen (STY), look for sshd in transport process tree ancestry
+  # detect whether psmisc pstree is available
+  HAVE_PSMISC_PSTREE="$FALSE"
+  /usr/bin/pstree -s $$ &>/dev/null && HAVE_PSMISC_PSTREE="$TRUE"
+
   if [ "$STY" ]; then
-    _iut_be_pid=$(echo "$STY" | cut -d. -f1)  # pid of back end (first part of e.g. 1459228.tty1.yorsqui)
-    # use lsof to find the "parent" PTY device by looking at what the backend has open
-    # ( /dev/pts/ or /dev/tty entries in the backend's file descriptors in /proc/$PID/fd/ )
-    _iut_parent_pts=$(ls -l /proc/"${_iut_be_pid}"/fd | grep -E 'pts|tty' | awk '{print $NF}' | sed 's|/dev/||')
+    _iut_be_pid=$(printf "%s" "$STY" | cut -d. -f1) # pid of back end (first part of e.g. 1459228.tty1.yorsqui)
+    # find backend PTY (/dev/pts/ or /dev/tty entries in the backend's file descriptors in /proc/$PID/fd/)
+    _iut_parent_pts=$(ls -l /proc/"$_iut_be_pid"/fd 2>/dev/null | awk '/pts|tty/ { sub(".*/","",$NF); print $NF; exit }')
     if [ "$_iut_parent_pts" ]; then
-      # find the screen frontend sitting on that PTY - use [s]creen to avoid matching my own grep
-      _iut_my_fe=$(ps -t "$_iut_parent_pts" -o pid=,args= | grep "[s]creen.*-" | awk '{print $1}')
+      # find frontend screen process (busybox-safe)
+      _iut_my_fe=""
+      for pid in /proc/[0-9]*; do    # look at all processes
+        pid=${pid#/proc/}          # strip shortest match for '/proc/' from the left - leaving pid
+        # skip to next if cmdline for this pid does not incl "screen'
+        grep -q "screen" /proc/"$pid"/cmdline 2>/dev/null || continue
+        # linked device is the last field listed in ls -l /proc/"$pid"/fd output
+        dev=$(ls -l /proc/"$pid"/fd 2>/dev/null \
+          | awk '/pts|tty/ { sub(".*/","",$NF); print $NF; exit }')
+        # if the pts does not match the parent pts, just skip to the next
+        [ "$dev" = "$_iut_parent_pts" ] || continue
+        # accept first match; assign front-end pid, and we are done so break out of loop
+        _iut_my_fe=$pid
+        break
+      done
+
       if [ "$_iut_my_fe" ]; then
-        # look for "sshd(" in the process tree of the front-end linked to the current back-end
-        if pstree -s -p "$_iut_my_fe" 2>/dev/null | grep -q "sshd("; then
-          # the use of ssh to this screen session is evidence but not certainty that this terminal should be capable
-          _iut_score=$((_iut_score + 6))
-#          j_msg -${debug} -p "strong SSH evidence [fe PID: $_iut_my_fe]; adjusted _iut_score + 6 to [$_iut_score]"
-        fi
-      fi
-    fi
-  fi
+        if [ "$HAVE_PSMISC_PSTREE" -eq 1 ]; then
+          # use full pstree to -s (show parents) -p (show pids) looking for "sshd("
+            if /usr/bin/pstree -s -p "$_iut_my_fe" 2>/dev/null | grep -q "sshd("; then
+              _iut_score=$((_iut_score + 6))
+              j_msg -${debug} -p "strong SSH ancestry evidence; _iut_score now [$_iut_score]"
+            fi
+        else
+          # fallback: walk /proc
+          _iut_ancestor=$_iut_my_fe
+          while [ "$_iut_ancestor" -gt 1 ] 2>/dev/null; do
+            # assign name from the ^Name: line of /proc/$pid/status
+            name=$(sed -n 's/^Name:\s*//p' /proc/"$_iut_ancestor"/status 2>/dev/null)
+            # if name is sshd, incrment score and break out; done
+            if [ "$name" = "sshd" ]; then
+              _iut_score=$((_iut_score + 6))
+#             j_msg -${debug} -p "strong SSH ancestry evidence; _iut_score now [$_iut_score]"
+              break
+            fi  # name
+            _iut_ancestor=$(sed -n 's/^PPid:\s*//p' /proc/"$_iut_ancestor"/status 2>/dev/null)
+          done
+        fi  # HAVE_PSMISC_PSTREE
+      fi  # _iut_my_fe
+    fi  # _iut_parent_pts
+  fi  # STY
 
   # tier 4 examine locale, to adjust confidence in unicode capability
   case " ${LC_ALL} ${LC_CTYPE} ${LANG} " in
