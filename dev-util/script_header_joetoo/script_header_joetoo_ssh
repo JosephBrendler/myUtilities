@@ -1,0 +1,232 @@
+#!/bin/sh
+#
+# script_header_joetoo_ssh
+#
+# optionally sourcable ssh key management utilities for joetoo
+#
+toc() # POSIX functions providing ssh key management
+{ summarize_header; printf "\n";
+  j_msg -${notice} "That's all I have to say about that" ; }
+# @usage . /usr/sbin/script_header_joetoo_ssh
+# @vars user SSH_KEY (username and associated ssh key id)
+# @req script_header_joetoo must be sourced first
+# @note provides ssh-agent lifecycle management for joetoo scripts
+# @note functions are POSIX‑portable for use in both bash and busybox ash
+# @rule lifecycle order: start_ssh_agent → load_key → unload_key → stop_ssh_agent
+# @rule cleanup hooks ensure safe teardown on die() or leave()
+# @warn improper ordering may leave SSH_AUTH_SOCK exposed;
+# @append this process mitigates risk of 0606 environment compromise by keeping it open only
+# @append for the duration of the command that requires access to the key
+# @rule used with _cleanup_stale_ssh_environment() and die() to further mitigate
+# @append risk entailed by two failure modes: "software error" or "system failure."
+# @append These functions handle both failure modes in a manner that is sh-compatible
+# @append across both my typical bash shell and my busybox (ash) boot shell
+
+# global variable identifying the persistence file for agent environment
+AGENT_ENV_FILE="/root/.ssh_agent_env"
+
+_cleanup_stale_ssh_environment() # (POSIX) remove stale ssh agent data for clean slate
+{
+    # check if the persistence file exists
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        # source the variables using POSIX dot operator (must be space-separated)
+        j_msg -${info} -m -n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || die "failed sourcing AGENT_ENV_FILE" 1
+        right_status 0 ${info}
+
+        # check if a PID was defined and is still running - if so, just return 0
+        # 'kill -0' is a POSIX-compliant check - does process exist? (without killing it)
+        if [ -n "$SSH_AGENT_PID" ] && kill -0 "$SSH_AGENT_PID" 2>/dev/null ; then
+            # agent is ALIVE - do nothing
+            j_msg -${info} -m "ssh-agent is running; returning without action"
+            return 0
+        fi
+
+        # remove the stale socket file (if the variable is set and the file exists)
+        if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ] ; then
+            # use 'rm -f' for silent, forceful removal
+            j_msg -${info} -m -n "removing SSH_AUTH_SOCK ..."
+            rm -f "$SSH_AUTH_SOCK" 2>/dev/null || die "failed to remove SSH_AUTH_SOCK" 2
+            right_status 0 ${info}
+        fi
+
+        # remove the persistence file
+        j_msg -${info} -m -n "removing AGENT_ENV_FILE ..."
+        rm -f "$AGENT_ENV_FILE" 2>/dev/null || die "failed to remove AGENT_ENV_FILE" 3
+        right_status 0 ${info}
+
+        # unset variables (to be thorough)
+        unset SSH_AUTH_SOCK SSH_AGENT_PID
+    fi
+    return 0
+}
+# @usage _cleanup_stale_ssh_environment
+# @vars AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @ret 0 on success; die() on unrecoverable error
+# @deps j_msg right_status die rm kill . (POSIX dot operator)
+# @req AGENT_ENV_FILE may exist and contain exported SSH_AUTH_SOCK and SSH_AGENT_PID
+# @rule must run before start_ssh_agent main body to ensure no stale agent state persists
+# @note removes stale sockets and persistence files left by software or system failure
+# @note safe to call repeatedly; no action taken if agent is alive
+# @warn if AGENT_ENV_FILE is corrupt, sourcing may fail and die() will terminate caller
+# @ex cleanup_stale_ssh_environment
+
+start_ssh_agent() # (POSIX) clean up and start ssh agent
+{
+    # run cleanup first to ensure a clean slate
+    _cleanup_stale_ssh_environment
+
+    j_msg -${notice} -p "Starting ssh-agent as user [$user] ..."
+
+    # Start the agent as the unprivileged user and capture the environment.
+    # POSIX sh: eval is used the same way
+    j_msg -${info} -m -n "loading AGENT_ENV ..."
+    AGENT_ENV=$(sudo -u "$user" ssh-agent -s) || die "failed loading AGENT_ENV" 1
+    eval "$AGENT_ENV" || die "failed running eval AGENT_ENV" 2
+    right_status 0 ${info}
+
+    if [ -z "$SSH_AUTH_SOCK" ] ; then
+        j_msg -${err} "ERROR: Failed to start ssh-agent as user %s\n" "$user"
+        return 1
+    fi
+#    printf "SSH_AUTH_SOCK set to: %s\n" "$SSH_AUTH_SOCK"
+    j_msg -${notice} -p "SSH_AUTH_SOCK: [$SSH_AUTH_SOCK]"
+
+    # write the environment variables to the persistence file
+    printf "export SSH_AUTH_SOCK=\"%s\"\n" "$SSH_AUTH_SOCK" > "$AGENT_ENV_FILE"
+    printf "export SSH_AGENT_PID=\"%s\"\n" "$SSH_AGENT_PID" >> "$AGENT_ENV_FILE"
+
+    j_msg -${notice} -p "${BGon}Agent started${Boff}, ${BYon}environment stored${Boff}. ${Mon}Key is NOT yet loaded${Boff}\n"
+    return 0
+}
+# @usage start_ssh_agent
+# @vars user AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @ret 0 on success; nonzero on failure; die() on fatal error
+# @deps _cleanup_stale_ssh_environment j_msg right_status sudo ssh-agent eval printf
+# @req caller must define $user as the unprivileged account owning the key
+# @req ssh-agent must be available in PATH for the target user
+# @rule must be called before load_key; does not load the key itself
+# @rule writes SSH_AUTH_SOCK and SSH_AGENT_PID to AGENT_ENV_FILE for later sourcing
+# @note agent is started with user privileges; environment is persisted for reuse
+# @warn failure to start agent leaves no partial environment; cleanup is automatic
+# @ex start_ssh_agent
+
+load_key() # (POSIX) load ssh key for duration of requiring command
+{
+    # POSIX sh: Use the dot operator for sourcing
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        j_msg -${info} -m -n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || die "failed sourcing AGENT_ENV_FILE"  1
+        right_status 0 ${info}
+    fi
+
+    # 1. CRITICAL: Loosen socket permission (POSIX check: -S = socket)
+    if [ -S "$SSH_AUTH_SOCK" ] ; then
+        j_msg -${info} -m -n "setting socket permissions ..."
+        chmod 606 "$SSH_AUTH_SOCK" 2>/dev/null || die "failed setting socket permissions" 1
+        right_status 0 ${info}
+    fi
+
+    j_msg -${notice} -p "Loading user's ssh key [$SSH_KEY]... (Passphrase required)"
+
+    # add the key as the unprivileged user (passphrase prompt occurs here)
+    # the -E flag is passed through sudo, and is POSIX compliant here
+    sudo -E -u "$user" ssh-add "$SSH_KEY" || return 2
+
+    j_msg -${notice} -p "Key loaded. Socket permissions are temporarily 606 for transfer"
+    return 0
+}
+# @usage load_key
+# @vars user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @ret 0 on success; 2 if ssh-add fails; die() on fatal error
+# @deps j_msg right_status sudo ssh-add chmod . (POSIX dot operator)
+# @req SSH_KEY must reference a readable private key for $user
+# @req AGENT_ENV_FILE must contain valid agent environment or agent must be running
+# @rule temporarily sets SSH_AUTH_SOCK permissions to 606 for key transfer
+# @rule must be followed by unload_key to restore secure permissions
+# @note passphrase prompt occurs under sudo -E -u "$user"
+# @warn leaving socket at 606 is a security risk; unload_key must run promptly
+# @ex load_key
+
+unload_key() # (POSIX) unload ssh key
+{
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        j_msg -${info} -m -n "sourcing AGENT_ENV_FILE ..."
+        . "$AGENT_ENV_FILE" || die "failed sourcing AGENT_ENV_FILE" 1
+        right_status 0 ${info}
+    fi
+
+    # 1. Remove the key from the agent's memory
+    j_msg -${info} -m -n "Removing key from agent memory..."
+    sudo -E -u "$user" ssh-add -d "$SSH_KEY" >/dev/null 2>&1 || \
+        die "failed running sudo -E -u \$user ssh-add -d \$SSH_KEY" 2
+    right_status 0 ${info}
+
+    # 2. CRITICAL: Re-secure the socket file immediately
+    if [ -S "$SSH_AUTH_SOCK" ] ; then
+        j_msg -${info} -m -n "Re-securing socket permissions to 600..."
+        chmod 600 "$SSH_AUTH_SOCK" 2>/dev/null || \
+            die "failed to chmod 600 \$SSH_AUTH_SOCK" 3
+        right_status 0 ${info}
+    fi
+
+    j_msg -${notice} -p "${Gon}Key unloaded and ${BGon}socket secured${Boff}"
+    return 0
+}
+# @usage unload_key
+# @vars user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @ret 0 on success; die() on fatal error
+# @deps j_msg right_status sudo ssh-add chmod . (POSIX dot operator)
+# @req AGENT_ENV_FILE must contain valid agent environment or agent must be running
+# @rule removes key from agent memory and restores SSH_AUTH_SOCK to mode 600
+# @rule must be called after load_key to close the 606 permission window
+# @note safe to call even if key is not loaded; ssh-add -d will silently ignore
+# @warn failure to restore 600 permissions leaves socket exposed to local users
+# @ex unload_key
+
+stop_ssh_agent() # (POSIX) stop ssh agent and remove persistence info
+{
+    # source the persistence file if it exists
+    if [ -f "$AGENT_ENV_FILE" ] ; then . "$AGENT_ENV_FILE" || return 1 ; fi
+
+    if [ -n "$SSH_AGENT_PID" ] ; then
+        j_msg -${info} -m -n "Killing SSH agent (PID: [$SSH_AGENT_PID]) ..."
+        kill "$SSH_AGENT_PID" >/dev/null 2>&1 || die "failed to kill SSH_AGENT_PID" 1
+        right_status 0 ${info}
+    fi
+
+    # Cleanup: Remove the socket file and persistence file
+    if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ] ; then
+        j_msg -${info} -m -n "removing SSH_AUTH_SOCK ..."
+        rm -f "$SSH_AUTH_SOCK" 2>/dev/null || die "failed to remove SSH_AUTH_SOCK" 2
+        right_status 0 ${info}
+    fi
+
+    if [ -f "$AGENT_ENV_FILE" ] ; then
+        j_msg -${info} -m -n "removing AGENT_ENV_FILE ..."
+        rm -f "$AGENT_ENV_FILE" 2>/dev/null || die "failed to remove AGENT_ENV_FILE" 3
+        right_status 0 ${info}
+    fi
+
+    # unset the variables in the current shell (POSIX compliant)
+    j_msg -${info} -m -n "un-setting SSH_AUTH_SOCK and SSH_AGENT_PID ..."
+    unset SSH_AUTH_SOCK SSH_AGENT_PID || die "failed to unset SSH_AUTH_SOCK SSH_AGENT_PID" 4
+    right_status 0 ${info}
+
+    return 0
+}
+# @usage stop_ssh_agent
+# @vars AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @ret 0 on success; die() on fatal error
+# @deps j_msg right_status kill rm . (POSIX dot operator)
+# @req AGENT_ENV_FILE may exist; environment is sourced if present
+# @rule must be called after unload_key to ensure key is removed before shutdown
+# @rule removes socket, kills agent, deletes persistence file, unsets variables
+# @note safe to call even if agent is not running; stale artifacts are removed
+# @warn killing an agent with loaded keys without unload_key may leave socket exposed
+# @ex stop_ssh_agent
+
+# this is the key integration point - register unload_key and stop_ssh_agent
+# so they will be run by die() and leave() _CLEANUP_HOOKS
+register_cleanup_hook unload_key
+register_cleanup_hook stop_ssh_agent
