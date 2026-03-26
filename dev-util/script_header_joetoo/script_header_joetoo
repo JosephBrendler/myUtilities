@@ -44,6 +44,10 @@ fi
  # if here, past the guards, sourcing is underway, set this false
 JOETOO_ENVIRONMENT_ALREADY_SOURCED=$FLASE
 
+#-----[ cleanup hookiInfrastructure ]-----------------------------------------
+# list of cleanup functions to run on die() or leave()
+# (registered by sourcing headers, e.g. unload_key, stop_ssh_agent in script_header_joetoo_ssh)
+_CLEANUP_HOOKS=""
 
 toc() # table of contents (this fn just calls summarize_header
 { summarize_header; printf "\n"
@@ -4458,27 +4462,35 @@ confirm_continue_or_exit() # prompt() for confirm to continue (answer must be se
 # @note provides a safety gate to prevent accidental batch execution
 
 die() # (POSIX) display reason with j_msg -${err} and exit/return with status 1
-{ _die_msg="${1:-"unknown fatal error"}" ; j_msg -${err} "${BRon}FATAL: ${_die_msg}${Boff}"
-  unset -v _die_msg ; SCU  # (re)show cursor in case it was hidden when die was called
+{ _die_msg="${1:-"unknown fatal error"}"
+  _die_status="${2:-}"  # optional passed exit status of dying function (append if not null)
+  if [ ! -z "$_die_status" ]; then _die_msg="${_die_msg} Exit Status: [${_die_status}]"; fi
+  j_msg -${err} "${BRon}FATAL: ${_die_msg}${Boff}"  # output the fatal error message
+  # run cleanup hooks (silent, failure‑tolerant)
+  for _die_hook in $_CLEANUP_HOOKS ; do "$_die_hook" >/dev/null 2>&1 ; done
+  unset -v _die_msg _die_status _die_hook; SCU  # (re)show cursor in case it was hidden when die was called
   case "$-" in       # use the $- (current shell flags/options)
     *i*) return 1 ;; # interactive: return failure to terminal
     *)   exit 1   ;; # script: exit with error code
   esac; }
 # @usage die "error message"
-# @args $1 string: the reason for the fatal error
+# @args $1 string: reason for fatal error, $2 (optional) exit status of dying process
 # @ret exit 1 (script) or return 1 (interactive)
 # @deps j_msg -${err}
 # @rule detects shell state via $- to avoid closing interactive terminals
 
 leave() # (POSIX) display reason with j_msg -${notice} and exit/return with status 0
-{ _leave_msg="${1:-"normal exit"}" ; j_msg -${notice} -p "${BYon}Leaving: ${Boff}${_leave_msg}${Boff}"
-  unset -v _leave_msg ; SCU  # (re)show cursor in case it was hidden when die was called
+{ _lv_msg="${1:-"normal exit"}"
+  j_msg -${notice} -p "${BYon}Leaving: ${Boff}${_lv_msg}${Boff}"
+  # run cleanup hooks (silent, failure‑tolerant)
+  for _lv_hook in $_CLEANUP_HOOKS ; do "$_lv_hook" >/dev/null 2>&1 ; done
+  unset -v _lv_msg _lv_hook; SCU  # (re)show cursor in case it was hidden when die was called
   case "$-" in       # use the $- (current shell flags/options)
-    *i*) return 1 ;; # interactive: return failure to terminal
-    *)   exit 1   ;; # script: exit with error code
+    *i*) return 0 ;; # interactive: return success to terminal
+    *)   exit 0   ;; # script: exit with no error code
   esac; }
 # @usage leave "message"
-# @args $1 string: the reason for leaving
+# @args $1 string: reason for leaving
 # @ret exit 0 (script) or return 0 (interactive)
 # @deps j_msg -${notice}
 # @rule detects shell state via $- to avoid closing interactive terminals
@@ -4656,6 +4668,25 @@ d_do() # (POSIX) IAW verbosity, execute complex (multi-command) jobs
 
 
 # @note =====[ Section 7: System, Net & LUKS ]========================================================================
+
+register_cleanup_hook()  # (POSIX) register functions that must run on die, leave, etc
+{ [ $# -ne 1 ] && { j_msg -${err} "register_cleanup_hook: requires exactly one argument" ; return 1 ; }
+  _rch_func="$1"
+  # use command -v to ensure the function exists
+  if ! command -v "$_rch_func" >/dev/null 2>&1 ; then
+    j_msg -${err} "register_cleanup_hook: function '$_rch_func' not found"
+    unset -v _rch_func
+    return 1
+  fi
+  # avoid duplicates
+  for _rch_existing in $_CLEANUP_HOOKS ; do
+    [ "$_rch_existing" = "$_rch_func" ] && { unset -v _rch_func _rch_existing ; return 0 ; }
+  done
+  # append to the list (with space only if needed)
+  _CLEANUP_HOOKS="${_CLEANUP_HOOKS}${_CLEANUP_HOOKS:+ }${_rch_func}"
+  unset -v _rch_func _rch_existing
+  return 0
+}
 
 milli_sleep() # (almost POSIX)(busybox safe) "sleep" for sub-second delays
 { # @usage milli_sleep <ms>
