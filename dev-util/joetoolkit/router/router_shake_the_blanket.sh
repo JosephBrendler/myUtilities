@@ -6,6 +6,10 @@ source /usr/sbin/script_header_joetoo
 PN=${0##*/}   # like =$(basename $0) but w/o subshell and function call
 
 key_router_services=(
+  net.eth0
+  net.br0
+  ipset
+  ulogd
   shorewall
   shorewall6
   dnsmasq
@@ -13,9 +17,11 @@ key_router_services=(
   stubby
   hostapd
   haveged
+  conntrackd
   samba
   cronie
   chronyd
+  node_exporter
   prometheus
   systat
   grafana
@@ -30,7 +36,7 @@ done
 }
 
 #-----[ main script ]---------------------------------------------------------------
-checkroute
+checkroot
 separator "$(hostname)" "$PN"
 shake-the-blanket
 
