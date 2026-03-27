@@ -142,7 +142,7 @@ maybe_mkdir() {
   # don't flag; die over error
   _mm_dir="$1"
   _mm_path="/home/${user}/${collection_directory%/}/${_mm_dir}"
-  j_msg -${notice} -M $idx_axe -p -n "maybe making directory [${_mm_dir}]"
+  j_msg -${notice} -M $idx_seedling -p -n "maybe making directory [${_mm_dir}]"
   if [ ! -d "${_mm_path}" ] ; then
     mkdir -p "${_mm_path}" &>/dev/null ; _mm_result=$?
     handle_result $_mm_result "created" "" ${notice} || \
@@ -181,6 +181,7 @@ copy_dirs() {
     # unset loop-local variables for each iteration
     unset -v _src _z _dst _result
   done
+  [ "$FLAGGED" ] && return 1
   return 0
 }
 
@@ -208,12 +209,13 @@ copy_files() {
     # unset loop-local variables for each iteration
     unset -v _z _dst _result
   done
+  [ "$FLAGGED" ] && return 1
   return 0
 }
 
 maybe_create_collection_directory() {
   # don't flag; die over error
-  j_msg -${notice} -M $idx_axe -p "maybe creating collection directory"
+  j_msg -${notice} -M $idx_shovel -p "maybe creating collection directory"
   j_msg -${notice} -M $idx_hammer -p -n "  collection directory: [${collection_directory}]"
   _mc_cd="/home/${user}/${collection_directory}"
   if [ ! -d "${_mc_cd}" ] ; then
@@ -230,65 +232,74 @@ maybe_create_collection_directory() {
 
 
 show_tree() {
+  st_ret=0
   _st_cd="/home/${user}/${collection_directory}"
-  j_msg -${notice} -M $idx_splatter -p "please inspect results in [${_st_cd}] ..."
+  j_msg -${notice} -M $idx_tree_deciduous -p "please inspect results in [${_st_cd}] ..."
   # -- (end of opts) protects against dirnames beginning w -
-  tree -a -- "$_st_cd"
+  tree -a -- "$_st_cd"; st_ret=$?
   j_msg -${notice} -mp ""  # severity-aware newline
   unset -v _st_cd
-  if [ "$FLAGGED" ]; then return 1; else return 0; fi
+  return $st_ret
 }
 
 transfer_results() {
-    # sudo -E rsync to access files as root and pass the environment containing SSH_AUTH_SOCK, etc
-    # since rsync destination is ${user}@${remotehost}:... it runs as user (who can authenticate)
-    local _tr_msg=""
-#    local AGENT_ENV_FILE="/root/.ssh_agent_env"  ## shouldnt need to assign - it is in script_header_joetoo_ssh
+  tr_ret=0
+  # don't flag - die or return status immediately on error
+  # sudo -E rsync to access files as root and pass the environment containing SSH_AUTH_SOCK, etc
+  # since rsync destination is ${user}@${remotehost}:... it runs as user (who can authenticate)
+  local _tr_msg=""
+#  local AGENT_ENV_FILE="/root/.ssh_agent_env"  ## shouldnt need to assign - it is in script_header_joetoo_ssh
 
-    # source environment variables to guarantee persistence
-    if [ -f "${AGENT_ENV_FILE}" ]; then
-        j_msg -${notice} -p -n "sourcing AGENT_ENV_FILE..."
-        source "${AGENT_ENV_FILE}"
-        right_status $? ${notice} || die "failed to source AGENT_ENV_FILE" 1
-    else
-        j_msg -${err} "AGENT_ENV_FILE not found"
-        return 2
-    fi
+  # source environment variables to guarantee persistence
+  if [ -f "${AGENT_ENV_FILE}" ]; then
+    j_msg -${notice} -p -n "sourcing AGENT_ENV_FILE..."
+    source "${AGENT_ENV_FILE}"
+    right_status $? ${notice} || die "failed to source AGENT_ENV_FILE" 1
+  else
+    j_msg -${err} "AGENT_ENV_FILE not found"
+    return 2
+  fi
 
-    for remotehost in "${remotehosts[@]}"; do
-        _tr_msg="[ ${bin_rocket} ] ${BYon}Transfer to ${BCon}${remotehost}?${Boff}"
-        response=""  # re-initialize yns_prompt global
-        yns_prompt "$_tr_msg"
-        case "${response:0:1}" in
-            [nN]) j_msg -${err} "aborting as instructed"; return 1 ;;
-            [sS]) j_msg -${notice} -p "skipping transfer to ${remotehost}, as instructed" ;;
-            [yY])
-                j_msg -${notice} -p "Validating availability of environment variables:"
-                env | grep SSH ; _tr_result=$?
-                j_msg -${notice} -p -n "done validating availability of environment variables; result:"
-                right_status $_tr_result ${notice}
+  for remotehost in "${remotehosts[@]}"; do
+    _tr_msg="[ ${bin_rocket} ] ${BYon}Transfer to ${BCon}${remotehost}?${Boff}"
+    response=""  # re-initialize yns_prompt global
+    if [ "$INTERACTIVE" ]; then yns_prompt "$_tr_msg"; else response="yes"; fi
+    case "${response:0:1}" in
+      [nN]) j_msg -${err} "aborting as instructed"; return 2 ;;
+      [sS]) j_msg -${notice} -p "skipping transfer to ${remotehost}, as instructed" ;;
+      [yY])
+          j_msg -${notice} -p "Validating availability of environment variables:"
+          env | grep SSH ; _tr_result=$?
+          j_msg -${notice} -p -n "done validating availability of environment variables; result:"
+          right_status $_tr_result ${notice}
 
-                j_msg -${notice} -p "Validating accessibility of SSH_AUTH_SOCK"
-                ls -l "$SSH_AUTH_SOCK" 2>/dev/null ; _tr_result=$?
-                handle_result $_tr_result "confirmed" "" ${notice} || \
-                  die "No access to SSH_AUTH_SOCK, or variable is empty" 2
+          j_msg -${notice} -p "Validating accessibility of SSH_AUTH_SOCK"
+          ls -l "$SSH_AUTH_SOCK" 2>/dev/null ; _tr_result=$?
+          handle_result $_tr_result "confirmed" "" ${notice} || \
+            die "No access to SSH_AUTH_SOCK, or variable is empty" 3
 
-                j_msg -${notice} -p "Validation complete"
-                # execute rsync as ROOT (to read root-owned 0600 files)
-                # script runs as root, so sudo -E is not needed
-                # --rsync-path="sudo rsync" ensures the remote side runs rsync as root
-                # Destination "${user}@${remotehost}..." guarantees SSH environment for authentication as ${user}
-                # user, remotehosts, sync_root, and collection_directory are assigned in .conf
-                rsync -avzhe ssh --rsync-path="sudo rsync" \
-                  "${sync_root%/}/${collection_directory%/}" "${user}@${remotehost}:${sync_root%/}/"
-                _tr_result=$?
-                j_msg -${notice} -p -n "rsync command complete; result:"
-                handle_result $_tr_result "${bin_face_beam} success" "${bin_explosion} failed" ${notice} || return 1
-                ;;
-            *    ) j_msg -${err}  "invalid case [${response}] in ${FUNCNAME[0]}"; return 2 ;;
-        esac
-    done # next remotehost
+          j_msg -${notice} -p "Validation complete"
+          # execute rsync as ROOT (to read root-owned 0600 files)
+          # script runs as root, so sudo -E is not needed
+          # --rsync-path="sudo rsync" ensures the remote side runs rsync as root
+          # Destination "${user}@${remotehost}..." guarantees SSH environment for authentication as ${user}
+          # user, remotehosts, sync_root, and collection_directory are assigned in .conf
+          rsync -avzhe ssh --rsync-path="sudo rsync" \
+            "${sync_root%/}/${collection_directory%/}" "${user}@${remotehost}:${sync_root%/}/"
+            _tr_result=$?
+          j_msg -${notice} -p -n "rsync command complete; result:"
+          handle_result $_tr_result "${bin_face_beam} success" "${bin_explosion} failed" ${notice} || \
+            die "rsync transfer over ssh failed with status [$_tr_result]" 4
+          ;;
+      *    ) j_msg -${err}  "invalid case [${response}] in ${FUNCNAME[0]}"; return 5 ;;
+    esac
+  done # next remotehost
+  return $tr_ret
 }
+# exit status codes:
+# 0: success; 1: failed to source AGENT_ENV_FILE, 2: aborting as instructed
+# 3: No access to SSH_AUTH_SOCK, or variable is empt, 4: rsync transfer over ssh failed
+# 5: invalid case in response to prompt
 # Note: this transfer_results function is one of the most complex pieces in my joetoo ecosystem, to date
 # It coordinates SSH agent persistence, environment validation, interactive prompting, and rsync execution
 # under mixed privilege contexts, and error‑aware reporting
