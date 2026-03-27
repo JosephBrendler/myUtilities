@@ -27,3 +27,7 @@ time to time, to update the dev-sbc/crossbuild-tools package as these
 basic joetoo system files evolve.  Such users should point the
 collect-system-files.conf symlink at a configuration file like
 collect-system-files_basic.conf
+
+Use case (3): Elrond configuration as router is unique among joetoo variants,
+so a unique collect-system-files_ElrondRouterShorewallDnsVpnNtpEtc.conf
+archives this config's components to multiple remote machines
