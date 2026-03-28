@@ -94,6 +94,7 @@ update_hosts_file() {
     # add all the raw data to temp_file each ip/client_name pair as a nicely tab-separated hosts file entry
     for ((i=0; i<${#client_list[@]}; i++)); do
         # put data in 2 columns ip (20 char), client_name (20 char), timestamp (20 char)
+        # (i.e. use tab delimiters to build nicely machine-readable data)
         printf "%s\t%s\t%s\t%s\n" "${ip_list[i]}" "${client_list[i]}" "${ts_list[i]}" "${ip_type_list[i]}"
     done > "$temp_raw"
 
@@ -101,12 +102,31 @@ update_hosts_file() {
     #   First de-duplicates by hostname (field 2), keeping only the last (newest) entry seen
     #   LC_COLLATE applied here ensures uppercase Z does not precede lowercase a
     #   Second awk prints in fixed-width columns appropriate for ipv4 address info
-    grep -E "${W1}ipv4$" "$temp_raw" | \
-        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' |
-        # re-do space needed is 4xoctet + 3x'.' = 15 + pad = 17 char
-        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
-        # Sort alphabetically by hostname. Hostname is now field 2, starting at column 22.
-        LC_COLLATE="en_US.UTF-8" sort -k1.19,2 > "$temp_ipv4"
+#    grep -E "${W1}ipv4$" "$temp_raw" | \
+#        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' |
+#        # re-do space needed is 4xoctet + 3x'.' = 15 + pad = 17 char
+#        LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
+#        # Sort alphabetically by hostname. Hostname is now field 2, starting at column 22.
+#        LC_COLLATE="en_US.UTF-8" sort -k1.19,2 > "$temp_ipv4"
+
+    # Process IPv4 Entries (grep picks only ipv4 entries)
+    # (replaces the block above because "latest timestam" does not mean newest)
+    # Old routes can have newer ts, so get the highest 4th octet since that is always
+    #   the one openvpn assigned most recently. sort on hostname with secondary key on IP descending;
+    #   since the rest of 192.168.63. is always identical, the most recent will be last, so
+    #   first de-duplicates by hostname (field 2), keeping only the last (newest ip - field 1) entry
+    # Note: explicitly use IFS='\t' since the for loop above builds with tab delimiters and sort otherwise
+    #   treats any whitespace as a delimtier (this is why previous key was -k1.19,2)
+    #   LC_COLLATE applied here ensures uppercase Z does not precede lowercase a
+    #   Second awk prints in fixed-width columns appropriate for ipv4 address info
+    # get ipv4 only and sort by key1 hostname key2 ip (to get in recency order)
+    grep -E "${W1}ipv4$" "$temp_raw" | LC_COLLATE="en_US.UTF-8" IFS='\t' sort -k2 -k1,1 |  \
+    # key on host name and keep only the last entry for each
+    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' | \
+    # print fixed width (human-readable) output for file
+    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
+    # sort by hostname (needed again b/c de-duplication destroys order of grep | sort
+    LC_COLLATE="en_US.UTF-8" IFS='\t' sort -k2,2
 
     # Process IPv6 Entries (grep picks only ipv6 entries)
     #   First de-duplicates by hostname (field 2), keeping only the last (newest) entry seen
