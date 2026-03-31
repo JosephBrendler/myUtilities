@@ -1205,21 +1205,27 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
     _joetoo_cache="/tmp/.joetoo_ui_asset_cache_${user}"
   fi
 
-  # ensure the directory exists and is searchable (755)
-  #  * pre-check * if root access is needed to setup the store directory
-  if [ ! -d "$_store_dir" ] || [ ! -w "$_store_dir" ]; then
-    # inform the user WHY they are about to see a password prompt
-    # (which, for ssh connections would otherwise look like
-    #  pki authentication is not being used and the sshd is asking for
-    #  the password). so be clear about why this is about to happen
-    printf "*** >>> [sudo] Accessing %s (sudo password may be required) <<< ***\n" "$_store_dir"
-    # combined sudo call for efficiency
-    sudo sh -c "mkdir -p '$_store_dir' && chmod 755 '$_store_dir'" >/dev/null 2>&1 || hua_ret=1   # bit 0 = joetoo_store mkdir/chmod fail
-  fi
   # ensure the store file itself (if it exists) is world-readable
   if [ -f "$joetoo_store" ] && [ ! -r "$joetoo_store" ]; then
-    sudo chmod 644 "$joetoo_store" || hua_ret=$(( hua_ret + 2 ))   # bit 1 = chmod 644 fail
-  fi
+    # file existence implies dir existence, but make sure it is searchable
+    printf "*** >>> [sudo] setting permission on store file and dir [%s] (sudo password may be required) <<< ***\n" "$joetoo_store"
+    # combined sudo call for efficiency
+    sudo sh -c "chmod 644 '$joetoo_store' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=$(( hua_ret + 2 ))   # bit 1 = chmod 644 fail
+  else
+    # if the file does not exist or is not readable,
+    # then ensure the directory exists and is searchable (755)
+    # so the the create process will work
+    #  * pre-check * if root access is needed to setup the store directory
+    if [ ! -d "$_store_dir" ] || [ ! -w "$_store_dir" ]; then
+      # inform the user WHY they are about to see a password prompt
+      # (which, for ssh connections would otherwise look like
+      #  pki authentication is not being used and the sshd is asking for
+      #  the password). so be clear about why this is about to happen
+      printf "*** >>> [sudo] creating _store_dir [%s] (sudo password may be required) <<< ***\n" "$_store_dir"
+      # combined sudo call for efficiency
+      sudo sh -c "mkdir -p '$_store_dir' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=1   # bit 0 = joetoo_store mkdir/chmod fail
+    fi  # store dir
+  fi  # strore file
   # define the source of truth (this header itself)
   _joetoo_header="${script_header_installed_dir%/}/script_header_joetoo"
   # "hydration" strategy - if cache exists and is newer than the header, use it
