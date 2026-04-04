@@ -49,37 +49,39 @@ initialize_variables() {
 
     FLAGGED="$FALSE"
     # assign initial values
-    j_msg -${info} -m -n "Assigning PN = $(basename $0) ..."
-    PN=$(basename $0) ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning PN = $(basename $0) ..."
+    PN=$(basename $0) ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning BPN = ${PN} ..."
-    BPN="joetoolkit/${PN}" ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning BPN = ${PN} ..."
+    BPN="joetoolkit/${PN}" ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning INTERACTIVE = \$TRUE ..."
-    INTERACTIVE="$TRUE" ; right_status $? ${info} || FLAGGED="$TRUE"
+    # set INTERACTIVE appropriately depending on $- (current shell option flags)
+    if [[ $- == *i* ]]; then _iv_CHOICE="$TRUE"; else  _iv_CHOICE="$FALSE"; fi
+    j_msg -${debug} -m -n "Assigning INTERACTIVE = $(TrueFalse $_iv_CHOICE) ..."
+    INTERACTIVE="$_iv_CHOICE" ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning verbosity = 3 ..."
-    verbosity=3 ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning verbosity = 3 ..."
+    verbosity=3 ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Sourcing BUILD ..."
-    source /etc/${BPN}/BUILD ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Sourcing BUILD ..."
+    source /etc/${BPN}/BUILD ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning starting_step = 0 ..."
-    starting_step=0 ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning starting_step = 0 ..."
+    starting_step=0 ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning sleepwait = 0.5 ..."
-    sleepwait=0.5 ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning sleepwait = 0.5 ..."
+    sleepwait=0.5 ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning stopping_step = \${#command_sequence[@]} - 1 ..."
-    stopping_step=$(( ${#command_sequence[@]} - 1 )) ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning stopping_step = \${#command_sequence[@]} - 1 ..."
+    stopping_step=$(( ${#command_sequence[@]} - 1 )) ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning cmdseq_statusfile = /root/${PN}_status ..."
-    cmdseq_statusfile="/root/${PN}_status" ; right_status $? ${info} || FLAGGED="$TRUE"
+    j_msg -${debug} -m -n "Assigning cmdseq_statusfile = /root/${PN}_status ..."
+    cmdseq_statusfile="/root/${PN}_status" ; right_status $? ${debug} || FLAGGED="$TRUE"
 
-    j_msg -${info} -m -n "Assigning runlevels ..."
+    j_msg -${debug} -m -n "Assigning runlevels ..."
     # runlevels=$(find /etc/runlevels/ -mindepth 1 -maxdepth 1 -printf '%f\n')
     runlevels=("boot" "sysinit" "default")  # dont check nonetwork or shutdown
-    right_status $? ${info} || FLAGGED="$TRUE"
+    right_status $? ${debug} || FLAGGED="$TRUE"
 
     [ $FLAGGED ] && return 1 || return 0
 }
@@ -92,7 +94,7 @@ check_all_services() {
 
 check_runlevel_services() {
     rl=$1
-    separator "${PN}" "(${rl} services)"
+    separator "${PN}-${BUILD}" "(${rl} services)"
     # load array of services using find to create \0 delimited list of service names
     readarray -d '' -t runlevel_services < <(find "/etc/runlevels/${rl}/" -mindepth 1 -maxdepth 1 -printf '%f\0')
     for service in "${runlevel_services[@]}" ; do
@@ -109,57 +111,57 @@ check_fix_one_service() {
 
     # get the status of service named by $1 and act accordingly
     status=$(get_svc_status "${svc}")
-    d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+    j_msg -${info} -p "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}"
     # if status is stopped or crashed, try to restart
     if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
-        debug_do 'echo -e -n " (restarting)"' 2
+        d_do 'echo -e -n " (restarting)"' ${info}
         restart_service "${svc}" && sleep ${sleepwait}
 
         # check again, and if still stopped or crashed, try to stop and then start
         status=$(get_svc_status "${svc}")
-        d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+        j_msg -${info} -p  "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}"
         # if status is stopped or crashed, try to stop and then start
         if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
-            debug_do 'echo -e -n "(stop-starting)"' 2
+            d_do 'echo -e -n "(stop-starting)"' ${info}
             stop_start_service "${svc}" && sleep ${sleepwait}
 
             # check again, and if still stopped or crashed, try to look for and remove the running pid tracking file, then restart
             status=$(get_svc_status "${svc}")
-            d_message "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}" 4
+            j_msg -${info} -p  "svc: ${svc}   status: $(service_status_color ${status})${status}${Boff}"
             # if status is stopped or crashed, try remove pid file and then restart
             if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
-                debug_do 'echo -e -n "(removing pidfile)"' 2
+                d_do 'echo -e -n "(removing pidfile)"' ${info}
                 rmpid_restart_service "${svc}" && sleep ${sleepwait}
                 # if still stopped or crashed, return 1
                 if [[ "${status}" =~ ^("stopped"|"crashed")$ ]] ; then
-                    debug_do 'echo -e -n "(${BRon}still down${Boof})"' 2
-                    loggit "${PN}" 1
+                    d_do 'echo -e -n "(${BRon}still down${Boof})"' ${info}
+                    loggit "${PN}-${BUILD}" 1
                     return 1
                 else
-                    /usr/bin/logger -p cron.notice "${PN}" "${svc} successfully restarted after rm pidfile"
+                    /usr/bin/logger -p cron.notice "${PN}-${BUILD}" "${svc} successfully restarted after rm pidfile"
                 fi # still down
             else
-                /usr/bin/logger -p cron.notice "${PN}" "${svc} successfully started after stop"
+                /usr/bin/logger -p cron.notice "${PN}-${BUILD}" "${svc} successfully started after stop"
             fi # third check
         else
-            /usr/bin/logger -p cron.notice "${PN}" "${svc} successfully restarted"
+            /usr/bin/logger -p cron.notice "${PN}-${BUILD}" "${svc} successfully restarted"
         fi # second check
     else
-        debug_do '/usr/bin/logger -p cron.info "${PN}" "${svc} status checked - ok"' 3
+        d_do '/usr/bin/logger -p cron.info "${PN}-${BUILD}" "${svc} status checked - ok"' ${info}
     fi # first check
     return 0
 }
 
 restart_service() {
     # restart the service named by $1
-    d_message "in ${FUNCNAME[0]}}" 5
+    j_msg -${debug} -p  "in ${FUNCNAME[0]}}"
     local svc="$1"
     "/etc/init.d/${svc}" restart >/dev/null 2>&1
 }
 
 stop_start_service() {
     # restart the service named by $1
-    d_message "in ${FUNCNAME[0]}}" 5
+    j_msg -${debug} -p  "in ${FUNCNAME[0]}}"
     local svc="$1"
     "/etc/init.d/${svc}" stop >/dev/null 2>&1
     sleep ${sleepwait}
@@ -168,7 +170,7 @@ stop_start_service() {
 
 rmpid_restart_service() {
     # restart the service named by $1
-    d_message "in ${FUNCNAME[0]}}" 5
+    j_msg -${debug} -p  "in ${FUNCNAME[0]}}"
     local svc="$1"
     if [ -e "/run/${svc}.pid" ] ; then
         rm "/run/${svc}.pid" >/dev/null 2>&1
@@ -195,7 +197,7 @@ service_status_color() {
 }
 
 display_configuration() {
-    separator "${PN}" "(display configuration)"
+    separator "${PN}-${BUILD}" "(display configuration)"
     # use script_header_joetoo functions
     longest=$(get_longest ${varlist})
     display_vars $longest ${varlist} || return 1
@@ -203,7 +205,7 @@ display_configuration() {
 }
 
 sanity_check() {
-    separator "${PN}" "(sanity check)"
+    separator "${PN}-${BUILD}" "(sanity check)"
     # put some code here to catch dumb stuff like cmdline option assignments that should
     # be mutually exclusive
     [ ! "$INTERACTIVE" ] && [ "$EXAMPLE" ] && j_msg -${err} "(demonstration) INTERACTIVE and EXAMPLE should NOT both be TRUE; quitting" && return 1
@@ -212,16 +214,15 @@ sanity_check() {
 
 show_all_service_status() {
     # list all service status
-    for runlevel in ${runlevels}; do
-        separator "${PN}" "rc-status ${runlevel}"
+    for runlevel in "${runlevels[@]}"; do
+        separator "${PN}-${BUILD}" "rc-status ${runlevel}"
         rc-status "${runlevel}"
     done
 }
 
 #-----[ main script ]----------------------------------------------------
 checkroot
-separator "${PN}" $(hostname)
-
+separator "$(hostname)" "${PN}-${BUILD}"
 
 # basic common approach -
 # initialize variables (local function)
@@ -238,10 +239,10 @@ initialize_variables || die "Failed to initialize_variables"
 validate_file "$cmdseq_statusfile" || die "Failed to validate status_file"
 
 # over-ride configuration with commandline input
-separator "${PN}" "(process_cmdline)"
+[ "$INTERACTIVE" ] && separator "${PN}-${BUILD}" "(process_cmdline)"
 process_cmdline $@  || die "Failed to process_cmdline"
 
-display_configuration || die "Failed to display_configuration"
+if [ "$INTERACTIVE" ] ; then display_configuration || die "Failed to display_configuration"; fi
 
 # sanity check configuration
 sanity_check || die "Failed sanity_check"
@@ -252,11 +253,7 @@ run_array "$cmdseq_statusfile" '' '' || die "Failed to run_array"
 j_msg -${notice} -p "${PN} Complete"
 echo
 
-
-
-
 # pause so messages can be read by user
-#pause 5
 sh_countdown 4
 
 exit 0
