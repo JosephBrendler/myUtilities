@@ -286,15 +286,20 @@ run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence
   # guard 1 - minimum arguments check (status, start, stop, + at least 1 cmd)
   [ $# -lt 3 ] && { j_msg -${err} "usage: run_array <status_file> <start> <stop>"; return 1; }
   local _ra_status_file="$1"           # assign the status file
-  local _ra_start="${2:-1}"            # guard 2 - start step (default to zero but ensure it is an integer in range)
-  local _ra_count=0 _ra_step=0 _ra_msg="" _ra_result=""
-  num_cmds=${num_cmds:-${#command_sequence[@]}     # should have been set globally
+  [ ! -w "$_ra_status_file" ] && { j_msg -${err} "error: _ra_status_file: [$_ra_status_file] is not writable by user [$USER]"; return 1; }
+  local _ra_start="${2:-0}"            # guard 2 - start step (default to zero but ensure it is an integer in range)
+  local _ra_count=0
+  local _ra_step=0
+  local _ra_msg=""
+  local _ra_result=""
+  # should have been set globally; but assign just to be sure
+  num_cmds="${#command_sequence[@]}"
   ! isint "$_ra_start" && { j_msg -${err} "run_array: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; }
-  if [ "$_ra_start" -lt 1 ] || [ "$_ra_start" -gt "$num_cmds" ]; then
+  if [ "$_ra_start" -lt 0 ] || [ "$_ra_start" -gt "$num_cmds" ]; then
      j_msg -${err} "run_array: start_step '$2' must be an integer 0 - $(( num_cmds -1 ))"; return 1; fi
-  _ra_stop="${3:-$num_cmds}" # guard 3 - stop step (default to num cmds but ensure it is an integer in range)
+  _ra_stop="${3:-$(( num_cmds - 1 ))}" # guard 3 - stop step (default to num cmds but ensure it is an integer in range)
   ! isint "$_ra_stop" && { j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; }
-  if [ "$_ra_stop" -lt 1 ] || [ "$_ra_stop" -gt "$num_cmds" ]; then
+  if [ "$_ra_stop" -lt 0 ] || [ "$_ra_stop" -gt "$(( num_cmds - 1 ))" ]; then
     j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; fi
   # initialize both starting step (command) and loop counter
   _ra_step="$_ra_start"   # points to the number of the actual command that is "up" next (gets wrapped to 1 after num_cmds)
@@ -303,16 +308,17 @@ run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence
     if [ "$_ra_step" -lt "$_ra_start" ]; then       # enforce lower bound (shift into range)
       _ra_count=$(( _ra_count + 1 )); _ra_step=$(( _ra_step + 1 )); continue; fi
     # assign commadn and description from input, delimitted by unit separator ($US)
-    _ra_cmd="${command_sequence[${step}]}"  # the actual command
-    _ra_desc="${msg1_sequence[${step}]}"    # human readable description
+    _ra_cmd="${command_sequence[${_ra_step}]}"  # the actual command
+    _ra_desc="${msg1_sequence[${_ra_step}]}"    # human readable description
     _ra_clean_cmd=$(printf -- '%b' "$_ra_cmd" | strip_ansi | _translate_escapes)
 
-#    j_msg -${debug} -p "_ra_start: $_ra_start"
-#    j_msg -${debug} -p "_ra_stop: $_ra_stop"
-#    j_msg -${debug} -p "_ra_step: $_ra_step"
-#    j_msg -${debug} -p "_ra_clean_cmd: $_ra_clean_cmd"
-#    j_msg -${debug} -p "_ra_desc: $_ra_desc"
-#    j_msg -${debug} -p "termwidth: $(termwidth)"
+    j_msg -${debug} -p "_ra_start: $_ra_start"
+    j_msg -${debug} -p "_ra_stop: $_ra_stop"
+    j_msg -${debug} -p "_ra_step: $_ra_step"
+    j_msg -${debug} -p "_ra_clean_cmd: $_ra_clean_cmd"
+    j_msg -${debug} -p "_ra_desc: $_ra_desc"
+    j_msg -${debug} -p "termwidth: $(termwidth)"
+    j_msg -${debug} -p "_ra_status_file: $_ra_status_file"
 
     # if INTERACTIVE, confirm before executing the step
     if [ "$INTERACTIVE" ]; then
@@ -350,16 +356,16 @@ run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence
     _ra_step=$(( (_ra_step % num_cmds) + 1 ))
     _ra_count=$(( _ra_count + 1 ))
     # store the pointer to the command that is actually "up" next (not the loop counter)
-    j_msg -${info} -n -m "writing step (next up) to status_file =>"
-    printf '%s\n' "$_ra_step" > "$status_file"
-#    handle_result $? "$_ra_step" "failed to write step [$_ra_step] to status_file [$status_file]" ${info} || ra_ret=1
+    j_msg -${info} -n -m "writing step (next up) to _ra_status_file =>"
+    printf '%s\n' "$_ra_step" > "$_ra_status_file"
+#    handle_result $? "$_ra_step" "failed to write step [$_ra_step] to _ra_status_file [$_ra_status_file]" ${info} || ra_ret=1
   done
   unset -v _ra_status_file _ra_step _ra_cmd _ra_result _ra_entry _ra_desc
   unset -v _ra_response _ra_clean_cmd _ra_start _ra_stop _ra_msg _ra_result
   return $ra_ret
 }
 # @usage: run_array <status_file> <start> <stop>
-# @args: $1 (string) path to array status file
+# @args: $1 (string) path to status file
 # @args: $2 (int) starting step (0-indexed)
 # @rule: $2 start must be '' or integer 0(default) - num_cmds
 # @args: $3 (int) stopping step (0-indexed)
