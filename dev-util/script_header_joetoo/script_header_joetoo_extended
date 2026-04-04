@@ -280,3 +280,90 @@ bs_2() # (BASH) binary recursive search of array named by $1 for tartet $2 betwe
 # @note   array elements must be simple strings without newlines
 # @ex     readarray -t items < <(sort -u file.txt)
 # @cont      depth=0; result=-1; bs2 items "needle"; echo "$result"
+
+run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence[@]}; $1=status_file, $2=start, $3=stop
+{ ra_ret=0
+  # guard 1 - minimum arguments check (status, start, stop, + at least 1 cmd)
+  [ $# -lt 3 ] && { j_msg -${err} "usage: run_array <status_file> <start> <stop>"; return 1; }
+  local _ra_status_file="$1"           # assign the status file
+  local _ra_start="${2:-1}"            # guard 2 - start step (default to zero but ensure it is an integer in range)
+  local _ra_count=0 _ra_step=0 _ra_msg="" _ra_result=""
+  num_cmds=${num_cmds:-${#command_sequence[@]}     # should have been set globally
+  ! isint "$_ra_start" && { j_msg -${err} "run_array: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; }
+  if [ "$_ra_start" -lt 1 ] || [ "$_ra_start" -gt "$num_cmds" ]; then
+     j_msg -${err} "run_array: start_step '$2' must be an integer 0 - $(( num_cmds -1 ))"; return 1; fi
+  _ra_stop="${3:-$num_cmds}" # guard 3 - stop step (default to num cmds but ensure it is an integer in range)
+  ! isint "$_ra_stop" && { j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; }
+  if [ "$_ra_stop" -lt 1 ] || [ "$_ra_stop" -gt "$num_cmds" ]; then
+    j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; fi
+  # initialize both starting step (command) and loop counter
+  _ra_step="$_ra_start"   # points to the number of the actual command that is "up" next (gets wrapped to 1 after num_cmds)
+  _ra_count="$_ra_start"  # points to current step + 1 (does NOT wrap at num_cmds; so loop can detect completion)
+  while [ "$_ra_count" -le "$_ra_stop" ]; do        # enforce upper bound
+    if [ "$_ra_step" -lt "$_ra_start" ]; then       # enforce lower bound (shift into range)
+      _ra_count=$(( _ra_count + 1 )); _ra_step=$(( _ra_step + 1 )); continue; fi
+    # assign commadn and description from input, delimitted by unit separator ($US)
+    _ra_cmd="${command_sequence[${step}]}"  # the actual command
+    _ra_desc="${msg1_sequence[${step}]}"    # human readable description
+    _ra_clean_cmd=$(printf -- '%b' "$_ra_cmd" | strip_ansi | _translate_escapes)
+
+#    j_msg -${debug} -p "_ra_start: $_ra_start"
+#    j_msg -${debug} -p "_ra_stop: $_ra_stop"
+#    j_msg -${debug} -p "_ra_step: $_ra_step"
+#    j_msg -${debug} -p "_ra_clean_cmd: $_ra_clean_cmd"
+#    j_msg -${debug} -p "_ra_desc: $_ra_desc"
+#    j_msg -${debug} -p "termwidth: $(termwidth)"
+
+    # if INTERACTIVE, confirm before executing the step
+    if [ "$INTERACTIVE" ]; then
+      _ra_msg="${BYon}Are you ready to [${_data_color}${_ra_step}${BYon}]"
+      _ra_msg="${_ra_msg} (${_op_color}${_ra_desc}${BYon}) ? ${Boff}"
+      yns_prompt "$_ra_msg"
+      _ra_response="$response"
+    else
+      _ra_response="yes"
+    fi  # INTERACTIVE?
+    # execute according to response
+    case "$_ra_response" in
+      [Yy]* )
+        # start with a separator for every step
+        separator "$PN" "(step [$_ra_step]: $_ra_desc)"
+        j_msg -${notice} -p -M $idx_hammer "${BCon}Executing step [${Mon}$_ra_step${BCon}]: ${BYon}${_ra_clean_cmd}${Boff}"
+        # eval expands variables inside the string
+        eval "$_ra_cmd"; _ra_result=$?
+        ### don't die - let the calling script decide what to do based on return
+        ### handle_result $_ra_result || die "failed to execute step [$_ra_step]: $_ra_clean_cmd"
+        # display/log result and set bit in ra_ret status binary bitmask
+        j_msg -${notice} -n -p "${BWon}step [${Mon}$_ra_step${BWon}] result:"
+        handle_result $_ra_result '' "failed with exit code [$_ra_result]" ${notice} || \
+            ra_ret=$(( ra_ret | 1 << _ra_step )) ;;
+      [Ss]* )
+        _ra_msg="${BYon}Skipping step [${_data_color}${_ra_step}${BYon}]:"
+        _ra_msg="${_ra_msg} ${_op_color}${_ra_desc}${BYon} as instructed${Boff}"
+        j_msg -${notice} -p "$_ra_msg" ;;
+      * )
+        j_msg -${notice} -p "${BRon}Aborting array, as instructed${Boff}"
+        ra_ret=1; break ;;
+    esac
+    # use 1-indexed modular increment to wrap _ra_step back to 1 at num_cmds
+    # but just increment _ra_count w/o wrap, so loop can detect completion
+    _ra_step=$(( (_ra_step % num_cmds) + 1 ))
+    _ra_count=$(( _ra_count + 1 ))
+    # store the pointer to the command that is actually "up" next (not the loop counter)
+    j_msg -${info} -n -m "writing step (next up) to status_file =>"
+    printf '%s\n' "$_ra_step" > "$status_file"
+#    handle_result $? "$_ra_step" "failed to write step [$_ra_step] to status_file [$status_file]" ${info} || ra_ret=1
+  done
+  unset -v _ra_status_file _ra_step _ra_cmd _ra_result _ra_entry _ra_desc
+  unset -v _ra_response _ra_clean_cmd _ra_start _ra_stop _ra_msg _ra_result
+  return $ra_ret
+}
+# @usage: run_array <status_file> <start> <stop>
+# @args: $1 (string) path to array status file
+# @args: $2 (int) starting step (0-indexed)
+# @rule: $2 start must be '' or integer 0(default) - num_cmds
+# @args: $3 (int) stopping step (0-indexed)
+# @rule: $3 stop must be '' or integer num_cmds - 1 (defaault)
+# @vars: INTERACTIVE, logFile, PN, US, _data_color, _op_color
+# @ret: 0 on success, 1 on abort, or bitmask of failed steps
+# @deps: isint, yns_prompt, separator, j_msg -${notice}, handle_result, strip_ansi, _translate_escapes
