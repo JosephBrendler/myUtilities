@@ -1,0 +1,118 @@
+#!/bin/bash
+#
+# This script performs a secure DDNS update using ssh
+#
+#PN=$(basename $0)
+PN=${0##*/}
+
+#-----[ user configured variables ]---------------------------------------------------
+user="joe"
+ddns_server="elrond"
+domain="brendler"
+
+# tp-do: transition to pairwise-unique (or client-qunique keys) for greater security
+# (with a shared key [status quo] compromise of any client enables actor to impersonate
+#  any remote hostname in spoofed dns updates - sending false ip addr for the impersonated host)
+ssh_key_id="id_ddns_update"
+
+debugging_log="/tmp/ddns-update.debug.log"
+LOG_FACILITY="local5"
+
+#-----[ derived variables ]----------------------------------------------------------
+# The key is owned by '${user}' and used via 'sudo -u ${user}'
+SSH_KEY_PATH="/home/${user}/.ssh/${ssh_key_id}"
+DDNS_SSH_TARGET="${user}@${ddns_server}.${domain}"
+# The Fully Qualified Domain Name
+FQDN="$(hostname).${domain}"
+
+# Get parameters passed as arguments by ddns_watcher script
+#    for this script to get hooked if these events fire
+EVENT="$1"
+ADDR="$2"
+INTERFACE="$3"
+
+#-----[ functions ]-----------------------------------------------------------
+timestamp() {
+    printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')"
+}
+
+#-----[ main script ]---------------------------------------------------------
+
+# Log the Initial State
+{
+    printf '%s\n' "-----[ ${PN} started at $(timestamp) ]----------------"
+    printf '%s\n' "    EVENT: .....: [$EVENT]"
+    printf '%s\n' "    ADDR .......: [$ADDR]"
+    printf '%s\n' "    INTERFACE ..: [$INTERFACE]"
+} >> "$debugging_log"
+
+msg="[$(timestamp)] DEBUG: DDNS_UPDATE Script Invoked. EVENT: [$EVENT] INTERFACE: [$INTERFACE]"
+logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${msg}"
+msg="[$(timestamp)] DEBUG: ADDR: [$ADDR]"
+logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${msg}"
+
+# Extract the ULA IPv6 address from the passed new and old address variables (removes /64 netmask)
+# These variables are supplied by dhcpcd hooks when an IPv6 address is available,
+# and this assignment SHOULD pass valid ULA addresses to the input validateion below
+
+# now that we know which address matters, validate it
+if [ -z "$ADDR" ]; then
+    # the variable is an "empty" string
+    msg="[$(timestamp)] INVALID: Empty address provided by ddns_watcher script for EVENT: [$EVENT]"
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
+    exit 0
+elif [[ ! "$ADDR" =~ ^fd[0-9a-fA-F]{2}:[0-9a-fA-F:]+$ ]]; then
+    # this string does not match the format expected for a valid ULA address
+    msg="[$(timestamp)] INVALID: address provided by ddns_watcher script for EVENT: [$EVENT] is not a valid ULA address"
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
+    exit 0
+else
+    # looks good; just log progress
+    msg="[$(timestamp)] UPDATE READY: action: [$EVENT] address: [$ADDR] iface: [$INTERFACE]"
+    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
+fi
+
+# Final command arguments: ADDRESS, FQDN, INTERFACE, and timestamp
+# (INTERFACE to be used in NS hosts file '#' comment field
+#  in oder to distinguish between multiple addresses for a fqdn
+#  when that host has multiple interfaces with ipv6 addresses)
+# (timestamp in same comment field for visibly obvious confirmation)
+TIMESTAMP="$(timestamp)"
+COMMAND_ARGS="${ADDR} ${FQDN} ${INTERFACE} ${TIMESTAMP} ${EVENT}"
+
+msg="[$(timestamp)] Executing SSH as ${user} with args: [$COMMAND_ARGS]..."
+logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+printf '%s\n' "${msg}" >> "$debugging_log"
+
+# Execute the secure SSH command as ${user}
+# CRITICAL: We pass the FQDN and IPV6_ADDRESS as a single, quoted argument string
+SSH_OUTPUT=$( \
+    /usr/bin/sudo -u "${user}" /usr/bin/ssh \
+    -i "$SSH_KEY_PATH" \
+    -o StrictHostKeyChecking=yes \
+    -o BatchMode=yes \
+    "$DDNS_SSH_TARGET" \
+    "${COMMAND_ARGS}" 2>&1 \
+)
+EXIT_CODE=$?
+# Log the action taken
+{
+    printf '%s\n' "SSH Exit Code: $EXIT_CODE"
+    printf '%s\n' "SSH Output (Stdout/Stderr):"
+    if [ "$EXIT_CODE" -eq 0 ]; then
+        msg="SSH exit code: [$EXIT_CODE] RESULT: SUCCESS. ${EVENT} AAAA record for ${FQDN} on $INTERFACE."
+        logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+        logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
+        printf '%s\n' "${msg}"
+    else
+        msg="[$(timestamp)] SSH exit code: [$EXIT_CODE] RESULT: FAILED. failed to update AAAA record for ${FQDN}."
+        logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+        logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
+        printf '%s\n' "${msg}"
+    fi
+    printf '%s\n' "-----[ ${PN} fnished at $(timestamp) ]----------------"
+} >> "${debugging_log}"
+exit 0

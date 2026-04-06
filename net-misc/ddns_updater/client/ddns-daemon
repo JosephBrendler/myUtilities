@@ -1,0 +1,160 @@
+#!/bin/sh
+#
+# dynamic dns update service daemon (c) joe brendler 2026-8765
+#
+# use "ip -6 monitor all" as a background service - to detect and act on
+# events requiring a ddns update be sent to the dns (call /usr/sbin/ddns-update)
+# format:
+# Deletion: [ADDR]Deleted <ifindex>: <iface> inet6 <addr>
+#   action: ddns-update add <NEW_ADDR> <FQDN> <INTERFACE> <TIMESTAMP>
+# Addition: [ADDR]<ifindex>: <iface> inet6 <addr> scope global ...
+#   (but only when it is not “Deleted”, “temporary”, or “tentative”)
+#  action: ddns-update del <OLD_ADDR> <FQDN> <INTERFACE> <TIMESTAMP>
+# note: ignore lifetime refresh messages, link flapping, and route changes
+#  ** act only on [ADDR]Deleted or [ADDR] with a stable ULA
+
+# make the daemon tell the shell - “When I exit, kill every process in my process group”
+trap 'kill 0' EXIT
+
+#-----[ variables ]-----------------------------------------------------
+joetoo_ULA_prefix="fd62"
+joetoo_domain="brendler"
+FQDN="$(hostname).${joetoo_domain}"
+# let ddns-update calculate timestamp and fqdn for itself
+
+PN=${0##*/}
+
+joetoo_dns="elrond"
+
+debugging_log="/tmp/ddns-update.debug.log"
+LOG_FACILITY="local5"
+
+CACHE_REVERIFY_INTERVAL=600  # seconds (reverify dns if cache info is older than 10 min)
+
+CACHE_PREFIX=/run/ddns-daemon.cache
+mkdir -p $(dirname "$CACHE_PREFIX")
+#-----[ functions ]-----------------------------------------------------
+
+timestamp() {
+    printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')"
+}
+
+
+#-----[ main script ]-----------------------------------------------------
+ip -6 monitor address | while read -r line; do
+
+    case "$line" in
+        *"Deleted"* )
+            # extract interface and address
+            IFACE=$(printf '%s\n' "$line" | awk '{print $3}')
+            ADDR=$(printf '%s\n' "$line" | awk '{print $5}' | cut -d/ -f1)
+            # ignore link-local and multicast deletions
+            printf '%s\n' "$ADDR" | grep -q "^fe80" && continue
+            printf '%s\n' "$ADDR" | grep -q "^ff" && continue
+            EVENT="del"
+            ;;
+
+        *"inet6 ${joetoo_ULA_prefix}"* )
+            # extract interface and address
+            IFACE=$(printf '%s\n' "$line" | awk '{print $2}')
+            ADDR=$(printf '%s\n' "$line" | awk '{print $4}' | cut -d/ -f1)
+            # skip temporary or tentative
+            printf '%s\n' "$line" | grep -q "temporary" && continue
+            printf '%s\n' "$line" | grep -q "tentative" && continue
+            EVENT="add"
+            ;;
+
+        * )
+            continue
+            ;;
+    esac
+
+    # when we have EVENT, ADDR, and IFACE, then act
+    if [ -n "$EVENT" ] && [ -n "$ADDR" ] && [ -n "$IFACE" ]; then
+        # first complete the identification of the cache file for this interface
+        CACHE_FILE="${CACHE_PREFIX}.${IFACE}"
+        TIMESTAMP=$(timestamp)
+        # check the cache - if this info has not changed, then if it is stale reverify with dns
+        # (don't update the dns unless the dns is wrong)
+        if [ -f "$CACHE_FILE" ]; then
+            CACHE_INFO=$(cut -d '|' -f1,2 "$CACHE_FILE")
+            CACHE_TS=$(cut -d '|' -f3 "$CACHE_FILE")
+        else
+            CACHE_INFO=""
+            CACHE_TS=""
+        fi
+
+        # for delete events - always submit to dns and always delete cache entry
+        case "$EVENT" in
+            "del")
+                msg="[$TIMESTAMP] Deleting; sending update for $ADDR $IFACE"
+                logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
+                /usr/sbin/ddns-update "$EVENT" "$ADDR" "$IFACE"
+                # remove the cache
+                rm -f "$CACHE_FILE"
+                ;;
+            "add")
+                msg="[$TIMESTAMP] event: [$EVENT]; CACHE_INFO: [$CACHE_INFO];  ADDR|IFACE: [$ADDR|$IFACE]"
+                logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
+
+                if [ "$CACHE_INFO" = "$ADDR|$IFACE" ]; then
+                    # if CACHE_TS is unset, treat it as stale
+                    [ -z "$CACHE_TS" ] && CACHE_TS="1985-01-01_00:00:00"
+                    # guard vs unset or malformed CACHE_TS
+                    if ! CACHE_TS_SECONDS=$(date -d "${CACHE_TS/_/ }" +%s 2>/dev/null); then
+                        # treat as stale
+                        CACHE_TS_SECONDS=0
+                    fi
+                    NOW_SECONDS=$(date +%s)
+                    # reverify dns if cache info is older than 10 min
+                    if (( NOW_SECONDS - CACHE_TS_SECONDS > CACHE_REVERIFY_INTERVAL )); then
+                        # STALE CACHE
+                        # domain information groper (dig) +short means just get the final answer; AAAA means ipv6
+                        DNS_INFO=$(dig +short AAAA "$FQDN" "@${joetoo_dns}")
+                        if [ -z "$DNS_INFO" ]; then
+                            # DNS unreachable → do NOT update cache, do NOT update DNS
+                            # let cache remain stale; retry later
+                            continue   # i.e. skip directly to next iteration of while loop
+                        fi
+                        # look for ADDR in DNS_INFO -F (fixed string) -x (whole line) -q (quiet)
+                        if printf '%s\n' "$DNS_INFO" | grep -Fxq "$ADDR"; then
+                            # dns has the correct address - just update the cache
+                            printf '%s\n' "${ADDR}|${IFACE}|${TIMESTAMP}" > "$CACHE_FILE"
+                            msg="[$TIMESTAMP] DNS verified; updated cache timestamp for $ADDR $IFACE"
+                            logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+                            printf '%s\n' "${msg}" >> "${debugging_log}"
+                        else
+                            # dns does not have the right address - update it
+                            msg="[$TIMESTAMP] DNS not verified; sending update for $ADDR $IFACE"
+                            logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+                            printf '%s\n' "${msg}" >> "${debugging_log}"
+                            /usr/sbin/ddns-update "$EVENT" "$ADDR" "$IFACE"
+                            # write new info to cache
+                            printf '%s\n' "${ADDR}|${IFACE}|${TIMESTAMP}" > "$CACHE_FILE"
+                        fi  # addr in dns_info ?
+                    fi  # stale cache
+                else
+                    # address is not the same ac cache - submit new update
+                    msg="[$TIMESTAMP] address differs from cache; sending update for $ADDR $IFACE"
+                    logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+                    printf '%s\n' "${msg}" >> "${debugging_log}"
+                    /usr/sbin/ddns-update "$EVENT" "$ADDR" "$IFACE"
+                    # write new info to cache
+                    printf '%s\n' "${ADDR}|${IFACE}|${TIMESTAMP}" > "$CACHE_FILE"
+                fi  # addr same as cache?
+                ;;
+            *)
+                msg="[$TIMESTAMP] INVALID event [$EVENT] for $ADDR $IFACE (skipping)"
+                logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
+                continue
+        esac
+
+        EVENT=""
+        ADDR=""
+        IFACE=""
+    fi  # call for action
+
+done
