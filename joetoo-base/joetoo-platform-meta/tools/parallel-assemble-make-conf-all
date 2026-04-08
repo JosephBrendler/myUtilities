@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# use GNU parallel to assemble all make.conf files
+#
+source /usr/sbin/script_header_joetoo
+
+# experimental results with gmki91 (20 core alder lake i9 12000k)
+# -j	Runtime
+# 4  	27.0 s
+# 8	  17.6 s
+# 12	15.3 s
+# 16	13.8 s
+# 20	13.2 s
+# 24	13.6 s
+# 28	13.1 s
+# 32	13.7 s
+# 36	13.2 s
+#-------------
+#-j	Runtime (run 1)	Runtime (run 2)	Notes
+# 16	13.90 s	14.34 s	Slight jitter, normal
+# 17	13.33 s	13.29 s	Very stable
+# 18	13.36 s	13.19 s	Very stable
+# 19	13.56 s	13.76 s	Slight jitter
+# 20	13.00 s	13.20 s	Best overall
+# set number of jobs here
+jobs=${1:-20}
+
+# use a temp file to track progress of the parallel build
+joblog_file=$(mktemp /tmp/joetoo-parallel-assemble-make-conf-all-joblog.XXXXXX)
+
+# instead of nesting for loops, create two arrays to drive the input streams
+boards=( $(joetoo-sbc-list | awk '{print $1}') )
+
+configs=(
+    assemble-make-conf.headless.crossbuild.conf
+    assemble-make-conf.headless.chroot.conf
+    assemble-make-conf.desktop.crossbuild.conf
+    assemble-make-conf.desktop.chroot.conf
+)
+
+# to track progress, calculate how many jobs there will be
+total=$(( ${#boards[@]} * ${#configs[@]} ))
+
+msg="${BYon}$bin_hammer Running${_cmd_color} parallel ${_data_color}-j${jobs}${BWon} sudo "
+msg+="QUIET${_op_color}=${BRon}\$TRUE ${_op_color}./${_func_color}assemble-make-conf"
+msg+="${Boff} for all joetoo-supported platforms and configs${Boff}"
+tw=$(termwidth)
+j_msg -${notice} -mp ""  # serverity-aware newline
+box_msg "$msg" $(( tw - ( tw / 4 ) ))
+j_msg -${notice} -mp ""  # serverity-aware newline
+j_msg -${notice} -p "${Con}this may take a minute or so; $(emoji_safe $uT_watch) please wait ...${Boff}"
+j_msg -${notice} -mp ""  # serverity-aware newline
+
+old_v=$verbosity
+export QUIET=$TRUE
+export verbosity=0
+
+# {1} is argument list 1 -- each board; {2} is argument list 2 -- each config (2 ea for SYSTEM, ENV as above)
+# ":::" is how GNU parallel separates its argument list input streams
+# send the entire parallel jobset to background with & to measure progress
+parallel --joblog "$joblog_file" -j${jobs} sudo QUIET=$TRUE ./assemble-make-conf \
+    {1} {2} ::: "${boards[@]}" ::: "${configs[@]}" &
+par_pid=$!
+
+# loop to track progress with progress bar (kill -0 just means does pid exist)
+while kill -0 $par_pid 2>/dev/null; do
+    jobs_done=$(($(wc -l < "${joblog_file}") - 1))   # subtract header
+    progress_inline "$jobs_done" "$total"
+    sleep 0.2
+done  # progress bar
+
+# final update to progressbar
+jobs_done=$(($(wc -l < "${joblog_file}") - 1))
+progress_inline "$jobs_done" "$total"
+
+export QUIET=$FALSE
+export verbosity=$old_v
+
+rm -f "$joblog_file"
+
+#
+# play with GNU parallel --
+# parallel -j4 echo {1} {2} ::: $(joetoo-sbc-list | awk '{print $1}') ::: 1.1 1.2 2.1 2.2
+#

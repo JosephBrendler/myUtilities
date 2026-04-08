@@ -15,33 +15,85 @@ ARCH="arm64"
 CHOST="aarch64-unknown-linux-gnu"
 CBUILD=x86_64-pc-linux-gnu
 ROOT=/usr/${CHOST}/
-# comment-out 3 lines above, and use this (below) for chroot
+CTARGET="${CHOST}"
+SYSROOT="/usr/${CHOST}/"
+# comment-out lines above, and use this (below) for chroot
 # (or carefully use alias emerge-chroot to specify ROOT, CBUILD, CHOST)
 #ROOT=/
-
+#CTARGET="${CHOST}"
+#SYSROOT="/"
 
 EMERGE_DEFAULT_OPTS="--jobs=1 --load-average=1"
 
-# 3 remote host with 4 cores + 0 remote hosts with 2 cores = 12 cores remote
-# 1 local host with 4 cores = 4 cores local (M=4)
-# total number of cores is 16, so N = 2*16+1=33 ; set MAKEOPTS="-jN -lM"
-#MAKEOPTS="-j33 -l4"
-MAKEOPTS="-j17 -l4"
+# MAKEOPTS - set -j# and -l#
+#  -j (--jobs) is the number of simultaneous jobs (basic recommendation is (2 * #cpus) + 1)
+#     (note: total #cpus can be high, in a distcc environment)
+#  -l (--load-average) limits creation of parallel tasks based on the current load average
+#     (do not count remote cpus; basic recommendation is #cpus +1 )
+# former (now obsolete) wisdom from the 2006 timeframe:
+# aggressive setting --
+#   MAKEOPTS=" -j$(( $(( 2 * $(nproc) )) + 1 )) -l$(( $(nproc) + 1 ))"
+#   MAKEOPTS="-j9 -l5"  # example for 4 core system (no remote distcc support)
+# Above method is now obsolete; for example, as of 2026 --
+#   gcc/clang may take 1.5 GB to 2 GB of RAM per job; rustc can use 3–6 GB;
+#   linkers can use 8–16 GB on large packages
+# To avoid swap storms and OOM kills, limit jobs to RAM/2GB
+#   per job. Lower the MAKEOPTS j value to provide at least 2G RAM per cpu, so the system can
+#   compile without hitting swap very often, slowing things down
+# Also, the -l parameter is meaningless for distcc clients, so ignore it
+# Conserviative setting -- jobs must be integer, so integer division is sufficient
+memtotal_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+jobs=$(( memtotal_kb / (2 * 1024 * 1024) ))
+[ $jobs -lt 1 ] && jobs=1
+MAKEOPTS="-j${jobs}"
+# note: also consider using per-package j4_makeopts.conf
+#   or creating a j1_makeopts.conf for some packages
 
 ACCEPT_KEYWORDS="arm64"
 
 ACCEPT_LICENSE="* -@EULA"
 
-FEATURES="sandbox parallel-fetch -collision-protect -pid-sandbox"
-FEATURES=${FEATURES}" buildpkg"
-FEATURES=${FEATURES}" getbinpkg"
-#FEATURES=${FEATURES}" noman"
-FEATURES=${FEATURES}" noinfo"
-FEATURES=${FEATURES}" nodoc"
-FEATURES="distcc "${FEATURES}
-#FEATURES="ccache "${FEATURES}
+# explicitly opt in on Gentoo's new standard binary package format
+BINPKG_FORMAT="gpkg"
 
-USER_TIME_QUOTA=20.8
+# standard FEATURES set for joetoo --
+FEATURES=""
+FEATURES="${FEATURES} -pid-sandbox"           # off: breaks too many packages
+FEATURES="${FEATURES} -user-sandbox"          # off: prevent breakage in cross-arch and distcc builds (esp. for SBCs)
+FEATURES="${FEATURES} -userpriv"              # off: prevent breakage in cross-arch and distcc builds (esp. for SBCs)
+FEATURES="${FEATURES} -collision-protect"     # (obsolete) turn off b/c it breaks binpkg upgrades, multi-slot install
+
+FEATURES="${FEATURES} sandbox"                # prevents ebuilds from doing stupid things in the production system
+FEATURES="${FEATURES} parallel-fetch"         # fetch while building; saves time on slow SBCs
+FEATURES="${FEATURES} merge-sync"             # prevents portage from blowing away metadata during sync
+FEATURES="${FEATURES} fixlafiles"             # keeps .la files from breaking linking on mixed‑arch systems
+#FEATURES="${FEATURES} deterministic"         # reproducible builds across architectures (slows down builds)
+
+FEATURES="${FEATURES} buildpkg"               # build binpkgs for everything (serve to others)
+FEATURES="${FEATURES} getbinpkg"              # use external binhost when available
+FEATURES="${FEATURES} binpkg-multi-instance"  # required for multi-slot pkgs and gpkg, cluster consistency
+
+#FEATURES="${FEATURES} noman"                 # save space on sbcs
+FEATURES="${FEATURES} noinfo"                 # save space on sbcs
+FEATURES="${FEATURES} nodoc"                  # save space on sbcs
+
+#FEATURES="${FEATURES} ccache"                # cache compiled results (off until ABI/distcc problems get fixed)
+FEATURES="${FEATURES} distcc"                 # participate in distributed compile cluster
+
+# FUTURE: add binpkg signing
+#FEATURES="${FEATURES} sign"                  # sign binpkgs
+#PORTAGE_GPG_KEY="<binpkg-sign-key"           # sign binpkgs
+
+# Maintainer Notes:
+# (1) normally, one box might be best to use "userpriv" but this joetoo template is tuned to support
+#     a cross-arch distcc cluster, cross-builds for entire systems, binpkgs for multiple arch's,
+#     and SBCs with toolchain quirks
+# (2) per-package env overrides are available and should also be curated
+# (3) precedence: lowest to highest: make.conf, per-package env, command line...
+#   *** so app-portage/jus needs to be corrected to NOT override per-package env choices
+#       by adding FEATURES= on the command line ***
+
+# USER_TIME_QUOTA=20.8   # (obsolete) intended to limit cpu time an ebuild could consume; part of userpriv/usersandbox
 
 # some scripts looks for PORTDIR in make.conf explicitly
 PORTDIR="${ROOT}var/db/repos/gentoo"
@@ -53,31 +105,81 @@ PORTAGE_LOGDIR="${ROOT}var/log/portage"
 PORTAGE_ELOG_CLASSES="warn error log"
 PORTAGE_ELOG_SYSTEM="save"
 
-# This sets the language of build output to English.
-# Please keep this setting intact when reporting bugs.
-LANG="en_US.UTF-8"
-LINGUAS="en_US.UTF-8"
-LC_COLLATE="C"
-LC_CTYPE=C
-LC_MESSAGES=C
+# localization: see https://wiki.gentoo.org/wiki/Localization/Guide
+# RUNTIME localization (LANG and LC_*)
+#    * set locale(s) with locale.gen; locale-gen; eselect locale
+#    format: locales in /etc/locale.gen (<locale name> <charset>)
+#        <locale name>: (ll_CC.<charset> e.g. en_US.UTF-8) see /usr/share/i18n/locales/
+#        <charset>: normally UTF-8 (and ISO-8859-1)
+#        joetoo: two lines in /etc/locale.gen: 1: "en_US ISO-8859-1" and 2: "en_US.UTF-8 UTF-8"
+#    * after locale-gen; eselect en_US.utf8 (sets LANG=en_US.UTF-8),
+#         edit /etc/env.d/02locale to explicitly set LC_COLLATE=C, LC_CTYPE=en_US.UTF-8
+#    format: use ISO 639-1 or 639-2 (ll_cc.UTF-8)
+#        LC_ sets aspects, LANG sets what is not already explicity set
+#        don't set LC_ALL - it overrides other LC_ settings
+#        do set LC_COLLATE=C explicitly ( =C recommended for system-wide stability )
+#        (Gentoo recommendation: For optimal performance and predictability, especially
+#         in server environments or when dealing with scripts and utilities sensitive
+#         to collation speed: Set LC_COLLATE=C. You can still set LANG or LC_CTYPE
+#         to a UTF-8 locale (e.g., en_US.UTF-8) to ensure proper display of characters
+#         in other contexts.)
+# BUILDTIME localization (L10N and LINGUAS)
+#    * set with /etc/portage/package.use/02localization (equivalent to putting in make.conf)
+#    L10N is a USE_EXPAND flag group
+#        format: */* L10N: en en-US (language-only and/or language-country codes)
+#    LINGUAS is used as both a USE_EXPAND flag group and a gettext-specific environment variable
+#            format: */* LINGUAS: en en_US (ISO 639 but omit .country-charset (ll_cc) (no trailing .UTF-8)
+#            essentially expands into USE="nls-en nls-en_US"
+#    see also https://wiki.gentoo.org/wiki//etc/portage/make.conf#LINGUAS and #L10N
+#
+## This sets the language of build output to English.
+## Please keep this setting intact when reporting bugs.
+#LANG="en_US.UTF-8"
+#LINGUAS="en_US.UTF-8"
+#LC_COLLATE="C"
+#LC_CTYPE=C
+#LC_MESSAGES=C
 
-#INPUT_DEVICES="evdev"     # Linux kernel's generic input event interface
-#INPUT_DEVICES="libinput"  # Synaptics driver for touchpads
+#INPUT_DEVICES="evdev"     # (deprecated) Linux kernel's generic input event interface
+#INPUT_DEVICES="libinput"  # originally developed as Synaptics driver for touchpads
+# old guides recommended using both but it's not necessary
+# (X11 prefers libinput, Wayland ignores evdev, evdev can cause duplicate device enumeration,
+#  evdev can break touchpad gestures or touchscreen calibration, and evdev has been deprecated)
 # use libinput - the modern unified input stack for mice, kbds, touchpads, touchscreens
 INPUT_DEVICES="libinput"
 
-VIDEO_CARDS="fbdev"
+VIDEO_CARDS="etnaviv"
+# Maintainer Notes:
+# (1)  consider migrating to /etc/portage/package.use/13_video_cards with format:
+#   */* VIDEO_CARDS: "-* intel iris"
 
-INSTALL_MASK="/usr/share/dev-perl/DBD-mysqllocale \
--/usr/share/locale/en \
--/usr/share/locale/en_US \
--/usr/share/locale/kf5_all_languages \
--/usr/share/locale/locale.alias"
+# INSTALL_MASK is a post‑build, pre‑merge filter that tells portage -
+# “After building the package, but before merging it into ROOT, delete these paths”
+# It is used to strip unwanted locales, documentation, examples, manpages,
+#   bundled unwanted libraries, and files that would conflict with the live system layout
+#INSTALL_MASK="/usr/share/dev-perl/DBD-mysqllocale \
+#  -/usr/share/locale/en \
+#  -/usr/share/locale/en_US \
+#  -/usr/share/locale/kf5_all_languages \
+#  -/usr/share/locale/locale.alias"
+# The above was used to mask all and selectively unmask english - not needed any more, since
+#   L10N and LINGUAS in /etc/portage/package.use/02localization
 
+# UNINSTALL_IGNORE is also a post-build filter but in the other direction; it tells portage -
+# "When uninstalling a package, do NOT delete these paths"
+# It is used to protect symlinks, directories, files owned/installed by mutiple packages,
+#   and files that must persist across upgrades
 # otherwise apache2 uninstalls my symlink /var/www --> /srv/www
-UNINSTALL_IGNORE="/lib/modules/* \
-/var/www"
+UNINSTALL_IGNORE="
+/lib/modules/*
+/var/www
+/boot/*.dtb
+"
 
+# CONFIG_PROTECT_MASK tells portage -
+# "Do NOT treat these paths as config files;overwrite them without ._cfg0000 files.
+# It is used for generated/ephemeral files that should never be preserved
+#   across upgrades
 CONFIG_PROTECT_MASK="/etc/crossbuild-tools"
 
 # joetoo standard global USE flags (desktop)(crossbuild) (20250716)
@@ -89,23 +191,35 @@ ${ARCH} apache2 bash-completion bluetooth caps cgi crypt cxx dbus dvd \
 elogind evdev gd gif git gnutls gpm hardened \
 introspection libnotify logrotate mp3 mpeg mtp mysql odbc ogg pam \
 pdf perl pic pie png policykit ssl svg threads tiff truetype udev unicode \
-upnp urandom usb verify-sig zlib gtk gtk2 kde plasma qt6 wayland X xscreensaver \
+upnp urandom usb verify-sig zlib gtk kde plasma qt6 wayland X xscreensaver \
 -bindist -debug -networkmanager -nls -samba -systemd -test -webengine \
 "
 
 GRUB_PLATFORMS=""
 
-PHP_INI_VERSION="production"
-
-KERNEL="linux"
+# KERNEL= setting no longer required in modern Gentoo - removal scheduled for 1 August 2026
+#KERNEL="linux"
 
 QEMU_SOFTMMU_TARGETS="aarch64 arm x86_64"
 QEMU_USER_TARGETS="aarch64 arm x86_64"
 
-LLVM_TARGETS="AArch64 AMDGPU ARM AVR BPF Hexagon Lanai LoongArch MSP430 Mips NVPTX PowerPC RISCV Sparc SystemZ VE WebAssembly X86 XCore"
+LLVM_TARGETS="AArch64 ARM X86"
 
-GENTOO_MIRRORS="http://gentoo.osuosl.org/
-ftp://ftpp.gtlib.gatech.edu/pub/gentoo
-http://open-systems.ufl.edu/mirrors/gentoo
-ftp://mirrors.rit.edu/gentoo/
-http://mirrors.rit.edu/gentoo/"
+# GENTOO_MIRRORS - optimized choices for support to Northern Virginia
+#   LeaseWeb runs an Anycast CDN for Gentoo, with US East node in Washington, DC (fastest mirror for Northern VA)
+#     peering with Equinix Ashburn - biggest IX on east coast, Verizon, Comcast, Cox, CentruryLink
+#     20260407 - ipv4: 5.82 ms, no AAAA record for ipv6
+#   OSUOSL (Oregon State University Open Source Lab) is Gentoo’s primary upstream mirror provider,
+#     nodes in Oregon, Chicago, NY (latter 2 supporting east coast)
+#     (high reliability, excellent uptime, and strong bandwidth)
+#     20260407 - ipv4:  81.7 ms, ipv6: 80.7 ms
+#   Virginia Tech (Blacksburg, VA) - good regional mirror Ashburn -> Blackburg low latency, well maintained academic mirror
+#     20260407 - ipv4: 10.4 ms, ipv6: 10.9 ms
+#   Rochester Institute of Technology (RIT) (Rochester, NY) - solid, well‑maintained academic mirror
+#     20260407 - ipv4: 26.5 ms, ipv6: 190.ms
+GENTOO_MIRRORS="
+https://mirror.leaseweb.com/gentoo/
+http://gentoo.osuosl.org/
+http://mirror.cc.vt.edu/pub/gentoo/
+http://mirrors.rit.edu/gentoo/
+"

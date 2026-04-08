@@ -1,6 +1,25 @@
 EMERGE_DEFAULT_OPTS="--jobs=1 --load-average=1"
 
-# 3 remote host with 4 cores + 0 remote hosts with 2 cores = 12 cores remote
-# 1 local host with 4 cores = 4 cores local (M=4)
-# total number of cores is 16, so N = 2*16+1=33 ; set MAKEOPTS="-jN -lM"
-#MAKEOPTS="-j33 -l4"
+# MAKEOPTS - set -j# and -l#
+#  -j (--jobs) is the number of simultaneous jobs (basic recommendation is (2 * #cpus) + 1)
+#     (note: total #cpus can be high, in a distcc environment)
+#  -l (--load-average) limits creation of parallel tasks based on the current load average
+#     (do not count remote cpus; basic recommendation is #cpus +1 )
+# former (now obsolete) wisdom from the 2006 timeframe:
+# aggressive setting --
+#   MAKEOPTS=" -j$(( $(( 2 * $(nproc) )) + 1 )) -l$(( $(nproc) + 1 ))"
+#   MAKEOPTS="-j9 -l5"  # example for 4 core system (no remote distcc support)
+# Above method is now obsolete; for example, as of 2026 --
+#   gcc/clang may take 1.5 GB to 2 GB of RAM per job; rustc can use 3–6 GB;
+#   linkers can use 8–16 GB on large packages
+# To avoid swap storms and OOM kills, limit jobs to RAM/2GB
+#   per job. Lower the MAKEOPTS j value to provide at least 2G RAM per cpu, so the system can
+#   compile without hitting swap very often, slowing things down
+# Also, the -l parameter is meaningless for distcc clients, so ignore it
+# Conserviative setting -- jobs must be integer, so integer division is sufficient
+memtotal_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+jobs=$(( memtotal_kb / (2 * 1024 * 1024) ))
+[ $jobs -lt 1 ] && jobs=1
+MAKEOPTS="-j${jobs}"
+# note: also consider using per-package j4_makeopts.conf
+#   or creating a j1_makeopts.conf for some packages
