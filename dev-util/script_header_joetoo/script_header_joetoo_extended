@@ -373,3 +373,168 @@ run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence
 # @vars: INTERACTIVE, logFile, PN, US, _data_color, _op_color
 # @ret: 0 on success, 1 on abort, or bitmask of failed steps
 # @deps: isint, yns_prompt, separator, j_msg -${notice}, handle_result, strip_ansi, _translate_escapes
+
+validate_subnet()  # (BASH) validate a subnet by delegation
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+
+    if [[ "$sn" == *:* ]]; then
+        validate_ipv6_subnet "$sn"
+    else
+        validate_ipv4_subnet "$sn"
+    fi
+}
+# @usage  validate_subnet SUBNET
+# @args   SUBNET  CIDR-formatted IPv4 or IPv6 subnet string
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   validate_ipv4_subnet validate_ipv6_subnet j_msg
+# @vars   debug  severity level for j_msg diagnostics
+# @rule   Delegates validation to IPv4 or IPv6 validator based on presence of ':'
+# @note   This function performs no syntax checks itself; it only dispatches
+# @ex     validate_subnet "192.168.1.0/24"
+# @ex     validate_subnet "fd62:6262:6262::/64"
+
+validate_ipv6_subnet()  # (BASH) validate an IPv6 subnet
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+    local addr mask
+    # split address/mask
+    IFS='/' read -r addr mask <<< "$sn"
+    # mask must exist
+    if [[ -z "$mask" ]]; then
+        j_msg -${err} "missing IPv6 mask in [$sn]"
+        return 1
+    fi
+    # mask must be numeric 0–128
+    if [[ ! "$mask" =~ ^[0-9]{1,3}$ ]] || (( mask < 0 || mask > 128 )); then
+        j_msg -${err} "IPv6 mask [$mask] out of range in [$sn]"
+        return 1
+    fi
+    # address must contain only hex, colons, and at most one '::'
+    if [[ "$addr" =~ [^0-9a-fA-F:] ]]; then
+        j_msg -${err} "invalid characters in IPv6 address [$addr]"
+        return 1
+    fi
+    # only one '::' allowed
+    if [[ $(grep -o "::" <<< "$addr" | wc -l) -gt 1 ]]; then
+        j_msg -${err} "IPv6 address [$addr] contains multiple '::'"
+        return 1
+    fi
+    # validate each group (except the compressed '::')
+    local group
+    IFS=':' read -ra groups <<< "$addr"
+    for group in "${groups[@]}"; do
+        [[ -z "$group" ]] && continue  # part of ::
+        if [[ ${#group} -gt 4 ]]; then
+            j_msg -${err} "IPv6 group [$group] too long in [$addr]"
+            return 1
+        fi
+    done
+    j_msg -${info} -m "ipv6 subnet $sn is ${BGon}VALID${Boff}"
+    return 0
+}
+# @usage  validate_ipv6_subnet SUBNET
+# @args   SUBNET  IPv6 CIDR string (address/mask)
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   j_msg grep wc
+# @vars   debug err info  severity levels for j_msg diagnostics
+# @rule   Mask must be numeric 0–128; address may contain hex and colons only
+# @rule   At most one '::' compression sequence is allowed
+# @rule   Each non-empty group must be <=4 hex digits
+# @note   Does not expand or normalize IPv6 addresses; validation only
+# @note   Accepts compressed and uncompressed IPv6 forms
+# @ex     validate_ipv6_subnet "fd62:6262:6262::/64"
+# @ex     validate_ipv6_subnet "2001:db8:1:2:3:4:5:6/128"
+
+validate_ipv4_subnet()  # (BASH) validate an IPv4 subnet
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+    local o1 o2 o3 o4 mask
+    # basic IPv4 CIDR regex
+    if [[ ! "$sn" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+        j_msg -${err} "invalid IPv4 subnet syntax: [$sn]"
+        return 1
+    fi
+    # split
+    IFS='./' read -r o1 o2 o3 o4 mask <<< "$sn"
+    # validate octets
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+        if (( o < 0 || o > 255 )); then
+            j_msg -${err} "IPv4 octet [$o] out of range in [$sn]"
+            return 1
+        fi
+    done
+    # validate mask
+    if (( mask < 0 || mask > 32 )); then
+        j_msg -${err} "IPv4 mask [$mask] out of range in [$sn]"
+        return 1
+    fi
+    j_msg -${info} -m "ipv4 subnet $sn is ${BGon}VALID${Boff}"
+    return 0
+}
+# @usage  validate_ipv4_subnet SUBNET
+# @args   SUBNET  IPv4 CIDR string (address/mask)
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   j_msg
+# @vars   debug err info  severity levels for j_msg diagnostics
+# @rule   Address must match N.N.N.N/M where octets are 0–255 and mask 0–32
+# @rule   Rejects malformed IPv4 strings before numeric validation
+# @note   Does not check network/broadcast semantics; syntax only
+# @ex     validate_ipv4_subnet "192.168.1.0/24"
+# @ex     validate_ipv4_subnet "10.0.0.0/8"
+
+extract_distccd_settings() {
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    # note: uses global $distccd_conf
+    default_subnets=()
+    distcc_port=3632   # fallback
+    local opts token next
+
+    if [[ ! -f "$distccd_conf" ]]; then
+        j_msg -${warn} -p "distccd config [$distccd_conf] not found"
+        j_msg -${warn} -m "using fallback port [$distcc_port] and no default subnets"
+        return 0
+    fi
+    # source in a subshell to avoid polluting environment
+    opts=$(source "$distccd_conf" 2>/dev/null; echo "$DISTCCD_OPTS")
+    j_msg -${debug} -p "raw DISTCCD_OPTS: [$opts]"
+    # tokenize - read space-delimited string into array of form: (--opt val --opt val)
+    read -ra tokens <<< "$opts"
+    # iterate through tokens to identify port and allowed subnet values
+    for ((i=0; i<${#tokens[@]}; i++)); do
+        token="${tokens[i]}"
+        next="${tokens[i+1]}"
+        case "$token" in
+            --port)  # if next is not --opt, assign as distcc_port val
+                if [[ -n "$next" && "$next" != --* ]]; then
+                    distcc_port="$next"
+                    j_msg -${debug} -p "(distccd) port=$distcc_port"
+                fi
+                ;;
+            --allow)  # if next is not --opt, assign as a default_subnet array val
+                if [[ -n "$next" && "$next" != --* ]]; then
+                    default_subnets+=("$next")
+                    j_msg -${debug} -p "(distccd) allow subnet=$next"
+                fi
+                ;;
+        esac
+    done
+    return 0
+}
+# @usage  extract_distccd_settings
+# @ret    0 always; sets distcc_port and default_subnets[] based on config
+# @vars   distccd_conf  path to distccd config file
+# @vars   distcc_port   output port number extracted or fallback
+# @vars   default_subnets  array of --allow subnets extracted from config
+# @deps   j_msg source grep awk  # uses subshell sourcing and token parsing
+# @rule   Must not pollute caller environment; config is sourced in subshell
+# @rule   If distccd_conf missing, fallback port=3632 and no subnets are used
+# @rule   Only tokens following --port or --allow are consumed as values
+# @note   DISTCCD_OPTS is parsed as a flat token list; no quoting semantics
+# @note   Function performs no validation of extracted subnets or port
+# @warn   Unexpected or malformed DISTCCD_OPTS entries are silently ignored
+# @ex     extract_distccd_settings
+# @ex     echo "$distcc_port" ; printf "%s\n" "${default_subnets[@]}"
