@@ -3,45 +3,33 @@
 # distcc-estimator  - joe brendler nov 2025 (c) 2025-7789
 #   20260408 - refactored from collect_distcc_hosts_support_data_sysbench
 #
-# create a smartly rank-ordered draft /etc/distcc/hosts file AND a recommended MAKEOPTS=
+# create a smartly rank-ordered draft ${hosts_file} file AND a recommended MAKEOPTS=
 #   assignment for the local host (distcc client) /etc/portage/make.conf
 
 source /usr/sbin/script_header_joetoo
 
 #-----[ metadata ]--------------------------------------------------------------
 # @usage  distcc-estimator
-# @cont   Scans local and remote distcc servers, computes job limits, and prints
-# @cont   a draft /etc/distcc/hosts ordering and a recommended MAKEOPTS value.
-#
-# @opts   none
-#
-# @args   none
-#
+# @note   Scans local and remote distcc servers, computes job limits, and prints
+# @append   a draft ${hosts_file} ordering and a recommended MAKEOPTS value.
 # @vars   verbosity        # optional; controls message severity
 # @vars   local_job_limit  # computed local job capacity (L)
 # @vars   total_remote_job_limit  # computed remote job capacity (R)
 # @vars   host_benchmarks  # array of host:sysbench:joblimit entries
-#
 # @ret    0 on success; non-zero on failure with bitwise error flags in functions
-#
 # @deps   script_header_joetoo
 # @deps   ssh, sysbench, nproc, free, awk, grep, sed, sort, cut
-#
 # @req    must not be run as root; requires passwordless ssh to remote hosts
-# @req    /etc/distcc/hosts must exist and be world-readable
-#
+# @req    ${hosts_file} must exist and be world-readable
 # @rule   local job limit L = min(local_cores, local_RAM_GB/2)
 # @rule   remote job limit R = sum(min(remote_cores, remote_RAM_GB/2))
 # @rule   effective MAKEOPTS = -j(L + floor(0.75 * R))
 # @rule   sysbench is used only for host ranking, not for MAKEOPTS math
-#
-# @note   The tool does not modify /etc/distcc/hosts or make.conf; it only
+# @note   The tool does not modify ${hosts_file} or make.conf; it only
 # @cont   prints recommended values for administrator review
 # @note   Remote hosts that fail ssh or sysbench checks are skipped
-#
 # @warn   Incorrect RAM reporting (e.g. free -g rounding) may slightly reduce
 # @cont   calculated job limits; this is expected and safe
-#
 # @ex     distcc-estimator
 # @cont   # prints ranked host list and recommended MAKEOPTS="-jN"
 
@@ -55,9 +43,110 @@ if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1
 
 local_job_limit=0
 total_remote_job_limit=0
-declare -a host_benchmarks
+declare -a host_benchmarks=()
+
+varlist="bool.DISCOVER rlv.hosts_file  rlv.subnets_str verbosity"
+initialize_vars $varlist
+
+hosts_file=/etc/distcc/hosts
+DISCOVER=$FALSE
+declare -a discover_subnets=()
 
 #-----[ functions ]-------------------------------------------------------------
+
+usage() {
+  local msg="" longopt=""
+  local _u_format="     ${BMon}-%-1s${Boff}, ${BMon}--%-19s${Boff}%-40s"
+  local _u_indent=30
+
+  j_msg -${notice} -p "${BRon}Usage${Boff}: $PN [options]"
+  j_msg -${notice} -p "${BYon}Options${Boff}:"
+
+  msg=$(printf "$_u_format" "e" "existing ........." "Use existing ${hosts_file} (default)")
+  j_msg -${notice} -mp "$msg"
+
+  msg=$(printf "$_u_format" "c" "config [file] ...." "Use specified hosts file; if no file given,")
+  j_msg -${notice} -mp "$msg"
+  CUF ${_u_indent}; j_msg -${notice} -mp "defaults to ${hosts_file}"
+
+  msg=$(printf "$_u_format" "d" "discover [subnet]" "Discover distcc servers in subnet; may be repeated.")
+  j_msg -${notice} -mp "$msg"
+  CUF ${_u_indent}; j_msg -${notice} -mp "If no subnet is given, infer /24 subnets from"
+  CUF ${_u_indent}; j_msg -${notice} -mp "location of hosts in ${hosts_file}"
+
+  msg=$(printf "$_u_format" "h" "help ............." "Show this help message")
+  j_msg -${notice} -mp "$msg"
+  j_msg -${notice} -mp ""
+}
+
+parse_cmdline() {
+  # Normalize long options to short equivalents
+  local normalized=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --existing)   normalized+=("-e") ;;
+      --config)     normalized+=("-c") ;;
+      --discover)   normalized+=("-d") ;;
+      --help)       normalized+=("-h") ;;
+      *)            normalized+=("$1") ;;
+    esac
+    shift
+  done
+
+  # Reset positional parameters to normalized list
+  set -- "${normalized[@]}"
+
+  # Manual parser (supports optional args for -c and -d)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -e)  # (existing) explicitly use existing hosts file
+        DISCOVER=$FALSE
+        hosts_file="/etc/distcc/hosts"
+        shift
+        j_msg -${debug} -p "(pc) set DISCOVER=\$FALSE, hosts_file=default, shifted 1"
+        ;;
+
+      -c)  # (config) optional argument: if next token exists and is not an option, treat as file
+        DISCOVER=$FALSE
+        if [[ -n "${2:-}" && "$2" != -* ]]; then
+          hosts_file="$2"
+          shift 2
+          j_msg -${debug} -p "(pc) set DISCOVER=\$FALSE, hosts_file=$2, shifted 2"
+        else
+          hosts_file="/etc/distcc/hosts"
+          shift
+          j_msg -${debug} -p "(pc) set DISCOVER=\$FALSE, hosts_file=default, shifted 1"
+        fi
+        ;;
+      -d)  # (discover) optional argument: if next token exists and is not an option, treat as subnet
+        DISCOVER=$TRUE
+        if [[ -n "${2:-}" && "$2" != -* ]]; then
+          discover_subnets+=("$2")
+          subnets_str+="${subnets_str:+ }${2}"
+          hosts_file="/etc/distcc/hosts"
+          shift 2
+          j_msg -${debug} -p "(pc) set DISCOVER=\$TRUE, hosts_file=default, subnets+=$2, shifted 2"
+        else
+          # no subnet provided; infer later
+          hosts_file="/etc/distcc/hosts"
+          shift
+          j_msg -${debug} -p "(pc) set DISCOVER=\$TRUE, hosts_file=default, shifted 1"
+        fi
+        ;;
+
+      -h)  # (help) print usage message; exit 0
+        usage
+        exit 0
+        ;;
+
+      *)  # (invalid) print usage message; exit 1
+        j_msg -${err} "Unknown option: $1"
+        usage
+        exit 1
+        ;;
+    esac
+  done
+}
 
 # calculate the job limit for a single host
 # (algorithm: determine dominant constraint
@@ -109,20 +198,20 @@ draft_etc_distcc_hosts() {
   # print the formatted output for localhost
   printf "$format" "${Bon}" "localhost" "$local_benchmark" "$local_job_limit" "${Boff}"
 
-  # process /etc/distcc/hosts file
+  # process ${hosts_file} file
   _this_host=$(hostname)
   # grep -Ev "^#|^${W0}$" strips comments and blank lines
   # sed -E "s/^${W0}//; l-trims leading whitespace
   # sed -E s/,lzo.*//;  r-trims from ,lzo. to the right
   # sed -E s/\/(.*)//   r-trims from / to the right (e.g. 192.168.1.5/4 (jobs indicator))
   # also pre-filter out "localhost/loopback" entries
-  host_list=$(grep -Ev "^#|^${W0}$" /etc/distcc/hosts | \
+  host_list=$(grep -Ev "^#|^${W0}$" "${hosts_file}" | \
             sed -E "s/^${W0}//; s/,lzo.*//; s/\/(.*)//" | \
             grep -Ev "^(localhost|127\.0\.0\.1|::1|${_this_host})$")
   readarray -t hosts <<< "$host_list" || de_ret=$(( de_ret + 8 ))   # bit 3 = readarray host_list failed
 
   if [[ "${#hosts[@]}" -eq 0 ]]; then
-    j_msg -${warn} "No distcc hosts found in /etc/distcc/hosts (excluding localhost)."
+    j_msg -${warn} "No distcc hosts found in ${hosts_file} (excluding localhost)."
   else
     _count=0
     for host in "${hosts[@]}"; do
@@ -165,7 +254,7 @@ draft_etc_distcc_hosts() {
 
   printf "$format" "${Con}" "--------" "--------" "--------" "${Boff}"
   j_msg -${notice} -mp ""
-  j_msg -${notice} -p "Recommended /etc/distcc/hosts order (descending power):"
+  j_msg -${notice} -p "Recommended ${hosts_file} order (descending power):"
 
   # sort with key on col 2 (sysbench)
   sorted_hosts=($(printf "%s\n" "${host_benchmarks[@]}" | sort -t: -k2 -nr)) || de_ret=$(( de_ret + 64 ))   # bit 6 = host sort failed
@@ -196,8 +285,12 @@ draft_makeopts() {
 }
 
 #-----[ main script ]-------------------------------------------------------------
-checknotroot  # needs to run as user for ssh remote collection; /etc/distcc/hosts is world readable (644)
+checknotroot  # needs to run as user for ssh remote collection; ${hosts_file} is world readable (644)
 separator "$(hostname)" "${PN}-${BUILD}"
+
+parse_cmdline "$@" || die "failed to parse_cmdline"
+show_config || die "failed to show_config"
+debug_marker
 
 draft_etc_distcc_hosts || die "failed to draft_etc_distcc_hosts, status [$?]"
 draft_makeopts || die "failed to draft_makeopts, status [$?]"

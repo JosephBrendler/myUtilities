@@ -5908,6 +5908,131 @@ rotate_logfile()
 # @req logFile must be validated before LOGGING j_msg/right_status
 # @append use can work, incl. here
 
+validate_root_file()  # (POSIX) validate existence and readability of a root-owned file
+{ [ $# -ne 1 ] && { j_msg -${err} "validate_root_file_readonly: must specify file"; return 1; }
+  _vr_rootFile="$1"
+  _vr_msg=""
+
+  # check existence
+  j_msg -${info} -m -n "checking existence of _vr_rootFile [$_vr_rootFile]"
+  if [ ! -f "$_vr_rootFile" ]; then
+    if [ -z "${_vr_rootFile##*/}" ]; then
+      j_msg -${err} "_vr_rootFile [$_vr_rootFile] has a trailing /"
+      if [ -f "${_vr_rootFile%/}" ]; then
+        yn_prompt "${_vr_rootFile%/} is a file; did you mean that ?"
+        case "$answer" in
+          [yY]*) _vr_rootFile=${_vr_rootFile%/} ;;
+          *) return 1 ;;
+        esac
+      else
+        # trailing slash removed, it is still not a file, so reject it
+        [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+        [ ! -e  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] does not exist; specify a file"; return 1; }
+        j_msg -${err} "[$_vr_rootFile] is some other kind of bogus; specify a file"; return 1
+      fi  # try w/o trailing /
+    else
+      # not a file and does not have a trailing / - reject if dir; assume missing file otherwise (offer to fix below)
+      [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+    fi  # has trailing /
+    handle_result 1 "" "not found" "$info"
+    j_msg -${err} -p "${BRon}File missing:${Boff} $_vr_rootFile"
+    j_msg -${err} -m "Please verify the path; common mistakes include typos such as:"
+    j_msg -${err} -mp "  /etc/distcc/hostess"
+    j_msg -${err} -mp "  /etc/distcc/hosts.conf"
+    j_msg -${err} -mp "  /etc/distcc/hosts.bak"
+
+    yn_prompt "${BYon}(sudo) Create this file now as root:root (644) ?${Boff}"
+    case "$answer" in
+      [yY]*) fix_root_file "$_vr_rootFile"; _vr_result=$?
+          j_msg -${notice} "fix_root_file result:"
+          handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
+         ;;
+      *) return 2 ;;
+    esac
+  else
+    # -f tests true, but what about -L?
+    if [ -L "$_vr_rootFile" ]; then
+      j_msg -${err} "_vr_rootFile is a symlink; refusing for safety"
+      return 3
+    fi
+    handle_result 0 "found" "" "$info"
+  fi
+  # check readability
+  j_msg -${notice} -m -n "checking readability"
+  if [ ! -r "$_vr_rootFile" ]; then
+    handle_result 1 "" "not readable" "$notice"
+    j_msg -${err} "_vr_rootFile [$_vr_rootFile] is not readable by user [$user]"
+    yn_prompt "${BYon}(sudo) Fix permissions now (chmod a+r) ?${Boff}"
+    case "$answer" in
+      [yY]*) sudo chmod a+r "$_vr_rootFile"; _vr_result=$?
+        j_msg -${notice} "sudo chmod result:"
+        handle_result $_vr_result "" "failed to sudo chmod" ${notice} || return $?
+        ;;
+      *) return 4 ;;
+    esac
+  else
+    handle_result 0 "ok" "" "$notice"
+  fi
+  # check root writability
+  j_msg -${notice} -m -n "(sudo) checking root writability"
+  if ! sudo test -w "$_vr_rootFile" ; then
+    handle_result 1 "" "no" "$notice"
+    j_msg -${err} "_vr_rootFile is not writable by root"
+    j_msg -${err} "the file could be immutable, on a ro filesystem, ACL/Security restricted, etc."
+    yn_prompt "${BYon}(sudo) Try ownership/permissions fix now?${Boff}"
+    case "$answer" in
+      [yY]*) fix_root_file "$_vr_rootFile"; _vr_result=$?
+        j_msg -${notice} "fix_root_file result:"
+        handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
+        ;;
+      *) return 5 ;;
+    esac
+  else
+    handle_result 0 "yes" "" "$notice"
+  fi
+
+  unset -v _vr_msg _vr_result
+  return 0
+}
+# @usage validate_root_file
+# @args $1 (string) path to root-owned file to validate
+# @ret 0: exists and owned by $user; 1: missing or 2: bad ownership
+# @deps j_msg right_status
+# @note no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
+# @note in ash, the =+ operator works for arithmetic but not text concatenation
+# @rule validate_root_file performs checks only; fixes occur only after explicit user consent
+# @note validate_root_file never silently modifies root-owned files
+# @rule identifies owner/group UIDs via ls and awk for POSIX compatibility
+# @rule emits colored "corrective" instructions to stderr on failure
+
+fix_root_file() # (POSIX) create or repair a root-owned file
+{ [ $# -ne 1 ] && { j_msg -${err} "fix_root_file: must specify file"; return 1; }
+  rootFile="$1"
+  # create file if missing
+  if [ ! -f "$rootFile" ]; then
+    _fr_fix_cmd="touch '$rootFile' && chown 'root:root' '$rootFile'"
+    _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
+    sudo sh -c "$_fr_fix_cmd"
+    return $?
+  fi
+  # fix ownership and permission if needed
+  if [ ! -w "$rootFile" ]; then
+    _fr_fix_cmd="chattr -i '$rootFile' 2>/dev/null && chown 'root:root' '$rootFile'"
+    _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
+    sudo sh -c "$_fr_fix_cmd"
+    return $?
+  fi
+  return 0
+}
+# @usage fix_rootfile
+# @rule only used when the user explicitly asks for repair.
+# @append Not automatically called by validators.
+# @cont purpose: Create file if missing, set root:root ownership,
+# @append  set safe permissions, remove immutability if needed
+# @cont only run under explicit user consent
+# @note safe alternative to using validate_file which calls validate_dir
+# @append wherein validate_dir wants to chown the entire dir to user
+
 validate_logfile()  # validate existence and ownership of logFile
 { _logFile_owner_uid=""; _logFile_group_gid=""
   _user_uid=""; _user_gid=""
