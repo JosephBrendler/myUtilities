@@ -1,16 +1,35 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
 
-BUILD="0.0.0a"
+PN=${0##*/}
 
-#-----------[ start main script ]------------------------------
-checkroot
+# add ip 4/6 addresses associated with suspicious urls to block lists
+# ToDo: add more command line handling, root check, etc
+[ $# -eq 0 ] && { j_msg -${err} "${BRon}usage${Boff}: $PN <target_url>"; exit 1; }
+target="$1"
 
-separator "ipset-block-suspicious-url-"${BUILD}
+j_msg -${info} -m -n "getting ip addresses for target [$target]"
+readarray -t iplist < <(ipset-url ${target} | strip_ansi | grep '\[' | awk '{print $2}')
+handle_result $? "recorded ${#iplist[@]} ips" "" ${info} || die "failed to get ip addresses for $target"
 
-
-for ip in $(nslookup $1 | grep Address | grep -v '#' | cut -d' ' -f2)
-do
-  ipset add suspicious $ip/32
-  message "added: $ip/32"
+for ip in "${iplist[@]}";  do
+  case "$ip" in
+    *'.'*)   # ipv4
+        if ipset add suspicious "$ip"; then
+            j_msg -${debug} -p "added $ip to suspicious (ipv4)"
+        else
+            j_msg -${warn} "failed to add $ip to suspicious (ipv4)"
+        fi
+        ;;
+    *':'*) # ipv6
+        if ipset add suspicious_6 "$ip"; then
+            j_msg -${debug} -p "added $ip to suspicious_6 (ipv6)"
+        else
+            j_msg -${warn} "failed to add $ip to suspicious_6 (ipv6)"
+        fi
+        ;;
+    *) j_msg -${err} "invalid ip addr [$ip]; continuing" ;;
+  esac
 done
+
+j_msg -${info} -m "done"

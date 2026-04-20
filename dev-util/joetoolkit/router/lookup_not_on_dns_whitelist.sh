@@ -9,9 +9,13 @@
 # ---[ Include common functions ]---------------------------------
 source /usr/sbin/script_header_joetoo
 
+PN=${0##*/}   #  like =$(basename $0) but w/o subshell and function call
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+[ -z $verbosity ] && verbosity=${notice}  # assign default if null; allow calling program to dictate
+
 # ---[ Define local variables ]-----------------------------------
-BUILD="0.1 (20140809)"
-LOGFILE="/var/log/messages"
 
 SERVER="192.168.1.1"
 

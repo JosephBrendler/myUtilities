@@ -3,11 +3,13 @@
 # Joe Brendler, 2 Nov 14
 
 source /usr/sbin/script_header_joetoo
-BUILD="0.0.02"
 
-#VERBOSE=$TRUE
-VERBOSE=$FALSE
-verbosity=2
+
+PN=${0##*/}   #  like =$(basename $0) but w/o subshell and function call
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+[ -z $verbosity ] && verbosity=${notice}  # assign default if null; allow calling program to dictate
 
 ip_found_color="${BGon}"
 ip_not_found_color="${BRon}"
@@ -17,19 +19,19 @@ search_term=""
 
 parseCommandLine()
 {
-d_message "parsing commandline [ $@ ]" 1
+j_msg -${notice} -p "parsing commandline [ $@ ]"
 while [[ $# -gt 0 ]]
 do
   # if it starts with "-" then treat as option, else treat as ip address
   if [ "${1:0:1}" == "-" ]
   then
-    d_message "about to process argument(s): [ $* ]" 1
-    d_message "1: [ $1 ], 2: [ $2 ]" 2
+    j_msg -${info} -m "about to process argument(s): [ $* ]"
+    j_msg -${debug} -p "1: [ $1 ], 2: [ $2 ]"
     # process command line argument (must be one of the following)
     [ ! -z "$1" ] && case "$1" in
       "-b" | "--bogus"         ) BOGUS_VARIABLE="yes" ;;
       "-h" | "--help"          ) useage ; exit 0 ;;
-      "-v" | "--verbose"       ) VERBOSE=$TRUE; let "verbosity+=1" ;;
+      "-v" | "--verbose"       ) let "verbosity+=1" ;;
       *                        ) process_compound_arg $1 ;;
     esac
   else
@@ -53,7 +55,7 @@ do
     #handle first char
     case ${myargs:0:1} in
         "b") BOGUS_VARIABLE="yes" ;;
-        "v") VERBOSE=$TRUE; let "verbosity+=1" ;;
+        "v") let "verbosity+=1" ;;
         *  ) E_message "${E_BAD_ARGS}" && useage && exit 1
 esac
     #strip first char from myargs (i.e. "shift")
@@ -63,31 +65,33 @@ done
 
 useage()
 {
-  echo -e "${BGon}Useage:  ${Boff}ipset-find [-v[v[v[...]]]|-b] <search_criterion>"
-  echo -e " Command line options:"
-  echo -e "    "$BBon"[-h | --help]"$Boff".............print this text"
-  echo -e "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
-  echo
-  echo -e "${BBon}Example: ${Boff}ipset-find '^192.'"
+  j_msg -${notice} -p "${BGon}Useage:  ${Boff}ipset-find [-v[v[v[...]]]|-b] <search_criterion>"
+  j_msg -${notice} -mp " Command line options:"
+  j_msg -${notice} -mp "    "$BBon"[-h | --help]"$Boff".............print this text"
+  j_msg -${notice} -mp "    "$BBon"[-v | --verbose]"$Boff"..........increase verbosity"
+  j_msg -${notice} -mp ""
+  j_msg -${notice} -mp "${BBon}Example: ${Boff}ipset-find '^192.'"
 }
 
 #---[ main script ]-------------------------------
 checkroot
 
-separator "ipset-find-${BUILD}"
+separator "$(hostname)" "${PN}-${BUILD}"
 
 # $* and $@ are not the same; $* is a string and $@ is an actual array
 parseCommandLine "$@"
 
 if [[ ! -z ${search_term} ]]
 then
-  message "Searching ipsets for: [ ${BYon}${search_term}${Boff} ]"
+  j_msg -${notice} -p "Searching ipsets for: [ ${BYon}${search_term}${Boff} ]"
   # ipsets named "ipdeny" and "*_set" are of type list:set (ignore these)
   for i in $(ipset list -n | grep -v "_set" | grep -v "ipdeny" )
   do
-    ipset test $i ${search_term} 2>1 && \
-      message "${search_term} ${ip_found_color}IS${Boff} in set ${ip_found_color}${i}${Boff}" || \
-      dE_message "${search_term} is ${ip_not_found_color}NOT${Boff} in set ${i}" 3
+    if ipset test $i ${search_term} 2>1 ; then
+      j_msg -${notice} -p "${search_term} ${ip_found_color}IS${Boff} in set ${ip_found_color}${i}${Boff}"
+    else
+      j_msg -${debug} -p "${search_term} is ${ip_not_found_color}NOT${Boff} in set ${i}"
+    fi
   done
 else
   useage

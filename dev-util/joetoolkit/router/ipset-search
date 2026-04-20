@@ -1,51 +1,79 @@
 #!/bin/bash
+#
 # search ipsets for filter arg
+#
 
 source /usr/sbin/script_header_joetoo
+
+#---[ variables ]-----------------------------------------------------------------
+
+PN=${0##*/}   #  like =$(basename $0) but w/o subshell and function call
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+[ -z $verbosity ] && verbosity=${notice}  # assign default if null; allow calling program to dictate
+
 BLANK_LINE=$(repeat " " $(termwidth))
-BUILD="0.0.1a (20160221)"
 
-#---[ my local functions ]--------------------
-checkarg()
-{
-  [ ! "$1" == "" ] && SEARCH_PATTERN=$1 || exit_bad_args
-}
+declare -a ipset_list=()
+declare -a this_ipset=()
 
-exit_bad_args()
+#---[ functions ]-----------------------------------------------------------------
+
+my_usage()
 {
-  error_msg "Error: you must supply at least a search pattern (ip address) as arg1.  You may also name an ipset as arg2 to limit your search."
+  j_msg -${err}    -p "${BRon}usage${Boff} ...: $PN \"<ip_addr>\" [ipset] [ipset] ..."
+  j_msg -${err}    -m " ${BYon}Note${Boff} ....: you must provide an ip address search target as \$1"   # see ** below
+  j_msg -${err}    -m " ${BWon}Note${Boff} ....: You may also list ipset(s) as \$2+ to limit your search"
+  j_msg -${notice} -m " ${BMon}Tip${Boff} .....: run ipset-find first and then $PN with just ipsets the former returns"
+  j_msg -${warn}   -m " ${BYon}Warning${Boff} .: searching ALL ipsets takses a LONG time"
+  j_msg -${notice} -m " ${BMon}Tip${Boff} .....: to increase verbosity, run DEBUG=\$TRUE $PN ... or verbosity=[6|7] $PN ..."
   exit 1
 }
 
-#---[ main script ]--------------------------
+#---[ main script ]----------------------------------------------------------------
 checkroot
-CLR
-CUP 1 1
-checkarg $1
+[ $# -eq 0 ] && my_usage
+CLR; CUP 2 1 # clear the screen and go to second line for separator (not top)
+separator "${PN}-${BUILD}" "(looking for ${target})"
+j_msg -${debug} -p "cmdline: [$@]"
 
-## Search just one ipset if it is named by argument $2
-[ ! "$2" == "" ] && TARGET_LIST="$2" || TARGET_LIST="$(ipset list -n | sort)"
-
-separator "ipset-search-$BUILD looking for $SEARCH_PATTERN"
+target="$1"; shift # after shift any further args are ipset names
+j_msg -${notice} -m "target: [$target]"
+j_msg -${info} -m "remaining cmdline: [$@]"
+if [ $# -gt 0 ]; then
+  ipset_list=("$@")   # ** load the rest of the positional parameters as input ipset names
+  j_msg -${notice} -m "ipset_list: [${ipset_list[@]}] (assigned from cmdline)"
+else
+  # allow_set and block_set are ipsets of type list:set (contain names of ipssets, so don't include)
+  readarray -t ipset_list < <(ipset list -n | grep -v "set" | sort)
+  j_msg -${info} -m "ipset_list: [${ipset_list[@]}] (assigned by default)"
+fi
 
 ipset destroy TEMP_IPSET -q
 ipset create TEMP_IPSET hash:net
 
-#for TARGET in $(ipset list -n | sort)
-for TARGET in ${TARGET_LIST}
+# iterate through all ipsets to identify exacly which hashed range(s) the searhed ip is part of
+for list in "${ipset_list[@]}"
 do
-  for i in $(ipset list "$TARGET" | grep "\.")
+  j_msg -${notice} -p "${BYon}Now searching for ${BBon}[${BMon}$target${BBon}]${BYon} in ipset ${BBon}[${BMon}$list${BBon}]${Boff}"
+  this_ipset=()  # (re)initialize
+  # read ipv4 sets id'd by "." into this_ipset array
+  readarray -t this_ipset < <(ipset list "$list" | grep "\.")
+  # extract each range into a temporary ipset
+  for range in "${this_ipset[@]}"
   do
-    ipset flush TEMP_IPSET -q
-    ipset add TEMP_IPSET $i
-    ipset test TEMP_IPSET $SEARCH_PATTERN -q
-    result="$?"
-    [ "$result" -eq "0" ] && SCP && echo -en "${BLANK_LINE}" && RCP && \
-                             echo -en ${SEARCH_PATTERN}${BGon}" IS"${Boff}" in "${TARGET}" range "${i} && echo
-    [ "$result" -ne "0" ] && SCP && echo -en "${BLANK_LINE}" && RCP && \
-                             echo -en ${SEARCH_PATTERN}" is "${BRon}"NOT"${Boff}" in "${TARGET}" range "${i} && RCP
+    ipset flush TEMP_IPSET -q       # (re)initialize
+    ipset add TEMP_IPSET "$range"
+    # use "ipset test" to determine if target is in the range in TEMP_IPSET
+    # quietly return success if ip is in this range
+    ipset test TEMP_IPSET "$target" -q
+    case "$?" in
+      0) j_msg -${notice} -p "   [$target] ${BGon}is${Boff} in range ${BBon}[${BMon}$range${BBon}]${Boff}" ;;
+      *) j_msg -${debug} -p  "   [$target] ${BRon}is not${Boff} in range ${BBon}[${BMon}$range${BBon}]${Boff}" ;;
+    esac
   done
 done
 
 ipset destroy TEMP_IPSET -q
-SCP && echo -en "${BLANK_LINE}" && RCP && message "ipset-search complete"
+j_msg -${notice} -p "$PN complete"

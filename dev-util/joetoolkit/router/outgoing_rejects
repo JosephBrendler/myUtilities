@@ -1,3 +1,34 @@
 #!/bin/bash
 #
-grep REJECT messages | grep -v 'DST=192.168' | awk '{ print $13}' | sed 's|DST=||' | sort -u
+log_file="/var/log/shorewall-run.log"
+
+# extract REJECT message from log_file, using '-a' to force text mode and avoid "binary file match" errors
+# filter out local destinations to see "outgoing"
+# use perl-regex (-P) to extract only (-o) matching fields
+#   with positive lookbehind '(?<=)' to ensure the field matches
+#   "DST=" but to exclude the same text from output
+#   so that grep prints only the ip address
+# then sort -u to order and deduplicate
+#grep -a REJECT "$log_file" | grep -v 'DST=192.168' | grep -Po '(?<=DST=)[0-9.]+' | sort -u
+
+
+# another way - using sed for efficiency and survivability
+# stream-ed9t lines with "REJECT" and subtitute matches for *DST=<addr>* using backreference '\1' to print 'p'
+# only the grouping in parentheses (numbers and .s) following the DST=
+#sed -n '/REJECT/ s/.*DST=\([0-9.]*\).*/\1/p' /var/log/shorewall-run.log | grep -v '^192\.168' | sort -u
+#
+
+# both of the above will try but only get the first hextet of an ipv6 addr
+# above were for intended for ipv4 but introduction of dual stack ipv4/ipv6 in 2025
+
+# this pattern captures IPv4 and full IPv6 addresses
+#   \K is a "keep out" mechanism that matches everything to the left of it, but then "drops" those characters
+#   from the final result (considered a "forward match" (rather than look behind) because it simply restarts
+#   the regex engine's "start of match counter" (yes, its still a match, but dont count anything prior to this as part of it
+readarray -t K_way < <(grep -a "REJECT" "$log_file" | grep -Po 'DST=\K[0-9a-fA-F.:]+' | grep -vE '^(192\.168|fd62:6262|ff)' | sort -u)
+
+echo "Outbound REJECT Count: ${#K_way[@]}"
+
+for ip in "${K_way[@]}"; do
+  echo "$ip"
+done
