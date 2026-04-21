@@ -232,6 +232,12 @@ initialize_rus_variables()
   rus_features=" -distcc -getbinpkg"
   handle_result $? "$rus_features" "" ${info} || _irv_FLAGGED="$TRUE"
 
+  j_msg -${info} -m -n "assigning default rus_options"
+  # build exclude gentoo-kernel right into rus_options array
+  rus_options=( "--keep-going" "--exclude" "gentoo-kernel" )
+  rus_options_str="${rus_options[@]}"
+  handle_result $? "$rus_options_str" "" ${info} || _irv_FLAGGED="$TRUE"
+
   j_msg -${info} -m -n "assigning default rus_makeopts"
   rus_makeopts="-j$(nproc)"
   handle_result $? "$rus_makeopts" "" ${info} || _irv_FLAGGED="$TRUE"
@@ -303,38 +309,29 @@ initialize_rus_variables()
 rebuild_world()
 {
   rewo_ret=0
-  _rewo_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
-  _rewo_cmd="${_rewo_cmd} emerge -avbke1 world --keep-going"
-  eval "${_rewo_cmd}"; rewo_ret=$?
-  unset -v _rewo_cmd
+  env MAKEOPTS="${rus_makeopts}" FFEATURES="${FEATURES} ${rus_features}" emerge -avbke1 @world "${rus_options[@]}"
+  rewo_ret=$?
   return $rewo_ret
 }
 
 rebuild_system()
 { resys_ret=0
-  _resys_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
-  _resys_cmd="${_resys_cmd} emerge -avbke1 system --keep-going"
-  eval "${_resys_cmd}"
-  unset -v _resys_cmd
+  env MAKEOPTS="${rus_makeopts}" FFEATURES="${FEATURES} ${rus_features}" emerge -avbke1 @system "${rus_options[@]}"
+  resys_ret=$?
   return $resys_ret
 }
 
 rebuild_toolchain_with_new_tools()
 { rtwnt_ret=0
-  _rtwnt_cmd="MAKEOPTS=\"${rus_makeopts}\" FFEATURES=\"${FEATURES} ${rus_features}\""
-  _rtwnt_cmd="${_rtwnt_cmd} emerge -avb1 ${key_packages1[@]} --keep-going"
-  eval "${_rtwnt_cmd}" ; rtwnt_ret=$?
-  unset -v _rtwnt_cmd=
+  env MAKEOPTS="${rus_makeopts}" FFEATURES="${FEATURES} ${rus_features}" emerge -avb1 "${key_packages1[@]}" "${rus_options[@]}"
+  rewnt_ret=$?
   return $rtwnt_ret
 }
 
 rebuild_toolchain()
 { rt_ret=0;
-  _rt_prefix="MAKEOPTS=\"${rus_makeopts}\" FEATURES=\"${FEATURES} ${rus_features}\""
-  _rt_suffix="${key_packages1[@]} ${key_packages2[@]} --keep-going"
-  _rt_cmd="${_rt_prefix} emerge -av1 ${_rt_suffix}"
-  eval "${_rt_cmd}" ; rt_ret=$?
-  unset -v _rt_prefix _rt_suffix
+  env MAKEOPTS="${rus_makeopts}" FFEATURES="${FEATURES} ${rus_features}" emerge -av1 "${key_packages1[@]}" "${key_packages2[@]}" "${rus_options[@]}"
+  rt_ret=$?
   return $rt_ret
 }
 
@@ -426,18 +423,12 @@ j_msg -${notice} -p "done pkgsync ${action}"
 # must be root
 checkroot
 separator "$PN" "(starting)"
-app_configure || die "failed to app_configure"
 
-# re-assign varlist variables appended at the top of the script and thus
-# over-written by app_configure
-#j_msg -${info} -m -n "(re)assigning LOCALIZED"
-#LOCALIZED=$TRUE
-#handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED" ${info}
-#j_msg -${info} -m -n "(re)assigning INITIALIZED_ME"
-#INITIALIZED_ME="yes"
-#handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "${info}"
-
+# must come first, so app_configure's load .conf can override
 initialize_rus_variables || die "failed to initialize_rus_variables"
+
+# initialize varlist, load .conf, local arg handler
+app_configure || die "failed to app_configure"
 
 d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
 j_msg -${info} -m "(BEFORE process_cmdline)"

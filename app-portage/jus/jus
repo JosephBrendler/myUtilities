@@ -152,7 +152,11 @@ initialize_jus_variables()
 
   j_msg -${notice} -p -n "setting default NOBINFEATURES ..."
   # turn off getbinpkg userpriv and distcc --> override make.conf or package.env
-  NOBINFEATURES='MAKEOPTS="-j1 -l1" FEATURES=" -getbinpkg -userpriv -distcc"'
+  NOBINFEATURES="FEATURES=-getbinpkg -userpriv -distcc"
+  right_status $? ${notice} || _ijv_FLAGGED="$TRUE"
+
+  j_msg -${notice} -p -n "setting default NOBINMAKEOPTS ..."
+  NOBINMAKEOPTS="MAKEOPTS=-j1 -l1"
   right_status $? ${notice} || _ijv_FLAGGED="$TRUE"
 
   j_msg -${notice} -p -n "setting default yes/no variables ..."
@@ -161,7 +165,7 @@ initialize_jus_variables()
   NEWUSE="yes" && CHANGEDUSE="no" && \
   PYTHON_UPDATER="yes" && MODULE_REBUILD="no" && \
   X11_MODULE_REBUILD="no" && RKHUNTER="no" && GLSA_CHECK="yes" && EMAINT_CHECK="yes" && \
-  continue="y" && RESUME="no" && SYNC="no" && EXCLUDE="" && UPDATE_CHECK="no" && GO_AHEAD="no" && \
+  continue="y" && RESUME="no" && SYNC="no" && EXCLUDE="" && UPDATE_CHECK="no" && \
   KEEPGOING="yes" && USEPKG="no" && USEPKGONLY="no" && GETBINPKG="no" && GETBINPKGONLY="no" && \
   WITH_BDEPS_Y="yes"
   right_status $? ${notice} || _ijv_FLAGGED="$TRUE"
@@ -242,7 +246,7 @@ check_timestamp()
         j_msg -${notice} -p "option: sync not set by command line"
     if [ "$agehours" -gt "$MAX_AGE" ]
     then
-        if [ "$GO_AHEAD" == "yes" ]
+        if [ ! $INTERACTIVE ]
         then
             # sanity-check: unwise to go-ahead immediately after sync
             #  without checking what will be merged
@@ -270,10 +274,11 @@ emerge_sync()
     then
         fixpackages   # Perform package move updates for all packages
         case "${SYNC_CMD}" in
-            "WEBRSYNC" ) j_msg -${notice} -p "Running emerge-webrsync... " && emerge-webrsync ;;
-            "SYNC"     ) j_msg -${notice} -p "Running emerge --sync... " && emerge --sync ;;
-            "EIX_SYNC" ) j_msg -${notice} -p "Running eix-sync..." && eix-sync ;;
-            *          ) j_msg -${err} "Error: invalid sync option [ $SYNC_CMD ]" ; return 1 ;;
+            "WEBRSYNC"    ) j_msg -${notice} -p "Running emerge-webrsync... " && emerge-webrsync ;;
+            "SYNC"        ) j_msg -${notice} -p "Running emerge --sync... " && emerge --sync ;;
+            "EIX_SYNC"    ) j_msg -${notice} -p "Running eix-sync..." && eix-sync ;;
+            "EMAINT_SYNC" ) j_msg -${notice} -p "Running emaint sync..." && emaint sync ;;
+            *             ) j_msg -${err} "Error: invalid sync option [ $SYNC_CMD ]" ; return 1 ;;
         esac
         [ "${REGEN_OVERLAY_METADATA}" == "yes" ] && j_msg -${notice} -p "Running emerge --regen ..." && emerge --regen
     else
@@ -334,7 +339,8 @@ ls -al /usr/sbin/script_header_joetoo_extended
       ( depth=0; VERBOSE="$TRUE" verbosity=7 bs "${updateables[i]}" 0 "${#key_packages[@]}" "${key_packages[@]}" )
     fi
     if [[ "${result}" -gt 0 ]] ; then KP_FOUND="${TRUE}" ; pkg_color="${BRon}"; fi
-    j_msg -${notice} -mp -n "   "; j_msg -${notice} -p "${i}: ${pkg_color}${updateables[i]}${Boff} result: [${Mon}$result${Boff}]"
+#    j_msg -${notice} -mp -n "   "; j_msg -${notice} -p "${i}: ${pkg_color}${updateables[i]}${Boff} result: [${Mon}$result${Boff}]"
+    j_msg -${notice} -mp -n "   "; j_msg -${notice} -M $idx_package -p "${i}: ${pkg_color}${updateables[i]}${Boff}"
     if [[ "${result}" -gt 0 ]] ; then j_msg -${notice} -mp -n "       " ; eix -uc "${updateables[i]}" ; fi
   done
   if [[ "${KP_FOUND}" ]]
@@ -355,13 +361,13 @@ ls -al /usr/sbin/script_header_joetoo_extended
 
 emerge_updates()
 {
+    eu_ret=0
     # assemble the emerge option string and message with baseline options (note --oneshot prevents jus
     #   from just adding all updateable packages to the world favorites file)
-    OPTS1="uvD"
-    OPTS2=""
-    MSG="emerging updates"
-    if [ ! "${GO_AHEAD}" == "yes" ]
-    then
+    local OPTS1="uvD"
+    local -a OPTS2=()
+    local MSG="emerging updates"
+    if [ $INTERACTIVE ]; then
         OPTS1="a${OPTS1}"
         MSG+=" interactively"
     else
@@ -373,37 +379,41 @@ emerge_updates()
     [ "${USEPKGONLY}" == "yes" ] && OPTS1+="K"
     [ "${GETBINPKG}" == "yes" ] && OPTS1+="g"
     [ "${GETBINPKGONLY}" == "yes" ] && OPTS1+="G"
-    [ "${KEEPGOING}" == "yes" ] && OPTS2+=" --keep-going"
-    [ "${WITH_BDEPS_Y}" == "yes" ] && OPTS2+=" --with-bdeps=y"
+    [ "${KEEPGOING}" == "yes" ] && OPTS2+=( "--keep-going" )
+    [ "${WITH_BDEPS_Y}" == "yes" ] && OPTS2+=( "--with-bdeps=y" )
 
     # add --binpkg-respect-use=y and --binpkg-changed-deps=y universally (for now anyway)
-    OPTS2+=" --binpkg-respect-use=y --binpkg-changed-deps=y"
+    OPTS2+=( "--binpkg-respect-use=y" "--binpkg-changed-deps=y" )
 
     # if verbose, use --verbose-conflicts
-    [ "$verbosity" -ge "$notice" ] && OPTS2+=" --verbose-conflicts"
+    [ "$verbosity" -ge "$notice" ] && OPTS2+=( "--verbose-conflicts" )
 
-    # if we have an exclude, put it on the end of the command line
-    [ ! -z "${EXCLUDE}" ] && OPTS2+=" --exclude ${EXCLUDE}"
+    # if we have an exclude, put it on the end of the command line array (unquoted so pkgs are split args)
+    [ ! -z "${EXCLUDE}" ] && OPTS2+=( "--exclude" ${EXCLUDE} )
 
     j_msg -${notice} -p "${MSG}"
     # turn on distcc feature, but don't override setting in make.conf or package.env
     if [[ "$DISTCC" == "yes" ]]; then
-        MyCMD='FEATURES="distcc ${FEATURES}" '
+        eu_FEATURES="FEATURES=distcc ${FEATURES}"
     else
-        MyCMD=""
+        eu_FEATURES=""
     fi
-    MyCMD+="emerge -${OPTS1} @world${OPTS2}" && \
-    j_msg -${notice} -p "${BWon}About to run - [ ${BRon}${MyCMD}${BWon} ]${Boff}" && \
-    eval "${MyCMD}" || return 1
-    return 0
+    MSG="${BWon}About to run - [ ${BRon}env FEATURES=\"${eu_FEATURES}\" emerge -\"${OPTS1}\" @world \"${OPTS2[@]}\" ${BWon} ]${Boff}"
+    j_msg -${notice} -p "$MSG"
+    env FEATURES="${eu_FEATURES}" emerge -"${OPTS1}" @world "${OPTS2[@]}"
+    eu_ret=$?
+    return $eu_ret
 }
 
 show_news()
 {
     # display any news...
     j_msg -${notice} -p "The following news has been generated:"
-    eselect news read new
-    j_msg -${notice} -mp ""
+    local newscount=$(eselect news count new)
+    if [ "$newscount" -gt 0 ]; then
+        eselect news read new | less
+        j_msg -${notice} -mp ""
+    fi
 }
 
 maintain_config_files()
@@ -430,25 +440,34 @@ showelogs()
 {
     # run show-elogs script to apply important phases from emerge notes
     # if the optional go-ahead flag is set, skip this (remind user later)
-    j_msg -${notice} -p "Running show-elogs -l | less ..." && [ "$GO_AHEAD" == "no" ] && show-elogs -l | less && return 0 || return 1
+    j_msg -${notice} -p "Running show-elogs -l | less ..."
+    if [ "$INTERACTIVE"  ]; then
+        show-elogs -l | less
+        return 0
+    else
+        return 1
+    fi
 }
 
 handle_dependencies()
 {
-    j_msg -${notice} -p "\nRunning emerge -av --depclean ..." && emerge -av --depclean
-    j_msg -${notice} -p "\nRunning emerge @preserved-rebuild ..." && eval "${NOBINFEATURES} emerge @preserved-rebuild"
-    j_msg -${notice} -p "\nRunning revdep-rebuild -p ..." && eval "${NOBINFEATURES} revdep-rebuild -p"
+    j_msg -${notice} -p "\nRunning emerge -av --depclean ..."
+    emerge -av --depclean
+    j_msg -${notice} -p "\nRunning emerge @preserved-rebuild ..."
+    env "${NOBINMAKEOPTS}" "${NOBINFEATURES}" emerge @preserved-rebuild
+    j_msg -${notice} -p "\nRunning revdep-rebuild -p ..."
+    env "${NOBINMAKEOPTS}"  "${NOBINFEATURES}" revdep-rebuild -p
     # recommend you run revdep-rebuild again if it had to
     #   emerge something to fix dependencies
     # TO DO: check if that is the case and ask this only if so
+    answer=""
     if [ "$INTERACTIVE" ] ; then
-        j_msg -${notice} -mp -n "${BYon}would you like to run revdep-rebuild again, for action? (y/n) ${Boff}"
-        read rerun && j_msg -${notice} -mp ""
+        yn_prompt "${BYon}would you like to run revdep-rebuild again, for action?${Boff}"
     else
-        rerun="y"
+        answer="y"
     fi
-    case "$rerun" in
-        "y") eval "${NOBINFEATURES} revdep-rebuild" ;;
+    case "${answer:0:1}" in
+        "y") env "${NOBINMAKEOPTS}" "${NOBINFEATURES}" revdep-rebuild ;;
         *) ;; # do nothing
     esac
     j_msg -${notice} -p "\nDouble-checking configuration files now ..."
@@ -466,12 +485,12 @@ final_phases()
 
     if [ "${PERL_CLEANER}" == "yes" ]; then
         j_msg -${notice} -p "Running ${BGon}perl-cleaner --all${Boff} ..."
-        eval "${NOBINFEATURES} perl-cleaner --all"
+        env "${NOBINMAKEOPTS}" "${NOBINFEATURES}" perl-cleaner --all
     fi
 
     if [ "${HASKELL_UPDATER}" == "yes" ]; then
         j_msg -${notice} -p "Running ${BGon}haskell-updater${Boff} ..."
-        eval "${NOBINFEATURES} haskell-updater"
+        env "${NOBINMAKEOPTS}" "${NOBINFEATURES}" haskell-updater
     fi
 
     if [ "${PYTHON_UPDATER}" == "yes" ]; then
@@ -482,12 +501,12 @@ final_phases()
 
     if [ "${MODULE_REBUILD}" == "yes" ]; then
         j_msg -${notice} -p "Running ${BGon}emerge @module-rebuild${Boff} ..."
-        eval "${NOBINFEATURES} emerge @module-rebuild"
+        env "${NOBINMAKEOPTS}" "${NOBINFEATURES}" emerge @module-rebuild
     fi
 
     if [ "${X11_MODULE_REBUILD}" == "yes" ]; then
         j_msg -${notice} -p "Running ${BGon}emerge @x11-module-rebuild${Boff} ..."
-        eval "${NOBINFEATURES} emerge @x11-module-rebuild"
+        env "${NOBINMAKEOPTS}" "${NOBINFEATURES}"  emerge @x11-module-rebuild
     fi
 
     if [ "${SELINUX_RELABEL}" == "yes" ]; then
@@ -543,11 +562,11 @@ wrapup_reminders()
     find_cmd+='sort -n | tail -n 1 | '                     # sort numeric, keep only the last (latest)
     find_cmd+='cut -d" " -f2-'                             # drop the timestamp
     x=$(eval "$find_cmd")                                       # x is the full path name of the most recent file
-    x_date=$(stat "$x" | grep "Modify" | awk '{print $2}') # used stat to get the modification date
+    x_date=$(stat "$x" | grep "Modify" | awk '{print $2}') # use stat to get the modification date
     y_date=$(date -u +%Y-%m-%d)                            # e.g. 2026-02-12
     z_date=$(date -u +%Y%m%d)                              # e.g. 20260212
 
-    # if the lates file has a modification date of today, consider it new and recommend reviewing elogs
+    # if the latest file has a modification date of today, consider it new and recommend reviewing elogs
     if [ "$x_date" == "$y_date" ] ; then
         j_msg -${notice} -p "there are new elogs for today ($z_date).  Recommend you run \"echo $z_date | show-elogs | less\""
     fi  # new elogs?
@@ -556,22 +575,15 @@ wrapup_reminders()
 }
 #-----[ main script ]----------------------------------------------------
 
-app_configure || die "failed to app_configure"
+# do this first, so app_configure loads .conf can override
+initialize_jus_variables || die "failed to initialize_jus_variables"
 
-# re-assign varlist variables appended at the top of the script and thus
-# over-written by app_configure
-#j_msg -${info} -m -n "(re)assigning LOCALIZED"
-#LOCALIZED="$TRUE"
-#handle_result $? "$(TrueFalse $LOCALIZED)" "failed to reassign LOCALIZED"
-#j_msg -${info} -m -n "(re)assigning INITIALIZED_ME"
-#INITIALIZED_ME="yes"
-#handle_result $? "$INITIALIZED_ME" "failed to reassign INITIALIZED_ME" "$notice"
+# app_configure initializes varlist named variables and loads config file, local arg handler
+app_configure || die "failed to app_configure"
 
 j_msg -${info} -m -n "main script checking to verify handle_local_arg was loaded"
 command -v handle_local_arg >/dev/null 2>&1
 handle_result $? '' '' ${info}
-
-initialize_jus_variables || die "failed to initialize_jus_variables"
 
 #d_do show_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
 d_do display_config "$info"  # show config prior to processing cmdline only at info/debug verbosity
