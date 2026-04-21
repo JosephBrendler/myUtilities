@@ -1,6 +1,8 @@
 #!/bin/bash
 # assemble a make.conf file for a joetoo system
 
+# must be root - to create tempfile
+
 # source headers
 #script_header_installed_dir=./         ## only when testing, pre-ebuild
 script_header_installed_dir=/usr/sbin   # this is where it should be installed
@@ -112,8 +114,19 @@ initialize_variables() {
     right_status $? ${notice} || FLAGGED=$TRUE
 
     j_msg -${notice} -p -n "Assigning DRAFT_FILE = /tmp/draft-make-conf/make.conf.draft_${BOARD} ..."
-    export DRAFT_FILE="/tmp/draft-make-conf/make.conf.draft_${BOARD}"
+    # append pid to create a per-instance filename to prevent race conditions for parallel operations
+    export DRAFT_FILE="/tmp/draft-make-conf/make.conf.draft_${BOARD}.$$"
     right_status $? ${notice} || FLAGGED=$TRUE
+
+    j_msg -${notice} -p -n "Checking OUT_FILE directory [${package_source_dir%/}/make_conf] ..."
+    if [ -d "${package_source_dir%/}/make_conf" ]; then
+        handle_result 0 "exists" "" ${notice}
+    else
+        mkdir -p "${package_source_dir%/}/make_conf"
+        handle_result $? "created" "" ${notice} || FLAGGED=$TRUE
+        chown ${user}:${user} "${package_source_dir%/}/make_conf"
+        handle_result $? "fixed owner" "" ${notice} || FLAGGED=$TRUE
+    fi
 
     j_msg -${notice} -p -n "Assigning OUT_FILE = ${package_source_dir%/}/make_conf/make.conf.\${SYS_TYPE}.\${ENV_TYPE}.\${BOARD}"
     export OUT_FILE="${package_source_dir%/}/make_conf/make.conf.${SYS_TYPE}.${ENV_TYPE}.${BOARD}"
@@ -411,7 +424,7 @@ create-draft-file() {
         j_msg -${notice} -mp -n " (${BGon}exists${Boff})"
     else
         mkdir -p "${z}" ; result=$?
-        if [ $result -eq 0] ; then
+        if [ $result -eq 0 ] ; then
             j_msg -${notice} -mp -n " (${BGon}created${Boff})"
         else
             die "failed to mkdir -p ${z}"
@@ -589,6 +602,8 @@ post-file() {
         # copy file to final
         cp -a "${DRAFT_FILE}" "${OUT_FILE}"
         handle_result $? "copied" "" ${notice} || die "failed to copy draft to final"
+        # remove draft file
+        rm -f "${DRAFT_FILE}" || die "failed to rm ${DRAFT_FILE}"
     fi
     right_status $? ${notice} ; return $?
 }
@@ -602,6 +617,8 @@ set-ownership() {
 }
 
 #-----[ main script ]----------------------------------------------------
+
+# must be root - to create tempfile
 checkroot
 separator "${PN}" "$(hostname)"
 [ $# -ne 2 ] && usage
