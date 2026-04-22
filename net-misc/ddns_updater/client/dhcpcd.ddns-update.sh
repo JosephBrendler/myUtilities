@@ -7,7 +7,8 @@ PN=${0##*/}
 
 #-----[ user configured variables ]---------------------------------------------------
 user="joe"
-ddns_server="elrond"
+#ddns_server="elrond"
+ddns_server="elrond-ddns"   # use the alias established in ~/.ssh/config
 domain="brendler"
 
 # tp-do: transition to pairwise-unique (or client-qunique keys) for greater security
