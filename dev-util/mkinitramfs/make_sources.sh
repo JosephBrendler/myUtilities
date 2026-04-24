@@ -28,12 +28,12 @@ PN=${0##*/}    # equivalent to =$(basename $0) but w/o subshell and function cal
 separator "${PN}-$BUILD" "(setup)"
 
 # override (ROTATE and verbosity) variables with mkinitramfs.conf file
-notice_msg_n "Sourcing mkinitramfs.conf ..."
-source "${MAKE_CONF_DIR}/mkinitramfs.conf" ; right_status $?
+j_msg -${notice} -p -n "Sourcing mkinitramfs.conf ..."
+source "${MAKE_CONF_DIR}/mkinitramfs.conf" ; right_status $? ${notice}
 
 # source the init_structure list
-notice_msg_n "Sourcing init_structure variables ..."
-source "${MAKE_DIR%/}/init_structure" ; right_status $?
+j_msg -${notice} -p -n "Sourcing init_structure variables ..."
+source "${MAKE_DIR%/}/init_structure" ; right_status $? ${notice}
 
 #source ${MAKE_DIR}/dyn_executables_header
 # initialize list of executables
@@ -44,16 +44,16 @@ dependencies=()
 #---[ functions ]-----------------------------------------------
 
 # source functions in make_sources_functions_header
-notice_msg_n "Sourcing functions in make_sources_functions_header ..."
-source "${MAKE_DIR%/}/make_sources_functions_header" ; right_status $?
+j_msg -${notice} -p -n "Sourcing functions in make_sources_functions_header ..."
+source "${MAKE_DIR%/}/make_sources_functions_header" ; right_status $? ${notice}
 
 # source functions in common_bash_functions_header (load_list_ dump_executables)
-notice_msg_n "Sourcing functions in common_bash_functions_header ..."
-source "${MAKE_DIR%/}/common_bash_functions_header" ; right_status $?
+j_msg -${notice} -p -n "Sourcing functions in common_bash_functions_header ..."
+source "${MAKE_DIR%/}/common_bash_functions_header" ; right_status $? ${notice}
 
 # source functions in common_ash_functions_header (display_config, echo_long_string)
-notice_msg_n "Sourcing functions in common_ash_functions_header ..."
-source "${MAKE_DIR%/}/common_ash_functions_header" ; right_status $?
+j_msg -${notice} -p -n "Sourcing functions in common_ash_functions_header ..."
+source "${MAKE_DIR%/}/common_ash_functions_header" ; right_status $? ${notice}
 
 #---[ Main Script ]-------------------------------------------------------
 # Create the required directory structure -- maintain the file
@@ -118,8 +118,8 @@ copy_dependencies
 
 # create the BUILD reference file to be used by the init script
 separator "${PN}-$BUILD" "(Create the BUILD reference file)"
-notice_msg_n "writing [BUILD=\"${BUILD}\"] to ${SOURCES_DIR}/BUILD ..."
-printf '%s' "BUILD=\"${BUILD}\"" > "${SOURCES_DIR}/BUILD" ; right_status $?
+j_msg -${notice} -p -n "writing [BUILD=\"${BUILD}\"] to ${SOURCES_DIR}/BUILD ..."
+printf '%s' "BUILD=\"${BUILD}\"" > "${SOURCES_DIR}/BUILD" ; right_status $? ${notice}
 
 # optionally display the resulting initramfs directory tree
 [ ! "$QUIET" ] && d_do 'verbosity="$info" separator "${PN}-$BUILD" "(initramfs directory tree)"; tree "${SOURCES_DIR}"' "$info"

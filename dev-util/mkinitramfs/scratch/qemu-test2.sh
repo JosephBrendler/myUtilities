@@ -65,7 +65,9 @@ if is_keydev_safe && is_vg_safe && is_luks_safe; then
 #    -drive "file=${luks_partition_device},format=raw,if=virtio,cache=none"
 
   # execute the array
-  "${qemu_cmd[@]}" | tee boot/qemu_boot.log
+#  "${qemu_cmd[@]}" | tee boot/qemu_boot.log
+  #  (filter ansi pipe escapes redirecto to file)
+  "${qemu_cmd[@]}" | tee >(sed 's/\x1b\[[0-9;]*[mKC]//g' | tr '\010\011\013\014\015' ' ' > boot/qemu_boot.log)
   stty sane  # restore terminal state to sane defaults in case command crashed
 else
   error_msg "error: ensure /dev/sda1 and vg_rock5bplus6401 are not in use"

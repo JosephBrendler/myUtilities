@@ -16,18 +16,18 @@ assign_volume() {
     _av_prefix="${_av_volume_name%_volume}"     # e.g. assign root, from root_volume (POSIX strip from end)
     eval "_av_volume=\"\$${_av_volume_name}\""
     if [ -z "${_av_volume}" ] ; then
-        info_msg "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
-        info_msg_n "${_av_prefix} _av_volume_name not assigned, scanning ..."
+        j_msg -${info} -m "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
+        j_msg -${info} -m -n "${_av_prefix} _av_volume_name not assigned, scanning ..."
         _av_volume="/dev/mapper/$(lvs | grep ${_av_prefix} | awk '{print $2"-"$1}')"
 ### substitute for testing only (ver 10.0+ changed from deselecting gmki91 to SELECTING test device)
-#        info_msg "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep ${_av_prefix} | awk '{print $2"-"$1}')"
-#        info_msg_n "${_av_prefix} _av_volume_name not assigned, scanning ..."
+#        j_msg -${info} -m "about to evaluate ${_av_prefix}_volume=/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep ${_av_prefix} | awk '{print $2"-"$1}')"
+#        j_msg -${info} -m -n "${_av_prefix} _av_volume_name not assigned, scanning ..."
 #        _av_volume="/dev/mapper/$(lvs | grep 'rock5bplus6401' | grep $_av_prefix | awk '{print $2"-"$1}')"
         eval "${_av_prefix}_volume=$_av_volume"
         ret=$?
-        info_handle_result $ret "$_av_volume" "failed to assign _av_volume"
+        handle_result $ret "$_av_volume" "failed to assign _av_volume" ${info}
     else
-        info_msg "No action. ${_av_prefix} volume already assigned [$_av_volume]"
+        j_msg -${info} -m "No action. ${_av_prefix} volume already assigned [$_av_volume]"
     fi
     unset -v _av_prefix _av_volume_name _av_volume
     return $ret
@@ -42,7 +42,7 @@ display_logical_volumes() {
     vgs || ret=1
     separator "${PN}-${BUILD}" "(available logical volumes)"
     lvs || ret=1
-    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown '$init_wait' "$debug"
+    [ ! "$QUIET" ] && d_do sh_countdown "$init_wait" "$debug"
     return $ret
 }
 
@@ -52,30 +52,30 @@ mount_new_root_and_prepare_to_switch_root() {
     # previous version re-scanned here, but that now occurs after unlock
     # note: script_header_joetoo v0.2.0+ changed arg sequence for color()
     # color() - $1: FG code (30-37, 39); $2: Bold (0/1); $3: BG code (40-47, 49
-    info_msg "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${root_fs} on $root_volume${Boff}"
+    j_msg -${info} -m "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${root_fs} on $root_volume${Boff}"
     fsck -t "${root_fs}" -p "$root_volume" 2>/dev/null
     result=$?
-    info_handle_result $result '' "failed with exit code [$result]"
+    handle_result $result '' "failed with exit code [$result]" ${info}
     [ $result -ge 4 ] && die "fsck failure ($result); cannot continue"
-    info_msg "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${usr_fs} on $usr_volume${Boff}"
+    j_msg -${info} -m "$(color ${RED} ${BOLD} ${BBACK})running fsck -t ${usr_fs} on $usr_volume${Boff}"
     fsck -t "${usr_fs}" -p "$usr_volume" 2>/dev/null
     result=$?
-    info_handle_result $result '' "failed with exit code [$result]"
+    handle_result $result '' "failed with exit code [$result]" ${info}
     [ $result -ge 4 ] && die "fsck failure ($result); cannot continue"
     # give more time to read display if debugging
-    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown '$init_wait' "$debug"
-    [ ! "$QUIET" ] && d_do verbosity=7 'tree -d' "$debug"
+    [ ! "$QUIET" ] && d_do sh_countdown "$init_wait" "$debug"
+    [ ! "$QUIET" ] && d_do tree -d "$debug"
     # mount root - drop to shell if not locked down
-    info_msg_n "Mounting new root volume ..."
+    j_msg -${info} -m -n "Mounting new root volume ..."
     mount -r -t "${root_fs}" "${root_volume}" /newroot 2>/dev/null ; _mnr_result=$?
-    info_handle_result "$_mnr_result" '' "failed to mount root volume"
+    handle_result "$_mnr_result" '' "failed to mount root volume" ${info}
     if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
         ret=1
         rescue_shell "Failed to mount root volume"
     fi
-    info_msg_n "Mounting new usr volume ..."
+    j_msg -${info} -m -n "Mounting new usr volume ..."
     mount -t "${usr_fs}" -o defaults,noatime "$usr_volume" /newroot/usr ; _mnr_result=$?
-    info_handle_result "$_mnr_result" '' "failed to mount usr volume"
+    handle_result "$_mnr_result" '' "failed to mount usr volume" ${info}
     if  [ ! "$_mnr_result" -eq 0 ] && [ "$init_lock_down" = "no" ]; then
         ret=1
         rescue_shell "Failed to mount usr volume"
@@ -86,18 +86,18 @@ mount_new_root_and_prepare_to_switch_root() {
 
     # clean up in preparation to actually switch root - with retry if needed
     for _mnr_fs in /dev/pts /dev /sys /proc; do
-        info_msg_n "umount ${_mnr_fs} ..."
+        j_msg -${info} -m -n "umount ${_mnr_fs} ..."
         # Try standard unmount
         umount "${_mnr_fs}"
         _mnr_result=$?
         # if standard umount fails, try a "lazy" unmount (-l)
         # This is often necessary if a process has a lingering handle
         if [ $_mnr_result -ne 0 ]; then
-            info_msg " (retrying lazy umount...)"
+            j_msg -${info} -m " (retrying lazy umount...)"
             umount -l "${_mnr_fs}"
             _mnr_result=$?
         fi
-        info_handle_result "$_mnr_result" '' "Critical error: Could not unmount ${_mnr_fs}"
+        handle_result "$_mnr_result" '' "Critical error: Could not unmount ${_mnr_fs}" ${info}
 
         # fatal exit -- if it's still mounted, switch_root WILL fail.
         if [ $_mnr_result -ne 0 ]; then
@@ -110,7 +110,7 @@ mount_new_root_and_prepare_to_switch_root() {
     done
 
     # give more time to read display if debugging
-    [ ! "$QUIET" ] && d_do verbosity=7 sh_countdown "$init_wait" "$debug"
+    [ ! "$QUIET" ] && d_do sh_countdown "$init_wait" "$debug"
     unset -v _mnr_result _mnr_fs
     return $ret
 }
@@ -127,12 +127,12 @@ validate_volume_and_assign_fs() {
     #   (2) begins with a numeral are invalid variable names in a POSIX shell
     case "$_vva_volume_name" in
         *[![:alnum:]_]* | [0-9]*)
-            error_msg "volume_name [$_vva_volume_name] is not a valid POSIX variable name"
+            j_msg -${err} "volume_name [$_vva_volume_name] is not a valid POSIX variable name"
             unset -v _vva_volume_name ; return 1 ;;
     esac
     # POSIX indirect variable assignment
     eval "_vva_volume=\"\$${_vva_volume_name}\""
-    info_msg "validating volume ${_vva_volume_name} [${_vva_volume}]"
+    j_msg -${info} -m "validating volume ${_vva_volume_name} [${_vva_volume}]"
 
     # caution - an unassigned volume_name (null $my_volume) will evaluate true for [ -b ${my_volume} ]
     if [ -b "${_vva_volume}" ]; then
@@ -141,16 +141,16 @@ validate_volume_and_assign_fs() {
         # e.g. if _vva_volume_name = root_volume then _vva_fs_name = root_fs
         _vva_fs_name=$( printf '%s' "$_vva_volume_name" | sed 's|volume|fs|')
         # get only the filesystem type and assign it directly to a variable
-        info_msg_n "looking up fs type for ${_vva_volume}"
+        j_msg -${info} -m -n "looking up fs type for ${_vva_volume}"
         # capture raw blkid output (since BusyBox -o value may fail)
         _vva_raw_info=$(blkid "${_vva_volume}")
         # use awk to find the field starting with TYPE= and strip the quotes
         _vva_fs_type=$(printf '%s' "$_vva_raw_info" | awk -F'TYPE="' '{print $2}' | awk -F'"' '{print $1}')
-        info_handle_result $? "$_vva_fs_type" "failed"
+        handle_result $? "$_vva_fs_type" "failed" ${info}
         # now assign the type to the fs name e.g. root_fs=ext4
-        info_msg_n "performing indirect assignment ${_vva_fs_name}=\"${_vva_fs_type}\""
+        j_msg -${info} -m -n "performing indirect assignment ${_vva_fs_name}=\"${_vva_fs_type}\""
         eval "${_vva_fs_name}=\"${_vva_fs_type}\""
-        info_handle_result $? '' ''
+        handle_result $? '' '' ${info}
     else
         _vva_EXISTS=$FALSE
         printf '%s' " (${BRon}not a blockdev${Boff})"
@@ -158,13 +158,13 @@ validate_volume_and_assign_fs() {
     fi
     # keep this check/message outside the if-then-else above, so it can return clean status on the same line
     if [ $_vva_EXISTS ];    then
-        info_msg "    ${BGon}Valid device${Boff} [${_vva_volume}] type [${TYPE}] ${BGon}Exists${Boff}"
+        j_msg -${info} -m "    ${BGon}Valid device${Boff} [${_vva_volume}] type [${TYPE}] ${BGon}Exists${Boff}"
     else
-        error_msg "    ${BRon}invalid device [${_vva_volume}]${Boff}"
+        j_msg -${err} "    ${BRon}invalid device [${_vva_volume}]${Boff}"
         _vva_volcase="$(printf '%s' ${_vva_volume_name} | sed 's|_volume||')"
         case "${_vva_volcase}" in
-            "root"|"usr" ) info_msg "     -- will scan for ${_vva_volcase} volume later, in unlocked volumes" ;;
-            * ) info_msg "    -- invalid case [$_vva_volcase]" ;;
+            "root"|"usr" ) j_msg -${info} -m "     -- will scan for ${_vva_volcase} volume later, in unlocked volumes" ;;
+            * ) j_msg -${info} -m "    -- invalid case [$_vva_volcase]" ;;
         esac
     fi
     unset -v _vva_volume_name _vva_fs_name _vva_volume _vva_fs_type _vva_answer _vva_EXISTS
@@ -174,7 +174,7 @@ validate_volume_and_assign_fs() {
 
 process_cmdline() {
   ret=0
-  notice_msg "Processing cmdline ..."
+  j_msg -${notice} -p "Processing cmdline ..."
   _pc_line_out=""
   set -- ${CMDLINE}
   while [ $# -gt 0 ]; do
@@ -188,19 +188,19 @@ process_cmdline() {
     case "$_pc_var" in
       "verbosity" )
         export "${_pc_entry}" || die "failed to export verbosity"
-        info_msg "cmdline override: [${_pc_entry}]]"
+        j_msg -${info} -m "cmdline override: [${_pc_entry}]]"
       ;;
       "root" )
         export root_volume="${_pc_val}" || die "failed to export root_volume"
-        info_msg "cmdline override: [root_volume=${_pc_val}]"
+        j_msg -${info} -m "cmdline override: [root_volume=${_pc_val}]"
         _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
       "usr" )
         export usr_volume="${_pc_val}" || die "failed to export usr_volume"
-        info_msg "cmdline override: [usr_volume=${_pc_val}]"
+        j_msg -${info} -m "cmdline override: [usr_volume=${_pc_val}]"
       ;;
       * )
-        info_msg "cmdline entry [${_pc_entry}] ignored by initramfs"
+        j_msg -${info} -m "cmdline entry [${_pc_entry}] ignored by initramfs"
         _pc_line_out="${_pc_line_out} ${_pc_entry}"
       ;;
     esac
@@ -209,8 +209,8 @@ process_cmdline() {
   # reset the CMDLINE without the initramfs-peculiar entries
   export CMDLINE="${_pc_line_out}"
   # if not dead from a die command above, then success
-  notice_msg_n "Done processing cmdline; result:"
-  handle_result 0 "exported \$CMDLINE" ""
+  j_msg -${notice} -p -n "Done processing cmdline; result:"
+  handle_result 0 "exported \$CMDLINE" "" ${notice}
   unset -v _pc_line_out _pc_entry _pc_var _pc_val
   return $ret
 }

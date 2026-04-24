@@ -19,12 +19,12 @@ source "${SCRIPT_HEADER_DIR}/script_header_joetoo"
 source "${SOURCES_DIR}/BUILD"
 
 # set verbosity if it was not set externally
-[ -z "$verbosity" ] && verbosity=1
+[ -z "$verbosity" ] && verbosity=${notice}
 
-debug_msg "make_image.sh Debug - dump config"
-debug_msg "BUILD: [ ${BUILD} ]"
-debug_msg "MAKE_DIR: [ ${MAKE_DIR} ]"
-debug_msg "SOURCES_DIR: [ ${SOURCES_DIR} ]"
+j_msg -${debug} -p "make_image.sh Debug - dump config"
+j_msg -${debug} -p "BUILD: [ ${BUILD} ]"
+j_msg -${debug} -p "MAKE_DIR: [ ${MAKE_DIR} ]"
+j_msg -${debug} -p "SOURCES_DIR: [ ${SOURCES_DIR} ]"
 
 img_ROOT="/"
 ### ***** subsititure below for testing only ***** ---
@@ -49,12 +49,12 @@ separator "Make initramfs Image"  "makeinitramfs-$BUILD"
 checkroot; checkboot;
 old_pwd="$PWD"
 if [ -d "${SOURCES_DIR}" ]; then
-    notice_msg_n "moving to SOURCES_DIR: [${SOURCES_DIR}]"
+    j_msg -${notice} -p -n "moving to SOURCES_DIR: [${SOURCES_DIR}]"
     cd "${SOURCES_DIR}"
-    handle_result $? || die "failed to cd ${SOURCES_DIR}"
+    handle_result $? '' '' ${notice} || die "failed to cd ${SOURCES_DIR}"
     make_initramfs    # call the function above
 else
     die "SOURCES_DIR [${SOURCES_DIR}] does not exist"
 fi
 cd "${old_pwd}"
-notice_msg "all done"
+j_msg -${notice} -p "all done"

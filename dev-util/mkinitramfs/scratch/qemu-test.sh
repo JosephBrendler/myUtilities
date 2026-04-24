@@ -55,7 +55,7 @@ if is_keydev_safe && is_vg_safe && is_luks_safe; then
     -m "2G"
     -kernel "${current_kernel}"
     -initrd "${initramfs_img}"
-    -append "console=ttyS0 root=/dev/mapper/${root_vg}-root verbosity=${q_verbosity}"
+    -append "console=ttyS0 real_root=/dev/mapper/${root_vg}-root verbosity=${q_verbosity}"
     -drive "file=${luks_disk},format=raw,if=ide,cache=none"
     -device "usb-ehci,id=usb"
     -drive "file=${keydev_disk},format=raw,if=none,id=usbkey,readonly=on"
@@ -63,9 +63,11 @@ if is_keydev_safe && is_vg_safe && is_luks_safe; then
     -nographic
 )
 #    -drive "file=${luks_partition_device},format=raw,if=virtio,cache=none"
+#    -append "console=ttyS0 root=/dev/mapper/${root_vg}-root verbosity=${q_verbosity}"
 
-  # execute the array
-  "${qemu_cmd[@]}" | tee boot/qemu_boot.log
+  # execute the array - with pipe, tee, process substitution for filter
+  #  (filter ansi pipe escapes redirecto to file)
+  "${qemu_cmd[@]}" | tee >(sed 's/\x1b\[[0-9;]*[mKC]//g' | tr '\010\011\013\014\015' ' ' > boot/qemu_boot.log)
   stty sane  # restore terminal state to sane defaults in case command crashed
 else
   error_msg "error: ensure /dev/sda1 and vg_rock5bplus6401 are not in use"

@@ -6,45 +6,50 @@
 
 source /usr/sbin/script_header_joetoo
 
+mk_dir=/usr/src/mkinitramfs
+
 #-----[ variables ]------------------------------------------
 # see configure()
 
 # set default verbosity if not set externally
-[ -z "$verbosity" ] && verbosity = 2
+[ -z "$verbosity" ] && verbosity=${notice}
 
 #-----[ functions ]------------------------------------------
 
 usage() {
-  error_msg "usage: ckinitramfs [-][v|q]"
-  notice_msg   "  v - increase verbosity"
-  notice_msg   "  q - decrease verbosity"
+  j_msg -${err} "usage: ckinitramfs [-][v|q]"
+  j_msg -${notice} -p   "  v - increase verbosity"
+  j_msg -${notice} -p   "  q - decrease verbosity"
   exit 1
 }
 
 configure() {
-  notice_msg "configuring ..."
-  SOURCES_DIR="/usr/src/initramfs"
-  MAKE_DIR="/usr/src/mkinitramfs"
+  j_msg -${notice} -p "configuring ..."
+  j_msg -${notice} -p -n "sourcing GLOBALS ..."
+  source "${mk_dir}/GLOBALS"; right_status $? ${notice}
+
+#  SOURCES_DIR="/usr/src/initramfs"
+#  MAKE_DIR="/usr/src/mkinitramfs"
 
   # set ckinitramfs BUILD; not the kernel's BUILD used by mkinitramfs for init
   # PKG_PVR is populated by make_sources.sh in /usr/src/mkinitramfs
   # it is NOT found in development directory
   BUILD="$(cat ${MAKE_DIR%/}/PKG_PVR)"
-  PN=$(basename "$0")
-  debug_msg "MAKE_DIR: $MAKE_DIR"
-  debug_msg "BUILD: $BUILD"
-  debug_msg "PN: $PN"
+  PN=${0##*/}   # like =$(basename "$0") but w/o subshell and function call
+  j_msg -${debug} -p "MAKE_DIR: $MAKE_DIR"
+  j_msg -${debug} -p "PN: $PN"
+  j_msg -${debug} -p "BUILD: $BUILD"
   # source the list of executables used by the init script (from init_structure)
   executables=()
-  notice_msg_n "sourcing ${MAKE_DIR%/}/init_structure ..."
-  source "${MAKE_DIR%/}/init_structure"; right_status $?
+  j_msg -${notice} -p -n "sourcing ${MAKE_DIR%/}/init_structure ..."
+  source "${MAKE_DIR%/}/init_structure"; right_status $? ${notice}
   # source header for load_ list_ dump_executables
-  notice_msg_n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
-  source "${MAKE_DIR%/}/common_bash_functions_header"; right_status $?
+  j_msg -${notice} -p -n "sourcing ${MAKE_DIR%/}/common_bash_functions_header ..."
+  source "${MAKE_DIR%/}/common_bash_functions_header"; right_status $? ${notice}
 
   # source header for display_config, echo_long_string
-  notice_msg_n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
-  source "${MAKE_DIR%/}/common_ash_functions_header"; right_status $?
+  j_msg -${notice} -p -n "sourcing ${MAKE_DIR%/}/common_ash_functions_header ..."
+  source "${MAKE_DIR%/}/common_ash_functions_header"; right_status $? ${notice}
   load_executables
 
   # initialize verbosity by sourcing mkinitramfs.conf
@@ -53,11 +58,11 @@ configure() {
   elif [[ -e "/etc/mkinitramfs/mkinitramfs.conf" ]] ; then
     config_file="/etc/mkinitramfs/mkinitramfs.conf"
   else
-    error_msg "${BRon}Error: no mkinitramfs.conf found"
+    j_msg -${err} "${BRon}Error: no mkinitramfs.conf found"
     exit
   fi
-  notice_msg_n "sourcing config file ${config_file} ..."
-  source "${config_file}"; right_status $?
+  j_msg -${notice} -p -n "sourcing config file ${config_file} ..."
+  source "${config_file}"; right_status $? ${notice}
 
   # convert executables array into string variable we can display
   cki_executables=$(list_executables)
@@ -65,11 +70,11 @@ configure() {
 }
 
 process_cmdline() {  # tiny alternative to using the whole cli in script_header_joetoo
-  notice_msg "processsing commandline ..."
+  j_msg -${notice} -p "processsing commandline ..."
   # this is a macro for use by external helper _pc_action_verbosity (in script_header_joetoo)
   _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))";
   if [ $# -gt 1 ] ; then
-    error_msg "invalid arguments: $@"
+    j_msg -${err} "invalid arguments: $@"
     usage
   elif [ $# -eq 1 ] ; then
     arg="$1"
@@ -79,7 +84,7 @@ process_cmdline() {  # tiny alternative to using the whole cli in script_header_
         "-"* ) echo_msg "ignoring \"-\"";;
         "v"* ) _pc_operator="+"; _pc_action_verbosity ;;
         "q"* ) _pc_operator="-"; _pc_action_verbosity ;;
-         *  ) error_msg "invalid argument [ $arg ]"; usage;;
+         *  ) j_msg -${err} "invalid argument [ $arg ]"; usage;;
       esac
       arg="${arg:1}"   # drop first char (left shift)
     done
@@ -88,41 +93,41 @@ process_cmdline() {  # tiny alternative to using the whole cli in script_header_
 
 check_executables() {
   local _ce_w _ce_x _ce_y _ce_z _ce_find=()
-  notice_msg "checking initramfs executables ..."
+  j_msg -${notice} -p "checking initramfs executables ..."
   # compare current system executables (identified by the which command) with those installed in intramfs
   for _ce_w in "${executables[@]}"
   do
     # this will evaluate null (false) for files; and non-null (true) for links
     if [[ -L  $_ce_w ]] ; then
       # this is a link; skip it
-      info_msg "$_ce_w is a symbolic link; skipping ..."
+      j_msg -${info} -m "$_ce_w is a symbolic link; skipping ..."
       continue
     else
-      info_msg "$_ce_w is a file; checking ..."
-      debug_msg "_ce_w: $_ce_w"
+      j_msg -${info} -m "$_ce_w is a file; checking ..."
+      j_msg -${debug} -p "_ce_w: $_ce_w"
       _ce_x="$(basename $_ce_w)"
-      debug_msg "  _ce_x = basename _ce_w: $_ce_x"
+      j_msg -${debug} -p "  _ce_x = basename _ce_w: $_ce_x"
       # find the one running on the host system
       _ce_y="$(which $_ce_w)"
-      debug_msg "  _ce_y = which _ce_w: $_ce_y"
-      [ ! "$QUIET"] && d_do 'verbosity=7 _ce_ysize=$(stat -c %s "$_ce_y");  verbosigy=7 debug_msg "  _ce_y size: $_ce_ysize"' "$debug"
+      j_msg -${debug} -p "  _ce_y = which _ce_w: $_ce_y"
+      [ ! "$QUIET"] && d_do 'verbosity=7 _ce_ysize=$(stat -c %s "$_ce_y");  verbosity=7 j_msg -${debug} -p "  _ce_y size: $_ce_ysize"' "$debug"
       # find the one in a *bin folder in initramfs
       # some, e.g. fsck might be links on initramfs - skip those
       readarray -d '' _ce_find < <(find ${SOURCES_DIR%/}/ -wholename '*bin*'  -and -name "$_ce_x" -print0)
       if [[ ${#_ce_find[@]} -eq 0 ]]; then
-        error_msg "Component: ${LBon}$_ce_x ${BRon}NOT FOUND in initramfs"
+        j_msg -${err} "Component: ${LBon}$_ce_x ${BRon}NOT FOUND in initramfs"
         continue
       fi
       for _ce_z in "${_ce_find[@]}"; do  # this loop is just debugging output
         if [[ -L  $_ce_z ]] ; then
-          info_msg "$_ce_z is a symbolic link in initramfs; skipping ..."
+          j_msg -${info} -m "$_ce_z is a symbolic link in initramfs; skipping ..."
           continue
         else
-          debug_msg "  _ce_z = find ${SOURCES_DIR%/}/ -type f -name $_ce_x | grep bin: $_ce_z"
-          [ ! "$QUIET"] && d_do 'verbosity=7 _ce_zsize=$(stat -c %s "$_ce_z"); verbosity=7 debug_msg "  _ce_z size: $_ce_zsize"' "$debug"
+          j_msg -${debug} -p "  _ce_z = find ${SOURCES_DIR%/}/ -type f -name $_ce_x | grep bin: $_ce_z"
+          [ ! "$QUIET"] && d_do 'verbosity=7 _ce_zsize=$(stat -c %s "$_ce_z"); verbosity=7 j_msg -${debug} -p "  _ce_z size: $_ce_zsize"' "$debug"
           #--- this is the main output of this program ---
-          debug_msg "  abount to run cmp"
-          notice_msg_n "Component: ${LBon}$_ce_x"
+          j_msg -${debug} -p "  abount to run cmp"
+          j_msg -${notice} -p -n "Component: ${LBon}$_ce_x"
           cmp --silent $_ce_z $_ce_y
           handle_result $? "has not changed" "${BRon}has changed --> ${BMon}Rebuild your initramfs${Boff}"
         fi
