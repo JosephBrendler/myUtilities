@@ -4,6 +4,7 @@
 
 echo "(debug) running brendler-up.sh" > /tmp/brendler-up_debug.log
 _log_prefix="[vpn-dns-up]"
+_debug_log_file="/tmp/joetoo-up.debug.log"
 
 # initialize (ju_-localized) variables for exit status and data
 ju_status=0
@@ -56,7 +57,7 @@ if [ -n "${_ju_ns}" ]; then
         _dns_payload="${_dns_payload}domain ${_ju_domain}\n"
     fi
     _dns_payload="${_dns_payload}${_ju_ns}"
-echo "(debug) _dns_payload: $_dns_payload" > /tmp/brendler-up_debug.log
+echo "(debug) _dns_payload: $_dns_payload" > "${_debug_log_file}"
 
     # submit to openresolv - printf pipes the payload to openresolv on stdin;
     #   -a means "add" to database for "$dev" (which openvpn sets to tun0)
@@ -91,6 +92,19 @@ echo "(debug) _dns_payload: $_dns_payload" > /tmp/brendler-up_debug.log
     fi
 fi
 
+echo "(debug)(up) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn" > "${_debug_log_file}"
+echo "(debug)(up) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
+# ddns registration hook - only attempt if the ddns-update client script exists
+if [ -x /usr/bin/ddns-update ]; then
+    # Register IPv4 Tunnel Address (A Record)
+    if [ -n "${ifconfig_pool_remote_ip}" ]; then
+        /usr/bin/ddns-update add "${ifconfig_pool_remote_ip}" "${dev}"
+    fi
+    # Register IPv6 Tunnel Address (AAAA Record)
+    if [ -n "${ifconfig_pool_remote_ip6}" ]; then
+        /usr/bin/ddns-update add "${ifconfig_pool_remote_ip6}" "${dev}"
+    fi
+fi
 # Clean up localized variables
 unset -v _ju_ns _ju_domain _ju_search _i _opt _val _dns_payload _ju_metric _log_prefix
 

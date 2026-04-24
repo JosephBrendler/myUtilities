@@ -3,6 +3,7 @@
 # dual-stack DNS removal for joetoo architecture
 
 _log_prefix="[vpn-dns-down]"
+_debug_log_file="/tmp/joetoo-up.debug.log"
 
 # initialize localized variable for exit status
 jd_status=0
@@ -32,4 +33,17 @@ fi
 # clean up localized variables
 unset -v _log_prefix
 
+echo "(debug)(down) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn"> "${_debug_log_file}"
+echo "(debug)(down) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
+# ddns removal hook
+if [ -x /usr/bin/ddns-update ]; then
+    # Remove IPv4 Tunnel Address
+    if [ -n "${ifconfig_pool_remote_ip}" ]; then
+        /usr/bin/ddns-update del "${ifconfig_pool_remote_ip}" "${dev}"
+    fi
+    # Remove IPv6 Tunnel Address
+    if [ -n "${ifconfig_pool_remote_ip6}" ]; then
+        /usr/bin/ddns-update del "${ifconfig_pool_remote_ip6}" "${dev}"
+    fi
+fi
 exit ${jd_status}
