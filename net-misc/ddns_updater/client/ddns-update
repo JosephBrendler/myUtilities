@@ -2,8 +2,9 @@
 #
 # This script performs a secure DDNS update using ssh
 #
-#PN=$(basename $0)
-PN=${0##*/}
+# 20260424 - refactored to support dual-stack ipv4/ipv6 and both dnsmasq/radvd SLAAC and openvpn clients
+#
+PN=${0##*/}   # like =$(basename $0) but w/o sub-shell and function call
 
 #-----[ user configured variables ]---------------------------------------------------
 user="joe"
@@ -14,7 +15,7 @@ domain="brendler"
 # tp-do: transition to pairwise-unique (or client-qunique keys) for greater security
 # (with a shared key [status quo] compromise of any client enables actor to impersonate
 #  any remote hostname in spoofed dns updates - sending false ip addr for the impersonated host)
-ssh_key_id="id_ddns_update"
+ssh_key_id="id_ddns_update_46"
 
 debugging_log="/tmp/ddns-update.debug.log"
 LOG_FACILITY="local5"
@@ -33,9 +34,7 @@ ADDR="$2"
 INTERFACE="$3"
 
 #-----[ functions ]-----------------------------------------------------------
-timestamp() {
-    printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')"
-}
+timestamp() { printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')" ; }
 
 #-----[ main script ]---------------------------------------------------------
 
@@ -52,28 +51,33 @@ logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${msg}"
 msg="[$(timestamp)] DEBUG: ADDR: [$ADDR]"
 logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${msg}"
 
-# Extract the ULA IPv6 address from the passed new and old address variables (removes /64 netmask)
-# These variables are supplied by dhcpcd hooks when an IPv6 address is available,
-# and this assignment SHOULD pass valid ULA addresses to the input validateion below
+# address validation and dns record type A/AAAA detction (from ip family)
 
-# now that we know which address matters, validate it
+# reject empty address but return 0 (log as error, but dont error-out; just take no action)
 if [ -z "$ADDR" ]; then
     # the variable is an "empty" string
-    msg="[$(timestamp)] INVALID: Empty address provided by ddns_watcher script for EVENT: [$EVENT]"
+    msg="[$(timestamp)] INVALID: Empty address provided by caller ddns-daemon(SLAAC) or joetoo-up/down.sh(openvpn) for EVENT: [$EVENT]"
     logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
     printf '%s\n' "${msg}" >> "${debugging_log}"
     exit 0
-elif [[ ! "$ADDR" =~ ^fd[0-9a-fA-F]{2}:[0-9a-fA-F:]+$ ]]; then
-    # this string does not match the format expected for a valid ULA address
-    msg="[$(timestamp)] INVALID: address provided by ddns_watcher script for EVENT: [$EVENT] is not a valid ULA address"
-    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
-    printf '%s\n' "${msg}" >> "${debugging_log}"
-    exit 0
+fi
+
+# detect address family (ipv4/ipv6)
+if [[ "$ADDR" =~ ^192\.168\.6[0-3]\. ]]; then
+    # matches 192.168.60.x through 192.168.63.x (/22 range)
+    # this covers dnamasq (62.0/24) and VPN (63.0/24) clients
+    TYPE="A"
+elif [[ "$ADDR" =~ ^fd62:6262:626[0-9a-fA-F]: ]]; then
+    # matches fd62:6262:6260:: through fd62:6262:626f:: (/44 range)
+    # this covers stable SLAAAC (62::/64) and VPN (63::/64) clients
+    TYPE="AAAA"
 else
-    # looks good; just log progress
-    msg="[$(timestamp)] UPDATE READY: action: [$EVENT] address: [$ADDR] iface: [$INTERFACE]"
-    logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+    # This is not a Brendler-internal address (LL, GUA, or foreign subnet)
+    msg="[$(timestamp)] FILTERED: Address [$ADDR] outside authorized 192.168.60/22 or fd62:6262:6260::/44 ranges"
+    logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
     printf '%s\n' "${msg}" >> "${debugging_log}"
+    # Exit with success (0) because the script did its job by filtering
+    exit 0
 fi
 
 # Final command arguments: ADDRESS, FQDN, INTERFACE, and timestamp
@@ -82,7 +86,7 @@ fi
 #  when that host has multiple interfaces with ipv6 addresses)
 # (timestamp in same comment field for visibly obvious confirmation)
 TIMESTAMP="$(timestamp)"
-COMMAND_ARGS="${ADDR} ${FQDN} ${INTERFACE} ${TIMESTAMP} ${EVENT}"
+COMMAND_ARGS="${ADDR} ${FQDN} ${INTERFACE} ${TIMESTAMP} ${EVENT} ${TYPE}"
 
 msg="[$(timestamp)] Executing SSH as ${user} with args: [$COMMAND_ARGS]..."
 logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
@@ -95,6 +99,7 @@ SSH_OUTPUT=$( \
     -i "$SSH_KEY_PATH" \
     -o StrictHostKeyChecking=yes \
     -o BatchMode=yes \
+    -o ControlMaster=no \
     "$DDNS_SSH_TARGET" \
     "${COMMAND_ARGS}" 2>&1 \
 )
@@ -104,12 +109,12 @@ EXIT_CODE=$?
     printf '%s\n' "SSH Exit Code: $EXIT_CODE"
     printf '%s\n' "SSH Output (Stdout/Stderr):"
     if [ "$EXIT_CODE" -eq 0 ]; then
-        msg="SSH exit code: [$EXIT_CODE] RESULT: SUCCESS. ${EVENT} AAAA record for ${FQDN} on $INTERFACE."
+        msg="SSH exit code: [$EXIT_CODE] RESULT: SUCCESS. ${EVENT} ${TYPE} record for ${FQDN} on $INTERFACE."
         logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
         logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
         printf '%s\n' "${msg}"
     else
-        msg="[$(timestamp)] SSH exit code: [$EXIT_CODE] RESULT: FAILED. failed to update AAAA record for ${FQDN}."
+        msg="[$(timestamp)] SSH exit code: [$EXIT_CODE] RESULT: FAILED. failed to update ${TYPE} record for ${FQDN}."
         logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
         logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
         printf '%s\n' "${msg}"
