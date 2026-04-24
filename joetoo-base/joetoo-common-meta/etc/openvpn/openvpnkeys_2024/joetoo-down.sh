@@ -33,6 +33,12 @@ fi
 # clean up localized variables
 unset -v _log_prefix
 
+# DIAGNOSTIC: Capture OpenVPN Environment
+{
+    printf '%s\n' "---[ (down) OpenVPN Env Debug: $(date) ]---"
+    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
+    printf '%s\n' "-------------------------------------"
+} >> /tmp/brendler-up_debug.log
 echo "(debug)(down) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn"> "${_debug_log_file}"
 echo "(debug)(down) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
 # ddns removal hook

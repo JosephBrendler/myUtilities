@@ -91,7 +91,12 @@ echo "(debug) _dns_payload: $_dns_payload" > "${_debug_log_file}"
         ju_status=$?
     fi
 fi
-
+# DIAGNOSTIC: Capture OpenVPN Environment
+{
+    printf '%s\n' "---[ (up) OpenVPN Env Debug: $(date) ]---"
+    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
+    printf '%s\n' "-------------------------------------"
+} >> /tmp/brendler-up_debug.log
 echo "(debug)(up) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn" > "${_debug_log_file}"
 echo "(debug)(up) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
 # ddns registration hook - only attempt if the ddns-update client script exists
