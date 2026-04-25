@@ -5249,19 +5249,39 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
   # if we got here, it does exist in the system, so if _glk_crypt_keydev is not mounted, try to mount it
   # safe grep: match space-padded " /path " exactly to avoid partial directory false-matches
   # check /proc/mounts directly as the source of truth
-  j_msg -${debug} -n "checking if ${_glk_crypt_keydev} is mounted"
+  j_msg -${debug} -n -p "checking if ${_glk_crypt_keydev} is mounted"
   if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
     handle_result 0 "mounted" "" "$debug"
   else
-    j_msg -${debug} -np " (${BYon}not mounted${Boff})"
-    j_msg -${debug} -n "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
-    # use mount options ro,noload to prevent a dirty bit set from preventing readonly, no journal replay mount
-    _glk_keydev_mount_opts="ro,noload"
-    case "$_glk_crypt_keydev_type" in
-      "devicename" ) mount -o "${_glk_keydev_mount_opts}" "${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      "UUID"       ) mount -o "${_glk_keydev_mount_opts}" UUID="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
-      "LABEL"      ) mount -o "${_glk_keydev_mount_opts}" LABEL="${_glk_crypt_keydev}" "${_glk_mnt_fixed}"; _glk_result=$? ;;
+    j_msg -${debug} -n -pm " (${BYon}not mounted${Boff})"
+    # determine fs_type (by retrieving/evaluating lsblk FSTYPE returned for LABEL, UUID, or PATH (devicename) selectors
+   _glk_selector="$_glk_crypt_keydev"
+   # use lsblk in a sub-shell to isolate data for the selected device
+   _lsblk_out=$(lsblk -nP -o FSTYPE,LABEL,UUID,PATH | grep -m1 "$_glk_selector" | awk '{print $1}')
+   # use eval; echo in a subshell to isolate use of the lsblk variable FSTYPE and assign to controlled local var
+   _glk_fstype=$(eval "$_lsblk_out"; echo "$FSTYPE")
+    j_msg -${debug} -pm " (${BCon}fs_type: ${Boff}${Con}${_glk_fstype}${Boff})"
+
+    j_msg -${debug} -n -p "selecting mount options"
+    _glk_keydev_mount_opts="ro"
+    # Add noload/norecovery ONLY if we detect a journaling filesystem
+    case "$_glk_fstype" in
+        # use mount options ro,noload to prevent a dirty bit set from preventing readonly, no journal replay mount
+        ext3|ext4|xfs) _glk_keydev_mount_opts="${_glk_keydev_mount_opts},noload" ;;
     esac
+    j_msg -${debug} -pm " (${BMon}-o ${Boff}${Con}${_glk_keydev_mount_opts}${Boff})"
+
+    j_msg -${debug} -n -p "selecting mount method"
+    case "$_glk_crypt_keydev_type" in
+      "devicename" ) _glk_mount_method="${_glk_crypt_keydev}" ;;
+      "UUID"       ) _glk_mount_method="UUID=\"${_glk_crypt_keydev}\"" ;;
+      "LABEL"      ) _glk_mount_method="LABEL=\"${_glk_crypt_keydev}\"" ;;
+    esac
+    j_msg -${debug} -pm " (${BCon}method: ${Boff}${Con}${_glk_mount_method}${Boff})"
+    # execute mount command 
+    j_msg -${debug} -n -p "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
+    j_msg -${debug} -n -m "${BCon}command: ${Boff}[${Gon}mount -o ${_glk_keydev_mount_opts} ${_glk_mount_method} ${_glk_mnt_fixed}${Boff}]"
+    mount -o "${_glk_keydev_mount_opts}" "${_glk_mount_method}" "${_glk_mnt_fixed}"; _glk_result=$?
     case "$_glk_result" in
       0 ) handle_result 0 "mounted" "" "$debug";;
       1 ) handle_result 1 "" "mount failure (device missing, wrong FS, permission, etc)" "$debug";;
