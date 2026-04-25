@@ -5253,29 +5253,10 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
   if grep -q " ${_glk_mnt_fixed} " /proc/mounts; then
     handle_result 0 "mounted" "" "$debug"
   else
-    j_msg -${debug} -pm " (${BYon}not mounted${Boff})"
-    # determine fs_type (by retrieving/evaluating lsblk FSTYPE returned for LABEL, UUID, or PATH (devicename) selectors
-   _glk_selector="$_glk_crypt_keydev"
-
-   # use lsblk in a sub-shell to isolate data for the selected device
-   _lsblk_out=$(lsblk -nP -o FSTYPE,LABEL,UUID,PATH | grep -m1 "$_glk_selector" | awk '{print $1}')
-
-    j_msg -${debug} -p "unfiltered lsblk output --"
-    d_do 'lsblk -nP -o FSTYPE,LABEL,UUID,PATH' $debug
-
-    j_msg -${debug} -p "grepped lsblk output --"
-    d_do 'lsblk -nP -o FSTYPE,LABEL,UUID,PATH | grep -m1 "$_glk_selector"' $debug
-
-    j_msg -${debug} -p "awked, grepped lsblk output --"
-    if [ "$verbosity" -ge "$debug" ] ; then
-        lsblk -nP -o FSTYPE,LABEL,UUID,PATH | grep -m1 "$_glk_selector"  | awk '{print $1}'
-    fi
-
-    j_msg -${debug} -p " (${BYon}_lsblk_out: ${_lsblk_out}${Boff})"
-
-   # use eval; echo in a subshell to isolate use of the lsblk variable FSTYPE and assign to controlled local var
-   _glk_fstype=$(eval "$_lsblk_out"; echo "$FSTYPE")
-    j_msg -${debug} -p " (${BCon}fs_type: ${Boff}${Con}${_glk_fstype}${Boff})"
+    j_msg -${debug} -pm -n " (${BYon}not mounted${Boff})"
+    # determine fs_type (by retrieving blkid TYPE returned for LABEL, UUID, or PATH (devicename) selectors
+   _glk_fstype=$(blkid | grep "$_glk_crypt_keydev" | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+    j_msg -${debug} -pm " (${BCon}_glk_fstype: ${Boff}${Con}${_glk_fstype}${Boff})"
 
     j_msg -${debug} -n -p "selecting mount options"
     _glk_keydev_mount_opts="ro"
@@ -5308,7 +5289,7 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
     esac
     if [ ! "$_glk_result" -eq 0 ]; then
         unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result _glk_msg
-        unset -v _glk_keydev_mount_opts _glk_selector _lsblk_out _glk_fstype _glk_mount_target_str
+        unset -v _glk_keydev_mount_opts _glk_fstype _glk_mount_target_str
         return 3    # mount failure
     fi  # mount failure
   fi  # mounted ?
