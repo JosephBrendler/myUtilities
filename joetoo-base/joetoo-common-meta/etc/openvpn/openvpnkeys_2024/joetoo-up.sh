@@ -2,9 +2,9 @@
 # /etc/openvpn/openvpnkeys_2024/joetoo-up.sh
 # dual-stack DNS integration for joetoo architecture
 
-echo "(debug) running brendler-up.sh" > /tmp/brendler-up_debug.log
 _log_prefix="[vpn-dns-up]"
-_debug_log_file="/tmp/joetoo-up.debug.log"
+_debug_log_file="/tmp/joetoo-updown.debug.log"
+echo "(debug) running joetoo-up.sh" > "${_debug_log_file}"
 
 # initialize (ju_-localized) variables for exit status and data
 ju_status=0
@@ -91,26 +91,27 @@ echo "(debug) _dns_payload: $_dns_payload" > "${_debug_log_file}"
         ju_status=$?
     fi
 fi
-# DIAGNOSTIC: Capture OpenVPN Environment
+# DIAGNOSTIC: capture openVPN environment
 {
     printf '%s\n' "---[ (up) OpenVPN Env Debug: $(date) ]---"
     env | grep -E 'ifconfig|ip|remote|local|dev' | sort
     printf '%s\n' "-------------------------------------"
-} >> /tmp/brendler-up_debug.log
-echo "(debug)(up) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn" > "${_debug_log_file}"
-echo "(debug)(up) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
+} >> "${_debug_log_file}"
+echo "(debug)(up) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
+echo "(debug)(up) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
 # ddns registration hook - only attempt if the ddns-update client script exists
 if [ -x /usr/bin/ddns-update ]; then
     # Register IPv4 Tunnel Address (A Record)
-    if [ -n "${ifconfig_pool_remote_ip}" ]; then
-        /usr/bin/ddns-update add "${ifconfig_pool_remote_ip}" "${dev}"
+    if [ -n "${ifconfig_local}" ]; then
+        /usr/bin/ddns-update add "${ifconfig_local}" "${dev}"
     fi
     # Register IPv6 Tunnel Address (AAAA Record)
-    if [ -n "${ifconfig_pool_remote_ip6}" ]; then
-        /usr/bin/ddns-update add "${ifconfig_pool_remote_ip6}" "${dev}"
+    if [ -n "${ifconfig_ipv6_local}" ]; then
+        /usr/bin/ddns-update add "${ifconfig_ipv6_local}" "${dev}"
     fi
 fi
 # Clean up localized variables
 unset -v _ju_ns _ju_domain _ju_search _i _opt _val _dns_payload _ju_metric _log_prefix
 
 exit ${ju_status}
+

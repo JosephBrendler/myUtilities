@@ -3,7 +3,8 @@
 # dual-stack DNS removal for joetoo architecture
 
 _log_prefix="[vpn-dns-down]"
-_debug_log_file="/tmp/joetoo-up.debug.log"
+_debug_log_file="/tmp/joetoo-updown.debug.log"
+echo "(debug) running joetoo-down.sh" > "${_debug_log_file}"
 
 # initialize localized variable for exit status
 jd_status=0
@@ -38,18 +39,19 @@ unset -v _log_prefix
     printf '%s\n' "---[ (down) OpenVPN Env Debug: $(date) ]---"
     env | grep -E 'ifconfig|ip|remote|local|dev' | sort
     printf '%s\n' "-------------------------------------"
-} >> /tmp/brendler-up_debug.log
-echo "(debug)(down) ifconfig_pool_remote_ip: {$ifconfig_pool_remote_ip] should be populated by openvpn"> "${_debug_log_file}"
-echo "(debug)(down) ifconfig_pool_remote_ip6: {$ifconfig_pool_remote_ip6] should be populated by openvpn" > "${_debug_log_file}"
+} >> "${_debug_log_file}"
+echo "(debug)(down) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
+echo "(debug)(down) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
 # ddns removal hook
 if [ -x /usr/bin/ddns-update ]; then
     # Remove IPv4 Tunnel Address
-    if [ -n "${ifconfig_pool_remote_ip}" ]; then
-        /usr/bin/ddns-update del "${ifconfig_pool_remote_ip}" "${dev}"
+    if [ -n "${ifconfig_local}" ]; then
+        /usr/bin/ddns-update del "${ifconfig_local}" "${dev}"
     fi
     # Remove IPv6 Tunnel Address
-    if [ -n "${ifconfig_pool_remote_ip6}" ]; then
-        /usr/bin/ddns-update del "${ifconfig_pool_remote_ip6}" "${dev}"
+    if [ -n "${ifconfig_ipv6_local}" ]; then
+        /usr/bin/ddns-update del "${ifconfig_ipv6_local}" "${dev}"
     fi
 fi
 exit ${jd_status}
+
