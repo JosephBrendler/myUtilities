@@ -5266,22 +5266,24 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
     _glk_keydev_mount_opts="ro"
     # Add noload/norecovery ONLY if we detect a journaling filesystem
     case "$_glk_fstype" in
-        # use mount options ro,noload to prevent a dirty bit set from preventing readonly, no journal replay mount
-        ext3|ext4|xfs) _glk_keydev_mount_opts="${_glk_keydev_mount_opts},noload" ;;
+      # use mount options ro,noload to prevent a dirty bit set from preventing readonly, no journal replay mount
+      ext3|ext4|xfs) _glk_keydev_mount_opts="${_glk_keydev_mount_opts},noload" ;;
     esac
     j_msg -${debug} -pm " (${BMon}-o ${Boff}${Con}${_glk_keydev_mount_opts}${Boff})"
 
     j_msg -${debug} -n -p "selecting mount method"
     case "$_glk_crypt_keydev_type" in
       "devicename" ) _glk_mount_method="${_glk_crypt_keydev}" ;;
-      "UUID"       ) _glk_mount_method="UUID=\"${_glk_crypt_keydev}\"" ;;
-      "LABEL"      ) _glk_mount_method="LABEL=\"${_glk_crypt_keydev}\"" ;;
+      "UUID"       ) _glk_mount_method="UUID=${_glk_crypt_keydev}" ;;
+      "LABEL"      ) _glk_mount_method="LABEL=${_glk_crypt_keydev}" ;;
     esac
     j_msg -${debug} -pm " (${BCon}method: ${Boff}${Con}${_glk_mount_method}${Boff})"
-    # execute mount command 
-    j_msg -${debug} -n -p "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
-    j_msg -${debug} -n -m "${BCon}command: ${Boff}[${Gon}mount -o ${_glk_keydev_mount_opts} ${_glk_mount_method} ${_glk_mnt_fixed}${Boff}]"
-    mount -o "${_glk_keydev_mount_opts}" "${_glk_mount_method}" "${_glk_mnt_fixed}"; _glk_result=$?
+    # execute mount command
+    j_msg -${debug} -p "trying to mount (${_glk_crypt_keydev_type}) [${_glk_crypt_keydev}] ..."
+    _glk_msg="${BCon}command: ${Boff}[${Gon}mount -t $_glk_fstype -o ${_glk_keydev_mount_opts}"
+    _glk_msg="${_glk_msg} ${_glk_mount_method} ${_glk_mnt_fixed}${Boff}]"
+    j_msg -${debug} -m "${_glk_msg}"
+    mount -t "$_glk_fstype" -o "${_glk_keydev_mount_opts}" "${_glk_mount_method}" "${_glk_mnt_fixed}"; _glk_result=$?
     case "$_glk_result" in
       0 ) handle_result 0 "mounted" "" "$debug";;
       1 ) handle_result 1 "" "mount failure (device missing, wrong FS, permission, etc)" "$debug";;
@@ -5290,7 +5292,8 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
       * ) handle_result 99 "" "mount failure of unknown type" "$debug";;
     esac
     if [ ! "$_glk_result" -eq 0 ]; then
-        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+        unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result _glk_msg
+        unset -v _glk_keydev_mount_opts _glk_selector _lsblk_out _glk_fstype _glk_mount_method
         return 3    # mount failure
     fi  # mount failure
   fi  # mounted ?
@@ -5299,7 +5302,8 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
   handle_result $? "found" "not found" "$debug" || return 4    # has key check failure
   # set keyfile pathname
   export keyfile="${_glk_mnt_fixed}/crypt/dat"
-  unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result
+  unset -v _glk_mnt_fixed _glk_crypt_keydev _glk_crypt_keydev_type _glk_result _glk_msg
+  unset -v _glk_keydev_mount_opts _glk_selector _lsblk_out _glk_fstype _glk_mount_method
   return $glk_ret
 }
 # @usage _get_luks_keyfile <key_device>
