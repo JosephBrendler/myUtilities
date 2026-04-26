@@ -100,14 +100,14 @@ fi
 echo "(debug)(up) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
 echo "(debug)(up) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
 # ddns registration hook - only attempt if the ddns-update client script exists
-if [ -x /usr/bin/ddns-update ]; then
+if [ -x /usr/sbin/ddns-update ]; then
     # Register IPv4 Tunnel Address (A Record)
     if [ -n "${ifconfig_local}" ]; then
-        /usr/bin/ddns-update add "${ifconfig_local}" "${dev}"
+        /usr/sbin/ddns-update add "${ifconfig_local}" "${dev}"
     fi
     # Register IPv6 Tunnel Address (AAAA Record)
     if [ -n "${ifconfig_ipv6_local}" ]; then
-        /usr/bin/ddns-update add "${ifconfig_ipv6_local}" "${dev}"
+        /usr/sbin/ddns-update add "${ifconfig_ipv6_local}" "${dev}"
     fi
 fi
 # Clean up localized variables

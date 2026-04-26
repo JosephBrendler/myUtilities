@@ -43,14 +43,14 @@ unset -v _log_prefix
 echo "(debug)(down) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
 echo "(debug)(down) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
 # ddns removal hook
-if [ -x /usr/bin/ddns-update ]; then
+if [ -x /usr/sbin/ddns-update ]; then
     # Remove IPv4 Tunnel Address
     if [ -n "${ifconfig_local}" ]; then
-        /usr/bin/ddns-update del "${ifconfig_local}" "${dev}"
+        /usr/sbin/ddns-update del "${ifconfig_local}" "${dev}"
     fi
     # Remove IPv6 Tunnel Address
     if [ -n "${ifconfig_ipv6_local}" ]; then
-        /usr/bin/ddns-update del "${ifconfig_ipv6_local}" "${dev}"
+        /usr/sbin/ddns-update del "${ifconfig_ipv6_local}" "${dev}"
     fi
 fi
 exit ${jd_status}
