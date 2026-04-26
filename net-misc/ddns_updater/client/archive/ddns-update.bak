@@ -21,6 +21,8 @@ fi
 
 # dns to query with dig to validate cached address info
 joetoo_dns="${JOETOO_DNS_SERVER:-elrond}"
+# debugging_log: file in which to write debugging info (to do: move to ordinary log when mature)
+debugging_log="${DDNS_DEBUG_LOG:-/tmp/ddns-update.debug.log}"
 
 # now sourced from /etc/conf.d/ddns --
 #LOG_FACILITY="local5"
@@ -64,6 +66,13 @@ timestamp() { printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')" ; }
 #-----[ main script ]---------------------------------------------------------
 
 # Log the Initial State
+{
+    printf '%s\n' "-----[ ${PN} started at $(timestamp) ]----------------"
+    printf '%s\n' "    EVENT: .....: [$EVENT]"
+    printf '%s\n' "    ADDR .......: [$ADDR]"
+    printf '%s\n' "    INTERFACE ..: [$INTERFACE]"
+} >> "$debugging_log"
+
 msg="[$(timestamp)] DEBUG: DDNS_UPDATE Script Invoked. EVENT: [$EVENT] INTERFACE: [$INTERFACE]"
 logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${msg}"
 msg="[$(timestamp)] DEBUG: ADDR: [$ADDR]"
@@ -74,12 +83,14 @@ if [ -z "$EVENT" ] || ! printf '%s\n' "$EVENT" | grep -Eq '^(add|del)$'; then
     # EVENT is invalid if null or not one of add|del
     msg="[$(timestamp)] FILTERED: Event [$EVENT] is null"
     logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
     # Exit with success (0) because the script did its job by filtering
     exit 0
 elif [ -z "$INTERFACE" ]; then
     # INTERFACE is invalid if null
     msg="[$(timestamp)] FILTERED: Interface [$INTERFACE] is null"
     logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
     # Exit with success (0) because the script did its job by filtering
     exit 0
 fi
@@ -97,6 +108,7 @@ elif [[ "$ADDR" =~ ^fd62:6262:626[0-9a-fA-F]: ]]; then
 elif [ -n "$ADDR" ]; then
     msg="[$(timestamp)] FILTERED: Address [$ADDR] outside authorized 192.168.60/22 or fd62:6262:6260::/44 ranges"
     logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
     # Exit with success (0) because the script did its job by filtering
     exit 0
 fi
@@ -121,6 +133,7 @@ if [ -z "$ADDR" ]; then
         "add")
             msg="[$(timestamp)] FILTERED: Event [$EVENT], but ADDR [$ADDR] is null"
             logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+            printf '%s\n' "${msg}" >> "${debugging_log}"
             # Exit with success (0) because the script did its job by filtering
             exit 0
             ;;
@@ -133,6 +146,7 @@ if [ -z "$ADDR" ]; then
                 else
                     msg="[$(timestamp)] FILTERED: Event [$EVENT], but failed to read ADDR from cache"
                     logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+                    printf '%s\n' "${msg}" >> "${debugging_log}"
                     # Exit with success (0) because the script did its job by filtering
                     exit 0
                 fi
@@ -140,6 +154,7 @@ if [ -z "$ADDR" ]; then
             else
                 msg="[$(timestamp)] FILTERED: Event [$EVENT], but cannot get ADDR; cache is empty"
                 logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
                 # Exit with success (0) because the script did its job by filtering
                 exit 0
             fi
@@ -147,6 +162,7 @@ if [ -z "$ADDR" ]; then
         *)
             msg="[$(timestamp)] FILTERED: Invalid Event [$EVENT]"
             logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+            printf '%s\n' "${msg}" >> "${debugging_log}"
             # Exit with success (0) because the script did its job by filtering
             exit 0
             ;;
@@ -155,6 +171,7 @@ else
     # This is not a joetoo (brendler domain) internal address (LL, GUA, or foreign subnet)
     msg="[$(timestamp)] FILTERED: Address [$ADDR] outside authorized 192.168.60/22 or fd62:6262:6260::/44 ranges"
     logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "${debugging_log}"
     # Exit with success (0) because the script did its job by filtering
     exit 0
 fi
@@ -170,6 +187,7 @@ case "$EVENT" in
             if [ $? -ne 0 ]; then
                 msg="[$(timestamp)] WARNING: Failed to delete cache file"
                 logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
                 # Exit with success (0) because the script did its job by filtering
                 exit 0
             fi
@@ -177,6 +195,7 @@ case "$EVENT" in
         "add")
             msg="[$TIMESTAMP] event: [$EVENT]; CACHE_INFO: [$CACHE_INFO];  ADDR|INTERFACE: [$ADDR|$INTERFACE]"
             logger -p "${LOG_FACILITY}.notice" -t "${PN}" "${msg}"
+            printf '%s\n' "${msg}" >> "${debugging_log}"
             if [ "$CACHE_INFO" = "$ADDR|$INTERFACE" ]; then
                 # if CACHE_TS is unset, treat it as stale
                 [ -z "$CACHE_TS" ] && CACHE_TS="1985-01-01_00:00:00"
@@ -189,9 +208,8 @@ case "$EVENT" in
                 # reverify dns if cache info is older than 10 min
                 if (( NOW_SECONDS - CACHE_TS_SECONDS > DDNS_REVERIFY_INTERVAL )); then
                     # STALE CACHE
-                    # domain information groper (dig) +short means just get the final answer;
-                    #   TYPE means the command digs for ipv4|6 (A|AAAA) records automatically
-                    DNS_INFO=$(dig +short "${TYPE}" "$FQDN" "@${joetoo_dns}")
+                    # domain information groper (dig) +short means just get the final answer; AAAA means ip>
+                    DNS_INFO=$(dig +short AAAA "$FQDN" "@${joetoo_dns}")
                     if [ -z "$DNS_INFO" ]; then
                         # DNS unreachable → do NOT update cache, do NOT update DNS
                         # let cache remain stale; retry later
@@ -203,11 +221,13 @@ case "$EVENT" in
                         printf '%s\n' "${ADDR}|${INTERFACE}|${TIMESTAMP}" > "$CACHE_FILE"
                         msg="[$TIMESTAMP] DNS verified; updated cache timestamp for $ADDR $INTERFACE"
                         logger -p "${LOG_FACILITY}.notice" -t "${PN}" "${msg}"
+                        printf '%s\n' "${msg}" >> "${debugging_log}"
                     else
                         # dns does not have the right address - update it
                         msg="[$TIMESTAMP] DNS not verified; setting NEED_UPDATE to TRUE"
                         msg="${msg} to send update for $ADDR $INTERFACE"
                         logger -p "${LOG_FACILITY}.notice" -t "${PN}" "${msg}"
+                        printf '%s\n' "${msg}" >> "${debugging_log}"
                         NEED_UPDATE=$TRUE   # call for update for add event
                         # write new info to cache
                         printf '%s\n' "${ADDR}|${INTERFACE}|${TIMESTAMP}" > "$CACHE_FILE"
@@ -218,6 +238,7 @@ case "$EVENT" in
                 msg="[$TIMESTAMP] address differs from cache; setting NEED_UPDATE to TRUE"
                 msg="${msg} to send update for $ADDR $INTERFACE"
                 logger -p "${LOG_FACILITY}.notice" -t "${PN}" "${msg}"
+                printf '%s\n' "${msg}" >> "${debugging_log}"
                 NEED_UPDATE=$TRUE   # call for update for add event
                 # write new info to cache
                 printf '%s\n' "${ADDR}|${INTERFACE}|${TIMESTAMP}" > "$CACHE_FILE"
@@ -226,6 +247,7 @@ case "$EVENT" in
         *)
             msg="[$(timestamp)] FILTERED: Invalid Event [$EVENT]"
             logger -p "${LOG_FACILITY}.warn" -t "${PN}" "${msg}"
+            printf '%s\n' "${msg}" >> "${debugging_log}"
             # Exit with success (0) because the script did its job by filtering
             exit 0
             ;;
@@ -241,6 +263,7 @@ if [ "$NEED_UPDATE" ]; then
 
     msg="[$(timestamp)] Executing SSH as ${user} with args: [$COMMAND_ARGS]..."
     logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}" >> "$debugging_log"
 
     # Execute the secure SSH command as ${user}
         # note: to prevent redundancy, confusion, and config conflicts, and to enforce apprpriate policy,
@@ -257,18 +280,26 @@ if [ "$NEED_UPDATE" ]; then
     )
     EXIT_CODE=$?
     # Log the action taken
-    if [ "$EXIT_CODE" -eq 0 ]; then
-        msg="SSH exit code: [$EXIT_CODE] RESULT: SUCCESS. ${EVENT} ${TYPE} record for ${FQDN} on $INTERFACE."
-        logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
-        logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
-    else
-        msg="[$(timestamp)] SSH exit code: [$EXIT_CODE] RESULT: FAILED. failed to update ${TYPE} record for ${FQDN}."
-        logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
-        logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
-    fi
+    {
+        printf '%s\n' "SSH Exit Code: $EXIT_CODE"
+        printf '%s\n' "SSH Output (Stdout/Stderr):"
+        if [ "$EXIT_CODE" -eq 0 ]; then
+            msg="SSH exit code: [$EXIT_CODE] RESULT: SUCCESS. ${EVENT} ${TYPE} record for ${FQDN} on $INTERFACE."
+            logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+            logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
+            printf '%s\n' "${msg}"
+        else
+            msg="[$(timestamp)] SSH exit code: [$EXIT_CODE] RESULT: FAILED. failed to update ${TYPE} record for ${FQDN}."
+            logger -p "${LOG_FACILITY}.err" -t "${PN}" "${msg}"
+            logger -p "${LOG_FACILITY}.debug" -t "${PN}" "SSH_OUTPUT: $SSH_OUTPUT"
+            printf '%s\n' "${msg}"
+        fi
+        printf '%s\n' "-----[ ${PN} fnished at $(timestamp) ]----------------"
+    } >> "${debugging_log}"
 else
     # update not needed; log and leave
     msg="update transmission to dns not required; exiting without further action"
     logger -p "${LOG_FACILITY}.info" -t "${PN}" "${msg}"
+    printf '%s\n' "${msg}"
 fi
 exit 0
