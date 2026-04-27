@@ -8,7 +8,59 @@
 #    (2) /lib/dhcpcd/dhcpcd-hooks/99-dhcpcd-ddns-update (ipv4 dnsmasq clients)
 #    (3) /etc/openvpn/openvpnremote-up.sh --> joetoo-up.sh
 #
+#    Note: use the full path of system commands because that is how they must be referenced by sudo
+#      for the /etc/sudoers.d/99-ddns-update-server file entry that authorizes "$user"
+#      passwordless sudo access to run this script
+#
 # 20260424 - refactored to integrate ipv4 and ipv6 for both dnsmasq/radvd and openvpn clients (add address type A or AAAA)
+PN=${0##*/}
+
+# Use a more descriptive logging tag for the daemon specifically
+TAG="${PN}"
+
+# source /etc/conf.d/ddns if it exists; exit if missing
+_conf="/etc/conf.d/ddns"
+if [ -f "$_conf" ]; then
+    . "$_conf"
+else
+    logger -p "user.err" -t "${PN}" "(err) Configuration file $_conf missing. Exiting."
+    exit 1
+fi
+
+# map the sourced config variables to internal script variables if names differ
+
+# dns to query with dig to validate cached address info
+joetoo_dns="${JOETOO_DNS_SERVER:-elrond}"
+
+# now sourced from /etc/conf.d/ddns --
+LOG_FACILITY="${LOG_FACILITY:-local5}"
+DDNS_REVERIFY_INTERVAL="${DDNS_REVERIFY_INTERVAL:-600}"  # seconds (reverify dns if cache info is older than 10 min)
+DDNS_CACHE_DIR="${DDNS_CACHE_DIR:-/run/ddns-daemon.cache}"
+
+# assign and apply sensible defaults in case /etc/conf.d/ddns is missing or de-populated
+# user: identify the local user who will run ssh (sudo -u $user ssh ...)
+user="${DDNS_USER:-joe}"
+# ddns_server: identify the alias established in ~/.ssh/config and /etc/ssh/ssh_confg.d/01_joetoo_ssh_config.conf
+#   this will be used to set the remote User, shh key id, adn performance/resilience policy options
+ddns_server="${DDNS_SSH_ALIAS:-elrond-ddns-46}"
+# joetoo_ULA_prefix: first part of local stable SLAAC addresses in joetoo domain
+joetoo_ULA_prefix="${JOETOO_ULA_PREFIX:-fd62}"
+# joetoo_ip4_prefix: first part of local private ipv4 addresses in joetoo domain
+joetoo_ip4_prefix="${JOETOO_IP4_PREFIX:-192.168.6}"
+# joetoo_domain: identify the local domain (currently for joetoo this is "brendler")
+joetoo_domain="${JOETOO_DOMAIN:-brendler}"
+
+# server-specific variables from /etc/conf.d/ddns --
+# now sourced from /etc/conf.d/ddns --
+LOCK_DIR="${LOCK_DIR:-/run/lock/ddns_updater}"
+
+# IPV4_HOSTS_FILE: hosts file, e.g. --
+#   192.168.62.137  gmki91.brendler      # eth0       2026-04-27_02:11:12
+ipv4_hosts_file="${IPV4_HOSTS_FILE:-/etc/hosts.d/14_ddns_ipv4}"
+
+# IPV6_HOSTS_FILE: hosts file, e.g. --
+#   fd62:6262:6262:0:88ec:ce98:33f8:9d68   gmki91.brendler      # eth0       2026-04-27_13:30:59
+ipv6_hosts_file="${IPV6_HOSTS_FILE:-/etc/hosts.d/16_ddns_ipv6}"
 
 #-----[ variables ]----------------------------------------------------------------
 
@@ -44,8 +96,6 @@ else
     exit 1
 fi
 
-user="joe"
-
 W0="[[:space:]]*" # regex match for zero or more whitespaces
 W1="[[:space:]]+" # regex match for one or more whitespaces
 P0="[[:print:]]*" # regex match for zero or more printable characters (incl. whitespace)
@@ -56,18 +106,16 @@ G1="[[:graph:]]+" # regex match for one or more printable characters (excl. whit
 # ^^ parameter expansion operator - tells Bash to convert all characters in variable to uppercase
 # Route to the appropriate file based on TYPE
 if [ "${TYPE^^}" = "A" ]; then
-    HOSTS_FILE="/etc/hosts.d/14_ddns_ipv4"
+    HOSTS_FILE="$ipv4_hosts_file"
     COL_WIDTH=15  # a="123.123.123.123"; echo ${#a} ==> 15
 else
-    HOSTS_FILE="/etc/hosts.d/16_ddns_ipv6"
+    # note: assume if not A it is AAAA; given elif blocks above making AAAA a default, this should be safe
+    HOSTS_FILE="$ipv6_hosts_file"
     COL_WIDTH=38   # a="fd62:6262:6262:0:88ec:ce98:33f8:9d68"; echo ${#a} ==> 36
 fi
 TEMP_FILE=$(mktemp)
 TEMP_FILE2=$(mktemp)
 
-debug_logfile=/tmp/ddns-update-server.debug.log
-
-LOCK_DIR="/run/lock/ddns_updater"
 # Ensure the lock file directory is created, owned by root, and persistent across reboots
 /bin/mkdir -p "$LOCK_DIR"
 
@@ -96,8 +144,8 @@ exec 200>"$LOCK_FILE"
 # so - so they should gracefully decline to act, instead, this is enabled by using
 # a non-blocking lock, and then rejecting the new process
 if ! /usr/bin/flock -n 200; then
-    msg="[$(timestamp)] NOTICE: Updater is busy for ${FQDN}. Exiting non-blocking."
-    printf '%s\n' "$msg" | tee -a "$debug_logfile" >&2
+    msg="(notice): LOCK_FILE: [$LOCK_FILE] is locked. Exiting non-blockin., not updating for ${FQDN}."
+    logger -p "${LOG_FACILITY}.notice" -t "${TAG}" "$msg"
     exit 0 # Exit successfully (code 0) to prevent the client from logging an error
 fi
 
@@ -106,18 +154,8 @@ timestamp () { printf '%s\n' "$(date +'%Y%m%d-%H:%M:%S')" ; }
 
 #-----[ main script ]----------------------------------------------------------------
 # initiate log entry
-{
-printf '%s\n' "ADDR: $ADDR"
-printf '%s\n' "FQDN: $FQDN"
-printf '%s\n' "INTERFACE: $INTERFACE"
-printf '%s\n' "TIMESTAMP: $TIMESTAMP"
-printf '%s\n' "EVENT: $EVENT"
-printf '%s\n' "user: $user"
-printf '%s\n' "HOSTS_FILE: $HOSTS_FILE"
-printf '%s\n' "TEMP_FILE: $TEMP_FILE"
-printf '%s\n' "LOCK_DIR: $LOCK_DIR"
-printf '%s\n' "LOCK_FILE: $LOCK_FILE"
-} | tee -a "$debug_logfile" >&2
+logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: event: [$EVENT] type: [$TYPE] addr: [$ADDR] fqdn: [$FQDN] iface: [$INTERFACE]"
+logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: user: [$user] hosts_file: [$HOSTS_FILE] temp_file: [$TEMP_FILE] lock_file: [$LOCK_FILE]"
 
 # if this is a delete action, process it and exit early (otherwise add)
 if [ "$EVENT" = "del" ]; then
@@ -128,9 +166,7 @@ if [ "$EVENT" = "del" ]; then
     #   i.e. match/delete for interface=eth1: "<any-addr> <fqdn> #oops eth1 whatever"
     #   but do not match "<any-addr> <fqdn> #oops eth11" (there could be an actual eth11)
 
-    msg="[$(timestamp)] (debug) Delete [$EVENT]. dumping original HOSTS_FILE"
-    printf '%s\n' "$msg" | tee -a "$debug_logfile" >&2
-    nl -ba "$HOSTS_FILE" | tee -a "$debug_logfile" >&2
+    logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Action: Deleting $TYPE record for $FQDN on $INTERFACE"
 
     # match the new fixed-width format:
     # BOL followed by the IP (G1)
@@ -144,9 +180,8 @@ if [ "$EVENT" = "del" ]; then
 
     mv "$TEMP_FILE" "$HOSTS_FILE"
 
-    msg="[$(timestamp)] (debug) Delete [$EVENT]. dumping updated HOSTS_FILE"
-    printf '%s\n' "$msg" | tee -a "$debug_logfile" >&2
-    nl -ba "$HOSTS_FILE" | tee -a "$debug_logfile" >&2
+    msg="(debug) calling /etc/init.d/dnsmasq reload"
+    logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "$msg"
 
     /etc/init.d/dnsmasq reload
     exit 0
@@ -192,23 +227,24 @@ LC_COLLATE="en_US.UTF-8" /usr/bin/sort -t"${T}" -k2,2 -k3,3 "$TEMP_FILE" | \
     /usr/bin/awk -v ip_w="$COL_WIDTH" -v T="${T}" \
     '{ printf "%-"ip_w"s %-20s # %-10s %s\n", $1, $2, $3, $4 }' | \
     /usr/bin/tee "$TEMP_FILE2" > /dev/null
+
 # make sure the hosts file will be readable by dnsmasq
 chmod 644 "$TEMP_FILE2" ; result=$?
 mv "$TEMP_FILE2" "$HOSTS_FILE" ; result=$(( result + $? ))
 if [ "$result" -eq 0 ] ; then
-    printf '%s\n' "successfully set 644 permissions on $HOSTS_FILE" | tee -a "$debug_logfile" >&2
+    msg="(info) successfully posted and set 644 permissions on $HOSTS_FILE"
+    logger -p "${LOG_FACILITY}.info" -t "${TAG}" "$msg"
 else
-    printf '%s\n' "failed to set 644 permissions on $HOSTS_FILE" | tee -a "$debug_logfile" >&2
+    msg="(err) failed to post and/or set 644 permissions on $HOSTS_FILE"
+    logger -p "${LOG_FACILITY}.err" -t "${TAG}" "$msg"
 fi
-
-printf '%s\n' "DEBUG: new HOSTS file after final sort:" | tee -a "$debug_logfile" >&2
-nl -ba "$TEMP_FILE" | tee -a "$debug_logfile" >&2
 
 # Clean up the temporary file
 rm -f "$TEMP_FILE"
 
 # Trigger dnsmasq to reread the hosts file
 /etc/init.d/dnsmasq reload
-printf '%s\n' "SUCCESS: Updated ${FQDN} to ${ADDR} and reloaded dnsmasq."
+msg="(notice) SUCCESS: Updated ${FQDN} to ${ADDR} and reloaded dnsmasq."
+logger -p "${LOG_FACILITY}.notice" -t "${TAG}" "$msg"
 
 # Note: lock file is automatically released when script completes

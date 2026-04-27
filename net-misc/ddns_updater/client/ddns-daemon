@@ -28,7 +28,7 @@ _conf="/etc/conf.d/ddns"
 if [ -f "$_conf" ]; then
     . "$_conf"
 else
-    logger -p "user.err" -t "${PN}" "Configuration file $_conf missing. Exiting."
+    logger -p "user.err" -t "${PN}" "(err) Configuration file $_conf missing. Exiting."
     exit 1
 fi
 
@@ -38,9 +38,9 @@ fi
 joetoo_dns="${JOETOO_DNS_SERVER:-elrond}"
 
 # now sourced from /etc/conf.d/ddns --
-#LOG_FACILITY="local5"
-#DDNS_REVERIFY_INTERVAL=600  # seconds (reverify dns if cache info is older than 10 min)
-#DDNS_CACHE_DIR=/run/ddns-daemon.cache
+LOG_FACILITY="${LOG_FACILITY:-local5}"
+DDNS_REVERIFY_INTERVAL="${DDNS_REVERIFY_INTERVAL:-600}"  # seconds (reverify dns if cache info is older than 10 min)
+DDNS_CACHE_DIR="${DDNS_CACHE_DIR:-/run/ddns-daemon.cache}"
 
 # assign and apply sensible defaults in case /etc/conf.d/ddns is missing or de-populated
 # user: identify the local user who will run ssh (sudo -u $user ssh ...)
@@ -76,7 +76,7 @@ timestamp() {
 
 #-----[ main script ]-----------------------------------------------------
 ip -6 monitor address | while read -r line; do
-    _now=$(timestamp)
+    # _now=$(timestamp) # logger automatically timestamps
 
     case "$line" in
         *"Deleted"* )
@@ -86,7 +86,13 @@ ip -6 monitor address | while read -r line; do
             ADDR=$(printf '%s\n' "$line" | awk '{print $5}' | cut -d/ -f1)
             # filter to ignore link-local and multicast deletions
             case "$ADDR" in fe80:*|ff*) continue ;; esac
-            EVENT="del"
+            # valid deletion: trigger event
+            if [ -n "$INTERFACE" ] && [ -n "$ADDR" ]; then
+                EVENT="del"
+            else
+                # malformed extraction - continue for clean avoidance of subsequent logic for a non-event
+                continue
+            fi
             ;;
 
         *"inet6 ${joetoo_ULA_prefix}"* )
@@ -96,6 +102,22 @@ ip -6 monitor address | while read -r line; do
             ADDR=$(printf '%s\n' "$line" | awk '{print $4}' | cut -d/ -f1)
             # skip temporary or tentative (noise)
             case "$line" in *temporary*|*tentative*) continue ;; esac
+
+            # filter "no-change" events - check cache before setting EVENT
+            if [ -n "$INTERFACE" ] && [ -n "$ADDR" ]; then
+              _cache_file="${DDNS_CACHE_DIR}.${INTERFACE}.AAAA"
+              if [ -f "$_cache_file" ]; then
+                  _cache_info=$(cut -d '|' -f1,2 "$_cache_file")
+                  if [ "$_cache_info" = "${ADDR}|${INTERFACE}" ]; then
+                      # Silent drop: matches current state
+                      continue
+                  fi  # _cache_info
+              fi  # _cache_file
+            else
+                # malformed extraction - continue for clean avoidance of subsequent logic for a non-event
+                continue
+            fi  # INTERFACE && ADDR
+
             EVENT="add"
             ;;
 
@@ -105,13 +127,15 @@ ip -6 monitor address | while read -r line; do
     esac
 
     # when we have EVENT, ADDR, and INTERFACE, then act
-    if [ -n "$EVENT" ] && [ -n "$ADDR" ] && [ -n "$INTERFACE" ]; then
-        # moved cache/verify to ddns-update; dont need separate event cases here now
-        msg="[$_now] Event: [$EVENT] ADDR: [$ADDR] INTERFACE: [$INTERFACE]"
-        logger -p "${LOG_FACILITY:-local5}.notice" -t "${TAG}" "${msg}"
-        /usr/sbin/ddns-update "$EVENT" "$ADDR" "$INTERFACE"
-
-        # explicitly reset for next line in monitor
-        EVENT=""; ADDR=""; INTERFACE=""
-    fi
+    case "$EVENT" in
+        # add|del). add | del ), "add"|"del"), "add" | "del" ) are functionally identical
+        add | del )
+          # moved cache/verify to ddns-update; dont need separate event cases here now
+          msg="(notice) Event: [$EVENT] ADDR: [$ADDR] INTERFACE: [$INTERFACE]"
+          logger -p "${LOG_FACILITY:-local5}.notice" -t "${TAG}" "${msg}"
+          /usr/sbin/ddns-update "$EVENT" "$ADDR" "$INTERFACE"
+          # explicitly reset for next line in monitor
+          EVENT=""; ADDR=""; INTERFACE=""
+          ;;
+    esac
 done
