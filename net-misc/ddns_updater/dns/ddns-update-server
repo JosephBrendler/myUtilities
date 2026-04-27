@@ -63,6 +63,7 @@ else
     COL_WIDTH=38   # a="fd62:6262:6262:0:88ec:ce98:33f8:9d68"; echo ${#a} ==> 36
 fi
 TEMP_FILE=$(mktemp)
+TEMP_FILE2=$(mktemp)
 
 debug_logfile=/tmp/ddns-update-server.debug.log
 
@@ -186,13 +187,14 @@ printf "%s\t%s\t%s\t%s\n" "$ADDR" "$FQDN" "$INTERFACE" "$TIMESTAMP" >> "$TEMP_FI
 
 # Sort the final content based on FQDN (field 2) and interface (field 3),
 #   then format back to fixed-width (human-readable) and overwrite the privileged file
+# output to TEMP_FILE2 and then mv to HOSTS_FILE for atomic write
 LC_COLLATE="en_US.UTF-8" /usr/bin/sort -t"${T}" -k2,2 -k3,3 "$TEMP_FILE" | \
     /usr/bin/awk -v ip_w="$COL_WIDTH" -v T="${T}" \
     '{ printf "%-"ip_w"s %-20s # %-10s %s\n", $1, $2, $3, $4 }' | \
-    /usr/bin/tee "$HOSTS_FILE" > /dev/null
-
+    /usr/bin/tee "$TEMP_FILE2" > /dev/null
 # make sure the hosts file will be readable by dnsmasq
-chmod 644 "$HOSTS_FILE" ; result=$?
+chmod 644 "$TEMP_FILE2" ; result=$?
+mv "$TEMP_FILE2" "$HOSTS_FILE" ; result=$(( result + $? ))
 if [ "$result" -eq 0 ] ; then
     printf '%s\n' "successfully set 644 permissions on $HOSTS_FILE" | tee -a "$debug_logfile" >&2
 else
