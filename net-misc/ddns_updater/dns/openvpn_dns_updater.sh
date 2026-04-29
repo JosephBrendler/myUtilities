@@ -5,17 +5,71 @@
 #
 source /usr/sbin/script_header_joetoo
 
-PN=${0##*/}   # like =$(basename $0) but w/o subshell and function call
+# 20260424 - refactored to integrate ipv4 and ipv6 for both dnsmasq/radvd and openvpn clients (add address type A o>
+PN=${0##*/}
 
-log_file=/var/log/openvpn-status.log
-#openVPN_hosts_file="/etc/hosts.d/20_openVPN_clients"
-openVPN_hosts_file="/home/joe/test_openVPN_clients"
+# Use a more descriptive logging tag for the daemon specifically
+TAG="${PN}"
+
+# source /etc/conf.d/ddns if it exists; exit if missing
+_conf="/etc/conf.d/ddns"
+if [ -f "$_conf" ]; then
+    . "$_conf"
+else
+    logger -p "user.err" -t "${PN}" "(err) Configuration file $_conf missing. Exiting."
+    exit 1
+fi
+
+# map the sourced config variables to internal script variables if names differ
+
+# dns to query with dig to validate cached address info
+joetoo_dns="${JOETOO_DNS_SERVER:-elrond}"
+
+# now sourced from /etc/conf.d/ddns --
+LOG_FACILITY="${LOG_FACILITY:-local5}"
+DDNS_REVERIFY_INTERVAL="${DDNS_REVERIFY_INTERVAL:-600}"  # seconds (reverify dns if cache info is older than 10 min)
+DDNS_CACHE_DIR="${DDNS_CACHE_DIR:-/run/ddns-daemon.cache}"
+
+# assign and apply sensible defaults in case /etc/conf.d/ddns is missing or de-populated
+# user: identify the local user who will run ssh (sudo -u $user ssh ...)
+user="${DDNS_USER:-joe}"
+# ddns_server: identify the alias established in ~/.ssh/config and /etc/ssh/ssh_confg.d/01_joetoo_ssh_config.conf
+#   this will be used to set the remote User, shh key id, adn performance/resilience policy options
+ddns_server="${DDNS_SSH_ALIAS:-elrond-ddns-46}"
+
+# joetoo_ULA_prefix: Unique Local Addresses (ULAs) - IPv6 equivalent of IPv4 private addresses
+joetoo_ULA_prefix="${JOETOO_ULA_PREFIX:-fd62}"
+# joetoo_ip4_prefix: first part of local private ipv4 addresses in joetoo domain
+joetoo_ip4_prefix="${JOETOO_IP4_PREFIX:-192.168.6}"
+# JOETOO_DOMAIN: identify the local domain (currently for joetoo this is "brendler")
+JOETOO_DOMAIN="${JOETOO_DOMAIN:-brendler}"
+
+# server-specific variables from /etc/conf.d/ddns --
+# now sourced from /etc/conf.d/ddns --
+LOCK_DIR="${LOCK_DIR:-/run/lock/ddns_updater}"
+
+# IPV4_HOSTS_FILE: hosts file, e.g. --
+#   192.168.62.137  gmki91.brendler      # eth0       2026-04-27_02:11:12
+ipv4_hosts_file="${IPV4_HOSTS_FILE:-/etc/hosts.d/14_ddns_ipv4}"
+
+# IPV6_HOSTS_FILE: hosts file, e.g. --
+#   fd62:6262:6262:0:88ec:ce98:33f8:9d68   gmki91.brendler      # eth0       2026-04-27_13:30:59
+ipv6_hosts_file="${IPV6_HOSTS_FILE:-/etc/hosts.d/16_ddns_ipv6}"
+
+# OPENVPN_STATUS_LOG: where we scrape client info from server's log
+OPENVPN_STATUS_LOG="${OPENVPN_STATUS_LOG:-/var/log/openvpn-status.log}"
+
+# OPENVPN_HOSTS_FILE: hosts file, e.g. --
+#   192.168.63.22     yorsqui              2026-04-29 19:30:00
+#   ------
+#   fd62:6262:6263::100e   lcsp6402.brendler         2026-04-29 19:30:01
+OPENVPN_HOSTS_FILE="/etc/hosts.d/20_openVPN_clients"
+#OPENVPN_HOSTS_FILE="/home/joe/test_openVPN_clients"
+
+# OPENVPN_IPV4_SUBNET: joetoo domain subnet for openvpn
+OPENVPN_IPV4_SUBNET="${OPENVPN_IPV4_SUBNET:-192.168.63}"
 
 #-----[ script "global" variables ]------------------
-ipv4_subnet="192.168.63"
-ipv6_prefix="fd62"
-domain="brendler"
-
 TAB=$'\t'       # readable pre-coocked tab byte code
 
 client_list=()  # client names
@@ -41,7 +95,7 @@ PZ="[[:print:]]*"  # zero or more printable characters
 #-----[ functions ]-----------------------------
 read_routing_table() {
   j_msg -$debug -p "in ${FUNCNAME[0]}"
-  # read lines of log_file in the client list section only
+  # read lines of OPENVPN_STATUS_LOG in the client list section only
   CAPTURE="$FALSE"
 
   # use null IFS to force read to not split but treat the entire line as one variable
@@ -56,8 +110,8 @@ read_routing_table() {
     j_msg -$debug -p "line: [$line]"
     # if capturing and the line starts with target subnet, add the ip and client to lists
     if [ "${CAPTURE}" ] && ( \
-        [ "${line:0:${#ipv4_subnet}}" = "${ipv4_subnet}" ] || \
-        [ "${line:0:${#ipv6_prefix}}" = "${ipv6_prefix}" ] ) ; then
+        [ "${line:0:${#OPENVPN_IPV4_SUBNET}}" = "${OPENVPN_IPV4_SUBNET}" ] || \
+        [ "${line:0:${#joetoo_ULA_prefix}}" = "${joetoo_ULA_prefix}" ] ) ; then
 
       #Extract IP (field 1) and client name (field 2)
       # strip longest match for ',*' from the right - leaving ip e.g. fd62:6262:6263::1004
@@ -84,7 +138,7 @@ read_routing_table() {
 
       # for ipv6 addresses, append domain to hostname, to form fully qualified domain name (fqdn)
       if [ "$ip_type" = "ipv6" ]; then
-        client_name="${client_name}.${domain}"
+        client_name="${client_name}.${JOETOO_DOMAIN}"
       fi
       j_msg -$debug -p "ip: $ip"
       j_msg -$debug -p "client_name: $client_name"
@@ -125,7 +179,7 @@ read_routing_table() {
         j_msg -$debug -p "socat result: failure"
       fi  # connectivity validated
     fi  # capture mode
-  done < "${log_file}"
+  done < "${OPENVPN_STATUS_LOG}"
 }
 
 update_hosts_file() {
@@ -201,18 +255,18 @@ update_hosts_file() {
     # Clean up temporary files
     rm "$machine_temp_ipv4" "$machine_temp_ipv6"
 
-    # remove draft_hosts_file by using mv as an atomic write to re-populate openVPN_hosts_file
-    mv "$draft_hosts_file" "${openVPN_hosts_file}"
+    # remove draft_hosts_file by using mv as an atomic write to re-populate OPENVPN_HOSTS_FILE
+    mv "$draft_hosts_file" "${OPENVPN_HOSTS_FILE}"
 
     # Output the newly created hosts file content (optional, for logging/debug)
-    cat "${openVPN_hosts_file}"
+    cat "${OPENVPN_HOSTS_FILE}"
 
 }
 
 #-----[ main script ]----------------------------------------
 checkroot
 separator "$(hostname)" "${PN}"
-[ ! -f "${openVPN_hosts_file}" ] && touch "${openVPN_hosts_file}"
+[ ! -f "${OPENVPN_HOSTS_FILE}" ] && touch "${OPENVPN_HOSTS_FILE}"
 
 read_routing_table
 
