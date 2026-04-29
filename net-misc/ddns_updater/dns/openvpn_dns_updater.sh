@@ -221,4 +221,3 @@ j_msg -${notice} -p "found [${#client_list[@]}] potential openvpn client entries
 update_hosts_file
 
 /etc/init.d/dnsmasq reload
-Elrond ~ # 
