@@ -94,7 +94,7 @@ PZ="[[:print:]]*"  # zero or more printable characters
 
 #-----[ functions ]-----------------------------
 read_routing_table() {
-  j_msg -$debug -p "in ${FUNCNAME[0]}"
+  logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${FUNCNAME[0]} invoked"
   # read lines of OPENVPN_STATUS_LOG in the client list section only
   CAPTURE="$FALSE"
 
@@ -106,8 +106,8 @@ read_routing_table() {
     [ "${line:0:7}" = "ROUTING" ] && CAPTURE="${TRUE}"
     # if this is the beginning of the global section, stop capture
     [ "${line:0:6}" = "GLOBAL" ] && CAPTURE="${FALSE}"
-    j_msg -$debug -p "CAPTURE: [$(TrueFalse $CAPTURE)]"
-    j_msg -$debug -p "line: [$line]"
+    logger -p "${LOG_FACILITY}.debug" -t "${PN}" "CAPTURE: [$(TrueFalse $CAPTURE)]"
+    logger -p "${LOG_FACILITY}.debug" -t "line: [$line]"
     # if capturing and the line starts with target subnet, add the ip and client to lists
     if [ "${CAPTURE}" ] && ( \
         [ "${line:0:${#OPENVPN_IPV4_SUBNET}}" = "${OPENVPN_IPV4_SUBNET}" ] || \
@@ -140,9 +140,7 @@ read_routing_table() {
       if [ "$ip_type" = "ipv6" ]; then
         client_name="${client_name}.${JOETOO_DOMAIN}"
       fi
-      j_msg -$debug -p "ip: $ip"
-      j_msg -$debug -p "client_name: $client_name"
-      j_msg -$debug -p "ip_type: $ip_type"
+      logger -p "${LOG_FACILITY}.debug" -t "${PN}" "ip: [$ip] client_name: [$client_name] ip_type: [$ip_type]"
       # validate reachability before adding to the database
       # initial empirical results (≈50 hosts, local LAN):
       #   timeout 0.3 socat - TCP:"$ip":22,connect-timeout=0.3 &>/dev/null      ~0.20s total
@@ -256,7 +254,14 @@ update_hosts_file() {
     rm "$machine_temp_ipv4" "$machine_temp_ipv6"
 
     # remove draft_hosts_file by using mv as an atomic write to re-populate OPENVPN_HOSTS_FILE
-    mv "$draft_hosts_file" "${OPENVPN_HOSTS_FILE}"
+    chmod 644 "$draft_hosts_file" && mv "$draft_hosts_file" "${OPENVPN_HOSTS_FILE}"
+    if [ $? -eq 0 ]; then
+      msg="(notice) successfully set permissions and posted updated hosts_file [${OPENVPN_HOSTS_FILE}]"
+      logger -p "${LOG_FACILITY}.notice" -t "${PN}" "$msg"
+    else
+      msg="(err) failed to set permissions and/or post updated hosts_file [${OPENVPN_HOSTS_FILE}]"
+      logger -p "${LOG_FACILITY}.err" -t "${PN}" "$msg"
+    fi
 
     # Output the newly created hosts file content (optional, for logging/debug)
     cat "${OPENVPN_HOSTS_FILE}"
@@ -270,8 +275,8 @@ separator "$(hostname)" "${PN}"
 
 read_routing_table
 
-j_msg -${notice} -p "found [${#client_list[@]}] potential openvpn client entries"
-
+logger -p "${LOG_FACILITY}.notice" -t "${PN}" "(notice) found [${#client_list[@]}] potential openvpn client entries"
 update_hosts_file
 
 /etc/init.d/dnsmasq reload
+logger -p "${LOG_FACILITY}.notice" -t "${PN}" "(notice) complete"
