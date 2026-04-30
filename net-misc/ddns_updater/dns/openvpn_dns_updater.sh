@@ -16,7 +16,7 @@ _conf="/etc/conf.d/ddns"
 if [ -f "$_conf" ]; then
     . "$_conf"
 else
-    logger -p "user.err" -t "${PN}" "(err) Configuration file $_conf missing. Exiting."
+    logger -p "user.err" -t "${TAG}" "(err) Configuration file $_conf missing. Exiting."
     exit 1
 fi
 
@@ -69,6 +69,8 @@ OPENVPN_HOSTS_FILE="/etc/hosts.d/20_openVPN_clients"
 # OPENVPN_IPV4_SUBNET: joetoo domain subnet for openvpn
 OPENVPN_IPV4_SUBNET="${OPENVPN_IPV4_SUBNET:-192.168.63}"
 
+logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) sourced _conf [$_conf] OPENVPN_STATUS_LOG = [$OPENVPN_STATUS_LOG]"
+
 #-----[ script "global" variables ]------------------
 TAB=$'\t'       # readable pre-coocked tab byte code
 
@@ -100,14 +102,15 @@ read_routing_table() {
 
   # use null IFS to force read to not split but treat the entire line as one variable
   # -r (preserves trailing/leading whitespace and \s by disabling escape interpretation
+  logger -p "${LOG_FACILITY}.debug" -t "${PN}" "ingesting status log [$OPENVPN_STATUS_LOG]"
   while IFS= read -r line
   do
     # if this is the beginning of the routing table section, start capture
     [ "${line:0:7}" = "ROUTING" ] && CAPTURE="${TRUE}"
     # if this is the beginning of the global section, stop capture
     [ "${line:0:6}" = "GLOBAL" ] && CAPTURE="${FALSE}"
-    logger -p "${LOG_FACILITY}.debug" -t "${PN}" "CAPTURE: [$(TrueFalse $CAPTURE)]"
-    logger -p "${LOG_FACILITY}.debug" -t "line: [$line]"
+    logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "CAPTURE: [$(TrueFalse $CAPTURE)]"
+    logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "line: [$line]"
     # if capturing and the line starts with target subnet, add the ip and client to lists
     if [ "${CAPTURE}" ] && ( \
         [ "${line:0:${#OPENVPN_IPV4_SUBNET}}" = "${OPENVPN_IPV4_SUBNET}" ] || \
@@ -140,7 +143,7 @@ read_routing_table() {
       if [ "$ip_type" = "ipv6" ]; then
         client_name="${client_name}.${JOETOO_DOMAIN}"
       fi
-      logger -p "${LOG_FACILITY}.debug" -t "${PN}" "ip: [$ip] client_name: [$client_name] ip_type: [$ip_type]"
+      logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "ip: [$ip] client_name: [$client_name] ip_type: [$ip_type]"
       # validate reachability before adding to the database
       # initial empirical results (≈50 hosts, local LAN):
       #   timeout 0.3 socat - TCP:"$ip":22,connect-timeout=0.3 &>/dev/null      ~0.20s total
@@ -167,7 +170,7 @@ read_routing_table() {
       #   - minimal false-negatives in LAN sweeps
 #       tst=ping; if ping -W 1 -c 1 "$ip" &>/dev/null ; then
        tst=devtcp; if timeout 0.3 bash -c "echo > /dev/tcp/$ip/22" 2>/dev/null; then
-        j_msg -$debug -p "connectivity [$tst]-test result: success"
+       logger -p "${LOG_FACILITY}.info" -t "${TAG}" "connectivity test result = [$?]"
         # append to database - four parallel indexed arrays
         ip_list+=("${ip}")
         client_list+=("${client_name}")
@@ -181,6 +184,7 @@ read_routing_table() {
 }
 
 update_hosts_file() {
+  logger -p "${LOG_FACILITY}.debug" -t "${PN}" "${FUNCNAME[0]} invoked"
     # Combine client and IP lists, sort uniquely, and write to temporary file
     local machine_temp_ipv4=$(mktemp)   # tab delimited to be more machine-readable
     local machine_temp_ipv6=$(mktemp)   # tab delimited to be more machine-readable
