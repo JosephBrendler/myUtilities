@@ -64,12 +64,26 @@ INTERFACE="$3"
 SOURCE="${4:-$TBD}"  # for log entries (who sent this to us); also send to server
 
 #-----[ functions ]-----------------------------------------------------------
+
 timestamp() { printf '%s\n' "$(date '+%Y-%m-%d_%H:%M:%S')" ; }
+
+TrueFalse() {
+    case "$1" in
+        [yY]*|[tT]*|[uU]*|[hH]*|"$TRUE"|"0")
+            printf '%s' "True"; return 0 ;;
+        [nN]*|[fF]*|[dD]*|[lL]|"$FALSE")
+            printf '%s' "False"; return 1 ;;
+        *) printf '%s' "unset"; return 2 ;;
+    esac
+}
 
 #-----[ main script ]---------------------------------------------------------
 
 # Log the Initial State
 msg="(debug) - invoked - EVENT: [$EVENT] INTERFACE: [$INTERFACE] ADDR: [$ADDR] SOURCE: [$SOURCE]"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
+msg="(debug) - other variables: TRUE: [$(TrueFalse $TRUE)] FALSE: [$(TrueFalse $FALSE)] NEED_UPDATE: [$NEED_UPDATE]"
+msg+=" TAG: [$TAG] LOG_FACILITY: [$LOG_FACILITY] DDNS_CACHE_DIR [$DDNS_CACHE_DIR]"
 logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
 # summary-validate INTERFACE and EVENT
@@ -86,29 +100,29 @@ elif [ -z "$INTERFACE" ]; then
     # Exit with success (0) because the script did its job by filtering
     exit 0
 fi
+msg="(debug) progress: checking ADDR: [$ADDR]"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
 # validate ADDR and detect address family (ipv4/ipv6) and thus TYPE (A|AAAA)
 # (removed guard to reject empty address (some del events might not have one - try to get from cache))
-if [[ "$ADDR" =~ ^192\.168\.6[0-3]\. ]]; then
-    # matches 192.168.60.x through 192.168.63.x (/22 range)
-    # this covers dnamasq (62.0/24) and VPN (63.0/24) clients
-    TYPE="A"
-elif [[ "$ADDR" =~ ^fd62:6262:626[0-9a-fA-F]: ]]; then
-    # matches fd62:6262:6260:: through fd62:6262:626f:: (/44 range)
-    # this covers stable SLAAAC (62::/64) and VPN (63::/64) clients
-    TYPE="AAAA"
-elif [ -n "$ADDR" ]; then
-    msg="(warn) Filtered: Address [$ADDR] outside authorized 192.168.60/22 or fd62:6262:6260::/44 ranges"
-    logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
-    # Exit with success (0) because the script did its job by filtering
-    exit 0
-fi
+case "$ADDR" in
+    "$joetoo_ULA_prefix"*) TYPE="AAAA" ;;    # fd62:6262:6260::/44
+    "$joetoo_ip4_prefix"*) TYPE="A" ;;       # 192.168.60/22
+                       "") : ;;              # empty; Ok; validate below
+                        *) msg="(warn) Filtered: Address [$ADDR] outside authorized"
+                           msg+=" 192.168.60/22 or fd62:6262:6260::/44 ranges"
+                           logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
+                           # Exit with success (0) because the script did its job by filtering
+                           exit 0 ;;
+esac
 # ADDR is now either valid for A|AAAA or empty (validate latter with del event below)
 
 # complete the identification of the cache file for this interface
 # (cannot be done prior to determining TYPE (above), and
 #  must be done prior to assessing empty address for del event (below)
 CACHE_FILE="${DDNS_CACHE_DIR}.${INTERFACE}.${TYPE}"
+msg="(debug) progress: EVENT, INTERFACE, ADDR validation complete. TYPE: [$TYPE]; Checking cache file: [$CACHE_FILE]"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 # check the cache, if it exists
 if [ -f "$CACHE_FILE" ]; then
     CACHE_INFO=$(cut -d '|' -f1,2 "$CACHE_FILE")
@@ -117,6 +131,9 @@ else
     CACHE_INFO=""
     CACHE_TS=""
 fi
+
+msg="(debug) progress: assigned cache file: [$CACHE_FILE]"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
 if [ -z "$ADDR" ]; then
     # if event is del, try to get addr from cache; keep going if successful or exit
@@ -131,13 +148,13 @@ if [ -z "$ADDR" ]; then
             if [ -n "$CACHE_INFO" ]; then
                 # strip longest match for '|*' from the right - leaving addr
                 ADDR="${CACHE_INFO%%|*}"
-                if [ $? -eq 0 ]; then
-                    NEED_UPDATE=$TRUE  # call for update for del event
-                else
+                if [ -z "$ADDR" ]; then
                     msg="(warn) Filtered: Event [$EVENT], but failed to read ADDR from cache"
                     logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
                     # Exit with success (0) because the script did its job by filtering
                     exit 0
+                else
+                    NEED_UPDATE=$TRUE  # call for update for del event
                 fi
                 # ADDR should now contain the last cached address for this interface
             else
@@ -157,6 +174,11 @@ if [ -z "$ADDR" ]; then
 fi
 TIMESTAMP="$(timestamp)"
 
+msg="(debug) progress: Done ADDR check; Event: [$EVENT]. Expect: timestamp: [$TIMESTAMP] populated;"
+msg+=" for add, addr [$ADDR] populated, for del NEED_UPDATE [$(TrueFalse $NEED_UPDATE)] true"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
+
+
 # if you are here w/o getting shunted out, all input now "validated"
 # now determine is cache is fresh/valid or if update required
 # (only relevant if event is add)
@@ -172,7 +194,7 @@ case "$EVENT" in
             fi
             ;;
         "add")
-            msg="(notice) EVENT: [$EVENT]; CACHE_INFO: [$CACHE_INFO];  ADDR|INTERFACE: [$ADDR|$INTERFACE] SOURCE: [$SOURCE]""
+            msg="(notice) EVENT: [$EVENT]; CACHE_INFO: [$CACHE_INFO];  ADDR|INTERFACE: [$ADDR|$INTERFACE] SOURCE: [$SOURCE]"
             logger -p "${LOG_FACILITY}.notice" -t "${TAG}" "${msg}"
             if [ "$CACHE_INFO" = "$ADDR|$INTERFACE" ]; then
                 # if CACHE_TS is unset, treat it as stale
@@ -221,14 +243,14 @@ case "$EVENT" in
             fi  # addr same as cache?
             ;;
         *)
-            msg="(warn) Filtered: Invalid Event [$EVENT] from SOURCE: [$SOURCE]""
+            msg="(warn) Filtered: Invalid Event [$EVENT] from SOURCE: [$SOURCE]"
             logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
             # Exit with success (0) because the script did its job by filtering
             exit 0
             ;;
 esac
 
-"(debug) progress: validation complete. NEED_UPDATE: [$NEED_UPDATE)] Event [$EVENT] from SOURCE: [$SOURCE]""
+msg="(debug) progress: validation complete. NEED_UPDATE: [$NEED_UPDATE)] Event [$EVENT] from SOURCE: [$SOURCE]"
 logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
 if [ "$NEED_UPDATE" ]; then
@@ -269,7 +291,7 @@ if [ "$NEED_UPDATE" ]; then
     fi
 else
     # update not needed; log and leave
-    msg="(info) update transmission to dns not required; exiting without further action on input from SOURCE: [$SOURCE]""
+    msg="(info) update transmission to dns not required; exiting without further action on input from SOURCE: [$SOURCE]"
     logger -p "${LOG_FACILITY}.info" -t "${TAG}" "${msg}"
 fi
 exit 0
