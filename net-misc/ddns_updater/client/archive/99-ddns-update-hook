@@ -1,0 +1,89 @@
+#!/bin/sh
+#
+# 99-ddns-update   (c) joe brendler 2025-4799
+#
+# dhcpcd hook to run /usr/sbin/ddns-update
+# (ddns update script) on IPv4 address assignment changes, to update dns's /etc/hosts.d/14__ddns_ipv4  file
+#
+
+# Program Name - this should reflect "dhcpcd-run-hooks" which runs hooks by sourcing them
+PN=$(basename $0)
+
+# source /etc/conf.d/ddns if it exists
+_conf="/etc/conf.d/ddns"
+if [ -f "$_conf" ]; then
+    . "$_conf"
+else
+    # Fallback if config is missing so the hook doesn't just die silently
+    LOG_FACILITY="user"
+fi
+TAG="dhcpcd-hook-ddns"
+# Use the facility from the config, default to debug level for the hook's diagnostic info
+FACILITY="${LOG_FACILITY:-local5}.debug"
+
+# Research --
+# Category        Reason Codes               Action      Note
+#--------------  -------------------------  ----------  ---------------------------------------
+# Up / Refresh    BOUND, INFORM, REBOOT,     Add         new_ip_address is guaranteed
+#                 RENEW, REBIND
+#--------------  -------------------------  ----------  ---------------------------------------
+# Down (Soft)     STOP, RELEASE              Del         happens on dhcpcd -k. old_ip_address is
+#                                                        usually available
+#--------------  -------------------------  ----------  ---------------------------------------
+# Down (Hard)     STOPPED, EXPIRE,           Del         happens on service stop or lease loss,
+#                 DEPARTED, FAIL                         address is often missing
+#--------------  -------------------------  ----------  ---------------------------------------
+# Physical        NOCARRIER, CARRIER         Del/Ignore  NOCARRIER should trigger a del via cache.
+#--------------  -------------------------  ----------  ---------------------------------------
+# IPv6 (RA)       ROUTERADVERT               Ignore      you are handling IPv6 via your ip monitor
+#                                                        daemon; ignore this to avoid collisions
+#--------------  -------------------------  ----------  ---------------------------------------
+
+# Diagnostic hook to illuminate dhcpcd environment variables
+# move dupm to cover all reasons
+case "$reason" in
+    # BOUND|INFORM|REBOOT|RENEW|REBIND|STOP|RELEASE|STOPPED|EXPIRE|DEPARTED|FAIL|NOCARRIER|CARRIER|ROUTERADVERT)
+    # ignore ROUTERADVERT (ipv6 and very noisy)
+    # ignore CARRIER (link up but does not mean addr available - other signals do)
+    BOUND|INFORM|REBOOT|RENEW|REBIND|STOP|RELEASE|STOPPED|EXPIRE|DEPARTED|FAIL|NOCARRIER)
+        # Log the header line
+        logger -p "$FACILITY".info -t "$TAG" "(info) dhcpcd event: reason: [$reason] on interface: [$interface]"
+        # format and log select (or all) variables using a subshell, to gather the env variables
+        #    and send to logger in one go
+        env | grep -E 'interface|ip_address|reason|hostname|^if|^IF|new_|old_' | while read -r line; do
+            logger -p "$FACILITY".debug -t "$TAG" "(debug) ENV: $line"
+        done
+    ;;
+esac  # all ipv4 events, ignore ROUTERADVERT and other ipv6 reasons
+
+# actual add/del logic (tune with info learned from diagnostics)
+case "$reason" in
+    # potential add
+    INFORM|BOUND|RENEW|REBIND|REBOOT)
+        # explicit add (if we have the minimum requirements)
+        if [ -n "$new_ip_address" ] && [ -n "$interface" ]; then
+            logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering ADD: $new_ip_address on $interface"
+            /usr/sbin/ddns-update "add" "$new_ip_address" "$interface"
+        else
+            logger -p "$FACILITY.warn" -t "$TAG" "(warn) ADD skipped: missing data (addr: [$new_ip_address] iface: [$interface])"
+        fi
+        ;;
+    # explicit delete (with $old_ip_address that should be presented or fallback)
+    STOP|RELEASE|EXPIRE)
+        if [ -n "$old_ip_address" ] && [ -n "$interface" ]; then
+            logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: $old_ip_addr on $interface"
+            /usr/sbin/ddns-update "del" "$old_ip_address" "$interface"
+        else
+            # address not available; ddns-update will have to pull last known addr from cache
+            logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: (cache)[no addr] on $interface"
+            /usr/sbin/ddns-update "del" "" "$interface"
+        fi
+        ;;
+    # fallback-delete - address not available; ddns-update will have to pull last known addr from cache
+    STOPPED|DEPARTED|NOCARRIER)
+        if [ -n "$interface" ]; then
+            logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: (cache)[no addr] on $interface"
+            /usr/sbin/ddns-update "del" "" "$interface"
+        fi
+        ;;
+esac

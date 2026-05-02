@@ -1,0 +1,163 @@
+#!/bin/sh
+#
+# 99-ddns-update   (c) joe brendler 2025-4799
+#
+# dhcpcd hook to run /usr/sbin/ddns-update
+# (ddns update script) on IPv4 address assignment changes, to update dns's /etc/hosts.d/14__ddns_ipv4  file
+#
+
+# Program Name - this should reflect "dhcpcd-run-hooks" which runs hooks by sourcing them
+PN=$(basename $0)
+
+####### for testing in env where a syslog daemon is not available - convert logger to direct file logging
+logger() {
+    # Portable flag stripper
+    args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -*) shift ;;  # strip flags; shift once (leave arg, like priority or tag, to be printed)
+            * )  args+=("$1"); shift ;;
+        esac
+    done
+    if [ ${#args[@]} -gt 0 ]; then
+        # priority and $PN may end up in the message twice, but ok more portable startpoing if reused - this is for diagnostics
+        printf '[%s] (%s) %s\n' "$(date +'%Y%m%d-%H:%M:%S')" "$PN" "${args[*]}" >> /tmp/dhcpcd-hook-debug.log
+    fi
+}
+####### Temporary debug override for WSL/NuSpartacus
+if [ "$USER" = "joe" ] || [ "$USER" = "root" ]; then
+    # Force a local cache directory for testing
+    export DDNS_CACHE_DIR="/tmp/ddns-cache"
+    mkdir -p "$DDNS_CACHE_DIR"
+fi
+
+
+# source /etc/conf.d/ddns if it exists
+_conf="/etc/conf.d/ddns"
+if [ -f "$_conf" ]; then
+    . "$_conf"
+else
+    # Fallback if config is missing so the hook doesn't just die silently
+    LOG_FACILITY="user"
+fi
+TAG="$PN"
+# Use the facility from the config, default to debug level for the hook's diagnostic info
+FACILITY="${LOG_FACILITY:-local5}.debug"
+JOETOO_ULA_PREFIX="${JOETOO_ULA_PREFIX:-fd62}"
+JOETOO_IP4_PREFIX="${JOETOO_IP4_PREFIX:-192.168.6}"
+
+
+logger -p "$FACILITY".info -t "$TAG" "(info) starting"
+echo "(debug) running $PN"
+echo "logger: $(which logger)"
+# Research --
+# Category        Reason Codes               Action      Note
+#--------------  -------------------------  ----------  ---------------------------------------
+# Up / Refresh    BOUND, INFORM, REBOOT,     Add         new_ip_address is guaranteed
+#                 RENEW, REBIND
+#--------------  -------------------------  ----------  ---------------------------------------
+# Down (Soft)     STOP, RELEASE              Del         happens on dhcpcd -k. old_ip_address is
+#                                                        usually available
+#--------------  -------------------------  ----------  ---------------------------------------
+# Down (Hard)     STOPPED, EXPIRE,           Del         happens on service stop or lease loss,
+#                 DEPARTED, FAIL                         address is often missing
+#--------------  -------------------------  ----------  ---------------------------------------
+# Physical        NOCARRIER, CARRIER         Del/Ignore  NOCARRIER should trigger a del via cache.
+#--------------  -------------------------  ----------  ---------------------------------------
+# IPv6 (RA)       ROUTERADVERT               Ignore      you are handling IPv6 via your ip monitor
+#                                                        daemon; ignore this to avoid collisions
+#--------------  -------------------------  ----------  ---------------------------------------
+
+# Diagnostic hook to illuminate dhcpcd environment variables
+# move dupm to cover all reasons
+case "$reason" in
+    # BOUND|INFORM|REBOOT|RENEW|REBIND|STOP|RELEASE|STOPPED|EXPIRE|DEPARTED|FAIL|NOCARRIER|CARRIER|ROUTERADVERT\
+    # BOUND6|INFORM6|RENEW6|REBIND6|RECONFIGURE|ROUTERADVERT)
+    # ignore ROUTERADVERT (ipv6 and very noisy)  -- for ipv6 put it back? (ddns-daemon is triggered by address lifetime renewal anyway)
+    # ignore CARRIER (link up but does not mean addr available - other signals do)
+    BOUND|INFORM|REBOOT|RENEW|REBIND|STOP|RELEASE|STOPPED|EXPIRE|DEPARTED|FAIL|NOCARRIER|\
+    BOUND6|INFORM6|RENEW6|REBIND6|RECONFIGURE|ROUTERADVERT)
+        # Log the header line
+        logger -p "$FACILITY".info -t "$TAG" "(info) dhcpcd event: reason: [$reason] on interface: [$interface]"
+        # format and log select (or all) variables using a subshell, to gather the env variables
+        #    and send to logger in one go
+        env | grep -E 'interface|ip_address|reason|hostname|^if|^IF|new_|old_' | while read -r line; do
+            logger -p "$FACILITY".debug -t "$TAG" "(debug) ENV: $line"
+        done
+    ;;
+esac  # all ipv4 events, ignore ROUTERADVERT and other ipv6 reasons
+
+# actual add/del logic (tune with info learned from diagnostics)
+case "$reason" in
+    # add
+    INFORM|BOUND|RENEW|REBIND|REBOOT|BOUND6|INFORM6|RENEW6|REBIND6|RECONFIGURE|ROUTERADVERT|IPV6_UP|IPV6_RENEW)
+        # explicit add (if we have the minimum requirements)
+        source_6="dhcpcd"; source_4="dhcpcd"
+        if [ -n "$interface" ]; then
+            # use available ipv6 address or try to look one up
+            target_v6="$new_ip6_address"
+            if [ -z "$target_v6" ]; then
+                # fallback discovery logic: find stable ULA, ignore temporary
+                target_v6=$(ip -6 addr show dev "$interface" | \
+                    grep -E "inet6[[:space:]]+${JOETOO_ULA_PREFIX}" | \
+                    grep -v 'temporary' | \
+                    awk '{print $2}' | \
+                    cut -d/ -f1 | \
+                    head -n 1)
+                source_6="found locally"
+            fi
+            # use available ipv4 address or try to look one up
+             target_v4="$new_ip_address"
+            if [ -z "$target_v4" ]; then
+                # fallback discovery logic: find stable ULA, ignore temporary
+                target_v4=$(ip -4 address show dev "$interface" | \
+                    grep -E "inet[[:space:]]+${JOETOO_IP4_PREFIX}" | \
+                    grep -v 'temporary' | \
+                    awk '{print $2}' | \
+                    cut -d/ -f1 | \
+                    head -n 1)
+                source_4="found locally"
+            fi
+            # submit ipv6 address if populated, note source in log
+            if [ -n "$target_v6" ]; then
+                logger -p "$FACILITY.notice" -t "$TAG" "(notice) Triggering ADD: [$target_v6] ($source_6) on $interface"
+                /usr/sbin/ddns-update "add" "$target_v6" "$interface" "$PN"
+            fi
+            # submit ipv4 address if populated, note source in log
+            if [ -n "$target_v4" ]; then
+                logger -p "$FACILITY.notice" -t "$TAG" "(notice) Triggering ADD: [$target_v4] ($source_4) on $interface"
+                /usr/sbin/ddns-update "add" "$target_v4" "$interface" "$PN"
+            fi
+            # only if both are empty, log warning
+            if [ -z "$target_v4" ] && [ -z "$target_v6" ]; then
+                 logger -p "$FACILITY.warn" -t "$TAG" "(warn) ADD triggered by reason: [$reason], but no addresses found/provided for $interface"
+            fi
+            unset target_v6 target_v4 source_6 source_4
+        else
+            logger -p "$FACILITY.warn" -t "$TAG" "(warn) ADD triggered by reason: [$reason], but interface not provided; update not possible"
+        fi
+        ;;
+    # explicit delete (with $old_ip_address that should be presented or fallback)
+    STOP|RELEASE|EXPIRE|IPV6_EXPIRE|STOPPED|DECONFIG|DEPARTED|NOCARRIER)
+        if [ -n "$interface" ]; then
+            if [ -n "$old_ip_address" ]; then
+                # ipv4 address address available; submit update to delete it
+                logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: $old_ip_address on $interface"
+                /usr/sbin/ddns-update "del" "$old_ip_address" "$interface" "$PN"
+            fi
+            if [ -n "$old_ip6_address" ]; then
+                # ipv6 address address available; submit update to delete it
+                logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: $old_ip6_address on $interface"
+                /usr/sbin/ddns-update "del" "$old_ip6_address" "$interface" "$PN"
+            fi
+            if [ -z "$old_ip_address" ] && [ -z "$old_ip6_address" ]; then
+                # address not available; ddns-update will have to pull last known addr from cache
+                logger -p "$FACILITY.info" -t "$TAG" "(info) Triggering DEL: (cache)[no addr] on $interface"
+                /usr/sbin/ddns-update "del" "" "$interface" "$PN"
+            fi
+        else
+            # interface not available; cannot update
+            logger -p "$FACILITY.warn" -t "$TAG" "(warn) DEL triggered by reason: [$reason], but interface not provided; update not possible"
+        fi
+        ;;
+esac
