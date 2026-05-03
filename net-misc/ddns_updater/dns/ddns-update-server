@@ -13,6 +13,13 @@
 #      passwordless sudo access to run this script
 #
 # 20260424 - refactored to integrate ipv4 and ipv6 for both dnsmasq/radvd and openvpn clients (add address type A or AAAA)
+#
+# *** 20260502 *** - new file parsing strategy - treat the file read and write from the dns perspective -
+#      - each line contains col 1: ip, col 2: name, col 3: metadata beginning with # - everything else is a comment
+#      - after extracting these three parts, use separate (internal) logic to dissassemble and use the metadata
+#      - metadata will consist of # followed by interface then timestamp and as ver 0.1.15+ deploys,
+#        some lines will also have source (where the update originated - useful for human auditing)
+#
 PN=${0##*/}
 
 # source /etc/conf.d/ddns if it exists; exit if missing
@@ -71,47 +78,26 @@ ipv6_hosts_file="${IPV6_HOSTS_FILE:-/etc/hosts.d/16_ddns_ipv6}"
 if [ $# -eq 7 ]; then
     # Newest mode - integrated ipv4/6 for dnsmasq/radva and openvpn clients --
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] [EVENT] [TYPE]
-    ADDR="$1"
-    FQDN="$2"
-    INTERFACE="$3"
-    TIMESTAMP="$4"
-    EVENT="$5"
-    TYPE="$6"
-    SOURCE="${7:-TBD}"
+    ADDR="$1"; FQDN="$2"; INTERFACE="$3"; TIMESTAMP="$4"; EVENT="$5"; TYPE="$6"; SOURCE="${7:-TBD}"
 elif [ $# -eq 6 ]; then
     # Newest legacy mode - integrated ipv4/6 for dnsmasq/radva and openvpn clients --
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] [EVENT] [TYPE]
-    ADDR="$1"
-    FQDN="$2"
-    INTERFACE="$3"
-    TIMESTAMP="$4"
-    EVENT="$5"
-    TYPE="$6"
-    SOURCE="TBD"
+    ADDR="$1"; FQDN="$2"; INTERFACE="$3";TIMESTAMP="$4";EVENT="$5"; TYPE="$6"; SOURCE="TBD"
 elif [ $# -eq 5 ]; then
     # legacy mode: client ddns openrc service via /usr/sbin/ddns-daemon (ip monitor) and /usr/sbin/ddns-update script
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] [EVENT] (does not support type, but handles only ipv6)
-    ADDR="$1"
-    FQDN="$2"
-    INTERFACE="$3"
-    TIMESTAMP="$4"
-    EVENT="$5"
-    TYPE="AAAA"
-    SOURCE="legacy 5-arg ddns-daemon"
+    ADDR="$1"; FQDN="$2"; INTERFACE="$3"; TIMESTAMP="$4"; EVENT="$5"; TYPE="AAAA"; SOURCE="legacy 5-arg ddns-daemon"
 elif [ $# -eq 4 ]; then
     # fall back to legacy-legacy mode 4-arg dhcpcd-hook input (client /etc/dhcpcd.ddns_update.sh)
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] (does not support delete event or type; handles only ipv6 adds)
-    ADDR="$1"
-    FQDN="$2"
-    INTERFACE="$3"
-    TIMESTAMP="$4"
-    EVENT="add"
-    TYPE="AAAA"
-    SOURCE="legacy 4-arg dhcpcd.ddns_update.sh"
+    ADDR="$1"; FQDN="$2"; INTERFACE="$3"; TIMESTAMP="$4"; EVENT="add"; TYPE="AAAA"; SOURCE="legacy 4-arg dhcpcd.ddns_update.sh"
 else
     printf '%s\n' "Invalid argument count"
     exit 1
 fi
+
+# use a variable for the tab character to stay POSIX-friendly in awk, sort, printf below
+TAB=$'\t'
 
 W0="[[:space:]]*" # regex match for zero or more whitespaces
 W1="[[:space:]]+" # regex match for one or more whitespaces
@@ -167,14 +153,15 @@ if ! /usr/bin/flock -n 200; then
 fi
 
 #-----[ functions ]----------------------------------------------------------------
-timestamp () { printf '%s\n' "$(date +'%Y%m%d-%H:%M:%S')" ; }
+timestamp () { printf '%s\n' "$(date +'%Y-%m-%d_%H:%M:%S')" ; }
 
 #-----[ main script ]----------------------------------------------------------------
 # initiate log entry
 logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: event: [$EVENT] type: [$TYPE] addr: [$ADDR] fqdn: [$FQDN] iface: [$INTERFACE] source: [$SOURCE]"
 logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: user: [$user] hosts_file: [$HOSTS_FILE] temp_file: [$TEMP_FILE] lock_file: [$LOCK_FILE]"
 
-# if this is a delete action, process it and exit early (otherwise add)
+# if this is a delete action, just delete any line that has name and has interface in the metadata
+# (process it and exit early; if it is not a del, then add - more complex)
 if [ "$EVENT" = "del" ]; then
     # use nl to Write each file to standard output, with line numbers added.
     # remove lines that semantically match <something-ie-address><fqdn><space># followed by
@@ -191,11 +178,27 @@ if [ "$EVENT" = "del" ]; then
     # whitespace (W1), the comment marker '#', then whitespace (W1)
     # the INTERFACE name
     # EITHER more whitespace (W1) followed by the timestamp and source (P0) OR EOL ($)
-    /bin/grep -v -E "^${G1}${W1}${FQDN}${W1}#${W1}${INTERFACE}(${W1}${P0})?$" "$HOSTS_FILE" > "$TEMP_FILE"
+#    /bin/grep -v -E "^${G1}${W1}${FQDN}${W1}#${W1}${INTERFACE}(${W1}${P0})?$" "$HOSTS_FILE" > "$TEMP_FILE"
     #   i.e. match/delete for interface=eth1: "<any-addr> <fqdn> #oops eth1 whatever"
     #   but do not match "<any-addr> <fqdn> #oops eth11"
 
-    mv "$TEMP_FILE" "$HOSTS_FILE"
+    # use awk to print all but the line that matches the fqdn and iface to be deleted, intact, in their original form ($0)
+    /usr/bin/awk -v T="${TAB}" -v w0="${W0}" -v target_fqdn="$FQDN" -v target_iface="$INTERFACE" '{
+        addr = $1; fqdn = $2;
+        metadata = $0; sub("^[^#]*#" w0, "", metadata);
+        if (!(fqdn == target_fqdn && metadata ~ "^" target_iface)) { print $0 ; }
+    }' "$HOSTS_FILE"  > "$TEMP_FILE"
+
+    # atomic write - to ensure dnsmasq doesn't try to read a half-written file
+    chmod 644 "$TEMP_FILE" ; result=$?
+    mv "$TEMP_FILE" "$HOSTS_FILE" ; result=$(( result + $? ))
+    if [ "$result" -eq 0 ] ; then
+        msg="(info) successfully posted and set 644 permissions on $HOSTS_FILE for del"
+        logger -p "${LOG_FACILITY}.info" -t "${TAG}" "$msg"
+    else
+        msg="(err) failed to post and/or set 644 permissions on $HOSTS_FILE for del"
+        logger -p "${LOG_FACILITY}.err" -t "${TAG}" "$msg"
+    fi
 
     msg="(debug) calling /etc/init.d/dnsmasq reload"
     logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "$msg"
@@ -204,56 +207,58 @@ if [ "$EVENT" = "del" ]; then
     exit 0
 fi
 
-# Check for valid input
-if [ -z "$FQDN" ] || [ -z "$ADDR" ]; then
-    printf '%s\n' "Error: Missing FQDN or IPv6 Address in updatae from ($SOURCE). Usage: FQDN ADDR"
+# to get here, it must not be a del event - treat as add, but validate first
+# validate from dns perspective - two values on the line are ip (ADDR) and name (FQDN)
+if [ -z "$ADDR" ] || [ -z "$FQDN" ]; then
+    msg="9err) Missing FQDN [$FQDN] or ADDR [$ADDR] in update from SOURCE [$SOURCE]"
+    printf '%s\n' "$msg"
+    logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "$msg"
     exit 1
 fi
-
-#msg="[$(timestamp)] (debug) Add [$EVENT]. dumping updated HOSTS_FILE"
-#printf '%s\n' "$msg" | tee -a "$debug_logfile" >&2
-#nl -ba "$HOSTS_FILE" | tee -a "$debug_logfile" >&2
 
 # Note: All file access operations must be run with sudo for read/write access.
 # (depends on user running the script to have NOPASSWD access to the script
 #  which is granted in /etc/sudoers.d/99-ddns-update
 
-#   (use a temporary variable for the tab character to stay POSIX-friendly)
-T=$'\t'
-
+# ingest the current hosts file (except for any line matching into ADDR, FQDN, METADATA
 # Read all existing entries *EXCEPT* the line corresponding to the FQDN and INTERFACE
 #    into the temporary file. This handles multi-homing by removing ONLY the old IP for this FQDN/Interface
-# use awk and grep -v to filter out the old record and convert the remaining file to tab-delimited
-# filter matches any [ADDR] $1 (G1) followed by tab followed by this specific [FQDN]
-#    followed by tab followed by this specific [INTERFACE] either followed directly by EOL
-#    OR followed by whitespace and printable chars (e.g. timestamp) and then EOL
-#  i.e. match/delete for interface=eth1: "<any-addr> <fqdn> #oops eth1 whatever"
-#    but do not match "<any-addr> <fqdn> #oops eth11"
-# (more conveniently machine-readable for sorting)
-# (note: awk ignores the '#' - which is $3 - we dont include that in the temp file)
-/usr/bin/awk -v T="${T}" '{print $1 T $2 T $4 T $5}' "$HOSTS_FILE" 2>/dev/null | \
-    /bin/grep -v -E "^${G1}${T}${FQDN}${T}${INTERFACE}(${T}${G1})?$" > "$TEMP_FILE"
+# + assign addr and fqdn
+# + assign a copy of the whole line to metadata, then substitute (for everything from the left anchor (^)
+#   of the line up to and including any whitespace trailing the #), "" amd assign that remainder back to metadata --
+#   ( "^[^#]*#" : find everything from the start of the line until and including the first # )
+#     w0 (assigned ${W0} in -v): include any trailing spaces (equiv [[:space:]]*) )
+# + then only print if it does NOT match our target
+#   ! : match logical negative of -
+#   fqdn == target_fqdn (match the target_fqdn) && (and)
+#   metadata ~ "^" target_iface (match a metadata field left-anchored with the target_iface value
+/usr/bin/awk -v T="${TAB}" -v w0="${W0}" -v target_fqdn="$FQDN" -v target_iface="$INTERFACE" '{
+    addr = $1; fqdn = $2;
+    metadata = $0; sub("^[^#]*#" w0, "", metadata);
+    if (!(fqdn == target_fqdn && metadata ~ "^" target_iface)) { print addr T fqdn T metadata ; }
+}' "$HOSTS_FILE"  > "$TEMP_FILE"
 
-
+# construct fixed width metadata field from INTERFACE TIMESTAMP and SOURCE
+METADATA=$(printf "%-10s %-22s %s" "$INTERFACE" "$TIMESTAMP" "$SOURCE")
 # Append the NEW record in tab-delimited format
-printf "%s\t%s\t%s\t%s\n" "$ADDR" "$FQDN" "$INTERFACE" "$TIMESTAMP" "${SOURCE}" >> "$TEMP_FILE"
+printf "%s\t%s\t%s\t%s\n" "$ADDR" "$FQDN" "$METADATA" >> "$TEMP_FILE"
 
-# Sort the final content based on FQDN (field 2) and interface (field 3),
+# Sort the final content of tab-delimited TEMP_FILE based on FQDN (field 2) and interface (start of field 3),
 #   then format back to fixed-width (human-readable) and overwrite the privileged file
 # output to TEMP_FILE2 and then mv to HOSTS_FILE for atomic write
-LC_COLLATE="en_US.UTF-8" /usr/bin/sort -t"${T}" -k2,2 -k3,3 "$TEMP_FILE" | \
-    /usr/bin/awk -v ip_w="$COL_WIDTH" -v T="${T}" \
-    '{ printf "%-"ip_w"s %-20s # %-10s %s\n", $1, $2, $3, $4, $5 }' | \
+LC_COLLATE="en_US.UTF-8" /usr/bin/sort -t"${TAB}" -k2,2 -k3,3 "$TEMP_FILE" | \
+    /usr/bin/awk -F"${TAB}" -v ip_w="$COL_WIDTH" -v T="${TAB}" \
+    '{ printf "%-"ip_w"s %-20s # %s\n", $1, $2, $3 }' | \
     /usr/bin/tee "$TEMP_FILE2" > /dev/null
 
 # make sure the hosts file will be readable by dnsmasq
 chmod 644 "$TEMP_FILE2" ; result=$?
 mv "$TEMP_FILE2" "$HOSTS_FILE" ; result=$(( result + $? ))
 if [ "$result" -eq 0 ] ; then
-    msg="(info) successfully posted and set 644 permissions on $HOSTS_FILE"
+    msg="(info) successfully posted and set 644 permissions on $HOSTS_FILE for add"
     logger -p "${LOG_FACILITY}.info" -t "${TAG}" "$msg"
 else
-    msg="(err) failed to post and/or set 644 permissions on $HOSTS_FILE"
+    msg="(err) failed to post and/or set 644 permissions on $HOSTS_FILE for add"
     logger -p "${LOG_FACILITY}.err" -t "${TAG}" "$msg"
 fi
 
