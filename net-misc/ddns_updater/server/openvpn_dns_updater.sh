@@ -216,7 +216,8 @@ update_hosts_file() {
     # key on host name and keep only the last entry for each
     LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' | \
     # print fixed width (human-readable) output for file
-    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
+#    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
+    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s # %s\n", $1, $2, $3 }' | \
     # sort by hostname (needed again b/c de-duplication destroys order of grep | sort
     LC_COLLATE="en_US.UTF-8" sort -k2,2 > "$machine_temp_ipv4"
 

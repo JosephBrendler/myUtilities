@@ -20,6 +20,11 @@
 #      - metadata will consist of # followed by interface then timestamp and as ver 0.1.15+ deploys,
 #        some lines will also have source (where the update originated - useful for human auditing)
 #
+
+# Note: All file access operations must be run with sudo for read/write access.
+# (depends on user running the script to have NOPASSWD access to the script
+#  which is granted in /etc/sudoers.d/99-ddns-update
+
 PN=${0##*/}
 
 # source /etc/conf.d/ddns if it exists; exit if missing
@@ -82,7 +87,7 @@ if [ $# -eq 7 ]; then
 elif [ $# -eq 6 ]; then
     # Newest legacy mode - integrated ipv4/6 for dnsmasq/radva and openvpn clients --
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] [EVENT] [TYPE]
-    ADDR="$1"; FQDN="$2"; INTERFACE="$3";TIMESTAMP="$4";EVENT="$5"; TYPE="$6"; SOURCE="TBD"
+    ADDR="$1"; FQDN="$2"; INTERFACE="$3";TIMESTAMP="$4";EVENT="$5"; TYPE="$6"; SOURCE="legacy 6-arg ddns-daemon"
 elif [ $# -eq 5 ]; then
     # legacy mode: client ddns openrc service via /usr/sbin/ddns-daemon (ip monitor) and /usr/sbin/ddns-update script
     # [ADDR] [FQDN] [INTERFACE] [TIMESTAMP] [EVENT] (does not support type, but handles only ipv6)
@@ -216,16 +221,14 @@ if [ -z "$ADDR" ] || [ -z "$FQDN" ]; then
     exit 1
 fi
 
-# Note: All file access operations must be run with sudo for read/write access.
-# (depends on user running the script to have NOPASSWD access to the script
-#  which is granted in /etc/sudoers.d/99-ddns-update
-
 # ingest the current hosts file (except for any line matching into ADDR, FQDN, METADATA
 # Read all existing entries *EXCEPT* the line corresponding to the FQDN and INTERFACE
 #    into the temporary file. This handles multi-homing by removing ONLY the old IP for this FQDN/Interface
 # + assign addr and fqdn
-# + assign a copy of the whole line to metadata, then substitute (for everything from the left anchor (^)
-#   of the line up to and including any whitespace trailing the #), "" amd assign that remainder back to metadata --
+# + assign a copy of the whole line to metadata, then
+#   sub() - substitute (for everything from the left anchor (^)
+#     of the line up to and including any whitespace trailing the #)
+#     substitute "" - and assign that remainder back to metadata --
 #   ( "^[^#]*#" : find everything from the start of the line until and including the first # )
 #     w0 (assigned ${W0} in -v): include any trailing spaces (equiv [[:space:]]*) )
 # + then only print if it does NOT match our target
