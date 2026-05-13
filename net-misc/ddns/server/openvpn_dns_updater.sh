@@ -217,6 +217,7 @@ update_hosts_file() {
     LC_COLLATE="en_US.UTF-8" awk -F '\t' '{last[$2]=$0} END {for (a in last) print last[a]}' | \
     # print fixed width (human-readable) output for file
 #    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s %-20s\n", $1, $2, $3 }' | \
+    # include # to make timestamp a comment, else it is interpreted as alias for ip
     LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-17s %-20s # %s\n", $1, $2, $3 }' | \
     # sort by hostname (needed again b/c de-duplication destroys order of grep | sort
     LC_COLLATE="en_US.UTF-8" sort -k2,2 > "$machine_temp_ipv4"
@@ -239,7 +240,9 @@ update_hosts_file() {
     # of the form: fd62:6262:6263::xxxx - short for: fd62:6262:6263:0000:0000:0000:0000:xxxx
     # so space needed is 4xhextet + 4x':' = 20 + pad = 22 char
     # print fixed width (human-readable) output for file
-    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-22s %-25s %-20s\n", $1, $2, $3 }' | \
+#    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-22s %-25s %-20s\n", $1, $2, $3 }' | \
+    # include # to make timestamp a comment, else it is interpreted as alias for ip
+    LC_COLLATE="en_US.UTF-8" awk -F '\t' '{ printf "%-22s %-25s # %-20s\n", $1, $2, $3 }' | \
     # Sort alphabetically by hostname
     LC_COLLATE="en_US.UTF-8" sort -k2,2 > "$machine_temp_ipv6"
 
