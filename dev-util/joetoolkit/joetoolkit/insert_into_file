@@ -8,9 +8,16 @@ PN=${0##*/}   # basename
 PRETEND=$TRUE
 FLAGGED=$FALSE
 
-varlist="PN BPN BUILD starting_step stopping_step cmdseq_statusfile bool.VERBOSE verbosity bool.INTERACTIVE bool.PRETEND"
-varlist+=" BREAK configfile target_folder target_line_text insert_file before_after BREAK lv.target_file_list"
+varlist="PN BPN BUILD user logFile cmdseq_statusfile verbosity loglevel"
+varlist="${varlist} num_cmds starting_step stopping_step BREAK"
+varlist+=" configfile target_folder rlv.target_line_text insert_file before_after BREAK rlv.target_file_list"
+varlist="${varlist} bool.INTERACTIVE bool.RESUME bool.LOGGING bool.QUIET bool.DEBUG bool.PRETEND"
+varlist="${varlist} bool.UNICODE_CAPABLE bool.UNICODE_DISABLE"
+varlist="${varlist} bool.handle_local_arg_EXISTS bool.handle_local_compound_arg_EXISTS"
+varlist="${varlist} bool.handle_local_usage_EXISTS"
+varlist="${varlist} rlv.local_cmdline_arg_handler"
 varlist+=" BREAK user group"
+
 
 command_sequence=(
 'batch_edit_target_files'
@@ -20,95 +27,73 @@ msg1_sequence=(
 'batch edit target files'
 )
 
+num_cmds=${#command_sequence[@]}
 #-----[ functions ]-----------------------------------------------------
-initialize_variables() {
-    d_message "initializing variables" 2
-    myverbosity=$verbosity; myPRETEND=$PRETEND
-    initialize_vars ${varlist}
+re_initialize_variables() {
+    j_msg "-${notice}" -p "re-initializing variables"
+#    myPRETEND=$PRETEND
 
-    #reinitialize VERBOSE and verbosity as above
+    #reinitialize and verbosity as above
     FLAGGED=$FALSE
-    message_n "assigning PN = $(basename $0) "
-    export PN=$(basename $0) ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "assigning PN = $(basename $0) "
+    export PN=${0##*/}
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "sourcing BUILD"
-    source /etc/${PN}/BUILD ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "sourcing BUILD"
+    source "/etc/${PN}/BUILD"
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "sourcing BPN"
-    source /etc/${PN}/BPN ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "sourcing BPN"
+    source "/etc/${PN}/BPN"
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "sourcing script_header_joetoo_extended"
-    source /usr/sbin/script_header_joetoo_extended ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "sourcing script_header_joetoo_extended"
+    source "/usr/sbin/script_header_joetoo_extended"
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "re-initializing verbosity ... [ ${myverbosity} ]"
-    export verbosity=$myverbosity ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "re-initializing PRETEND ..."
+    export PRETEND=$myPRETEND
+    right_status $? "${info}" || FLAGGED=$TRUE
+    d_do 'echo -en " $(status_color ${PRETEND})$(TrueFalse ${PRETEND})${Boff}"' "${info}"
 
-    message_n "re-initializing VERBOSE ..."
-    [ ${verbosity} -gt 0 ] && export VERBOSE=$TRUE || export VERBOSE=$FALSE
-    right_status $?
-    debug_do 'echo -en " $(status_color ${VERBOSE})$(TrueFalse ${VERBOSE})${Boff}"' 3
+    j_msg "-${info}" -p -n "re-initializing num_cmds = ${#command_sequence[@]} ..."
+    export num_cmds=${#command_sequence[@]}
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "re-initializing PRETEND ..."
-    export PRETEND=$myPRETEND ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
-    debug_do 'echo -en " $(status_color ${PRETEND})$(TrueFalse ${PRETEND})${Boff}"' 3
+    j_msg "-${info}" -p -n "re-initializing starting_step = 0 ..."
+    export starting_step=0
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "re-initializing INTERACTIVE ..."
-    export INTERACTIVE=$FALSE ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
-    debug_do 'echo -en " $(status_color ${INTERACTIVE})$(TrueFalse ${INTERACTIVE})${Boff}"' 3
+    j_msg "-${info}" -p -n "re-initializing stopping_step = $((${#command_sequence[@]} - 1)) ..."
+    export stopping_step=$(( num_cmds - 1))
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "re-initializing starting_step = 0 ..."
-    export starting_step=0 ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "assigning configfile ..."
+    export configfile="/etc/${PN}/${PN}.conf"
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "re-initializing stopping_step = $((${#command_sequence[@]} - 1)) ..."
-    export stopping_step=$((${#command_sequence[@]} - 1)) ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "assigning cmdseq_statusfile = ${PN}_statusfile ..."
+    export cmdseq_statusfile="${PN}_statusfile"
+    right_status $? "${info}" || FLAGGED=$TRUE
 
-    message_n "assigning configfile ..."
-    export configfile="/etc/${PN}/${PN}.conf" ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
-
-    message_n "assigning cmdseq_statusfile = ${PN}_statusfile ..."
-    export cmdseq_statusfile="${PN}_statusfile" ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
-
-    message_n "initializing bash array for output ..."
-    export output=() ; result=$?
-    [ ! $result -eq 0 ] && FLAGGED=$TRUE
-    right_status $result
+    j_msg "-${info}" -p -n "initializing bash array for output ..."
+    export output=()
+    right_status $? "${info}" || FLAGGED=$TRUE
 
     [ $FLAGGED ] && return 1 || return 0
 }
 
 read_config() {
     echo
-    d_message "configfile: $configfile" 3
-    message_n "Reading config ..."
-    if [ -e ${configfile} ] ; then
-        echo -n " [ ${configfile} ]"
-        source ${configfile} || die "failed to source ${configfile}"
-        right_status $TRUE
+    j_msg "-${debug}" -m "configfile: $configfile"
+    j_msg "-${info}" -m -n "Reading config ..."
+    if [ -e "${configfile}" ] ; then
+        j_msg "-${info}" -mp -n " [ ${configfile} ]"
+        source "${configfile}" || die "failed to source ${configfile}"
+        right_status $TRUE "${info}"
     else
-        echo -en " (${BRon}not found${Boff})"
-        right_status 1
+        j_msg "-${info}" -mp -n " (${BRon}not found${Boff})"
+        right_status 1 "${info}"
         usage
     fi
     return 0
@@ -116,27 +101,27 @@ read_config() {
 
 display_config() {
   echo
-  message "${BYon}Current Configuration --${Boff}"
+  j_msg "-${notice}" -p "${BYon}Current Configuration --${Boff}"
   longest=$(get_longest ${varlist})
   display_vars ${longest} ${varlist}
   echo
   separator "${BYon}Content of insert_file [${insert_file}]" "(below)"
-  cat ${insert_file}
+  cat "${insert_file}"
   separator "${BYon}Content of insert_file [${insert_file}]" "(above)"
   echo
   return 0
 }
 
 do_insert() {
-    d_message " running do_insert with input from [ ${insert_file} ]" 4
+    j_msg "-${debug}" -p " running do_insert with input from [ ${insert_file} ]"
     insert_file="${1}"
     while read linein
     do
 #      if [ ! -z "${linein}" ] ; then
-        d_message "  inserting [ ${linein} ]" 4
+        j_msg "-${debug}" -p "  inserting [ ${linein} ]"
         output+=("${linein}")
 #      fi
-    done < ${insert_file}
+    done < "${insert_file}"
     return 0
 }
 
@@ -147,43 +132,43 @@ read_input_and_edit_output() {
     do
         # if line is not null and it matches tartet text, then insert before/after
         if [ ! -z "${line}" ] && [ "${line}" == "${target_line_text}" ] ; then
-            d_message "this is target target line; inserting ${before_after}" 4
-            case ${before_after} in
+            j_msg "-${debug}" -p "this is target target line; inserting ${before_after}"
+            case "${before_after}" in
                 "before" )
-                    d_message "adding insert to output array" 4
+                    j_msg "-${debug}" -p "adding insert to output array"
                     do_insert "${insert_file}"
-                    d_message "adding original line [ ${line} ] to output array" 4
+                    j_msg "-${debug}" -p "adding original line [ ${line} ] to output array"
                     output+=("$(echo "${line}")")
                   ;;
                 "after"  )
-                    d_message "adding original line [ ${line} ] to output array" 4
+                    j_msg "-${debug}" -p "adding original line [ ${line} ] to output array"
                     output+=("$(echo "${line}")")
-                    d_message "adding insert to output array" 4
+                    j_msg "-${debug}" -p "adding insert to output array"
                     do_insert "${insert_file}"
                   ;;
-                *        ) E_message "invalid before_after [ ${before_after}]"; usage;;
+                *        ) j_msg "-${err}" "invalid before_after [ ${before_after}]"; usage;;
             esac
         else
             # this is not the target line, so just add it back into the output array
-            d_message "adding line [ ${line} ] to output array" 4
+            j_msg "-${debug}" -p "adding line [ ${line} ] to output array"
             output+=("$(echo "${line}")")
         fi
-    done < ${in_file}
+    done < "${in_file}"
     return 0
 }
 
 sanity_check() {
     # sanity check explanations
-    [ $# -gt 1 ] && E_message "too many arguments [$#]" && usage
-    [ ${#user} -eq 0 ] && E_message "user: [ ${user} ] null" && usage
-    [ ${#group} -eq 0 ] && E_message "group: [ ${group} ] null" && usage
-    [ ${#user} -gt 0 ] && [[ ! $(grep ${user} /etc/shadow) ]] && E_message "user: [ ${user} ] not found" && usage
-    [ ${#group} -gt 0 ] && [[ ! $(grep ${group} /etc/gshadow) ]] && E_message "group: [ ${group} ] not found" && usage
-    [ ! -e ${target_folder} ] && E_message "target_folder [ ${target_folder} ] does not exist" && usage
-    [ ! -e ${insert_file} ] && E_message "insert_file [ ${insert_file} ] does not exist" && usage
-    [ ${#target_file_list} -eq 0 ] && E_message "target_file_list [ ${target_file_list} ] null" && usage
-    [ ${#target_line_text} -eq 0 ] && E_message "target_line_text [ ${target_line_text} ] null" && usage
-    [ ! -L /etc/${PN}/${PN}.conf ] && E_message "${PN}.conf symlink does not exist. Run eselect ${PN} list/set" && usage
+    [ $# -gt 1 ] && j_msg "-${err}" "too many arguments [$#]" && usage
+    [ ${#user} -eq 0 ] && j_msg "-${err}" "user: [ ${user} ] null" && usage
+    [ ${#group} -eq 0 ] && j_msg "-${err}" "group: [ ${group} ] null" && usage
+    [ ${#user} -gt 0 ] && [[ ! $(grep ${user} /etc/shadow) ]] && j_msg "-${err}" "user: [ ${user} ] not found" && usage
+    [ ${#group} -gt 0 ] && [[ ! $(grep ${group} /etc/gshadow) ]] && j_msg "-${err}" "group: [ ${group} ] not found" && usage
+    [ ! -e "${target_folder}" ] && j_msg "-${err}" "target_folder [ ${target_folder} ] does not exist" && usage
+    [ ! -e "${insert_file}" ] && j_msg "-${err}" "insert_file [ ${insert_file} ] does not exist" && usage
+    [ ${#target_file_list} -eq 0 ] && j_msg "-${err}" "target_file_list [ ${target_file_list} ] null" && usage
+    [ ${#target_line_text} -eq 0 ] && j_msg "-${err}" "target_line_text [ ${target_line_text} ] null" && usage
+    [ ! -L "/etc/${PN}/${PN}.conf" ] && j_msg "-${err}" "${PN}.conf symlink does not exist. Run eselect ${PN} list/set" && usage
     return 0
 }
 
@@ -196,55 +181,59 @@ dump_output() {
 
 write_output() {
     out_file="${1}"
-    message_n "writing output to ${out_file} ..."
-    echo "" > ${out_file}
+    j_msg "-${info}" -p -n "writing output to ${out_file} ..."
+    echo "" > "${out_file}"
     for ((i=0; i<=${#output[@]}; i++))
     do
-        echo "${output[i]}" >> ${out_file}
-    done ; right_status $?
-    message_n "setting ownership with chown ${user}:${group} ${out_file} ..."
-    chown ${user}:${group} ${out_file} ; right_status $?
+        echo "${output[i]}" >> "${out_file}"
+    done ; right_status $? "${info}"
+    j_msg "-${info}" -p -n "setting ownership with chown ${user}:${group} ${out_file} ..."
+    chown "${user}:${group}" "${out_file}" ; right_status $? "${info}"
 }
 
 batch_edit_target_files() {
-    for filename in $(find ${target_folder%/}/ -name "${target_file_list}") ; do
+    for filename in $(find "${target_folder%/}/" -name "${target_file_list}") ; do
         # reinitialize output array
         output=()
-        separator ${filename} ${PN}
+        separator "${PN}-${BUILD}" "(${FUNCNAME[0]})"
         target_file="${filename}"
-        d_message "target_file: [ ${target_file} ]" 2
+        j_msg "-${info}" -p "target_file: [ ${target_file} ]"
         read_input_and_edit_output "${target_file}"
-        d_do dump_output 3
+        d_do dump_output "${info}"
         if [ ! ${PRETEND} ] ; then
             # do it for real
             write_output "${target_file}"
             # if the first line is now blank, remove it
-            while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' $target_file ; done
+            while [ -z "$(head -n 1 $target_file)" ]; do sed -i '1{/^$/d}' "$target_file" ; done
             # if the last line is now blank, remove it
-            while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' $filename ; done
+            while [ -z "$(tail -n 1 $filename)" ]; do sed -i '${/^[[:space:]]*$/d;}' "$filename" ; done
         else
-            message "${BRon}PRETEND${Boff} -- ${BYon}did not write output${Boff}"
+            j_msg "-${notice}" -p "${BRon}PRETEND${Boff} -- ${BYon}did not write output${Boff}"
         fi
     done
 }
 
 #-----[ main script ]--------------------------------------------------
 echo
-separator "${PN}-${BUILD}" $(hostname)
+separator "$(hostname)" "${PN}"
 checkroot
-initialize_variables || die "failed initialize_variables"
-validate_status_file ${cmdseq_statusfile} || die "failed validate_status_file"
+j_msg "-${notice}" -p "calling app_configure"
+app_configure || die "failed to app_configure"
+j_msg "-${notice}" -p "calling re_initialize_variables"
+re_initialize_variables || die "failed re_initialize_variables"
+separator "$(hostname)" "${PN}-${BUILD}"
+validate_file "${cmdseq_statusfile}" || die "failed validate_status_file"
 read_config || die "failed read_config"
 
-#process command line to override config
+# call script_header_joetoo's process command line to override config
 process_cmdline $@
 
 sanity_check || die "failed sanity_check"
 display_config || die "failed display_config"
 confirm_continue_or_exit
 
-# ok - now actually do it
-run_array ${cmdseq_statusfile} '' '' || die "failed run_sequence"
-message "${BMon}${PN}${BGon} completed successfully${Boff}"
+# ok - use script_header_joetoo_extended's run_array now actually do it
+run_array "${cmdseq_statusfile}" '' '' || die "failed run_sequence"
+j_msg "-${notice}" -p "${BMon}${PN}${BGon} completed successfully${Boff}"
 echo
 exit 0
