@@ -97,7 +97,7 @@ auto_parmlist+=" lv.github_ebuild_repo_credentials SSH_AUTH_SOCK rlv.ebuild_dir 
 auto_parmlist+=" BREAK sources_dir version_number lv.build_root lv.k_config_dir lv.build_dir"
 auto_parmlist+=" kernel_basename lv.kernel_image_name"
 
-output_parmlist="rlv.distrib_dir rlv.boot_dir rlv.module_dir rlv.lib_dir"
+output_parmlist="rlv.distrib_dir rlv.boot_dir rlv.module_dir rlv.lib_dir rlv.template_dir"
 output_parmlist+=" rlv.publish_tarball_cmd_file"
 output_parmlist+=" rlv.publish_ebuild_cmd_file"
 output_parmlist+=" joetoo_kernel_webserver"
@@ -242,6 +242,9 @@ kernelupdate_configure()
 
   sources_dir="${build_root%/}/linux"
   k_config_dir="${build_root%/}/kernelconfigs"
+  # template_dir (location of ebuild and metadata templates is the same as the
+  #   location of the /etc/${PN}/${PN}.conf file loaded during app_configure
+  template_dir="/etc/${PN}"
   build_dir="${build_root%/}/build"
   status_file="${build_dir%/}/status"
   model_dir="${build_dir%/}/${model}"
@@ -1007,15 +1010,16 @@ publish_ebuild() {
     j_msg "-${notice}" -p "pwd: $(pwd)" && cd "${ebuild_dir}" && j_msg "-${notice}" -p "Now working in $(pwd)"
 
     _NEW_TEMPLATE="$FALSE"
-    _new_template="${k_config_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
+    _new_template="${template_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.ebuild"
     _old_template="${ebuild_dir%/}/linux-${model}_joetoo_kernelimage-0.0.0.ebuild"
-    # if the ebuild dir does not contain a template ebuild, then populate it
-    if [[ ! -f "$_old_template" ]] ; then
+    # if the ebuild dir does not contain a template ebuild, or if new one is newer, then (re)populate it
+    if [[ ! -f "$_old_template" ]] || [ "$_new_template" -nt "$_old_template" ] ; then
         # populate ebuild template if needed
         if [[ -f "$_new_template" ]] ; then
             j_msg "-${notice}" -p -n "published ebuild template does not exist; creating one ..."
             cp "$_new_template" "$_old_template" && \
-            chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || die "failed to create ebuild template"
+            chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || \
+                die "failed to create ebuild template"
             _publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
             _NEW_TEMPLATE="$TRUE"
         else
@@ -1025,26 +1029,18 @@ publish_ebuild() {
         j_msg "-${info}" -m "$_old_template already exists; not creating."
     fi
 
-    # if the ebuild dir contains a template that has changed, then replace it (shouldn't run if above just did)
-    if [[ $(diff "$_new_template" "$_old_template") ]] ; then
-        j_msg "-${notice}" -p -n "ebuild template has been updated; replacing old one ..."
-        cp "$_new_template" "$_old_template" && \
-        chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || die "failed to replace old ebuild template"
-        _publish_ebuild_command_sequence+=("git add linux-${model}_joetoo_kernelimage-0.0.0.ebuild")
-        _NEW_TEMPLATE="$TRUE"
-    fi
-
     _NEW_METADATA="$FALSE"
-    _new_metadata="${k_config_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
+    _new_metadata="${template_dir%/}/template_linux-MODEL_joetoo_kernelimage-0.0.0.metadata.xml"
     _old_metadata="${ebuild_dir%/}/metadata.xml"
-    # if the ebuild dir does not contain a metadata file, then populate it
-    j_msg "-${notice}" -p "k_config_dir: ${k_config_dir}"
-    if [[ ! -f "$_old_metadata" ]] ; then
+    # if the ebuild dir does not contain a metadata file, or if new one is newer, then (re)populate it
+    j_msg "-${notice}" -p "template_dir: ${template_dir}"
+    if [[ ! -f "$_old_metadata" ]] || [ "$_new_metadata" -nt "$_old_metadata" ] ; then
         # populate metadata.xml if needed
         if [[ -f "$_new_metadata" ]] ; then
             j_msg "-${notice}" -p -n "published ebuild metadata does not exist; creating ..."
             cp "$_new_metadata" "$_old_metadata" && \
-            chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || die "failed to create ebuild metadata"
+            chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || \
+                die "failed to create ebuild metadata"
             _publish_ebuild_command_sequence+=("git add /metadata.xml")
             _NEW_METADATA="$TRUE"
         else
@@ -1053,14 +1049,7 @@ publish_ebuild() {
     else
         j_msg "-${info}" -m "$_old_metadata already exists; not creating."
     fi
-    # if the ebuild dir contains a metadata file that has changed, then replace it (shouldn't run if above just did)
-    if [[ $(diff "$_new_metadata" "$_old_metadata") ]] ; then
-        j_msg "-${notice}" -p -n "ebuild metadata has been updated; replacing old one ..."
-        cp "$_new_metadata" "$_old_metadata" && \
-        chown -R "${_user}":"${_user}" "${ebuild_dir%/}/"; right_status $? "${notice}" || die "failed to replace ebuild metadata"
-        _publish_ebuild_command_sequence+=("git add ${ebuild_dir%/}/metadata.xml")
-        _NEW_METADATA="$TRUE"
-    fi
+
     ## don't bother with finding latest version ; just use template
     # enumerate existign ebuilds and determine the most recent "old version" of the ebuild
     old_version="0.0.0"
