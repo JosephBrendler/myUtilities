@@ -106,6 +106,18 @@ copypaste_parmlist="rlv.make_args_str rlv.make_me_str rlv.km_alias"
 header_varlist="$varlist"
 varlist="${header_varlist} ${config_parmlist} ${auto_parmlist} ${output_parmlist} ${copypaste_parmlist}"
 
+# filter for prefixing make output with unicode characters metaphoriical to meaning
+bin_giftwrap=$(printf '\360\237\216\201')   # temp until I add gift wrap to registry
+export make_work_filter="
+s|^${W0}CC |  $bin_hammer CC |;
+s|^${W0}LD |  $bin_gear LD |;
+s|^${W0}AS |  $bin_wrench AS |;
+s|^${W0}AR |  $bin_package AR |;
+s|^${W0}DTC |  $bin_tree_deciduous DTC |;
+s|^${W0}WRAP |  $bin_giftwrap WRAP |;
+"
+
+
 # append "/" to dtb_folder and overlay_folder if missing and not null
 #( [[ ${#dtb_folder} -gt 0 ]] && [[ ! "${dtb_folder: -1}" == "/" ]] ) && dtb_folder+="/"
 #( [[ ${#overlay_folder} -gt 0 ]] && [[ ! "${overlay_folder: -1}" == "/" ]] ) && overlay_folder+="/"
@@ -185,6 +197,7 @@ EOF
 kernelupdate_configure()
 { # 20260218 - this function created to defer this initialization of global-scope variables
   # untill after app_configure() has run, so that it will properly set variables and not immediately erase them
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local kc_ret=0 _old_dir=$PWD _msg=""
 
   #-----[ override defaults above with (eselected) ${PN}.conf ]-------------------------
@@ -325,6 +338,7 @@ kernelupdate_configure()
 
 display_config()
 {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local longest=$(get_longest ${varlist})
     local _msg0 _msg1 _msg2
     j_msg "-${notice}" -p "${BMon}Current Configuration:${Boff}"
@@ -379,10 +393,11 @@ display_config()
 
 run_make_me()
 {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _old_dir=$PWD _result=0
   j_msg "-${notice}" -p -n "moving to sources_dir"
   cd "$sources_dir"; handle_result $? "$PWD" "" "${notice}" || die "failed to cd sources_dir for run_make_me"
-  "${make_me[@]}" "$@" ; _result=$?
+  "${make_me[@]}" "$@" | sed "$make_work_filter" ; _result=$?
   j_msg "-${notice}" -p -n "returning to _old_dir"
   cd "$_old_dir" ; handle_result $? "$PWD" "" "${notice}" || die "failed to cd _old_dir for run_make_me"
   return $_result
@@ -391,6 +406,7 @@ run_make_me()
 # @ex run_make_me; run_make_me modules_install install
 
 cache_commit_signing_key() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _result
     sudo -u "${_user}" echo "test" > "/home/${_user}/cachetest" && \
     sudo -u "${_user}" gpg --clearsign "/home/${_user}/cachetest" && \
@@ -399,6 +415,7 @@ cache_commit_signing_key() {
 }
 
 warn_oldconfig() {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _old_dir="$PWD" _result=0
   j_msg "-${notice}" -p "${BYon}Note: ${Mon}invalid old configs may not work with ${Gon}make oldconfig${Boff}"
   j_msg "-${notice}" -p "  ${BMon}==> if you see \"${Boff}Restarting config ... ${BMon}\"${Boff}"
@@ -433,6 +450,7 @@ warn_oldconfig() {
 }
 
 make_mrproper() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _msg _clean_make_args=() _clean_make_me=() _result _old_dir=$PWD
     # clean up both the sources and build directories
     # set in config file, pasted here just for reference
@@ -492,6 +510,7 @@ make_mrproper() {
 }
 
 backup_config() {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _msg
   if [[ -f "${model_config}" ]]
   then
@@ -510,6 +529,7 @@ backup_config() {
 }
 
 restore_backup_config() {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _result
   j_msg "-${info}" -m "restoring backup .config file"
   cp -v "${k_config_dir%/}/.config.bak" "${model_config}" ; _result=$?
@@ -519,6 +539,7 @@ restore_backup_config() {
 }
 
 save_new_config() {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _result
   j_msg "-${info}" -m "saving new model_config to ${k_config_dir%/}/.config.${model}-${version_number}"
   cp -v "${model_config}" "${k_config_dir%/}/.config.${model}-${version_number}" ; _result=$?
@@ -530,19 +551,21 @@ save_new_config() {
 # leaving this here for reference, but it is deprecated, since I now
 # build all targets (kernel images, modules, and dtbs) with # "${make_me[@]}"
 make_dtbs() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     # make dtbs for this model SBC, if this is not a domU build
     j_msg "-${notice}" -p -n "moving to sources_dir"
     cd "$sources_dir" ; handle_result $? "$PWD" "" "${notice}" || die "failed to cd sources_dir for make_dtbs"
     local _old_dir="$PWD" _result=0
-    [[ ! "${model}" == dom* ]] && "${make_me[@]}" dtbs
+    [[ ! "${model}" == dom* ]] && "${make_me[@]}" dtbs | sed "$make_work_filter"
     result=$? ; return $result
     j_msg "-${notice}" -p -n "returning to _old_dir"
     cd "$_old_dir" ; handle_result $? "$PWD" "" "${notice}" || die "failed to cd _old_dir for make_dtbs"
 
 }
 
-clean_distrib_dirs()
-{   local _result=0
+clean_distrib_dirs() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
+    local _result=0
     j_msg "-${notice}" -p "${BCon}Cleaning the distribution staging directory...${Boff}"
     for x in "$lib_dir" "$boot_dir"
     do
@@ -563,6 +586,7 @@ clean_distrib_dirs()
 
 install_kernel()
 {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _k_out_dir _k_name_list _file _find_args _ik_FLAGGED="$FALSE"
     local _old_dir="$PWD" _result=0 _ik_ret=0
     # stage kernel
@@ -573,11 +597,11 @@ install_kernel()
     # if this is a domU kernel, install to host_dir (xen host use for guests) and boot_dir for tarball
     if [[ "${model}" == "domU" ]] ; then
         j_msg "-${info}" -m "installing kernel to host_dir [$host_dir]"
-        INSTALL_PATH="${host_dir}" "${make_me[@]}" install ; _result=$?
+        INSTALL_PATH="${host_dir}" "${make_me[@]}" install | sed "$make_work_filter"; _result=$?
         j_msg "-${info}" -m -n "done installing kernel to host_dir; result:"
         handle_result $_result "" "" "${info}" || _ik_ret=$(( _ik_ret + 1 ))
         j_msg "-${info}" -m "installing kernel to boot_dir [$boot_dir]"
-        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install ; _result=$?
+        INSTALL_PATH="${boot_dir}" "${make_me[@]}" install | sed "$make_work_filter" ; _result=$?
         j_msg "-${info}" -m -n "done installing kernel to host_dir; result:"
         handle_result $_result "" "" "${info}" || _ik_ret=$(( _ik_ret + 2 ))
     else
@@ -643,13 +667,14 @@ install_kernel()
 
 install_modules()
 {
+  j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
   local _result=0 _old_dir="$PWD" _module_paths=() _module_path_clean
   # stage modules
   j_msg "-${notice}" -p -n "moving to sources_dir"
   cd "$sources_dir" ; handle_result $? "$PWD" "" "${notice}" || die "failed to cd sources_dir for install_modules"
   j_msg "-${notice}" -p "${BCon}Installing modules ...${Boff}"
   # stage modules for tarball
-  INSTALL_MOD_PATH="${distrib_dir}" "${make_me[@]}" modules_install; _result=$?
+  INSTALL_MOD_PATH="${distrib_dir}" "${make_me[@]}" modules_install | sed "$make_work_filter"; _result=$?
   j_msg "-${notice}" -p -n "Done installing modules; result:"
   handle_result $_result "" "" "${notice}"
 
@@ -697,6 +722,7 @@ install_modules()
 
 install_dtbs()
 {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _result=0 _old_dir="$PWD" _find_cmd=() _files=()
     if [[ "$model" == dom* ]]; then return 0; fi    # dtb installation is not applicable to domU/dom0
     # note - dtb_folder and overlay_folder are relative to build/${model}/arch/${ARCH}/boot/dts/
@@ -704,7 +730,7 @@ install_dtbs()
     cd "$sources_dir" ; handle_result $? "$PWD" "" "${notice}" || die "failed to cd sources_dir for install_dtbs"
     j_msg "-${notice}" -p "${BCon}Installing device tree and overlay [.dtb and .dtbo] files ...${Boff}"
     mkdir -p "${boot_dir%/}/dts/${dtb_folder}"
-    INSTALL_DTBS_PATH="${boot_dir%/}/dts/${dtb_folder%/}/" "${make_me[@]}" dtbs_install ; _result=$?
+    INSTALL_DTBS_PATH="${boot_dir%/}/dts/${dtb_folder%/}/" "${make_me[@]}" dtbs_install | sed "$make_work_filter" ; _result=$?
     j_msg "-${notice}" -p -n "Done installing device tree and overlay files; result:"
     handle_result $_result "" "" "${notice}"
 
@@ -788,6 +814,7 @@ install_dtbs()
 
 make_tarball()
 {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _result=0 _old_dir="$PWD" _tar_args
     j_msg "-${notice}" -p -n "moving to distrib_dir"
     cd "$distrib_dir" ; handle_result $? "$PWD" "" "${notice}" || \
@@ -847,6 +874,7 @@ make_tarball()
 }
 
 publish_tarball() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _publish_tarball_command_sequence _result
     local _result=0 _old_dir="$PWD"
     # Migrating joetoo-kernels from github to raspi56403.brendler as of 28 Sep 2025
@@ -913,6 +941,7 @@ publish_tarball() {
 }
 
 publish_ebuild() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     # tried retiring this and consolidating all kernels of a given version in one ebuild
     #   (but then you have to build all 12 kernels before anyone can use the ebuild)
     #   (so I'm going back to an ebuild for the kernel for each model)
@@ -1102,6 +1131,7 @@ publish_ebuild() {
 }
 
 make_sources_message() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     # pull text from ${config_dir%/}/README-instructions
     # ignore lines beginning with two #s (i.e. "##")
     # echo lines beginning with one "#" in light blue
@@ -1131,6 +1161,7 @@ make_sources_message() {
 }
 
 sanity_check() {
+    j_msg "-${debug}" -p "${BYon}in ${FUNCNAME[0]} with arg(s) ${Boff}[$@]"
     local _result=0
     local _do_first_prompt _msg
     # veryfy the sanity of the combination of arguments on the command line
@@ -1178,13 +1209,15 @@ sanity_check() {
 #-----[ main script ]----------------------------------------------------
 
 app_configure || die "failed to app_configure"
+j_msg "-${debug}" -p "(debug) back from app_configure"
 
 # re-assign varlist variables appended at the top of the script and thus
 # over-written by app_configure
 kernelupdate_configure || die "failed to kernelupdate_configure"
+j_msg "-${debug}" -p "(debug) back from kernelupdate_configure"
 
 d_do display_config "$debug"  # show config prior to processing cmdline only at info/debug verbosity
-j_msg "-${notice}" -p "(BEFORE process_cmdline)"
+j_msg "-${info}" -p "(BEFORE process_cmdline)"
 
 process_cmdline "$@" || die "failed to process_cmdline"
 
