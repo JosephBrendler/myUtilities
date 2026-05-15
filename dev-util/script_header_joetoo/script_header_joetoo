@@ -94,7 +94,9 @@ toc() # table of contents (this fn just calls summarize_header
 
 j_msg()  # DUMMY assignment of j_msg until it is acutually defined in section 2, after foundation is set
 { printf '[init] %s\n' "$*" >&2 ; }
-
+die()    # DUMMY assignment of die until it is actaully defined in section 2 after j_msg
+{ printf '[init] fatal error: %s\n' "$*" >&2
+  case "$-" in *i*) return 1 ;; *) exit 1 ;; esac ; }
 
 # @note =====[ Section 1: Global Variables  ]=============================================
 # @vars SCRIPT_ENV: script paths and environment state (logFile, verbosity, TRUE/FALSE)
@@ -553,6 +555,15 @@ ACTIVE_EMOJI_REGISTRY="
 77${US}clover${US}$clover${US}[clover]
 78${US}fluttering_leaf${US}$fluttering_leaf${US}[fluttering_leaf]
 79${US}splatter${US}$splatter${US}[splatter]
+80${US}giftwrap${US}$giftwrap${US}[giftwrap]
+81${US}telephone${US}$telephone${US}[telephone]
+82${US}laptop${US}$laptop${US}[laptop]
+83${US}open_book${US}$open_book${US}[open_book]
+84${US}puzzle${US}$puzzle${US}[puzzle]
+85${US}chain${US}$chain${US}[chain]
+86${US}network${US}$network${US}[network]
+87${US}factory${US}$factory${US}[factory]
+88${US}house${US}$house${US}[house]
 "
 
 idx_of_emoji() # (POSIX) returns the registry index of a named emoji
@@ -858,6 +869,8 @@ _precook_registry() # (POSIX) helper to precook the assets in one registry "$1"
   # These are not index-constrained, but use the same 4-field parsing as emojis
   ### for _pr_entry in $_pr_REGISTRY; do  ## (replace with while read to protect vs word splits
   while IFS= read -r _pr_entry; do
+    # guard: skip empty lines like the one at the beginning of each registry
+    [ -z "$_pr_entry" ] && continue
     _pr_bin=""  # (re)initialize
     # strip the longest match for ${US}* from the right - leaving index
     _pr_idx="${_pr_entry%%${US}*}"
@@ -1007,6 +1020,8 @@ _precook_unregistry() # (POSIX) precook the unicode characters in ranges needed 
   # for each range precook characters between lower and upper
   # and append SED_LOG_FILTER rules for each
   while IFS= read -r _pu_entry; do
+    # guard: skip empty lines like the one at the beginning of each registry
+    [ -z "$_pu_entry" ] && continue
     # strip the longest match for ${US}* from the right - leaving index
     _pu_idx="${_pu_entry%%${US}*}"
     # strip shortest match for *${US} from the left - removing index
@@ -1094,7 +1109,7 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
   _precook_registry "$ACTIVE_EMOJI_REGISTRY" || cua_ret=1
 
   #----[ pass 1: UI Box Drawing Registry ]------------------------------------
-  _precook_registry "$ACTIVE_UI_BOX_REGISTRY" || cua_ret=1
+  _precook_registry "$ACTIVE_UI_BOX_REGISTRY" || cua_ret=$(( cua_ret + 2 ))
 
   #----[ add fall-back sanitize rules to the SED_LOG_FILTER ]---------------------------------------
   _precook_unregistry "$INACTIVE_UNICODE_UNREGISTRY"
@@ -1106,7 +1121,8 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
   #   2 - translate known emoji/ui-box grapheme clusters (done in _precook_registry)
   #   3 - translate unsafe and unwanted/fallback ranges (done in _precook_unregistry)
   #   4 - translate known zw characters not already found in grapheme clusters (must come last)
-  _precook_registry "$ACTIVE_ZERO_WIDTH_REGISTRY" || cua_ret=1
+  _precook_registry "$ACTIVE_ZERO_WIDTH_REGISTRY" || cua_ret=$(( cua_ret + 4 ))
+
   # note: ZW pass has to go last so the SED_LOG_FILTER has the combined
   # characters earlier in search pattern than the indifidual ZWs like VS16
   # (otherwise the ZWs get stripped first and the engine cannot recognize the
@@ -1114,6 +1130,7 @@ _precook_ui_assets() # (POSIX) precook the set of emoji considered most "active"
 
   unset -v _cua_idx _cua_rem _cua_name _cua_hex
   unset -v _cua_entry _cua_trans _cua_octal _cua_bin
+  #echo "(debug) returning from _precook_ui_assets with exit code [$cua_ret]"
   return $cua_ret
 }
 # @usage _precook_ui_assets
@@ -1243,9 +1260,19 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
       cp "$joetoo_store" "$_joetoo_cache" || hua_ret=$(( hua_ret + 8 ))   # bit 3 = joetoo_store cp fail
       if [ $(( hua_ret & 8 )) -eq 0 ] ; then . "$_joetoo_cache" || hua_ret=$(( hua_ret + 16 )) ; fi # cp ok
   else                                        # bit 4 = _joetoo_cache from store source fail
-      # tier 3 - nothing is fresh; do the heavy lifting
-      _cook_everything_now ||  hua_ret=$(( hua_ret + 32 ))   # bit 5 = _cook_everything_now failure
-      . "$_joetoo_cache" || hua_ret=$(( hua_ret + 64 ))   # bit 6 = _joetoo_cache from cook source fail
+      # tier 3 - nothing is fresh; do the heavy lifting (run _cook_everything_now)
+      if ! _cook_everything_now ;then
+        hua_ret=$(( hua_ret + 32 ))   # bit 5 = _cook_everything_now failure
+      else
+          # if cook succeeded, update the persistent store for future Tier 1 & 2 hydration
+          # copy to temp file in store dir, set permissions, then mv for atomic write
+          sudo sh -c "cp '$_joetoo_cache' '${joetoo_store}.tmp' && \
+                      chmod 644 '${joetoo_store}.tmp' && \
+                      mv '${joetoo_store}.tmp' '${joetoo_store}'" > /dev/null 2>&1 || \
+                          hua_ret=$(( hua_ret + 64 )) # bit 6 = _joetoo_store write fail
+          # source the asset cache
+          . "$_joetoo_cache" || hua_ret=$(( hua_ret + 128 ))   # bit 6 = _joetoo_cache from cook source fail
+      fi
   fi  # cache exists and is -nt header
   unset -v _store_dir joetoo_store _joetoo_cache
   return $hua_ret
@@ -1253,7 +1280,7 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
 # @usage _hydrate_ui_assets
 # @ret bitmask: 1:mkdir/chmod 755 store_dir fail, 2:chmod 644 store fail,
 # @append 4:cache_src_fail, 8:cp store->cache fail, 16:store src fail,
-# @append 32:cook_fail, 64:final_src_fail
+# @append 32:cook_fail, 64: store write fail; 128: final_src_fail
 # @rule Tiered recovery: memory/tmp -> disk -> cook
 # @note failures in bits 5+ (value 32+) indicate the UI
 # @append log-filtering will be disabled or degraded
@@ -1271,7 +1298,10 @@ _hua_status=$?
 [ ! $(( _hua_status & 32 )) -eq 0 ] && \
   { j_msg -${err} "failed to _cook_everything_now; disabling UI features"
     UNICODE_CAPABLE="$FALSE" ; }
-[ ! $(( _hua_status & 64 )) -eq 0 ] && die "Critical: failed to source ui assets after cooking"
+[ ! $(( _hua_status & 64 )) -eq 0 ] && j_msg -${warn} "failed to write ui assets to persistent store"
+[ ! $(( _hua_status & 128 )) -eq 0 ] && \
+  { j_msg -${err} "successfully-cooked but failed to source ui assets; disabling UI features"
+    UNICODE_CAPABLE="$FALSE" ; }
 
 # order matters - this function must precede the variable assignments depending
 #   on its availability (like longone= )
