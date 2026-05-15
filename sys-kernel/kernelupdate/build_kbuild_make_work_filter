@@ -1,0 +1,127 @@
+#!/bin/bash
+#
+# Automate production of a kbuild output sed filter
+#
+# e.g. run once with no arg redir output to file1
+#      then run again with $1 = /home/joe/raspi-sources/linux, and
+#      * append to file1 with >>, then sort -u file1 > file2
+#      then edit/use the contents of file2 to populate a block
+#      in kernelupdate, like -
+#      export make_work_filter="
+#      s|...|...|;
+#      ...
+#      "
+#      (semicolon delimited substitution clauses)
+#      and use in the script like -
+#      "${make_me[@]}" mrproper | sed "$make_work_filter"
+#
+sources_dir="${1:-/usr/src/linux/}"
+
+readarray -t kbuild_verbs < <(
+    grep -iR quiet_cmd "$sources_dir" | \
+    cut -d'=' -f2 | awk '{print $1}' | \
+    sort -u | grep -vE '^\$|^/|^$' | grep -v 'echo'
+)
+
+echo "ingested [${#kbuild_verbs[@]}] kbuild verbs"
+echo; echo
+
+make_work_filter=""
+
+for verb in "${kbuild_verbs[@]}"; do
+    case "$verb" in
+        AR|ARCHIVE|FIT|ITB|ITS|TAR) metaphor="\$bin_package" ;;
+        AS|AS32|PASYMS|SPU_AS) metaphor="\$bin_wrench" ;;
+        ASN.1|LDS) metaphor="\$bin_scroll" ;;
+        BINDGEN|OBJCOPY|COPY|CPUSTR|STUBCPY|UIMAGE|UIMAGE.O|X32)
+            metaphor="\$bin_dna" ;;
+        BISON) metaphor="\$bin_bison" ;;
+        BLDFW|DUMPSYMS|HDRTEST|TEST)
+            metaphor="\$bin_test_tube" ;;
+        BOOTAR) metaphor="\${bin_uBOOT}\${bin_package}" ;;
+        BOOTAS) metaphor="\${bin_uBOOT}\${bin_wrench}" ;;
+        BOOTCC) metaphor="\${bin_uBOOT}\${bin_hammer}" ;;
+        BTF|SCHEMA) metaphor="\$bin_triangular_ruler" ;;
+        BUILD|CC|CC32|CXX|SPU_CC)
+            metaphor="\$bin_hammer" ;;
+        BZIP2|GZIP|LZ4|LZMA|LZO|XIPZ|XZ|XZKERN|XZMISC|ZSTD|ZSTD22)
+            metaphor="\$bin_clamp" ;;
+        CALL|SYSCALL) metaphor="\$bin_telephone" ;;
+        CAT) metaphor="\$bin_cat" ;;
+        CERT|GENKEY) metaphor="\$bin_key" ;;
+        CHECK|CHKDT|CHKFTRC|CHKHEAD|CHKREL|LLSCCHK|PROMCHK)
+            metaphor="\$bin_magnifying_glass_left" ;;
+        CHKSHA1) metaphor="\$bin_lock" ;;
+        CLEAN|LINT) metaphor="\$bin_broom" ;;
+        CPP|OBJSTRIP|RSCPP|SO2S|STRIP)
+            metaphor="\$bin_scissors" ;;
+        CONMK|YACC|MODPOST) metaphor="\$bin_puzzle" ;;
+        DEPMOD) metaphor="\$bin_spider_web" ;;
+        DESCEND) metaphor="\$bin_ladder" ;;
+        DEVLIST) metaphor="\$bin_catalog" ;;
+        DTC) metaphor="\$bin_tree_deciduous" ;;
+        DTEX) metaphor="\$bin_magnet" ;;
+        ECOFF) metaphor="\$bin_relic" ;;
+        ELFTOAOUT|MKELF|M68KAS|M68KLD|MKCAP|MKDIR|MKELF|MKLST|MKMAP|MKPIGGY|MKREG)
+            metaphor="\$bin_bricks" ;;
+        EXPORTS) metaphor="\$bin_outbox" ;;
+        FLEX) metaphor="\$bin_toolbox" ;;
+        GEN|GENHDR|GENIMAGE|GENKDB|GENMAP|GENVDSO)
+            metaphor="\$bin_seedling" ;;
+        GENSEED) metaphor="\$bin_dice" ;;
+        HDRINST) metaphor="\$bin_inbox" ;;
+        HEXDUMP) metaphor="\$bin_hex_digits" ;;
+        HOSTCC|HOSTCXX|HOSTRUSTC) metaphor="\$bin_pickaxe" ;;
+        HOSTLD) metaphor="\${bin_house}\${bin_chain}" ;;
+        HYPCOPY|HYPERCALLS|HYPREL) metaphor="\${bin_uCLOUD}" ;;
+        INSTALL) metaphor="\$bin_hammer_and_wrench" ;;
+        IPE_POL|POLICY) metaphor="\$bin_shield" ;;
+        LD|LD32|SPU_LD|SYMLINK) metaphor="\$bin_chain" ;;
+        LEX) metaphor="\$bin_open_book" ;;
+        LOGO) metaphor="\$bin_palette" ;;
+        MOC) metaphor="\$bin_mask" ;;
+        MUNGE) metaphor="\$bin_cyclone" ;;
+        OVL) metaphor="\$bin_onion" ;;
+        PAD|VOFFSET|ZOFFSET) metaphor="\$bin_ruler" ;;
+        PERL|PERLASM) metaphor="\$bin_camel" ;;
+        PIGGY) metaphor="\$bin_piggy" ;;
+        QUOTE) metaphor="\$bin_speech_bubble" ;;
+        REMOVE) metaphor="\$bin_trash_can" ;;
+        RELOCS) metaphor="\$bin_paper_clip" ;;
+        RUSTDOC) metaphor="\$bin_books" ;;
+        SECTCMP) metaphor="\$bin_bar_chart" ;;
+        SEEDHDR) metaphor="\$bin_chestnut" ;;
+        SYSHDR) metaphor="\$bin_bookmarks" ;;
+        SIGN) metaphor="\$bin_lock_pen" ;;
+        SPHINX|SYSHDR|SYSNR|SYSTBL) metaphor="\$bin_blue_book" ;;
+        STUB_EXE) metaphor="\$bin_rocket" ;;
+        TABLE) metaphor="\$bin_clipboard" ;;
+        TOUCH) metaphor="\$bin_touch" ;;
+        UNROLL) metaphor="\$bin_paper_roll" ;;
+        VDSO*) metaphor="\$bin_compass" ;;
+        WRAP) metaphor="\$bin_giftwrap" ;;
+        UPD) metaphor="\$bin_refresh" ;;
+    esac
+
+    make_work_filter+="s|^\${W0}${verb} |   $metaphor $verb |;\n"
+
+done
+
+echo -e "$make_work_filter"
+
+
+# for kernel 6.18.28  20260515 --
+#joe@gmki91 ~/scratch $ echo "${#kbuild_verbs[@]}"
+#148
+#joe@gmki91 ~/scratch $ echo "${kbuild_verbs[@]}"
+#AR ARCHIVE AS AS32 ASN.1 BINDGEN BISON BLDFW BOOTAR BOOTAS BOOTCC BTF BUILD BZIP2 CAT CC CC32 CERT
+#CHECK CHKDT CHKFTRC CHKHEAD CHKREL CLEAN CONMK COPY CPP CPUSTR CXX DEPMOD DEVLIST DTC DTEX DUMPSYMS
+#ECOFF ELFTOAOUT EXPORTS FIT FLEX GEN GENHDR GENIMAGE GENKDB GENKEY GENMAP GENSEED GENVDSO GZIP HDRINST
+#HDRTEST HEXDUMP HOSTCC HOSTCXX HOSTLD HOSTRUSTC HYPCOPY HYPERCALLS HYPREL INSTALL IPE_POL ITB ITS LD
+#LD32 LDS LEX LINT LLSCCHK LOGO LZ4 LZMA LZO M68KAS M68KLD MKCAP MKDIR MKELF MKLST MKMAP MKPIGGY MKREG
+#MOC MODPOST MUNGE OBJCOPY OBJSTRIP OVL PAD PASYMS PERL PERLASM PIGGY POLICY PROMCHK QUOTE RELOCS REMOVE
+#RSCPP RUSTDOC SCHEMA SECTCMP SEEDHDR SIGN SO2S SPHINX SPU_AS SPU_CC SPU_LD STRIP STUBCPY STUB_EXE
+#SYMLINK SYSCALL SYSHDR SYSNR SYSTBL TABLE TAR TEST TOUCH UIMAGE UIMAGE.O UNROLL VDSO VDSO2C VDSO32A
+#VDSO32C VDSO32L VDSO32SYM VDSO64A VDSO64C VDSO64L VDSO64SYM VDSOAS VDSOCHK VDSOLD VDSOSYM VOFFSET WRAP
+#X32 XIPZ XZ XZKERN XZMISC YACC ZOFFSET ZSTD ZSTD22
+
