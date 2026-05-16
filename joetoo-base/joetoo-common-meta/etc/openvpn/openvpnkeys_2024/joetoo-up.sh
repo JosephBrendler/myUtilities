@@ -91,25 +91,33 @@ echo "(debug) _dns_payload: $_dns_payload" > "${_debug_log_file}"
         ju_status=$?
     fi
 fi
+
+# removed ddns stuff to separate script - either call from here in background, or call from ovpn config via --route-up directive
 # DIAGNOSTIC: capture openVPN environment
-{
-    printf '%s\n' "---[ (up) OpenVPN Env Debug: $(date) ]---"
-    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
-    printf '%s\n' "-------------------------------------"
-} >> "${_debug_log_file}"
-echo "(debug)(up) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
-echo "(debug)(up) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
+#{
+#    printf '%s\n' "---[ (up) OpenVPN Env Debug: $(date) ]---"
+#    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
+#    printf '%s\n' "-------------------------------------"
+#} >> "${_debug_log_file}"
+#echo "(debug)(up) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
+#echo "(debug)(up) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
+
+# to-do: remove this to openvpn_4-up.sh and openvpn_6-up.sh to be installed by net-misc/ddns
+#        (keep joetoo-up.sh focused on just the resolvconf job above)
 # ddns registration hook - only attempt if the ddns-update client script exists
-if [ -x /usr/sbin/ddns-update ]; then
-    # Register IPv4 Tunnel Address (A Record)
-    if [ -n "${ifconfig_local}" ]; then
-        /usr/sbin/ddns-update add "${ifconfig_local}" "${dev}"
-    fi
-    # Register IPv6 Tunnel Address (AAAA Record)
-    if [ -n "${ifconfig_ipv6_local}" ]; then
-        /usr/sbin/ddns-update add "${ifconfig_ipv6_local}" "${dev}"
-    fi
-fi
+#if [ -x /usr/sbin/ddns-update ]; then#
+#	# background subshell to register tunnel addresses asynchronously, and to thus avoid blocking openvpn thread
+#	(
+#		if [ -n "${ifconfig_local}" ]; then
+#			/usr/sbin/ddns-update add "${ifconfig_local}" "${dev}" "joetoo-up.sh"
+#		fi
+#		if [ -n "${ifconfig_ipv6_local}" ]; then
+#			/usr/sbin/ddns-update add "${ifconfig_ipv6_local}" "${dev}" "joetoo-up.sh"
+#		fi
+#	) &
+#fi
+
+
 # Clean up localized variables
 unset -v _ju_ns _ju_domain _ju_search _i _opt _val _dns_payload _ju_metric _log_prefix
 

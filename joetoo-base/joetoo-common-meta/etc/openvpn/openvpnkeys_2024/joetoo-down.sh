@@ -34,24 +34,26 @@ fi
 # clean up localized variables
 unset -v _log_prefix
 
+# removed to separte script installed by net-misc/ddns
 # DIAGNOSTIC: Capture OpenVPN Environment
-{
-    printf '%s\n' "---[ (down) OpenVPN Env Debug: $(date) ]---"
-    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
-    printf '%s\n' "-------------------------------------"
-} >> "${_debug_log_file}"
-echo "(debug)(down) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
-echo "(debug)(down) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
-# ddns removal hook
-if [ -x /usr/sbin/ddns-update ]; then
-    # Remove IPv4 Tunnel Address
-    if [ -n "${ifconfig_local}" ]; then
-        /usr/sbin/ddns-update del "${ifconfig_local}" "${dev}"
-    fi
-    # Remove IPv6 Tunnel Address
-    if [ -n "${ifconfig_ipv6_local}" ]; then
-        /usr/sbin/ddns-update del "${ifconfig_ipv6_local}" "${dev}"
-    fi
-fi
+#{
+#    printf '%s\n' "---[ (down) OpenVPN Env Debug: $(date) ]---"
+#    env | grep -E 'ifconfig|ip|remote|local|dev' | sort
+#    printf '%s\n' "-------------------------------------"
+#} >> "${_debug_log_file}"
+#echo "(debug)(down) ifconfig_local: ${ifconfig_local}] should be populated by openvpn" >> "${_debug_log_file}"
+#echo "(debug)(down) ifconfig_ipv6_local: ${ifconfig_ipv6_local}] should be populated by openvpn" >> "${_debug_log_file}"
+## ddns removal hook
+#if [ -x /usr/sbin/ddns-update ]; then
+#    # Remove IPv4 Tunnel Address
+#    if [ -n "${ifconfig_local}" ]; then
+#        /usr/sbin/ddns-update del "${ifconfig_local}" "${dev}"
+#    fi
+#    # Remove IPv6 Tunnel Address
+#    if [ -n "${ifconfig_ipv6_local}" ]; then
+#        /usr/sbin/ddns-update del "${ifconfig_ipv6_local}" "${dev}"
+#    fi
+#fi
+
 exit ${jd_status}
 
