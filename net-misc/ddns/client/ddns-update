@@ -106,6 +106,12 @@ fi
 msg="(debug) progress: checking ADDR: [$ADDR]"
 logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
+# default NEED_UPDATE differently depending on event (add / del)
+case "$EVENT" in
+    add) NEED_UPDATE=$FALSE ;;  # 'maybe' need to add a record - check cache and/or server
+    del) NEED_UPDATE=$TRUE ;;   # 'always' need to remove if it exists in server (cache doesn't tell that)
+esac
+
 # validate ADDR and detect address family (ipv4/ipv6) and thus TYPE (A|AAAA)
 # (removed guard to reject empty address (some del events might not have one - try to get from cache))
 case "$ADDR" in
@@ -158,12 +164,14 @@ if [ -z "$ADDR" ]; then
                 # strip longest match for '|*' from the right - leaving addr
                 ADDR="${CACHE_INFO%%|*}"
                 if [ -z "$ADDR" ]; then
-                    msg="(warn) Filtered: Event [$EVENT], but failed to read ADDR from cache"
+                    msg="(warn) Filtered: Event [$EVENT], but failed to read ADDR from cache; cannot execute del event"
                     logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
                     # Exit with success (0) because the script did its job by filtering
                     exit 0
                 else
                     NEED_UPDATE=$TRUE  # call for update for del event
+                    msg="(debug) Event [$EVENT], set NEED_UPDATE to true: [$(TrueFalse $NEED_UPDATE)]"
+                    logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
                 fi
                 # ADDR should now contain the last cached address for this interface
             else
@@ -184,7 +192,10 @@ fi
 TIMESTAMP="$(timestamp)"
 
 msg="(debug) progress: Done ADDR check; Event: [$EVENT]. Expect: timestamp: [$TIMESTAMP] populated;"
-msg+=" for add, addr [$ADDR] populated, for del NEED_UPDATE [$(TrueFalse $NEED_UPDATE)] true"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
+msg="(debug) for add event, expect addr [$ADDR] populated"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
+msg="(debug) for del event, expect  NEED_UPDATE [$(TrueFalse $NEED_UPDATE)] should be true"
 logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
 
 
@@ -195,7 +206,12 @@ case "$EVENT" in
         "del")
             # action is del, so remove the cache
             rm -f "$CACHE_FILE"
-            if [ $? -ne 0 ]; then
+            if [ $? -eq 0 ]; then
+                msg="(info) deleted cache [$CACHE_FILE]"
+                logger -p "${LOG_FACILITY}.info" -t "${TAG}" "${msg}"
+                # Exit with success (0) because the script did its job by filtering
+                exit 0
+            else
                 msg="(warn) Warning: Failed to delete cache file"
                 logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "${msg}"
                 # Exit with success (0) because the script did its job by filtering

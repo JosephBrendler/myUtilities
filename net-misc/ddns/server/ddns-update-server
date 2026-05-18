@@ -124,8 +124,25 @@ fi
 TEMP_FILE=$(mktemp)
 TEMP_FILE2=$(mktemp)
 
+#-----[ functions ]----------------------------------------------------------------
+timestamp () { printf '%s\n' "$(date +'%Y-%m-%d_%H:%M:%S')" ; }
+
+#-----[ main script ]----------------------------------------------------------------
+# initiate log entry
+msg="(info) Recv: event: [$EVENT] type: [$TYPE] addr: [$ADDR] fqdn: [$FQDN] iface: [$INTERFACE] source: [$SOURCE]"
+logger -p "${LOG_FACILITY}.info" -t "${TAG}" "${msg}"
+msg="(info) Recv: user: [$user] hosts_file: [$HOSTS_FILE] temp_file: [$TEMP_FILE] lock_file: [$LOCK_FILE]"
+logger -p "${LOG_FACILITY}.info" -t "${TAG}" "${msg}"
+
+msg="(debug) confirming i am who i think i am: who am i|id -u: [$(whoami)|$(id -u)]"
+logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "${msg}"
+
 # Ensure the lock file directory is created, owned by root, and persistent across reboots
 /bin/mkdir -p "$LOCK_DIR"
+# set the directory permissions (but not for shared access with a sticky bit)
+#/bin/chmod 1777 "$LOCK_DIR"
+/bin/chmod 0755 "$LOCK_DIR"
+
 
 # Ensure the lock file exists and is owned by user
 # Note: If $LOCK_FILE already exists, this does nothing but update the timestamp.
@@ -140,6 +157,9 @@ LOCK_FILE="${LOCK_DIR}/${HOSTS_FILE##*/}.lock"
 
 /usr/bin/touch "$LOCK_FILE"
 /bin/chown "${user}" "$LOCK_FILE"
+# set permission on lock file for user (but not 0606 restricted)
+#/bin/chmod 0606 "$LOCK_FILE"
+/bin/chmod 0644 "$LOCK_FILE"
 
 # Acquire exclusive lock (non-sudo) with fd 200 b/c it is well above range used for normal shell ops
 exec 200>"$LOCK_FILE"
@@ -156,14 +176,6 @@ if ! /usr/bin/flock -n 200; then
     logger -p "${LOG_FACILITY}.notice" -t "${TAG}" "$msg"
     exit 0 # Exit successfully (code 0) to prevent the client from logging an error
 fi
-
-#-----[ functions ]----------------------------------------------------------------
-timestamp () { printf '%s\n' "$(date +'%Y-%m-%d_%H:%M:%S')" ; }
-
-#-----[ main script ]----------------------------------------------------------------
-# initiate log entry
-logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: event: [$EVENT] type: [$TYPE] addr: [$ADDR] fqdn: [$FQDN] iface: [$INTERFACE] source: [$SOURCE]"
-logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) Recv: user: [$user] hosts_file: [$HOSTS_FILE] temp_file: [$TEMP_FILE] lock_file: [$LOCK_FILE]"
 
 # if this is a delete action, just delete any line that has name and has interface in the metadata
 # (process it and exit early; if it is not a del, then add - more complex)
