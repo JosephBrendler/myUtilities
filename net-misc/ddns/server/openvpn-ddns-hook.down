@@ -9,9 +9,10 @@
 # Note: this script does NOT remove info from /etc/hosts.d/20_openVPN_clients
 #   (openvpn_dns_updater.sh reads openvpn-status.log and just does not add
 #   what isn't there anymore)
-# - TBD but it does *trigger* openvpn_dns_updater.sh to make that happen immediately,
+# - but it does *trigger* openvpn_dns_updater.sh to make that happen immediately,
 #   rather than waiting for the next cron cycle to do so
-# - ** next version to use management interface rather than server.conf client-disconnect **
+#   (note that this job is backgrounded so the script can finish and this taks does not
+#    become a blocker to its own completion)
 
 PN=${0##*/}
 
@@ -166,36 +167,53 @@ fi
 
 # verify or fix ddns_user's permissions on status file
 check_status_log_perms
-# poll the openvpn-status.log file to confirm it no longer contains info on client to be deleted
-#   then call openvpn_dns_updater.sh to re-write the hosts file without it
-if [ -n "$common_name" ] && [ -f "$OPENVPN_STATUS_LOG" ]; then
-    logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) polling OPENVPN_STATUS_LOG"
-    while [ "$_odh_loop_count" -lt "$_odh_loop_timeout" ]; do
-        # explicitly check for a clean grep exit status (0 for found, 1 for not found, 2 or other means some error)
-        # skip the destructive execution phase if the polling sequence times out or fails
-        /bin/grep -q -F "$common_name" "$OPENVPN_STATUS_LOG"; _odh_grep_status=$?
-        # status 0 means still found, so continue looking
-        # status 1 means clean "not found", no error, so break out of polling loop and drive on
-        if [ "$_odh_grep_status" -eq 1 ]; then _odh_CONFIRMED=$TRUE; break; fi
-        # status > 1 means some kind of error with grep - log error and exit
-        if [ "$_odh_grep_status" -gt 1 ]; then
-            logger -p "${LOG_FACILITY}.err" -t "${TAG}" "(err) grep failed with status [$_odh_grep_status]"
-            break
-        fi
-        _odh_loop_count=$((_odh_loop_count + _odh_loop_interval ))
-        milli_sleep "$_odh_loop_interval"
-    done
 
-    if [ $_odh_CONFIRMED ]; then
-        logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "(debug) confirmed absence of ${common_name} in status log"
-        # trigger openvpn_dns_updater.sh (to re-read status log no longer containing info for
-        # this client - thus "deleting" it from the associated /etc/hosts.d/ file
-        logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) calling: /usr/bin/sudo /usr/sbin/openvpn_dns_updater.sh"
-        /usr/bin/sudo /usr/sbin/openvpn_dns_updater.sh
-    else
-        logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "(warn) timeout waiting for openvpn to purge ${common_name} from status log"
+# this must be run in the background - see '  ( ... ) & '   --
+# -  it cannot work with this script running as a child of openvpn becuase it becomes
+#   a blocker to its own completion (status log wont get updated until the client-disconnectaction
+#   completes, and it cant complete untill this script that it calls completes, and this script
+#   cant complete until it can call for re-reading of the log that wont get updated until after it completes
+#   (i.e. the loop is guaranteed to time out and NEVER meet CONFIRMED conditions)
+# - maybe this will be different if it runs under an openvpn management interface monitor?
+
+# start subshell to be backgrounded
+(
+    # poll the openvpn-status.log file to confirm it no longer contains info on client to be deleted
+    #   then call openvpn_dns_updater.sh to re-write the hosts file without it
+    if [ -n "$common_name" ] && [ -f "$OPENVPN_STATUS_LOG" ]; then
+        logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) polling OPENVPN_STATUS_LOG"
+        while [ "$_odh_loop_count" -lt "$_odh_loop_timeout" ]; do
+            # explicitly check for a clean grep exit status (0 for found, 1 for not found, 2 or other means some error)
+            # skip the destructive execution phase if the polling sequence times out or fails
+            /bin/grep -q -F "$common_name" "$OPENVPN_STATUS_LOG"; _odh_grep_status=$?
+            # status 0 means still found, so continue looking
+            # status 1 means clean "not found", no error, so break out of polling loop and drive on
+            if [ "$_odh_grep_status" -eq 1 ]; then _odh_CONFIRMED=$TRUE; break; fi
+            # status > 1 means some kind of error with grep - log error and exit
+            if [ "$_odh_grep_status" -gt 1 ]; then
+                logger -p "${LOG_FACILITY}.err" -t "${TAG}" "(err) grep failed with status [$_odh_grep_status]"
+                break
+            fi
+            _odh_loop_count=$((_odh_loop_count + _odh_loop_interval ))
+            milli_sleep "$_odh_loop_interval"
+        done
+
+        if [ $_odh_CONFIRMED ]; then
+            logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "(debug) confirmed absence of ${common_name} in status log"
+            logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "(debug) polling duration - _odh_loop_count: [$_odh_loop_count] milliseconds"
+            # trigger openvpn_dns_updater.sh (to re-read status log no longer containing info for
+            # this client - thus "deleting" it from the associated /etc/hosts.d/ file
+            logger -p "${LOG_FACILITY}.info" -t "${TAG}" "(info) calling: /usr/bin/sudo /usr/sbin/openvpn_dns_updater.sh"
+            /usr/bin/sudo /usr/sbin/openvpn_dns_updater.sh
+        else
+            logger -p "${LOG_FACILITY}.warn" -t "${TAG}" "(warn) timeout waiting for openvpn to purge ${common_name} from status log"
+        fi
     fi
-fi
+) &    # background the subshell and continue
+_odh_bg_pid=$!
+
+msg="(notice) status log polling and call to openvpn_dns_updater.sh are backgrounded; pid [$_odh_bg_pid]"
+logger -p "${LOG_FACILITY}.notice" -t "${TAG}" "$msg"
 
 
 logger -p "${LOG_FACILITY}.debug" -t "${TAG}" "Exiting with status [$odh_status]"
