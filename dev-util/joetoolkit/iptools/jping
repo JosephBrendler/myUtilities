@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# shellcheck source=/usr/sbin/script_header_joetoo
+# shellcheck source=/usr/sbin/script_header_joetoo_extended
+# shellcheck source=/usr/sbin/script_header_joetoo_unicode
 source /usr/sbin/script_header_joetoo
 
 
@@ -16,25 +20,43 @@ if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1
 #-----[ variables ]----------------------------------------------
 varlist="PN BUILD user logFile rlv.config_dir verbosity loglevel bool.LOGGING"
 varlist+=" bool.INTERACTIVE bool.QUIET bool.DEBUG bool.UNICODE_CAPABLE bool.UNICODE_DISABLE"
-varlist+=" BREAK command port bool.FILE bool.PARALLEL jobs waittime timeout"
-varlist+=" rlv.target_list"
+varlist+=" BREAK bool.RESOLVE bool.ASSOCIATIVE command port bool.FILE bool.PARALLEL jobs waittime timeout"
+varlist+=" rlv.target_list rlv.targets_str"
 initialize_vars
 
 default_target_list="192.168.62.{1..254}"  # a default
-targets=()           # check these
+
+TAB=$(printf '\t')   # pre-cooked literal tab character
+CR=$(printf '\r')    # pre-cooked literal carriage return character
+NLx="$(printf '\nx')" # pre-cooked literal newline character followed by x to prevent shell stripping \n
+NL="${NLx%x}"         # strip the x, leaving just the pre-cooked literal newline character
+
 command="devtcp"     # default (fast)
 port=22              # default to ssh port num
 PARALLEL="$TRUE"     # will be set false if cmdline has -s flag
 FILE="$FALSE"        # will be set true if cmdline has -f flag
 INTERACTIVE="$FALSE" # will be set true if cmdline has -I flag
+ASSOCIATIVE="$FALSE" # will be set true if cmdline has -A flag
+RESOLVE="$TRUE"      # will be set true if cmdline has -R flag; false if -n flag
 jobs=$(nproc)        # default parallel jobs to the number of cores
-waittime=0.5         # e.g. ping -W0.5 hostname (some tools e.g. nc don't allow fractions// use with timeout)
+waittime="0.5"       # e.g. ping -W0.5 hostname (some tools e.g. nc don't allow fractions// use with timeout)
 timeout="0.5"        # e.g. timeout 0.5 nc -vz $target 22
 logFile="/var/log/${PN}.log"
 joetoo_ip4_prefix=
+declare -a targets=()    # check these
+declare -A a_targets=()  # (if -A flag) use an associative array (hostnames keyed on ip addr); hold both values in one array
+
+
 #-----[ functions ]----------------------------------------------
 
-my_usage(){
+_jping_terminal_sanity() {
+  # restore standard character echoing and carriage return to the TTY device
+  stty echo icrnl 2>/dev/null
+  # use script_header_joetoo's SCU to explicitly unhide the hardware terminal cursor
+  SCU
+}
+
+my_usage() {
   j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
   local msg="${BRon}usage${Boff}: ${_func_color}$PN${Boff} [\"<target_list>\"]"
   msg+=" [-c|--command <cmd>] [-p port]"
@@ -54,17 +76,23 @@ my_usage(){
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -j|--jobs [n]${Boff}${Con} ........: job count (${Won}default:${Con} \$(nproc))"
   j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -S|--serial${Boff}${Con} ..........: disable parallel processing"
+  j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})"
-  j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -S|--serial${Boff}${Con} ..........: disable parallel processing"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -W|--wait [n]${Boff}${Con} ........: response-wait timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -t|--timeout [n]${Boff}${Con} .....: job timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)"
   j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -n|--noresolve${Boff}${Con} .......: never resolve (and display) hostnames for addresses"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -R|--resolve${Boff}${Con} .........: always resolve (and display) hostnames for addresses (${Won}default${Con})"
+  j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -f|--file${Boff}${Con} ............: indicates target_list is /path/to/target_list file"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -A|--associative${Boff}${Con} .....: from file, form an associve array of ip addrs keyed on hostnames"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -h|--help${Boff}${Con} ............: print this message"
   j_msg "-${notice}" -m "$msg"
@@ -94,7 +122,7 @@ my_usage(){
   j_msg "-${notice}" -mp "${Con}         socat       Any         Manual (&)       Hyper-flexible     Complex; high overhead${Boff}"
   msg="${BCon}  (5) ${BMon}<target_list> ${BCon}can be any of the following forms --${Boff}"
   j_msg "-${notice}" -m "$msg"
-  j_msg "-${notice}" -mp "${Con}         Quoted list.......: ${Boff}\"10.0.0.1 10.0.0.2\" or \"\$host_list\" or \"\${hosts[*]}\""
+  j_msg "-${notice}" -mp "${Con}         Quoted list.......: ${Boff}\"10.0.0.1 10.0.0.2\" or \"slim2 elrond\" or \"\$host_list\" or \"\${hosts[*]}\""
   j_msg "-${notice}" -mp "${Con}         Brace Expansion...: ${Boff}\"192.168.1.{1..254}\""
   j_msg "-${notice}" -mp "${Con}         IPv4 CIDR Subnet..: ${Boff}192.168.62.0/24 ${BCon}(Max /22)${Boff}"
   j_msg "-${notice}" -mp "${Con}         IPv6 CIDR Subnet..: ${Boff}fd62:6262::/118 ${BCon}(Max /118)${Boff}"
@@ -114,12 +142,288 @@ my_usage(){
   j_msg "-${notice}" -mp "${Con}  ${BMon}1024 addresses${Boff} per call. Use larger subnets with caution${Boff}"
 }
 
+fractip2dec() { # (POSIX) convert reasonably small fraction of ip address to decimal value
+  local _addr="$1"  # ip address
+  local _c _d       # octets in ipv4
+  local _last       # hextet in ipv6
+  local _rem        # remnant in parsing positional parameter by expansion
+  local _dec        # calculated decimal value
+  case "$_addr" in
+    *:*) fam=6; case "$1" in *[!0-9a-fA-F:]*) j_msg "-${err}" "invalid characters in ipv6 addr"; return 1 ;; esac ;;
+    *.*) fam=4; case "$1" in *[!0-9.]*) j_msg "-${err}" "invalid characters in ipv4 addr"; return 1 ;; esac ;;
+  esac
+
+  case "$fam" in
+    4)   # ipv4 address - reasonable range is /22 subnet, so ignore first two octets and convert the rest to decimal
+      _d=${_addr##*.}  # strip longest match for '*.' from prefix - leaving 4th octet d
+      _rem=${_addr%.*} # strip shortest match for '.*' from suffix - leaving a.b.c
+      _c=${_rem##*.}   # strip longest match for '*.' from prefix - leaving 3rd octet c
+      _dec=$(( _d + ( _c * 256 ) ))
+      ;;
+    6)   # ipv4 address - reasonable range is /118 subnet, so ignore all but last hextet abd convert that to decimal
+      _last=${_addr##*:}    # strip longest match for '*:' from prefix - leaving last hextet
+      _dec=$(h2d "$_last")  # use script_header_joetoo hex to decimal conversion
+      ;;
+    *)  j_msg "-${err}" "invalid fam in ip2dec function"; return 1 ;;
+  esac
+  printf '%s\n' "${_dec:-0}"   # convert null (like last hextet zero) to explicit zero
+  return 0
+}
+
+getpartip() { # (POSIX) return fraction of ip address above reasonably small range
+  local _addr="$1"  # ip address
+  local _c _d       # octets in ipv4
+  local _last       # hextet in ipv6
+  local _rem        # remnant in parsing positional parameter by expansion
+  local _dec        # calculated decimal value
+  case "$_addr" in
+    *:*) fam=6; case "$1" in *[!0-9a-fA-F:]*) j_msg "-${err}" "invalid characters in ipv6 addr"; return 1 ;; esac ;;
+    *.*) fam=4; case "$1" in *[!0-9.]*) j_msg "-${err}" "invalid characters in ipv4 addr"; return 1 ;; esac ;;
+  esac
+
+  case "$fam" in
+    4)   # ipv4 address - reasonable range is /22 subnet, so ignore first two octets and convert the rest to decimal
+      _d=${_addr##*.}  # strip longest match for '*.' from prefix - leaving 4th octet d
+      _rem=${_addr%.*} # strip shortest match for '.*' from suffix - leaving a.b.c
+      _c=${_rem##*.}   # strip longest match for '*.' from prefix - leaving 3rd octet c
+      _rem=${_addr%.*} # strip shortest match for '.*' from suffix - leaving a.b
+      ;;
+    6)   # ipv4 address - reasonable range is /118 subnet, so ignore all but last hextet abd convert that to decimal
+      _rem=${_addr%:*} # strip shortes match for ":*" from suffix - leaving all but last hextet
+      ;;
+    *)  j_msg "-${err}" "invalid fam in ip2dec function"; return 1 ;;
+  esac
+  printf '%s\n' "$_rem"
+  return 0
+}
+
+validate_target_list() {
+  local -a accumulated_list=() # accumulated indexed array of target addresses
+  local _vt_file=""            # pathname of file named by target_list
+  local _vt_partcount          # number of space-delimited parts in target_list
+  local -a part_targets        # array of targets expanded from a target-list part
+  local _vt_cidr _vt_net _vt_prefix  # components fo cidr subnet expansion
+  local _vt_start _vt_end _vt_diff   # components for range expansion
+  local _vt_start_dec _vt_end_dec    # components for range expansion
+  local _c _d       # octets in ipv4
+  local _last       # hextet in ipv6
+  local _rem        # remnant in parsing positional parameter by expansion
+  # target list can be any of a number of forms requiring different handling here -
+  #  - shorthand (e.g. 192.168.62.{1..254}, default) --> expand to a list
+  #  - a cidr formatted subnet - expand to a list but apply reasonable-size guards
+  #  - a quoted list - of ipv4 and/or ipv6 addresses
+  #  - a quoted list - of hostnames and/or fully qualified domain names
+  #  - the pathname to a file containing a list of addresses, hostnames, or both
+  #    - if both, and if -A|--associative (ASSOCIATIVE pBool) is set,
+  #      then build an associative target_list array of addresses key'd on names
+  # parse initial target_list variable, and assign final target_list array
+
+  # strategy: parse to identify use case -
+  #  - FILE and ASSOCIATIVE - return associative array
+  #  - FILE but not ASSOCIATIVE - populate array with lines from file and continue validation of these parts
+  #  - if not file - validate each part
+  #  - for each part -
+  #    is n.n.n.n/nn cidr subnet? - expand/append to accumulated_list array (with reasonable limits)
+  #    is n.n.n.{n..nn} brace shorthand - expand/append to accumulated_list array
+  #    is a.a.a.a-b.b.b.b or a:a:a::-b:b:b:: - expand/append to accumulated_list array (with reasonable limits)
+  #    is a hostname or single address - append to accumulated_list
+
+  # if -f|--file ($FILE pBool) indicates $target_list is a file pathname,
+  # replace the pathname with the contents of the file and continue validation
+  if [ "$FILE" ] ; then
+    _vt_file="$target_list"
+    if [ -f "$_vt_file" ] ; then
+       # if the -A|--associative (ASSOCIATIVE pBool) is set, then build associative array,
+       #   otherwise, build an indexed address array from potentially hybrid parts
+       if [ "$ASSOCIATIVE" ] ; then
+         local -a lines
+         readarray -t lines < <(cat "$_vt_file")
+         # iterate through all lines of the hosts files
+         j_msg "-${debug}" -p "reading associative array a_targets"
+         for line in "${lines[@]}"; do
+           # read the whole line, assign ip and host; ignore iface and timestamp
+           read -r ip host _ <<<"$line"
+           # Skip empty/comments
+           [[ -z "$ip" || "$ip" == \#* ]] && continue
+           # reject malformed hosts file (column 1, 2 must be valid ip address, hostname
+           case "$ip" in
+             *:*|*.* ) : ;; # ip address is ok - do nothing
+             *       )
+               j_msg "-${err}" "invalid ip address [$ip] while ingesting associative array from file [$_vt_file]"
+               my_usage; exit 1 ;;
+           esac
+           case "$host" in
+             *[!0-9a-zA-Z.-]* ) j_msg "-${err}" "invalid; illegal chars" ; my_usage; exit 1 ;;
+             -*|*-            ) j_msg "-${err}" "invalid: starts/ends w hyphen" ; my_usage; exit 1 ;;
+             *.-*|*-.*        ) j_msg "-${err}" "invalid: fqdn part starts/ends w hyphen" ; my_usage; exit 1 ;;
+             *..*             ) j_msg "-${err}" "invalid: consecutive dots" ; my_usage; exit 1 ;;
+             .*               ) j_msg "-${err}" "invalid: starts w dot" ; my_usage; exit 1 ;;
+             *                ) : ;;   # valid hostname/fqdn - do nothing
+           esac
+           [ ${#host} -gt 253 ] && { j_msg "-${err}" "invalid fqdn; exceeds 253 characters"; my_usage; exit 1 ; }
+#           j_msg "-${debug}" -m -n "assigning"
+           a_targets["$ip"]="$host"
+#           handle_result $? "ip: [$ip] host: [$host]" "" "$debug"
+         done
+         j_msg "-${info}" -m "ingested associative array with [${#a_targets[@]}] a_targets"
+         j_msg "-${debug}" -p "a_targets [${#a_targets[@]}] a_targets"
+         targets_str="${a_targets[*]}"    # string for show_config
+         return 0  # if -f|--file and -A|--associateve, then return with a_targets now
+       else
+         # transfer file content to target_list (space-delimited string) for common validation and assignment
+         # (filter comments and blank lines)
+         target_list=$(cat "$_vt_file" | grep -v "^${W0}#" | sed 's|^$||')
+         _vt_partcount=$(printf '%s' "$target_list" | wc -w)
+         j_msg "-${info}" -p "${BWon}(info}${Boff} ingested file [$_vt_file] as new target_list with [$_vt_partcount] parts"
+       fi  # ASSOCIATIVE
+    else
+       j_msg "-${err}" "${BRon}(error)${Boff}: -f flag is set but file [$target_list] not found"; my_usage; exit 1
+    fi
+  else
+    _vt_partcount=$(printf '%s' "$target_list" | wc -w)
+    j_msg "-${info}" -p "${BWon}(info}${Boff} validating original target_list with [$_vt_partcount] parts"
+  fi
+
+  # parse target_list with posix pipe to translate any comma, semicolon, pipe, CR, TAB, NL delimiters to spaces
+  target_list=$(printf '%s' "$target_list" | tr ",;|${TAB}${CR}${NL}" ' ')
+  _vt_partcount=$(printf '%s' "$target_list" | wc -w)
+  j_msg "-${info}" -p "${BWon}(info}${Boff} after delimiter translation, validating target_list with [$_vt_partcount] parts"
+
+  ### Note: at this point, regardless of its origin target_list is a single space-delimited string with
+  #    with any combination of allowable parts, but no 
+
+  # validate each part of target_list; id type, expand, and append to an accumulation of expanded parts
+  # strategy --
+  #   - only cidr subnet contains a / so look for that first and validate or reject
+  #   - if not cidr, then only brace shorthand will contain {}
+  for list_part in $target_list; do   # unquoted to split list into parts
+    case "$list_part" in
+
+      */*      )  # cidr subnet - e.g. "fd62:6262:6260::/118"
+        # assign cidr and net with parameter expansion
+        _vt_cidr="${list_part##*/}"    # strip longest match for '*/' from the left - leaving cidr
+        _vt_net="${list_part%/*}"      # strip shortest match for '/*' from the right - leaving network
+        # validate net with ipcalc
+        if ! ipcalc -c "$_vt_net"; then
+          j_msg "-${err}" "${BRon}error${Boff}: network [$_vt_net] rejected by ipcalc"; my_usage; exit 1;
+        fi
+        # detect family ipv4 or ipv6 and validate reasonably sized address range
+        # set prefix to be used by ipcalc to split the subnet into addresses (/31 or /128 for individual ips)
+        case "$_vt_net" in
+          *:*) fam=6; _vt_prefix=128; [[ "$_vt_cidr" -lt 118 ]] && \
+            { j_msg "-${err}" "${BRon}error${Boff}: IPv6 subnet out of range (max /118)"; my_usage; exit 1 ; } ;;
+          *.*) fam=4; _vt_prefix=32; [[ "$_vt_cidr" -lt 22 ]] && \
+            { j_msg "-${err}" "${BRon}error${Boff}: IPv4 subnet out of range (max /22)"; my_usage; exit 1 ; } ;;
+          *  ) j_msg "-${err}" "${BRon}error${Boff}: invalid network specified [$_vt_net]"; my_usage; exit 1 ;;
+        esac
+        # hydrate address range using ipcalc-ng
+        # -S splits into prefix sized subnets /32 (ipv4) or /128 (ipv6) for individual ips
+        # --no-decorate is clean | cut drops the cidr
+        readarray -t part_targets < <(ipcalc -S "$_vt_prefix" "$list_part" --no-decorate | cut -d'/' -f1)
+        # append this to array of accumulated targets
+        accumulated_list+=("${part_targets[@]}")
+        j_msg "-${debug}" -p "${BYon}(debug)${Boff} accumulated list contains [${#accumulated_list[@]}] individual targets"
+        continue   # this was cidr subnet, so skip other-case logic below, get next part
+        ;;  # */* - cidr subnet
+
+      *"{"*|*"}"*  )  # brace shorthand - e.g. "192.168.62.{1..254}" (note: arrays expand on command line, way before here)
+        # reject if contains other invalid chars
+        case "$list_part" in
+          *[!0-9a-zA-Z.:{}]*) j_msg "-${err}" "invalid characters in brace-shorthand list_part [$list_part]"; my_usage; exit 1 ;;
+          *)  j_msg "-${debug}" "all characters in brace-shorthand list_part [$list_part] are valid" ;;
+        esac
+        # now vetted, expand safely with eval and use readarray's -O option to *append to accumulated targets
+        # readarray -d '' -t -O "${#accumulated_list[@]}" accumulated_list < <( eval "printf '%s\0' $list_part" )
+        # use the safer 2-step approach - first eval to expand into intermediate array
+        readarray -d '' -t part_targets < <( eval "printf '%s\0' $list_part" )
+        # append this to array of accumulated targets
+        accumulated_list+=("${part_targets[@]}")
+        j_msg "-${debug}" -p "${BYon}(debug)${Boff} accumulated list contains [${#accumulated_list[@]}] individual targets"
+        continue   # this was brace shorthand part, so skip other-case logic below, get next part
+        ;;  # *{*|*}* - brace shorthand
+
+      *-*      )  # hyphen-separated start-end range or hyphenated host-name
+        # reject if contains other invalid chars
+        case "$list_part" in
+          *[!0-9a-fA-F.:-]*)
+            # cannot be range but could be hyphenated host-hame (check vs hostname template -
+            # hostname allows letters, digits, hyphens, periods separating domain parts
+            # domain parts must be max 63 char and fqdn including .s must be max 253 char
+            case "$list_part" in
+              *[!0-9a-zA-Z.-]*) j_msg "-${err}" "invalid characters in hyphenated list_part [$list_part]"; my_usage; exit 1 ;;
+              *)  # append as possible (vetted) hostname
+                accumulated_list+=("$list_part")
+                j_msg "-${debug}" -p "${BYon}(debug)${Boff} accumulated list contains [${#accumulated_list[@]}] individual targets"
+                continue  # skip other-case logic below; get next part
+                ::
+            esac
+            ;;
+          *)  j_msg "-${debug}" "all characters in range list_part [$list_part] are valid" ;;
+        esac
+        # validate both start and end to determine family, re-hydration prefix and reject if contains invalid other chars
+        _vt_start=$(printf '%s\n' "$list_part" | cut -d '-' -f 1)
+        _vt_end=$(printf '%s\n' "$list_part" | cut -d '-' -f 2)
+        case "$_vt_start" in
+          *:*) fam=6; _vt_prefix=128; case "$_vt_end" in *[!0-9a-fA-F:]*)
+                 j_msg "-${err}" "invalid characters in ipv6 range list_part [$list_part]";
+                 my_usage; exit 1; esac
+               ;;
+          *.*) fam=4; _vt_prefix=32; case "$_vt_end" in *[!0-9.]*)
+                 j_msg "-${err}" "invalid characters in ipv4 range list_part [$list_part]";
+                 my_usage; exit 1; esac
+               ;;
+          *  ) j_msg "-${err}" "${BRon}error${Boff}: invalid range start specified [$_vt_start]"; my_usage; exit 1 ;;
+        esac
+        # if start and end differ in first two octets / any but last hextet, then reject as unreasonably large range
+        if [[ "$(getpartip "$_vt_start")" != "$(getpartip "$_vt_end")" ]]; then
+          j_msg "-${err}" "leading octet/hextet mismatch; range too big (limit equiv /22 /118 for ipv4/6)";
+          my_usage; exit 1
+        fi
+        # examine decimal difference in lower 2 octests/last hextet to confirm reasonable range
+        _vt_start_dec=$(fractip2dec "$_vt_start")
+        _vt_end_dec=$(fractip2dec "$_vt_end")
+        _vt_diff=$(( _vt_end_dec - _vt_start_dec ))
+        if [ "$_vt_diff" -gt 1023 ]; then
+          j_msg "-${err}" "calculated range too big (limit 1023 addrs, equiv /22 /118 for ipv4/6)";
+          my_usage; exit 1
+        fi
+        # now safely hydrate the reasonably sized range to part_targets and append to accumulated targets
+        readarray -t part_targets < <(
+            ipcalc -d "$list_part" --no-decorate | \
+                xargs -n 1 ipcalc -S "${_vt_prefix}" --no-decorate | \
+                cut -d'/' -f1 )
+        # append this to array of accumulated targets
+        accumulated_list+=("${part_targets[@]}")
+        j_msg "-${debug}" -p "${BYon}(debug)${Boff} accumulated list contains [${#accumulated_list[@]}] individual targets"
+        continue   # this was hyphen-separated range expansion, so skip other-case logic below, get next part
+        ;;  # *-* - range expansion
+
+     *         )  # expanding cases covered, but list_part could still be an ip addresses or a host names
+        # reject if contains other invalid chars
+        case "$list_part" in
+          *[!0-9a-zA-Z.:\ ]*) j_msg "-${err}" "invalid characters in individual-target list_part [$list_part]"; my_usage; exit 1 ;;
+          *)  j_msg "-${debug}" "all characters in individual-target list_part [$list_part] are valid";
+            # append individual target to accumulated targets
+            accumulated_list+=("$list_part")
+            j_msg "-${debug}" -p "${BYon}(debug)${Boff} accumulated list contains [${#accumulated_list[@]}] individual targets"
+            continue  # skip any future other-case logic below; get next part
+            ;;
+        esac
+        ::
+    esac
+  done
+  # now build final array
+  targets=("${accumulated_list[@]}")  || die "failed to build final targets array"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} final target list contains [${#targets[@]}] individual targets"
+  # construct targets_str which is used by show_config via rlv.targets_str in varlist
+  export targets_str="${targets[*]}"    # string for show_config
+  return 0
+}
+
 parse_cmdline_and_validate_input() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   local args=()
   local msg
-  local cidr net prefix
-  local -a cidr_targets
   # early-exit guard max cmdline is - jping <tgtlst> -c d -p 1 -P -j 2 -W 1 -t 1 -f
   if [ $# -gt 13 ] ; then
     j_msg "-${err}" "too many [$#] args [$*]"
@@ -132,9 +436,9 @@ parse_cmdline_and_validate_input() {
   while [ $# -gt 0 ] ; do
     j_msg "-${debug}" -p "${BYon}parsing parameter${Boff}: [$1] of ${BYon}existing cmdline${Boff} [$*]"
     case "$1" in
-      --            ) args+=("$@"); break ;;  # remainder of cmdline is arg(s)
+      --                  ) args+=("$@"); break ;;  # remainder of cmdline is arg(s)
 
-      -c|--command  )  # devtcp(default) or netcat|ping|fping|socat
+      -c|--command        )  # ...................... #  devtcp(default) or netcat|ping|fping|socat
         if [[ -z "$2" || "$2" == -* ]]; then
           j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
         else
@@ -155,17 +459,17 @@ parse_cmdline_and_validate_input() {
           j_msg "-${debug}" -p "${BYon}set${Boff} command: [$command], and shifting 2"
         fi ;;
 
-      -P|--parallel )  # ...................... # parallel-process iaw -j|--jobs
+      -P|--parallel       )  # ...................... # parallel-process iaw -j|--jobs
           PARALLEL="$TRUE"
           j_msg "-${debug}" -p "${BYon}set${Boff} PARALLEL: [$(TrueFalse "$PARALLEL")], shifting 1"
           ;;
 
-      -S|--serial   )  # ...................... # disable parallel-process
+      -S|--serial         )  # ...................... # disable parallel-process
           PARALLEL="$FALSE"
           j_msg "-${debug}" -p "${BYon}set${Boff} PARALLEL: [$(TrueFalse "$PARALLEL")], shifting 1"
           ;;
 
-      -I|--interactive )  # ...................... # number of parallel jobs
+      -I|--interactive    )  # ...................... # number of parallel jobs
         INTERACTIVE="$TRUE"
         j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
         ;;
@@ -175,7 +479,7 @@ parse_cmdline_and_validate_input() {
         j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
         ;;
 
-      -p|--port     )  # ...................... # number of parallel jobs
+      -p|--port           )  # ...................... # number of parallel jobs
         if [[ -z "$2" || "$2" == -* ]]; then
           j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
         else
@@ -189,7 +493,7 @@ parse_cmdline_and_validate_input() {
         fi
         ;;
 
-      -j|--jobs     )  # ...................... # number of parallel jobs
+      -j|--jobs           )  # ...................... # number of parallel jobs
         if [[ -z "$2" || "$2" == -* ]]; then
           j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
         else
@@ -202,7 +506,7 @@ parse_cmdline_and_validate_input() {
         fi
         ;;
 
-     -w|-W|--wait     )  # ...................... # time to wait for response
+     -w|-W|--wait         )  # ...................... # time to wait for response
         if [[ -z "$2" || "$2" == -* ]]; then
           j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
         else
@@ -210,7 +514,7 @@ parse_cmdline_and_validate_input() {
           j_msg "-${debug}" -p "${BYon}set${Boff} waittime: [$waittime], and shifted 2"
         fi ;;
 
-      -t|--timeout  )  # ...................... # for timeout command (GNU)
+      -t|--timeout        )  # ...................... # for timeout command (GNU)
         if [[ -z "$2" || "$2" == -* ]]; then
           j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
         else
@@ -218,12 +522,29 @@ parse_cmdline_and_validate_input() {
           j_msg "-${debug}" -p "${BYon}set${Boff} timeout: [$timeout], and shifted 2"
         fi ;;
 
-      -f|--file     )  #....................... # set if target_list is a file path name
+      -n|--noresolve      )  #....................... # never resolve hostnames
+        export RESOLVE="$FALSE"
+        j_msg "-${debug}" -p "${BYon}set${Boff} RESOLVE: [$(TrueFalse "$RESOLVE")], shifting 1"
+        ;;
+
+      -R|--resolve        )  #....................... # always resolve hostnames
+        export RESOLVE="$TRUE"
+        j_msg "-${debug}" -p "${BYon}set${Boff} RESOLVE: [$(TrueFalse "$RESOLVE")], shifting 1"
+        ;;
+
+      -f|--file           )  #........................ # set if target_list is a file path name
         FILE="$TRUE"
         j_msg "-${debug}" -p "${BYon}set${Boff} FILE: [$(TrueFalse "$FILE")], shifting 1"
         ;;
-      -h|--help     ) my_usage; exit 1 ;;
-      *             )  # ...................... # fall-through (either arg or bad flag)
+
+      -A|--associative    )  # ....................... # parallel-process iaw -j|--jobs
+          export ASSOCIATIVE="$TRUE"
+          j_msg "-${debug}" -p "${BYon}set${Boff} ASSOCIATIVE: [$(TrueFalse "$ASSOCIATIVE")], shifting 1"
+          ;;
+
+      -h|--help           ) my_usage; exit 1 ;;
+
+      *                   )  # ...................... # fall-through (either arg or bad flag)
         case "${1:0:1}" in   # if - then this is an invalid flag
           "-") j_msg "-${err}" "${BRon}(error)${Boff}: invalid option flag [$1]"; my_usage; exit 1 ;;
           *  )  # hold to return unhandled arg to positional parameters
@@ -246,13 +567,14 @@ parse_cmdline_and_validate_input() {
     j_msg "-${err}" "${BRon}(error)${Boff}: non-integer port [$port]"
     my_usage; exit 1;
   fi
-  # early-exit guard - validate timing parameters (allow decimal - test after stripping .)
+  # early-exit guard - validate job count (concurrency)
   if isint "$jobs"; then
     j_msg "-${debug}" -p "${BYon}(debug)${Boff}: validated jobs [$jobs]"
   else
     j_msg "-${err}" "${BRon}(error)${Boff}: non-integer jobs [$jobs]"
     my_usage; exit 1
   fi
+  # early-exit guard - validate timing parameters (allow decimal - test after stripping .)
   if isint "$(printf '%s' "$waittime" | tr -d '.')"; then
     j_msg "-${debug}" -p "${BYon}(debug)${Boff}: validated waittime [$waittime]"
   else
@@ -269,60 +591,19 @@ parse_cmdline_and_validate_input() {
   # assign remaining arg|default as target_list
   target_list="${1:-"$default_target_list"}"
 
-  # if -f indicates $target_list is a file pathname, replace the pathname with the contents of the file
-  # order this before cidr check because path can also have / char in it
-  if [ "$FILE" ] ; then
-    if [ -f "$target_list" ] ; then
-       # transfer file content to target_list for common validation and assignment
-       target_list=$(cat "$target_list")
-    else
-       j_msg "-${err}" "${BRon}(error)${Boff}: -f flag is set but file [$target_list] not found"; my_usage; exit 1
-    fi
-  fi
-
-  # if target_list contains a / process it as a subnet in cidr format
-  # and replace the subnet spec with a string holding a space-deliminated list of all addresses in the subnet
-  # (for interoperability among allowed input formats for target_list)
-  if [[ "$target_list" == */* ]]; then
-    # assign cidr and net with parameter expansion
-    cidr="${target_list##*/}"    # strip longest match for '*/' from the left - leaving cidr
-    net="${target_list%/*}"      # strip shortest match for '/*' from the right - leaving network
-    # validate net with ipcalc
-    if ! ipcalc -c "$net"; then j_msg "-${err}" "${BRon}error${Boff}: network [$net] rejected by ipcalc"; my_usage; exit 1; fi
-    # detect family ipv4 or ipv6 and validate reasonably sized address range
-    # set prefix to be used by ipcalc to split the subnet into addresses (/31 or /128 for individual ips)
-    case "$net" in
-      *:*) fam=6; prefix=128; [[ "$cidr" -lt 118 ]] && { j_msg "-${err}" "${BRon}error${Boff}: IPv6 subnet out of range (max /118)"; my_usage; exit 1 ; } ;;
-      *.*) fam=4; prefix=32; [[ "$cidr" -lt 22 ]] && { j_msg "-${err}" "${BRon}error${Boff}: IPv4 subnet out of range (max /22)"; my_usage; exit 1 ; } ;;
-      *  ) j_msg "-${err}" "${BRon}error${Boff}: invalid network specified [$net]"; my_usage; exit 1 ;;
-    esac
-    # hydrate address range using ipcalc-ng
-    # -S splits into prefix sized subnets /32 (ipv4) or /128 (ipv6) for individual ips
-    # --no-decorate is clean | cut drops the cidr
-    readarray -t cidr_targets < <(ipcalc -S "$prefix" "$target_list" --no-decorate | cut -d'/' -f1)
-    # transfer this back to target_list for common eval assignment below
-    target_list="$(printf '%s\n' "${cidr_targets[@]}")"
-  fi  # */*
-
-  # validate using case - is any char in expanded target list invalid (not allowed in an ip addr)
-  # note: {} allow for the form target_list="192.168.62.{1..254}" and
-  #       / allows for the form target_list="fd62:6262:6260::/118"
-  case "$target_list" in
-     *[!0-9a-fA-F.:{}/$' \t\n']*) j_msg "-${err}" "${BRon}error${Boff}: invalid characters in target_list"; my_usage; exit 1 ;;
-     *)  j_msg -$debug "all characters in target_list are valid" ;;
-  esac
-
-  # now that $target list is known to be valid input,
-  # safely use eval to expand any form of target_list into an array
-###########  eval "targets=( $target_list )"
-mapfile -d '' -t targets < <( eval "printf '%s\0' $target_list" )
+  validate_target_list || die "failed to validate_target_list"
   # return status code of assignment by default
 }   # end of - parse_cmdline_and_validate_input
 
-# To Do - correct and make coherent use of timeout options in various tools, considering
-#  jping -t|--timeout (global $timeout) and -W|--waittime (global $waittime)
-#  *   -W|--wait [n] ........: response-wait timeout (n seconds)(default 0.5)(if applicable)
-#  *   -t|--timeout [n] .....: job timeout (n seconds)(default 0.5)(if applicable)
+sanity_check() {
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  # return non-zero if something doesnt make sense
+  if [ "$ASSOCIATIVE" ] && [ ${#a_targets[@]} -eq 0 ] ; then
+    j_msg "-${err}" "${BRon}(error)${Boff} ASSOCIATIVE is [$(TrueFalse $ASSOCIATIVE)] but \${#a_targets[@]} = 0"
+  fi
+  
+}
+
 # Notes:
 # Some tools require or benefit from the use of an external timeout (e.g. GNU timeout)
 #   to manage (and prevent hangs in) their total execution
@@ -356,7 +637,7 @@ _do_fping() {
 #                 ### to to - love the -nA gets both name and address, but make it an option ###
 #                       default to using whichever is provided in the targets array
 #
-    j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+    j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # fping -h | grep  '\-[artqc],'
   #  -c, --count=N      count mode: send N pings to each target and report stats
   #  -r, --retry=N      number of retries (default: 3)
@@ -371,9 +652,7 @@ _do_fping() {
   #  - prints “is alive” or “is unreachable” when *neither* -a nor -u is specified.
   #  - -c causes generation of two blocks of output results and summare statistics
   #  - fping uses -t (ms), so we convert 0.5 to 500 (just do integer math)
-#  _ms=$(printf "%.0f" "$(echo "$waittime * 1000" | bc)")
-#  local _fp_opts="-nA"
-  local _fp_opts=""
+  local _fp_opts=("-A")          # always show targets by address
   local _int=${waittime%%.*}   # strip longest match for '.*' from right - leaving int part
   local _frac=${waittime#*.}   # strip shortest match for '*.' from left - leaving frac part
   local _interval=1   # miliseconds scheduled between probes
@@ -383,46 +662,62 @@ _do_fping() {
   fi
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _int: [$_int] _frac: [$_frac]"
   local _wait_ms=$(( ( _int * 1000 ) + ( _frac * 100 ) ))
-  local _ups=0 _downs=0 _out=""
+  local ups=0 downs=0 _out=""
+  # handle user-directed RESOLVE choice
+  if [ "$RESOLVE" ] ; then _fp_opts+=("-n"); fi
+  # append timing options to _fp_opts
+  _fp_opts+=("-r" "$_retries" "-i" "$_interval" "-t" "$_wait_ms")
+  j_msg "-${debug}" -p "${BYon}(debug)${Boff} _fp_opts: [${_fp_opts[@]}]"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: fping ${_fp_opts[@]} \${targets[@]}"
+
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
   if [ "$PARALLEL" ]; then
     # native parallelism: pass the whole array at once,
     # but colorize output using parameter expansion/substitution
     while IFS= read -r line; do
       case "$line" in
         *Up*|*alive*)
-          (( _ups++ ))
+          (( ups++ ))
+          line="${Con}${line/(/${BBon}(${BMon}}"
+          line="${line/)/${BBon})${Boff}}"
           line="${line/alive/${BGon}Up${Boff}}"
           ;;
         *[uU]nreachable*)
-          (( _downs++ ))
+          (( downs++ ))
+          line="${Con}${line/(/${BBon}(${BMon}}"
+          line="${line/)/${BBon})${Boff}}"
           line="${line/unreachable/${BRon}Unreachable${Boff}}"
           ;;
       esac;
       # buffer the output and print it (faster) after the subshell
       _out+="${line}"$'\n'  # note: append literal newline
-    done < <( fping "$_fp_opts" -r "$_retries" -i "$_interval" -t "$_wait_ms" "${targets[@]}" )
-    # now print the buffered output
-    printf '%b\n' "$_out"
+    done < <( fping "${_fp_opts[@]}" "${targets[@]}" )
+    # now print the buffered output | sort to put down last and the rest in alpha order by name
+    printf '%b\n' "$_out" | sort -k4,4r -k1,1
   else # serialize
     j_msg "-${warn}" -p "${command} is natively optimized for parallel; serializing it will be significantly slower"
     for target in "${targets[@]}"; do
-#      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
+#      j_msg "-${notice}" -p -n "${BMon}${target}${Boff} is "
       # run same command as parallel but sed to colorize and strip alive/unreachable and newline
       # to follow w handle_result
-      fping "$_fp_opts" -r "$_retries" -i "$_interval" -t "$_wait_ms" "$target" 2>/dev/null | \
+      fping "${_fp_opts[@]}" "$target" 2>/dev/null | \
         sed 's| alive||' | \
         sed 's| unreachable||' | \
-        tr -d '\n'
+        tr -d '\n' | \
+        sed "s|^|${Con}|" | \
+        sed "s|(|${BBon}(${BMon}|" | \
+        sed "s|)|${BBon})${Boff}|"
       if handle_result $? "Up" "Down" "${notice}"; then
-        (( _ups++ ));
+        (( ups++ ));
       else
-        (( _downs++ ));
+        (( downs++ ));
       fi
     done
   fi
   # summarize results
-  msg="complete. ${BBon}[${BMon}$_ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$_downs${BBon}] ${BRon}down${Boff}"
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
   j_msg "-${notice}" -M "$idx_face_beam" "$msg"
 }
 
@@ -431,44 +726,46 @@ _do_nmap() {
   #                       default to using whichever is provided in the targets array
   # nmap options:
   #  --host-timeout <ms>   abort host scan after this time
+  #  --max-retries 0       don't retry unresponsive probes
   #  -p <port>             port selection
-  #  -n                    no DNS resolution
+  #  -n/-R                 Never/Always do DNS resolution [default: sometimes]
   #  -6                    IPv6 mode (auto-detected)
   #  -Pn                   skip host discovery (treat all as online)
   #  -T4                   faster timing template
   #  -oG -                 grepable output to stdout (-) instead of file
   # Note: -Tn sets rtt, scan-delay, retries - so dont set those (-T4 is optimized for LAN scanning)
-  #  * -n/-R               Never/Always do DNS resolution [default: sometimes]
   #  * -PO[protocol list]  IP Protocol Ping
   #  * -sO                 IP protocol scan
   #  (*) - possible future integration
   # timeout notes:
   # nmap - GNU timeout would be redundant; use --host-timeout ${_wait_ms}ms | Internal timer covers lifecycle
   #
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   local _int=${waittime%%.*}
   local _frac=${waittime#*.}
   local _wait_ms=$(( (_int * 1000) + (_frac * 100) ))
   local _port="${port:-22}"   # default port should already be done in validate_input
-  local _ups=0 _downs=0 _filtered=0
+  local ups=0 downs=0 _filtered=0
   local _out="" _raw_out="" _family=""
   local current_host="" current_status="" current_port_state=""
-  local -a targets_4 targets_6
-  local -a _nm_opts
+  local -a targets_4 targets_6 host_names
+  local -a _nm_opts=("--max-retries" "0")
+  local _count=0  # concurrency control variable for manually paralleled processes
+
+  # handle user-directed RESOLVE choice
+  if [ "$RESOLVE" ] ; then _nm_opts+=("-R"); else _nm_opts+=("-n"); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
   # start constructing _nm_opts array with "static" values
-  _nm_opts=("-n" "-Pn" "-T4")
+  _nm_opts+=("-Pn" "-T4")
   # append dynamically constructed timeout, port, greppable output flags to array
   # (flag and value as separate array elements so they parse properly)
   _nm_opts+=("--host-timeout" "${_wait_ms}ms" "-p" "$_port" "-oG" "-")
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} ipv4 native parallel command: nmap ${_nm_opts[@]} \${targets_4[@]}"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} ipv6 manual parallel command: timeout --signal=INT 2 nmap ${_nm_opts[@]} -6 \$target"
 
-  # FUTURE HOOK: (to support -A or -H flag, add -R here to support hostname resolution
-  # _nm_opts+=("-R")
-  #   - populate an associative array mapping ip→hostname
-  #   - override the printed identifier (ip vs hostname vs both)
-  #   - optionally enable nmap -R (reverse DNS)
-  #   (for now, we operate strictly on IPs for speed and determinism)
   # FUTURE HOOK: add multi-port scanning here
   # _nm_opts+=("-P0[$_proto_list]") or maybe _nm_opts+=("-sO")
   #
@@ -478,32 +775,67 @@ _do_nmap() {
   #    safe way to do that is to run each in its own subshell
   #   -to facilitate output parsing and buffering, have each subshell write
   #    to a mktemp file in /dev/shm (faster than /tmp), if it is available
-  #   _to make a summary count of _ups, _downs, _filtered, don't have the
+  #   _to make a summary count of ups, downs, _filtered, don't have the
   #    subshells to the math (i.e. don't put the math in the helpver function;
   #    instead, have the parent (this function) do the math after concatenating
   #    the temp files for the output buffer
   if [ "$PARALLEL" ]; then
     # nmap only does one of ipv4 or ipv6 in its parallel mode, so split into target list for each family
     for target in "${targets[@]}"; do
-      case "$target" in
-        *:*) targets_6+=("$target") ;;   # IPv6
-        *.*) targets_4+=("$target") ;;   # IPv4
-      esac
+      if [[ "$target" =~ : ]]; then targets_6+=("$target")
+      elif [[ "$target" =~ ^[0-9.]+$ ]]; then targets_4+=("$target")
+      else host_names+=("$target")
+      fi
     done
+    j_msg "-${notice}" -p "targetlist subdivided to optimize for nmap"
+    j_msg "-${notice}" -m "ipv4 target addresses: [${#targets_4[@]}]"
+    j_msg "-${debug}" -m  "ipv4 target addresses: [${targets_4[@]}]"
+    j_msg "-${notice}" -m "ipv6 target addresses: [${#targets_6[@]}]"
+    j_msg "-${debug}" -m  "ipv6 target addresses: [${targets_6[@]}]"
+    j_msg "-${notice}" -m "target hostnames ....: [${#host_names[@]}]"
+    j_msg "-${debug}" -m  "target hostnames ....: [${host_names[@]}]"
 
     if [ -d /dev/shm ] && [ -w /dev/shm ]; then
       tmp4=$(mktemp /dev/shm/jping_nmap4.XXXXXX)
       tmp6=$(mktemp /dev/shm/jping_nmap6.XXXXXX)
+      tmp_h=$(mktemp /dev/shm/jping_nmap_h.XXXXXX)
     else
       tmp4=$(mktemp /tmp/jping_nmap4.XXXXXX)
       tmp6=$(mktemp /tmp/jping_nmap6.XXXXXX)
+      tmp_h=$(mktemp /tmp/jping_nmap_h.XXXXXX)
     fi
 
+    # use nmaps native parallel ability for ipv4, where it works well due to optimized parallel ipv4 rDNS spt
     ( nmap "${_nm_opts[@]}" "${targets_4[@]}" ) > "$tmp4" &
-    ( nmap "${_nm_opts[@]}" -6 "${targets_6[@]}" ) > "$tmp6" &
-    wait
+    # Caution: nmap does not have a native/optimized ipv6 reverse dns lookup like it does for ipv4
+    #   and its timing/timeout parameters cannot control what it has to pass to the system dns resolver
+    # So - DON"T use nmap in native-parallel mode for ipv6 -- I'll do it myself
+    #( nmap "${_nm_opts[@]}" -6 "${targets_6[@]}" ) > "$tmp6" &
+    for target in "${targets_6[@]}"; do
+      # wrap nmap with GNU timeout, append to file, and push to background
+      # (SIGTERM default will wipe out nmap's buffer, so use --signal==INT instead, to dump what it has found before dying)
+      timeout --signal=INT 2 nmap "${_nm_opts[@]}" -6 "$target" >> "$tmp6" &
+      # Dynamically throttled by validated global $jobs
+      # (this goes mmediately after backgrounding (&) and outside the closing ')'
+      #  for intermediate subshell above so the _count variable will
+      #  be available in the current shell's scope), and before the done keyword)
+      #  (wait -n waits for a job vs all jobs to finish)
+      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
+    done;  wait  # crucial to wait for all backgrounded jobs to finish
+    # Similary with hostnames - which may fail to resolve, may resolve to ipv6 addresses, etc.
+    for target in "${host_names[@]}"; do
+      # wrap nmap with GNU timeout, append to file, and push to background
+      # (SIGTERM default will wipe out nmap's buffer, so use --signal==INT instead, to dump what it has found before dying)
+      timeout --signal=INT 2 nmap "${_nm_opts[@]}" "$target" >> "$tmp_h" &
+      # Dynamically throttled by validated global $jobs
+      # (this goes mmediately after backgrounding (&) and outside the closing ')'
+      #  for intermediate subshell above so the _count variable will
+      #  be available in the current shell's scope), and before the done keyword)
+      #  (wait -n waits for a job vs all jobs to finish)
+      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
+    done;  wait  # crucial to wait for all backgrounded jobs to finish
 
-    _raw_out="$(cat "$tmp4" "$tmp6")"
+    _raw_out="$(cat "$tmp4" "$tmp6" "$tmp_h")"
 
     # _finalize_host helper for while loop below
     _finalize_host() {
@@ -518,7 +850,7 @@ _do_nmap() {
       case "$current_status" in
           Up)   status_color="${BGon}Up${Boff}" ;;
           Down) status_color="${BRon}Down${Boff}" ;;
-          *)    status_color="${BYon}?${Boff}" ;;
+          *)    status_color="${BYon}Unk${Boff}" ;;
       esac
       # colorize custom sport state  output
       case "$current_port_state" in
@@ -529,17 +861,20 @@ _do_nmap() {
       esac
       # increment counters
       if [ "$current_status" = "Up" ]; then
-          (( _ups++ ))
+          (( ups++ ))
       else
-          (( _downs++ ))
+          (( downs++ ))
       fi
       if [ "$current_port_state" = "filtered" ]; then (( _filtered++ )); fi
 
-      # finalize previous host - build one-line output from aggregated data
-      host_line="${Mon}${current_host}${Boff} (${status_color})  port ${_port}: ${port_color}"
+      # finalize previous host - build one-line colorized output (acommodating hostname) from aggregated data
+      current_host="${BMon}${current_host// / ${BBon}}"
+      current_host="${current_host//\(/\(${Boff}${Con}}"
+      current_host="${current_host//\)/${BBon}\)${Boff}}"
+      host_line="${BMon}${current_host}${Boff} (${status_color})  port ${_port}: ${port_color}"
       # append to output buffer for fast printf later
       _out+="${host_line}"$'\n'
-    }
+    }   # end of _finalize_host function
 
     # iterate through lines of output buffer and count stats by
     # examining the Status and Ports lines for each target
@@ -553,9 +888,12 @@ _do_nmap() {
     current_port_state=""
 
     while IFS= read -r line; do
-      # example grepable output lines formats
+      # example grepable output lines formats (nmap -n; ! $RESOLVE)
       #   Host: 192.168.62.155 () Status: Up
       #   Host: 192.168.62.155 () Ports: 22/open/tcp//ssh///
+      # example grepable output lines formats (nmap -R; $RESOLVE)
+      #   Host: 192.168.62.155 (g3nuc01.brendler) Status: Up
+      #   Host: 192.168.62.155 (g3nuc01.brendler) Ports: 22/open/tcp//ssh///
 
       [[ "$line" == \# ]] && continue  # ignore comment lines
       [[ -z "$line" ]] && continue     # ignore blank lines
@@ -580,8 +918,12 @@ _do_nmap() {
 
             fi  # -n "$current_host"
 
-            # now, start new host
-            current_host=$(printf '%s\n' "$line" | awk '{print $2}')
+            # now, start new host - if RESOLVE, include hostname
+            if [ "$RESOLVE" ] ; then
+                current_host=$(printf '%s\n' "$line" | awk '{print $2 " " $3}')
+            else
+                current_host=$(printf '%s\n' "$line" | awk '{print $2}')
+            fi
             current_status=""; current_port_state=""  # clear these for the new host
             case "$line" in
                 *Status:\ Up*)   current_status="Up" ;;
@@ -597,78 +939,101 @@ _do_nmap() {
                 *\/closed\/*)    current_port_state="closed" ;;
                 *\/filtered\/*)  current_port_state="filtered" ;;
             esac
-            ;;      esac
+            ;;
+      esac
     done <<< "$_raw_out"
     # use helper function to finalize the last host
     # - build one-line output from aggregated data (flush the "buffer")
     _finalize_host
 
-    printf '%s\n' "$_out"
+    # print final the buffered output, sorted on port status, then up/down, then address
+    printf '%s\n' "$_out" | LC_COLLATE=en_US.UTF-8 sort -k6,6r -k4,4 -k1,1
 
     rm -f "$tmp4"
     rm -f "$tmp6"
+    rm -f "$tmp_h"
   else  # else searialize the jobs
     j_msg "-${warn}" -p "${command} is natively optimized for parallel; serializing it will be slower"
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
     for target in "${targets[@]}"; do
       # prepaare to pass _family to nmap as an option flag "-4" or "-6"
       _family=""  # reinitialize each iteration
-      [[ "$target" == *:* ]] && _family"-6"
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is"
-
-
-      j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
-
-      local _result
+      [[ "$target" == *:* ]] && _family="-6"
+      local _result _addr _hostname
       _result=$(nmap "${_nm_opts[@]}" "$_family" "$target" 2>/dev/null)
+      # use tail to get the last status line from nmap's greppable output
+      # (since with -Pn nmap always first prints a Status: Up line (as -Pn said to assume))
+      _addr=$(printf '%s' "$_result" | grep Status | tail -n 1 | awk '{print $2}')
+      j_msg "-${notice}" -p -n "${BMon}${_addr}"
+      if [ "$RESOLVE" ] ; then
+        if [ "$ASSOCIATIVE" ]; then
+          _hostname="${a_targets[$target]}"
+        else
+          _hostname=$(printf '%s' "$_result" | grep Status | tail -n 1 | awk '{print $3}')
+        fi
+        j_msg "-${notice}" -mp -n " ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
+      else
+        j_msg "-${notice}" -mp -n "${Boff} is"
+      fi
 
       if grep -q "Status: Up" <<< "$_result"; then
-        (( _ups++ ))
-        handle_result 0 "Up" "" "${notice}"
+        (( ups++ ))
+        j_msg "-${notice}" -mp -n " (${BGon}Up${Boff})"
       else
-        (( _downs++ ))
-        handle_result 1 "" "Down" "${notice}"
+        (( downs++ ))
+        j_msg "-${notice}" -mp -n " (${BRon}Down${Boff})"
       fi
 
       if grep -q "/open/" <<< "$_result"; then
-        j_msg "-${notice}" -mp "       port ${_port}: ${BGon}open${Boff}"
+        j_msg "-${notice}" -mp " port ${_port}: ${BGon}open${Boff}"
       elif grep -q "/filtered/" <<< "$_result"; then
         (( _filtered++ ))
-        j_msg "-${notice}" -mp "       port ${_port}: ${BYon}filtered${Boff}"
+        j_msg "-${notice}" -mp " port ${_port}: ${BYon}filtered${Boff}"
       else
-        j_msg "-${notice}" -mp "       port ${_port}: ${BRon}closed${Boff}"
+        j_msg "-${notice}" -mp " port ${_port}: ${BRon}closed${Boff}"
       fi
     done
   fi
-  msg="complete. ${BBon}[${BMon}$_ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$_downs${BBon}] ${BRon}down${Boff} |"
+
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff} |"
   msg+=" ${BBon}[${BMon}$_filtered${BBon}] ${BYon}filtered${Boff}"
-  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+  j_msg "-${notice}" -p -M "$idx_face_beam" "$msg"
+
 }
 
 #-----[ manual parallel tools ]-----------------------------------------------------
-_do_devtcp() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
-  # timeout notes:
-  # /dev/tcp - use GNU timeout "$timeout" | No internal timeout; needs GNU t
-  local ups=0 downs=0
-  local _count=0  # concurrency control variable for manually paralleled processes
-  if [ -z "$timeout" ]; then
-    if [ -n "$waittime" ]; then
-      timeout="$waittime"
-      j_msg "-${warn}" -p "substituted waittime [$waittime] for null timeout"
-    else
-      timeout=1
-      j_msg "-${warn}" -p "assiigned timeout=1 because it and waittime were both empty"
-    fi
-  fi
-  j_msg "-${info}" -m "command:  timeout $timeout bash -c \"</dev/tcp/\${target}/22\""
 
-  if [ "$PARALLEL" ]; then
+_jping_parallel_core() {
+    # common core manual parallelization engine - take T/F command function name as input and
+    #   run it in parallel for all targets in the target-appropriate manner
+    #   depending on user choices for dns resolution (RESOLVE), use of
+    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
+    #   go fast without lookups if not RESOLVE
+    # Provide common standard colorized and sorted output format
+    local target    # one memger of the original targets array passed to calling function
+    local _hostname # hostname looked up (or provided as target) as appropriate if RESOLVE
+    local _tgt_v    # _target vecotr derived from _hostname if original target is a hostname
+    local _target   # one _target of _tgt_v new target vector
+    local _count=0  # concurrency control variable for manually paralleled processes
+    local _status   # up/down
+    local line      # one line of raw output of parallelized jobs
+    local cleanline # ansi-stripped line to facilitat safer status counting
+    local _jp_command # name of tool-specific syntaxed command to call with each target
+
+    # receive the name of the function for core connectivity check
+    local _jp_command="$1"
+
+    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _jp_command: [${_jp_command}]"
+    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
+
     # feed the grouped output (below) into a while loop in the current shell
     # in order to be able to scan the output and count total ups and downs
     # (cant be done in subshell because that variable is gone when subshell exits)
     while read -r line; do
-      # print the line to stdout (and/or log)
+      # print the colorozed line to stdout (and/or log)
+      line="${BMon}${line//\(/${BBon}\(${Boff}${Con}}"
+      line="${line//\)/${BBon}\)${Boff}}"
       j_msg "-${notice}" -p "$line"
       # Strip ANSI colors before checking the status
       # (Color codes can interfere with "Up" matching)
@@ -679,49 +1044,185 @@ _do_devtcp() {
       esac
     done < <(  # substitute the process below (actual parallel scan) into the while loop above
     { for target in "${targets[@]}"; do (
-        { timeout "$timeout" bash -c "</dev/tcp/${target}/22" && \
-          echo -e "${Mon}${target}${Boff} is ${BGon}Up${Boff}" || \
-          echo -e "${Mon}${target}${Boff} is ${BRon}Down${Boff}" ;
+        { if [ "$RESOLVE" ]; then
+            if "$ASSOCIATIVE" ]; then  # already have hostname
+              _hostname="${a_targets[$target]}"
+              if "$_jp_command" "$target"; then   # execute RESOLVE and ASSOCIATIVE case
+                _status="${BGon}Up${Boff}";
+              else
+                _status="${BRon}Down${Boff}"
+              fi
+              printf '%s\n' "${target} (${_hostname}) is $_status"
+            else   # Not ASSOCIATIVE - look up hostname in the background
+              # if this is a hostname rathern than address, look up the address(es) instead
+              case "$target" in
+                *[!0-9a-fA-F.:]*)  # target is a hostname (contains characters not allowed in ip address)
+                    # j_msg  "-${debug}" -p "target [$target] is hostname"
+                   _hostname=${target};
+                   # use getent to look up all ip addresses for this _hostname
+                   _tgt_v=$(getent ahosts "$target" | awk '{print $1}' | sort -u)
+                   for _target in $_tgt_v; do
+                     if "$_jp_command" "$_target" ; then  # execute RESOLVE but not ASSOCIATIVE for target hostname
+                       _status="${BGon}Up${Boff}"
+                     else
+                       _status="${BRon}Down${Boff}"
+                     fi
+                     printf '%s\n' "${_hostname} (${_target}) is $_status"
+                   done
+                   ;;
+                *)   # .......... # target is an ip address (non-ASSOCIATIVE case) - look up hostname with dig
+                  _hostname=$(dig -x "$target" +short | sed 's|.$||')
+                  if "$_jp_command" "$target"; then   # execute RESOLVE but not ASSOCIATIVE for target ip address
+                    _status="${BGon}Up${Boff}"
+                  else
+                    _status="${BRon}Down${Boff}"
+                  fi
+                  printf '%s\n' "${target} (${_hostname}) is $_status"
+                  ;;
+              esac
+            fi
+          else # not RESOLVE
+            if "$_jp_command" "$target" ; then   # execute non-RESOLVE case
+              _status="${BGon}Up${Boff}"
+            else
+              _status="${BRon}Down${Boff}"
+            fi
+            printf '%s\n' "${target} () is $_status"
+          fi
         } 2>/dev/null &
       )
       # Dynamically throttled by validated global $jobs
       # (this goes mmediately after backgrounding (&) and outside the closing ')'
       #  for intermediate subshell above so the _count variable will
       #  be available in the current shell's scope), and before the done keyword)
-      if (( ++_count % "$jobs" == 0 )); then wait; fi
+      # wait -n waits for a job vs all jobs to finish
+      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
       done; wait
-    } | sed "/^${W0}$/d"
+      # filter empty lines and sort by status and then address
+    } | sed "/^${W0}$/d" | sort -t' ' -k4,4r -k2,2
+#    } | sed "/^${W0}$/d"  # unsorted for now
   )
-  else # serialize
+
+}
+
+_jping_serial_core() {
+    # common core manual serialization engine - take T/F command function name as input and
+    #   run it in serial sequence for all targets in the target-appropriate manner
+    #   depending on user choices for dns resolution (RESOLVE), use of
+    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
+    #   go fast without lookups if not RESOLVE
+    # Provide common standard colorized and sorted output format
+    local target    # one memger of the original targets array passed to calling function
+    local _hostname # hostname looked up (or provided as target) as appropriate if RESOLVE
+    local _tgt_v    # _target vecotr derived from _hostname if original target is a hostname
+    local _target   # one _target of _tgt_v new target vector
+    local _count=0  # concurrency control variable for manually paralleled processes
+    local _status   # up/down
+    local line      # one line of raw output of parallelized jobs
+    local cleanline # ansi-stripped line to facilitat safer status counting
+    local _js_command # name of tool-specific syntaxed command to call with each target
+
+    # receive the name of the function for core connectivity check
+    local _js_command="$1"
+
+    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _js_command: [${_js_command}]"
+    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
+
     for target in "${targets[@]}"; do
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
-      timeout "$timeout" bash -c "</dev/tcp/${target}/22"
-      if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
+        if [ "$RESOLVE" ]; then
+          if [ "$ASSOCIATIVE" ]; then  # already have hostname
+            _hostname="${a_targets[$target]}"
+            # use simpler format of j_msg to set up output line prior and handle_result to close after execution because
+            #   serialized jobs will assemble output pieces properly - unlike parallel which require atomic writes
+            j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
+            "$_js_command" "$target"   # execute RESOLVE and ASSOCIATIVE case
+            if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
+          else   # Not ASSOCIATIVE - look up hostname in the background
+            # if this is a hostname rathern than address, look up the address(es) instead
+            case "$target" in
+              *[!0-9a-fA-F.:]*)
+                 _hostname=${target};
+                 _tgt_v=$(getent ahosts "$target" | awk '{print $1}' | sort -u)
+                 for _target in $_tgt_v; do
+                   j_msg "-${notice}" -p -n "${BMon}${_hostname}${Boff} ${BBon}(${Boff}${Con}${_target}${BBon})${Boff} is"
+                   # j_msg "-${debug}" -p "_js_command: [$_js_command]  _target: [$_target]"
+                   "$_js_command" "$_target"   # execute RESOLVE but not ASSOCIATIVE case with target hostname
+                   if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
+                 done
+                 ;;
+              *)   # ip address
+                _hostname=$(dig -x "$target" +short | sed 's|.$||')
+                j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
+                "$_js_command" "$target"   # execute RESOLVE but not ASSOCIATIVE case with target ip address
+                if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
+                ;;
+            esac
+          fi
+        else   # not RESOLVE
+          j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
+          "$_js_command" "$target"   # execute non-RESOLVE case
+          if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
+        fi
     done
+
+}
+
+_do_devtcp() {
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  # timeout notes:
+  # /dev/tcp - use GNU timeout "$timeout" | No internal timeout; needs GNU t
+  local ups=0 downs=0
+  local _hostname _target _tgt_v
+  local _count=0  # concurrency control variable for manually paralleled processes
+  local -a _cmd  # properly constructed command line array, using this tool
+  if [ -z "$timeout" ]; then
+    if [ -n "$waittime" ]; then
+      timeout="$waittime"
+      j_msg "-${warn}" -p "substituted waittime [$waittime] for null timeout"
+    else
+      timeout=1
+      j_msg "-${warn}" -p "assiigned timeout=1 because it and waittime were both empty"
+    fi
+  fi
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout bash -c \"</dev/tcp/\${target}/22\""
+
+  # handle user-directed RESOLVE choice
+#  if [ "$RESOLVE" ] ; then _nm_opts+=("-R"); else _nm_opts+=("-n"); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  j_msg "-${debug}" -p "checking [${#targets[@]}] targets"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _devtpc_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1";
+    timeout "$timeout" "bash" "-c" "</dev/tcp/${_target}/22" &>/dev/null
+  }
+
+  if [ "$PARALLEL" ]; then
+    _jping_parallel_core "_devtpc_cmd"
+  else # serialize
+    _jping_serial_core "_devtpc_cmd"
   fi
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
   msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
-  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+  j_msg "-${notice}" -p -M "$idx_face_beam" "$msg"
 }
 
-      # actual in-script sytax and results --
-      # tst=socat; case "$target" in *:*) tgt="[${target}]" ;; *.*) gt="${target}" ;; *) tgt="" ;; esac
-      # j_msg -$debug -p "testing tgt: $tgt"
-      # if timeout 0.3 socat - TCP:"$tgt":22,connect-timeout=0.3 \
-      #  1>/dev/null 2>/dev/null < /dev/null; then                                        3.210s (slowest; very finicky)
-      # tst=devtcp; if timeout 0.3 bash -c "echo > /dev/tcp/$target/22" 2>/dev/null; then     1.787s
-      # tst=nc; if nc -z -w 1 "$target" 22 2>/dev/null; then                                  1.348s (fastest)
-      # tst=ping; if ping -W 1 -c 1 "$target" &>/dev/null ; then                              2.602s
-
-
 _do_netcat() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  #  -n                      numeric-only IP addresses, no DNS
+  #  -v                      verbose [use twice to be more verbose]
+  #  -w secs                 timeout for connects and final net reads
+  #  -z                      zero-I/O mode [used for scanning]
+
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # timeout notes:
   # nc - recommended to use GNU timeout "$timeout" AND jping waittime (-w ${waittime})
   #      to fortify and version-proof the exit status
   local ups=0 downs=0
   local _count=0  # concurrency control variable for manually paralleled processes
-  local nc_opts="-nzv"
+  local -a _nc_opts=("-zv")
   if [ -z "$timeout" ]; then
     if [ -n "$waittime" ]; then
       timeout="$waittime"
@@ -741,47 +1242,33 @@ _do_netcat() {
     j_msg "-${warn}" "${BYon}(warning)${Boff} nc -w must be integer, waittime [$waittime] rounded to [$_nc_wait]"
     waittime="$_nc_wait"
   fi
-  j_msg "-${info}" -m "command:  timeout $timeout nc $nc_opts -\${fam} -w $waittime \"\$target\" $port"
+  _nc_opts+=("-w" "$waittime")
+
+  # handle user-directed RESOLVE choice
+  if [ ! "$RESOLVE" ] ; then _nc_opts+=("-n"); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  j_msg "-${debug}" -p "_nc_opts: [${_nc_opts[@]}]"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout nc ${_nc_opts[@]} \${fam} \$target $port"
+
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _netcat_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1" fam=""
+    case "$_target" in
+      *[!0-9a-fA-F.:]* ) : ;; # possible hostname - continue
+      *:*              ) fam="-6";;
+      *.*              ) fam="-4";;
+    esac
+    timeout "$timeout" nc "${_nc_opts[@]}" "${fam}" "$target" "$port" &>/dev/null
+  }
 
   if [ "$PARALLEL" ]; then
-    # feed the grouped output (below) into a while loop in the current shell
-    # in order to be able to scan the output and count total ups and downs
-    # (cant be done in subshell because that variable is gone when subshell exits)
-    while read -r line; do
-      # print the line to stdout (and/or log)
-      j_msg "-${notice}" -p "$line"
-      # Strip ANSI colors before checking the status
-      # (Color codes can interfere with "Up" matching)
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Up)   (( ups++ )) ;;
-        *is\ Down) (( downs++ )) ;;
-      esac
-    done < <(  # substitute the process below (actual parallel scan) into the while loop above
-    { for target in "${targets[@]}"; do (
-      case "$target" in *:*) fam="6";; *.*) fam="4";; *) die "bad target in ${FUNCNAME[0]}";; esac
-      # -z: scan mode (zero-I/O), -v: verbose (sent to stderr), -w: waittime
-        {  timeout "$timeout" nc "$nc_opts" "-${fam}" -w "$waittime" "$target" "$port" &>/dev/null && \
-          printf '%s\n' "${Mon}${target}${Boff} is ${BGon}Up${Boff}" || \
-          printf '%s\n' "${Mon}${target}${Boff} is ${BRon}Down${Boff}" ;
-        } 2>/dev/null &
-      )
-      # Dynamically throttled by validated global $jobs
-      # (this goes mmediately after backgrounding (&) and outside the closing ')'
-      #  for intermediate subshell above so the _count variable will
-      #  be available in the current shell's scope), and before the done keyword)
-      if (( ++_count % "$jobs" == 0 )); then wait; fi
-      done; wait;
-    } | sed "/^${W0}$/d"
-  )
+    _jping_parallel_core "_netcat_cmd"
   else # serialize
-    for target in "${targets[@]}"; do
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
-      case "$target" in *:*) fam="6";; *.*) fam="4";; *) die "bad target in ${FUNCNAME[0]}";; esac
-      timeout "$timeout" nc "$nc_opts" "-${fam}" -w "$waittime" -- "$target" "$port" &>/dev/null; result=$?
-      handle_result $result "Up" "Down" "${notice}"
-      if [ $? -eq 0 ]; then (( ups++ )); else (( downs++ )); fi
-    done
+    _jping_serial_core "_netcat_cmd"
   fi
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
   msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
@@ -789,7 +1276,7 @@ _do_netcat() {
 }
 
 _do_ssh() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # timeout notes:
   # ssh - recommended to use GNU timeout "$timeout" and -o ConnectTimeout=${waittime} | protects vs protocol/banner hang
   local ups=0 downs=0 _ssh_wait
@@ -817,119 +1304,47 @@ _do_ssh() {
     ssh_opts+=("-o" "ConnectTimeout=${_ssh_wait}")
 
   fi
-  j_msg "-${info}" -m "command:  timeout $timeout ssh ${ssh_opts[*]} -\${fam} \"\$target\" true 2>&1"
+
+  # handle user-directed RESOLVE choice
+  # if [ ! "$RESOLVE" ] ; then ... NA for ssh; fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ssh ${ssh_opts[*]} -\${fam} \"\$target\" true 2>&1"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _ssh_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1" fam=""
+    case "$_target" in
+      *[!0-9a-fA-F.:]* ) : ;; # possible hostname - continue
+      *:*              ) fam="-6";;
+      *.*              ) fam="-4";;
+    esac
+    timeout "$timeout" ssh "${ssh_opts[@]}" "${fam}" "$target" true 2>&1
+  }
 
   if [ "$PARALLEL" ]; then
-    # feed the grouped output (below) into a while loop in the current shell
-    # in order to be able to scan the output and count total ups and downs
-    # (cant be done in subshell because that variable is gone when subshell exits)
-    while read -r line; do
-      # print the line to stdout (and/or log)
-      j_msg "-${notice}" -p "$line"
-      # Strip ANSI colors before checking the status
-      # (Color codes can interfere with "Up" matching)
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Up)   (( ups++ )) ;;
-        *is\ Down) (( downs++ )) ;;
-      esac
-    done < <(  # substitute the process below (actual parallel scan) into the while loop above
-    { for target in "${targets[@]}"; do (
-      case "$target" in *:*) fam="6";; *.*) fam="4";; *) die "bad target in ${FUNCNAME[0]}";; esac
-      # -z: scan mode (zero-I/O), -v: verbose (sent to stderr), -w: waittime
-        {  timeout "$timeout" ssh "${ssh_opts[@]}" "-${fam}" "$target" true 2>&1 && \
-          printf '%s\n' "${Mon}${target}${Boff} is ${BGon}Up${Boff}" || \
-          printf '%s\n' "${Mon}${target}${Boff} is ${BRon}Down${Boff}" ;
-        } 2>/dev/null &
-      )
-      # Dynamically throttled by validated global $jobs
-      # (this goes mmediately after backgrounding (&) and outside the closing ')'
-      #  for intermediate subshell above so the _count variable will
-      #  be available in the current shell's scope), and before the done keyword)
-      if (( ++_count % "$jobs" == 0 )); then wait; fi
-      done; wait;
-    } | sed "/^${W0}$/d"
-  )
+    _jping_parallel_core "_ssh_cmd"
   else # serialize
-    for target in "${targets[@]}"; do
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
-      case "$target" in *:*) fam="6";; *.*) fam="4";; *) die "bad target in ${FUNCNAME[0]}";; esac
-      timeout "$timeout" ssh "${ssh_opts[@]}" "-${fam}" "$target" true 2>&1 ; result=$?
-      handle_result $result "Up" "Down" "${notice}"
-      if [ $? -eq 0 ]; then (( ups++ )); else (( downs++ )); fi
-    done
+    _jping_serial_core "_ssh_cmd"
   fi
+
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
   msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
   j_msg "-${notice}" -M "$idx_face_beam" "$msg"
 }
 
-_do_arping() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
-  # Note: the logic in this function is basically lifted from _do_ssh(); for detailed
-  # comments explaining how the parallel and serialized branches work see that function
-    # timeout notes:
-  # arping use of GNU timeout would be redundant; use -W ${waittime}                   | Layer 2; exits after response
-  local _ups=0 _downs=0 _arping_wait
-  local _count=0  # concurrency control variable for manually paralleled processes
-  local -a _arping_opts=()
-  # integerize waittime for arping
-  if ! isint "$waittime"; then
-    # try to round a decimal up to integer value, but don't round 1 or 1.0 up to 2
-    if [ "${waittime##*.}" -gt 0 ] && [[ "$waittime" == *"."* ]]; then
-      _arping_wait=$(( ${waittime%.*} + 1 ))
-    else
-      _arping_wait="${waittime%.*}"
-    fi
-    waittime="$_arping_wait"
-    # now add that to args
-    _arping_opts+=("-c" "1" "-w" "$_arping_wait" "-f")
-  else
-    _arping_opts+=("-c" "1" "-w" "$waittime" "-f")
-  fi
-  j_msg "-${info}" -m "command:  arping ${_arping_opts[*]} \"\$target\" &>/dev/null"
-  # arping options:
-  # -c 1 (one packet), -W $waittime (wait for response)
-  # -f (exit immediately after first reply)
-  # Note: arping usually requires an interface (-I); defaulting to eth0 or similar may be needed
-  # arping only supports ipv4
-  for x in "${targets[@]}"; do case $x in "${joetoo_ip4_prefix}"*) targets_4+=("$x");; esac; done
-  targets=("${targets_4[@]}")
-  if [ "$PARALLEL" ]; then
-    while read -r line; do
-      j_msg "-${notice}" -p "$line"
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Up)   (( _ups++ )) ;;
-        *is\ Down) (( _downs++ )) ;;
-      esac
-    done < <(
-      { for target in "${targets[@]}"; do (
-          { arping "${_arping_opts[@]}" "$target" &>/dev/null && \
-            printf '%s\n' "${Mon}${target}${Boff} is ${BGon}Up${Boff}" || \
-            printf '%s\n' "${Mon}${target}${Boff} is ${BRon}Down${Boff}" ;
-          } 2>/dev/null &
-        )
-        if (( ++_count % "$jobs" == 0 )); then wait; fi
-        done; wait
-      } | sed "/^${W0}$/d"
-    )
-  else # serialize
-    for target in "${targets[@]}"; do
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
-      arping "${_arping_opts[@]}" "$target" &>/dev/null
-      result=$?
-      if handle_result $result "Up" "Down" "${notice}"; then (( _ups++ )); else (( _downs++ )); fi
-    done
-  fi
-
-  msg="complete. ${BBon}[${BMon}$_ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$_downs${BBon}] ${BRon}down${Boff}"
-  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
-}
-
 _do_ping() {
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  # -c <count>         stop after <count> replies
+  # -H                 force reverse DNS name resolution (useful for numeric
+  #                    destinations or for -f), override -n
+  # -n                 no reverse DNS name resolution, override -H
+  # -w <deadline>      reply wait <deadline> in seconds
+  # -W <timeout>       time to wait for response
+  # -4                 use IPv4
+  # -6                 use IPv6
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # Note: the logic in this function is basically lifted from _do_ssh(); for detailed
   # comments explaining how the parallel and serialized branches work see that function
   # timout notes:
@@ -939,34 +1354,33 @@ _do_ping() {
 
   # ping uses -W for seconds (standard iputils-ping)
   # -c 1 ensures it sends only one packet
-  local ping_opts=("-c" "1" "-W" "$waittime")
-  j_msg "-${info}" -m "command: ping ${ping_opts[*]} \"\$target\" &>/dev/null"
+  # -n turns off reverse DNS name resolution because I'm manually doing that (so ping doesnt need to wait for it
+  local _ping_opts=("-c" "1" "-W" "$waittime" "-n")
+
+  # handle user-directed RESOLVE choice
+  # if [ ! "$RESOLVE" ] ; then ... NA for _ping_opts in this use case (see above); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ping ${_ping_opts[@]} \$target &>/dev/null"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _ping_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1" fam=""
+    case "$_target" in
+      *[!0-9a-fA-F.:]* ) : ;; # possible hostname - continue
+      *:*              ) fam="-6";;
+      *.*              ) fam="-4";;
+    esac
+    # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
+    timeout "$timeout" ping "${_ping_opts[@]}" "$target" &>/dev/null
+  }
 
   if [ "$PARALLEL" ]; then
-    while read -r line; do
-      j_msg "-${notice}" -p "$line"
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Up)   (( ups++ )) ;;
-        *is\ Down) (( downs++ )) ;;
-      esac
-    done < <(
-      { for target in "${targets[@]}"; do (
-          { ping "${ping_opts[@]}" "$target" &>/dev/null && \
-            printf '%s\n' "${Mon}${target}${Boff} is ${BGon}Up${Boff}" || \
-            printf '%s\n' "${Mon}${target}${Boff} is ${BRon}Down${Boff}" ;
-          } 2>/dev/null &
-        )
-        if (( ++_count % "$jobs" == 0 )); then wait; fi
-        done; wait
-      } | sed "/^${W0}$/d"
-    )
+    _jping_parallel_core "_ping_cmd"
   else # serialize
-    for target in "${targets[@]}"; do
-      j_msg "-${notice}" -p -n "${Mon}${target}${Boff} is "
-      ping "${ping_opts[@]}" "$target" &>/dev/null
-      if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
-    done
+    _jping_serial_core "_ping_cmd"
   fi
 
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
@@ -987,8 +1401,11 @@ _do_socat() {
   # socat - recommended to use GNU timeout "$timeout" and connect-timeout=${waittime}
   #   to protect vs protocol/banner hang
   #
-  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
-  local _open=0 _closed=0 _msg=""
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  local ups=0     # accumulated count of up stats
+  local downs=0   # accumulated count of down stats
+  local _msg=""
+  local _socat_opts=()
   local _count=0  # concurrency control variable for manually paralleled processes
   # guard against empty timeout (should be defaulted)
   if [ -z "$timeout" ]; then
@@ -1000,73 +1417,139 @@ _do_socat() {
       j_msg "-${warn}" -p "assiigned timeout=1 because it and waittime were both empty"
     fi
   fi
-  _msg="command:  timeout $timeout socat GOPEN:/dev/null"
+
+  # handle user-directed RESOLVE choice
+  # if [ ! "$RESOLVE" ] ; then ... NA for _ping_opts in this use case (see above); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  # formulate _socat_opts array
+  _socat_opts+=("GOPEN:/dev/null")
+  _msg="command:  timeout $timeout socat ${_socat_opts[@]}"
   _msg+=" TCP:\"\${target}\":${port},connect-timeout=${waittime} 2>/dev/null"
-  j_msg "-${info}" -m "$_msg"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} $_msg"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _socat_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1"
+    # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
+    timeout "$timeout" socat "${_socat_opts[@]}" TCP:"${target}":"${port}",connect-timeout="${waittime}" 2>/dev/null
+  }
 
   if [ "$PARALLEL" ]; then
-    # use process substitution rather than a pipe to feed the grouped output (below)
-    #  into a while loop in the current shell
-    # in order to be able to scan the output and count total ups and downs
-    # (cant be done in subshell because that variable is gone when subshell exits)
-    while read -r line; do
-      [ -z "$line" ] && continue   # ignore blank lines
-      # print the line to stdout (and/or log)
-      j_msg "-${notice}" -p "$line"
-      # Strip ANSI colors before checking the status
-      # (Color codes can interfere with matching)
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Open)   (( _open++ ));  ;;
-        *is\ Closed) (( _closed++ )) ;;
-      esac
-    done < <(  # substitute the process below (actual parallel scan) into the while loop ab>
-      {  for target in "${targets[@]}"; do
-        (
-          # Handle the bracket logic inside the subshell
-          case "$target" in *:*) target="[$target]"; esac
-          timeout "$timeout" socat GOPEN:/dev/null TCP:"${target}":"${port}",connect-timeout="${waittime}" 2>/dev/null
-          res=$?
-          # generate formatted output
-          local _status_msg="${Con}$target${Boff} port ${Mon}$port${Boff} is "
-          case "$res" in
-            0) _status_msg+="${BGon}Open${Boff}";;
-            *) _status_msg+="${BRon}Closed${Boff}";;
-          esac
-          printf '%s\n' "$_status_msg"
-          # Note: cant count them with if block here; subshell vars not avail to parent
-        ) &
-        # Dynamically throttled by validated global $jobs
-        # (this goes mmediately after backgrounding (&) and outside the closing ')'
-        #  for intermediate subshell above so the _count variable will
-        #  be available in the current shell's scope), and before the done keyword)
-        if (( ++_count % "$jobs" == 0 )); then wait; fi
-        done
-        wait
-      }
-    )
-  else
-    _open=0; _closed=0
-    for target in "${targets[@]}"; do
-      j_msg -p -n "${Con}$target${Boff} port ${Mon}$port${Boff} is";
-      case "$target" in *:*) target="[${target}]";; esac;
-      timeout "$timeout" socat GOPEN:/dev/null TCP:"${target}":"${port}",connect-timeout=0.4 2>/dev/null;
-      if handle_result $? "Open" "Closed"; then (( _open++ )); else (( _closed++ )); fi;
-    done
+    _jping_parallel_core "_socat_cmd"
+  else # serialize
+    _jping_serial_core "_socat_cmd"
   fi
-  _msg="${BGon}open${Boff}: [${BMon}$_open${Boff}]"
-  _msg+=" ${BRon}closed${Boff}: [${BMon}$_closed${Boff}]"
-  j_msg -p "$_msg"
+
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
 
 }
 
-#-----[ main script ]----------------------------------------------
-checknotroot  # principle of least privilege (root priv not required for this script)
+_do_arping() {
+  # -f            quit on first reply
+  # -q            be quiet
+  # -c <count>    how many packets to send
+  # -w <timeout>  how long to wait for a reply
+  # -i <interval> set interval between packets (default: 1 second)
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  # Note: the logic in this function is basically lifted from _do_ssh(); for detailed
+  # comments explaining how the parallel and serialized branches work see that function
+    # timeout notes:
+  # arping use of GNU timeout would be redundant; use -W ${waittime}                   | Layer 2; exits after response
+  local ups=0 downs=0 _arping_wait
+  local _count=0   # concurrency control variable for manually paralleled processes
+  local -a _arping_opts=("-c" "1" "-f" "-q")
+  # integerize waittime for arping
+  if ! isint "$waittime"; then
+    # try to round a decimal up to integer value, but don't round 1 or 1.0 up to 2
+    if [ "${waittime##*.}" -gt 0 ] && [[ "$waittime" == *"."* ]]; then
+      _arping_wait=$(( ${waittime%.*} + 1 ))
+    else
+      _arping_wait="${waittime%.*}"
+    fi
+    waittime="$_arping_wait"
+    # now add that to args
+    _arping_opts+=("-w" "$_arping_wait")
+  else
+    _arping_opts+=("-w" "$waittime")
+  fi
+  # arping options:
+  # -c 1 (one packet), -W $waittime (wait for response)
+  # -f (exit immediately after first reply)
+  # Note: arping usually requires an interface (-I); defaulting to eth0 or similar may be needed
+
+  # handle user-directed RESOLVE choice
+  # if [ ! "$RESOLVE" ] ; then ... NA for _arping_opts in this use case (see above); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  # arping only supports ipv4 - targets can be hostnames or ip addresses; so exclude ipv6 addresses
+  for x in "${targets[@]}"; do
+    case "$x" in
+      *:*) : ;; # ..............# ipv6 address; do nothing with it
+      *  ) targets_4+=("$x");;  # hostname or ipv4 address - add to new list
+    esac
+  done
+  # warn user if targetlist was down-selected to ipv4 only
+  if [ ${#targets_4[@]} -lt ${#targets[@]} ]; then
+    j_msg "-${warn}" -p "${BYon}(Warning)${Boff} arping supports only ipv4, targetlist downselected"
+  fi
+  j_msg "-${notice}" -p "checking [${#targets_4[@]}] targets"
+  # reload targets array with new list
+  targets=("${targets_4[@]}")
+
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command:  arping ${_arping_opts[*]} \"\$target\" &>/dev/null"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _arping_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1"
+    # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
+    timeout "$timeout" arping "${_arping_opts[@]}" "$target" &>/dev/null
+  }
+
+  if [ "$PARALLEL" ]; then
+    _jping_parallel_core "_arping_cmd"
+  else # serialize
+    _jping_serial_core "_arping_cmd"
+  fi
+
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+
+}
+
+
+#-----[ tool usage notes ]----------------------------------------------
+
+      # actual in-script sytax and results --
+      # tst=socat; case "$target" in *:*) tgt="[${target}]" ;; *.*) gt="${target}" ;; *) tgt="" ;; esac
+      # j_msg -$debug -p "testing tgt: $tgt"
+      # if timeout 0.3 socat - TCP:"$tgt":22,connect-timeout=0.3 \
+      #  1>/dev/null 2>/dev/null < /dev/null; then                                        3.210s (slowest; very finicky)
+      # tst=devtcp; if timeout 0.3 bash -c "echo > /dev/tcp/$target/22" 2>/dev/null; then     1.787s
+      # tst=nc; if nc -z -w 1 "$target" 22 2>/dev/null; then                                  1.348s (fastest)
+      # tst=ping; if ping -W 1 -c 1 "$target" &>/dev/null ; then                              2.602s
+
+
+
+#-----[ main script ]--------------------------------------------------
+#checknotroot  # principle of least privilege (root priv not required for this script)
+
+# Register the cleanup hook to catch Normal exits (0), Interrupts (2), and Terminations (15)
+trap '_jping_terminal_sanity' EXIT INT TERM
 
 separator "$(hostname)" "${PN}-${BUILD}"
 j_msg "-${info}" -M "$idx_rocket" "Starting"
 
 parse_cmdline_and_validate_input "$@" || die "failed to parse_cmdline_and_validate_input"
+
+sanity_check || die "failed sanity_chekc"
 
 if [ $INTERACTIVE ] ; then
   show_config
@@ -1078,4 +1561,4 @@ fi
 time "_do_${command}"
 wait  # allow parallel/backgrounded jobs to finish (in case I forgot to have them do this internally)
 
-j_msg "-${info}" -M "$idx_face_grin" "Complete"
+j_msg "-${info}" -p -M "$idx_face_grin" "Complete"
