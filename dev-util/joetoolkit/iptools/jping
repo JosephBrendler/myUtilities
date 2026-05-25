@@ -10,17 +10,22 @@ PN=${0##*/}   # basename
 if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
 
 # Tool			Protocol	Parallelism			Advantage												Disadvantage
-# /dev/tcp	TCP only	Manual (&)			Built into Bash; no binary req.	TCP only; syntax is clunky.
-# nc -zv		TCP/UDP		Manual (xargs)	Standard on most systems.				Versions vary (OpenBSD vs GNU).
-# ping			ICMP only	Manual (xargs)	Universal; low overhead.				Blocked by many firewalls.
-# socat			Any				Manual (&)			Extremely flexible; power tool.	Complex syntax; heavy binary.
-# fping			ICMP only	Native					High-speed parallel scanning.		Must be installed separately.
+# /dev/tcp	TCP only	Manual (&)			Built into Bash; no binary req.	TCP only; syntax is clunky
+# nc -zv		TCP/UDP		Manual (xargs)	Standard on most systems				Versions vary (OpenBSD vs GNU)
+# ping			ICMP only	Manual (xargs)	Universal; low overhead 				Blocked by many firewalls
+# socat			Any				Manual (&)			Extremely flexible; power tool 	Complex syntax; heavy binary
+# fping			ICMP only	Native					High-speed parallel scanning 		Must be installed separately
+# ping      ICMP only Manual (&)      Standard on most systems        Often filtered by firewall
+# ssh       ssh       Manual (&)      Runs on most and answers quick  Requires SSH daemon
+
+# arping    arp       Manual (&)      Bypass Firewalls								local ipv4 subnet only
+# ndisc6    ndp       Manual (&)      Bypass Firewalls								local ipv6 subnet only
 
 
 #-----[ variables ]----------------------------------------------
 varlist="PN BUILD user logFile rlv.config_dir verbosity loglevel bool.LOGGING"
 varlist+=" bool.INTERACTIVE bool.QUIET bool.DEBUG bool.UNICODE_CAPABLE bool.UNICODE_DISABLE"
-varlist+=" BREAK bool.RESOLVE bool.ASSOCIATIVE command port bool.FILE bool.PARALLEL jobs waittime timeout"
+varlist+=" BREAK bool.RESOLVE bool.ASSOCIATIVE mode command port bool.FILE bool.PARALLEL jobs waittime timeout"
 varlist+=" rlv.target_list rlv.targets_str"
 initialize_vars
 
@@ -31,6 +36,7 @@ CR=$(printf '\r')    # pre-cooked literal carriage return character
 NLx="$(printf '\nx')" # pre-cooked literal newline character followed by x to prevent shell stripping \n
 NL="${NLx%x}"         # strip the x, leaving just the pre-cooked literal newline character
 
+mode="FAST"          # default (fast) will be set otherwise if -m flag is used with arg
 command="devtcp"     # default (fast)
 port=22              # default to ssh port num
 PARALLEL="$TRUE"     # will be set false if cmdline has -s flag
@@ -41,6 +47,14 @@ RESOLVE="$TRUE"      # will be set true if cmdline has -R flag; false if -n flag
 jobs=$(nproc)        # default parallel jobs to the number of cores
 waittime="0.5"       # e.g. ping -W0.5 hostname (some tools e.g. nc don't allow fractions// use with timeout)
 timeout="0.5"        # e.g. timeout 0.5 nc -vz $target 22
+ups=0                # count of host-status "Up" targets
+downs=0              # count of host-status "Down" targets
+opened=0             # count of port-state "Open" targets
+closed=0             # count of port-state "Closed" targets
+filtered=0           # count of port-state "Filtered" targets
+unverified=0         # count of port-state "Unverified" targets
+timeouts=0           # count of port-state "Timeout" targets (may be down or up with port firewalled)
+
 logFile="/var/log/${PN}.log"
 joetoo_ip4_prefix=
 declare -a targets=()    # check these
@@ -48,12 +62,30 @@ declare -A a_targets=()  # (if -A flag) use an associative array (hostnames keye
 
 
 #-----[ functions ]----------------------------------------------
+# define here improved (and POSIX) rather than source script_header_joetoo_extended's RBG_FG function
+# to define truecolor (24 bit) Orange to add to status coloring
+# ToDo: convert to RGB_FG to posix, move to script_header_joetoo, and define BOon and others there
+# note BOLD is defined in script_header_joetoo already
+RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local _FG="38;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%sm' "${CSI}" "${_FG}" "${_R}" "${_G}" "${_B}" ; }
+RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local _BG="48;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%sm' "${CSI}" "${_BG}" "${_R}" "${_G}" "${_B}" ; }
+B_RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local _FG="38;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%s;%sm' "${CSI}" "${_FG}" "${_R}" "${_G}" "${_B}" "${BOLD}"; }
+Oon=$(RGB_FG 255 165 0)
+BOon=$(B_RGB_FG 255 165 0)
+BOonBB=${BOon}$(RGB_BG 0 0 255)
 
 _jping_terminal_sanity() {
   # restore standard character echoing and carriage return to the TTY device
   stty echo icrnl 2>/dev/null
   # use script_header_joetoo's SCU to explicitly unhide the hardware terminal cursor
   SCU
+  # ensure CTRL-C will work when trapped here, by explicitly running exit 130 (not return)
+  exit 130
 }
 
 my_usage() {
@@ -68,47 +100,49 @@ my_usage() {
   j_msg "-${notice}" -mp "$msg"
   msg="${BYon}Options --${Boff}"
   j_msg "-${notice}" -p "$msg"
-  msg="${BMon}  -c|--command${Boff}${Con} .........: one of [d[evtcp]|n[etcat]|nm[ap]|ss[h]|a[rping]|p[ing]|f[ping]|so[cat]"
+  msg="${BMon}  -m|--mode${Boff}${Con} ............: one of [F[AST]*|E[NRICHED] (TBD:D[ISCOVERY]|M[APPING] (*: ${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -p|--port${Boff}${Con} ............: user-specified port to check"
+  msg="${BMon}  -c|--command${Boff}${Con} .........: one of [d[evtcp]*|n[etcat]|nm[ap]|ss[h]|a[rping]nd[isc6]|p[ing]|f[ping]|so[cat] (*: ${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -P|--parallel${Boff}${Con} ........: parallel processing (${Won}default${Con})"
+  msg="${BMon}  -p|--port${Boff}${Con} ............: user-specified port to check${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -j|--jobs [n]${Boff}${Con} ........: job count (${Won}default:${Con} \$(nproc))"
+  msg="${BMon}  -P|--parallel${Boff}${Con} ........: parallel processing (${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -S|--serial${Boff}${Con} ..........: disable parallel processing"
+  msg="${BMon}  -j|--jobs [n]${Boff}${Con} ........: job count (${Won}default:${Con} \$(nproc))${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command"
+  msg="${BMon}  -S|--serial${Boff}${Con} ..........: disable parallel processing${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})"
+  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -W|--wait [n]${Boff}${Con} ........: response-wait timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)"
+  msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -t|--timeout [n]${Boff}${Con} .....: job timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)"
+  msg="${BMon}  -W|--wait [n]${Boff}${Con} ........: response-wait timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -n|--noresolve${Boff}${Con} .......: never resolve (and display) hostnames for addresses"
+  msg="${BMon}  -t|--timeout [n]${Boff}${Con} .....: job timeout (n seconds)(${Won}default${Con} 0.5)(if applicable)${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -R|--resolve${Boff}${Con} .........: always resolve (and display) hostnames for addresses (${Won}default${Con})"
+  msg="${BMon}  -n|--noresolve${Boff}${Con} .......: never resolve (and display) hostnames for addresses${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -f|--file${Boff}${Con} ............: indicates target_list is /path/to/target_list file"
+  msg="${BMon}  -R|--resolve${Boff}${Con} .........: always resolve (and display) hostnames for addresses (${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -A|--associative${Boff}${Con} .....: from file, form an associve array of ip addrs keyed on hostnames"
+  msg="${BMon}  -f|--file${Boff}${Con} ............: indicates target_list is /path/to/target_list file${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -h|--help${Boff}${Con} ............: print this message"
+  msg="${BMon}  -A|--associative${Boff}${Con} .....: from file, form an associve array of ip addrs keyed on hostnames${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -h|--help${Boff}${Con} ............: print this message${Boff}"
   j_msg "-${notice}" -m "$msg"
   msg="${BYon}Arguments --${Boff}"
   j_msg "-${notice}" -p "$msg"
-  msg="${BCon}  <target_list>${Boff}${Con} .......: (optional) ${Won}default:${Con} ${default_target_list}"
+  msg="${BCon}  <target_list>${Boff}${Con} .......: (optional) ${Won}default:${Con} ${default_target_list}${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BYon}Notes --"
+  msg="${BYon}Notes --${Boff}"
   j_msg "-${notice}" -p "$msg"
-  msg="${BCon}  (1) $PN default is command: /dev/tcp port 22"
+  msg="${BCon}  (1) $PN default is command: /dev/tcp port 22${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BCon}  (2) ping command is slower and icmp rather than explicit port, but lower false positive rate"
+  msg="${BCon}  (2) ping command is slower and icmp rather than explicit port, but lower false positive rate${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BCon}  (3) parallel processing is on by default (disable with -s), and -j jobs defaults to \$(nproc)"
+  msg="${BCon}  (3) parallel processing is on by default (disable with -s), and -j jobs defaults to \$(nproc)${Boff}"
   j_msg "-${notice}" -m "$msg"
-  msg="${BCon}  (4) general command choice rationale --"
+  msg="${BCon}  (4) general command choice rationale --${Boff}"
   j_msg "-${notice}" -m "$msg"
   j_msg "-${notice}" -mp "${BWon}         Tool        Protocol    Parallelism      Advantage          Disadvantage${Boff}${Boff}"
   j_msg "-${notice}" -mp "${BWon}         --------    ---------   --------------   -----------------  -------------------------${Boff}"
@@ -116,17 +150,19 @@ my_usage() {
   j_msg "-${notice}" -mp "${Con}         nc -zv      TCP/UDP     Manual (xargs)   Standard/Readable  Versions vary widely${Boff}"
   j_msg "-${notice}" -mp "${Con}         nmap        Any         Native           Deep inspection    Heavy binary; slow${Boff}"
   j_msg "-${notice}" -mp "${Con}         ssh         TCP (22)    Manual (&)       Verifies Service   Requires SSH daemon${Boff}"
-  j_msg "-${notice}" -mp "${Con}         arping      Layer 2     Manual (&)       Bypass Firewalls   Local subnet only${Boff}"
+  j_msg "-${notice}" -mp "${Con}         arping      Layer 2     Manual (&)       Bypass Firewalls   Local ipv4 subnet only${Boff}"
+  j_msg "-${notice}" -mp "${Con}         ndisc6      Layer 2     Manual (&)       Bypass Firewalls   Local ipv6 subnet only${Boff}"
   j_msg "-${notice}" -mp "${Con}         ping        ICMP only   Manual (xargs)   Universal/Light    Often blocked; no ports${Boff}"
   j_msg "-${notice}" -mp "${Con}         fping       ICMP only   Native           Fastest scanning   Requires separate install${Boff}"
   j_msg "-${notice}" -mp "${Con}         socat       Any         Manual (&)       Hyper-flexible     Complex; high overhead${Boff}"
   msg="${BCon}  (5) ${BMon}<target_list> ${BCon}can be any of the following forms --${Boff}"
   j_msg "-${notice}" -m "$msg"
-  j_msg "-${notice}" -mp "${Con}         Quoted list.......: ${Boff}\"10.0.0.1 10.0.0.2\" or \"slim2 elrond\" or \"\$host_list\" or \"\${hosts[*]}\""
-  j_msg "-${notice}" -mp "${Con}         Brace Expansion...: ${Boff}\"192.168.1.{1..254}\""
+  msg="${Con}         Quoted list.......: ${Boff}\"10.0.0.1 10.0.0.2\" or \"slim2 elrond\" or \"\$host_list\" or \"\${hosts[*]}\"${Boff}"
+  j_msg "-${notice}" -mp "$msg"
+  j_msg "-${notice}" -mp "${Con}         Brace Expansion...: ${Boff}\"192.168.1.{1..254}\"${Boff}"
   j_msg "-${notice}" -mp "${Con}         IPv4 CIDR Subnet..: ${Boff}192.168.62.0/24 ${BCon}(Max /22)${Boff}"
   j_msg "-${notice}" -mp "${Con}         IPv6 CIDR Subnet..: ${Boff}fd62:6262::/118 ${BCon}(Max /118)${Boff}"
-  j_msg "-${notice}" -mp "${Con}         Flat File (-f)....: ${Boff}/path/to/targetlist.txt"
+  j_msg "-${notice}" -mp "${Con}         Flat File (-f)....: ${Boff}/path/to/targetlist.txt${Boff}"
 
   j_msg "-${notice}" -p "${BYon}Examples --${Boff}"
   j_msg "-${notice}" -mp "${Con}  Standard Scan...: ${_func_color}$PN${Boff} ${_quote_color}\"192.168.1.{1..50}\"${Boff}"
@@ -290,7 +326,7 @@ validate_target_list() {
   j_msg "-${info}" -p "${BWon}(info}${Boff} after delimiter translation, validating target_list with [$_vt_partcount] parts"
 
   ### Note: at this point, regardless of its origin target_list is a single space-delimited string with
-  #    with any combination of allowable parts, but no 
+  #    with any combination of allowable parts
 
   # validate each part of target_list; id type, expand, and append to an accumulation of expanded parts
   # strategy --
@@ -450,6 +486,7 @@ parse_cmdline_and_validate_input() {
             nm*) command="nmap"   ;;
             ss*) command="ssh"    ;;
             a* ) command="arping" ;;
+            nd*) command="ndisc6" ;;
             p* ) command="ping"   ;;
             f* ) command="fping"  ;;
             so*) command="socat"  ;;
@@ -477,6 +514,15 @@ parse_cmdline_and_validate_input() {
       -N|--noninteractive )  # ...................... # number of parallel jobs
         INTERACTIVE="$FALSE"
         j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
+        ;;
+
+      -m|--mode           )  # ...................... # mode: one of FAST, ENRICHED, <TBD> DISCOVERY, MAPPING
+        if [[ -z "$2" || "$2" == -* ]]; then
+          j_msg "-${err}" "Option $1 requires an argument" ; my_usage; exit 1
+        else
+          mode="${2:-FAST}"; shift
+          j_msg "-${debug}" -p "${BYon}set${Boff} mode: [$mode], and shifting 2"
+        fi
         ;;
 
       -p|--port           )  # ...................... # number of parallel jobs
@@ -601,43 +647,264 @@ sanity_check() {
   if [ "$ASSOCIATIVE" ] && [ ${#a_targets[@]} -eq 0 ] ; then
     j_msg "-${err}" "${BRon}(error)${Boff} ASSOCIATIVE is [$(TrueFalse $ASSOCIATIVE)] but \${#a_targets[@]} = 0"
   fi
-  
+  # ping does not have an enriched mode
+  if [[ "${command:0:2}" == "pi" ]] && [[ "${mode:0:1}" == "E" ]]; then
+    j_msg "-${warn}" "${BYon}(warning)${Boff} ping does not have an ENHANCED mode, setting mode to FAST"
+    mode="FAST"
+  fi
+  # devtcp does not have an enriched mode
+  if [[ "${command:0:2}" == "de" ]] && [[ "${mode:0:1}" == "E" ]]; then
+    j_msg "-${warn}" "${BYon}(warning)${Boff} ping devtcp not have an ENHANCED mode, setting mode to FAST"
+    mode="FAST"
+  fi
+  # ssg does not have an enriched mode
+  if [[ "${command:0:2}" == "ss" ]] && [[ "${mode:0:1}" == "E" ]]; then
+    j_msg "-${warn}" "${BYon}(warning)${Boff} ssh does not have an ENHANCED mode, setting mode to FAST"
+    mode="FAST"
+  fi
+  # arping does not have an enriched mode
+  if [[ "${command:0:2}" == "ar" ]] && [[ "${mode:0:1}" == "E" ]]; then
+    j_msg "-${warn}" "${BYon}(warning)${Boff} arping does not have an ENHANCED mode, setting mode to FAST"
+    mode="FAST"
+  fi
+  # ndisc6 does not have an enriched mode
+  if [[ "${command:0:2}" == "nd" ]] && [[ "${mode:0:1}" == "E" ]]; then
+    j_msg "-${warn}" "${BYon}(warning)${Boff} ndisc6 does not have an ENHANCED mode, setting mode to FAST"
+    mode="FAST"
+  fi
 }
 
-# Notes:
-# Some tools require or benefit from the use of an external timeout (e.g. GNU timeout)
-#   to manage (and prevent hangs in) their total execution
-# (1) Mandatory for tools built for interactive use -
-#   + /dev/tcp - without an outer timeout, a dropped packet will await system TCP timeout (60+ sec)
-#   + ssh - has ConnectTimeout, but can hang in key exchange or banner grab
-#     (if the port is open but the service is broken)
-# (2) Recommended for tools where it provides a safety net vs hangs in kernel space if network state is wierd
-#   + nc (netcat) - has -w but version dependent may only apply to connection
-#   + socat - has -t/connect-timeout (channel handshake) and -T (inactivity),
-#       (but socat just sits there if it connects but hangs on a protocol string)
-# (3) NOT needed/redundant for tools that are built for scanning and have internal "hard" timeouts
-#   + nmap: use --host-timeout - reliable and handles the entire lifecycle of the probe
-#   + fping: use -t (per-target timeout). It’s designed for high-speed parallel work and won't hang
-#   + ping/arping: use -W (wait) and -c (count) - designed to exit after packet exchange/wait time
-# command   | GNU timeout n       | tool connection timeout   |
-# tool      | (jping $timeout -t) | (jping W="$waittime" -W)  | Logic/Notes
-# ----------|---------------------|---------------------------|----------------------------------
-# /dev/tcp  | timeout "$timeout"  | (N/A)                     | No internal timeout; needs GNU t
-# ssh       | timeout "$timeout"  | -o ConnectTimeout=${W}    | Protects vs protocol/banner hang
-# socat     | timeout "$timeout"  | connect-timeout=${W}      | Protects vs protocol/banner hang
-# nc        | timeout "$timeout"  | -w ${W}                   | Version-proofs the exit status
-# nmap      | Redundant           | --host-timeout ${W}       | Internal timer covers lifecycle
-# fping     | Redundant           | -t ${W_ms}                | Native parallel; very reliable
-# ping      | Redundant           | -W ${W}                   | Exits after count/wait reached
-# arping    | Redundant           | -W ${W}                   | Layer 2; exits after response
+#-----[ jping core engines ]--------------------------------------------------------
 
+_jping_parallel_core() {
+    # common core manual parallelization engine - take T/F command function name as input and
+    #   run it in parallel for all targets in the target-appropriate manner
+    #   depending on user choices for dns resolution (RESOLVE), use of
+    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
+    #   go fast without lookups if not RESOLVE
+    # Provide common standard colorized and sorted output format
+    local _jp_target       # one memger of the original targets array passed to calling function
+    local _jp_hostname     # hostname looked up (or provided as target) as appropriate if RESOLVE
+    local _jp_tgt_v        # _jp_newtarget vecotr derived from _jp_hostname if original target is a hostname
+    local _jp_newtarget    # one _jp_newtarget of _jp_tgt_v new target vector
+    local _jp_count=0      # concurrency control variable for manually paralleled processes
+    local _jp_status       # up/down
+    local _jp_line         # one line of raw output of parallelized jobs
+    local _jp_cleanline    # ansi-stripped line to facilitat safer status counting
+    local _jp_display      # output of _jp_command function
+    local _jp_msg          # scratchpad for composition of long message for j_msg
+    local _jp_rem          # remainder of parameter expansion parsing
+    local _jp_host_status  # host status exatracted from _<tool>_cmd output lines
+    local _jp_port_state   # port state extracted from _<tool>_cmd output lines
+    # receive the name of the function for core connectivity check
+    local _jp_command="$1"
+
+    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _jp_command: [${_jp_command}]"
+    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
+
+    # feed the grouped output (below) into a while loop in the current shell
+    # in order to be able to scan the output and count total ups and downs
+    # (cant be done in subshell because that variable is gone when subshell exits)
+    while read -r _jp_line; do
+      # print the colorozed line to stdout (and/or log)
+      _jp_line="${BMon}${_jp_line//\(/${BBon}\(${Boff}${Con}}"
+      _jp_line="${_jp_line//\)/${BBon}\)${Boff}}"
+      j_msg "-${notice}" -p "$_jp_line"
+      # Strip ANSI colors before checking the status
+      # (Color codes can interfere with "Up" matching)
+      _jp_cleanline=$( printf '%s\n' "$_jp_line" | strip_ansi )
+      # increment appropriate host-status counter
+      case "$_jp_cleanline" in
+        *is\ Up*                             )  (( ups++ )) ;;
+        *is\ Down*|*Unreachable*|*Timedout*  )  (( downs++ )) ;;
+      esac
+      # increment appropriate port-state counter
+      case "$_jp_cleanline" in
+        *port*is\ Open                )  (( opened++ )) ;;
+        *port*is\ Closed              )  (( closed++ )) ;;
+        *port*is\ Filtered            )  (( filtered++ )) ;;
+        *port*is\ Unverified          )  (( unverified++ )) ;;
+        *port*is\ Timedout            )  (( timeouts++ )) ;;
+      esac
+    done < <(  # substitute the process below (actual parallel scan) into the while loop above
+    { for _jp_target in "${targets[@]}"; do (
+        { if [ "$RESOLVE" ]; then
+            if "$ASSOCIATIVE" ]; then  # already have hostname
+              _jp_hostname="${a_targets[$_jp_target]}"
+              _jp_display=$("$_jp_command" "$_jp_target")   # execute RESOLVE and ASSOCIATIVE case
+              printf '%s\n' "${_jp_target} (${_jp_hostname}) is $_jp_display"
+            else   # Not ASSOCIATIVE - look up hostname in the background
+              # if this is a hostname rathern than address, look up the address(es) instead
+              case "$_jp_target" in
+                *[!0-9a-fA-F.:]*)  # _jp_target is a hostname (contains characters not allowed in ip address)
+                  # j_msg  "-${debug}" -p "_jp_target [$_jp_target] is hostname"
+                  _jp_hostname=${_jp_target};
+                  # use getent to look up all ip addresses for this _jp_hostname
+                  _jp_tgt_v=$(getent ahosts "$_jp_target" | awk '{print $1}' | sort -u)
+                 # if there were no addresses for this hostname, return now that it is down
+                 if [ -z "$_jp_tgt_v" ] ; then
+                   _jp_msg="${BMon}${_jp_hostname}${Boff} ${BBon}()${Boff} is ${BRon}Unreachable${Boff}"
+                   # append appropriate port state if in enriched mode
+                   [[ "${mode:0:1}" == "E" ]] && _jp_msg+=" and port ${port} is ${BOon}Unverified${Boff}"
+                   printf '%s\n' "$_jp_msg"
+                   continue   # get next _jp_target
+                 fi
+                  for _jp_newtarget in $_jp_tgt_v; do
+                    _jp_display=$("$_jp_command" "$_jp_newtarget")   # execute RESOLVE and ASSOCIATIVE case
+                    printf '%s\n' "${_jp_hostname} (${_jp_newtarget}) is $_jp_display"
+                  done
+                  ;;
+                *)   # .......... # _jp_target is an ip address (non-ASSOCIATIVE case) - look up hostname with dig
+                  _jp_hostname=$(dig -x "$_jp_target" +short | sed 's|.$||')
+                  _jp_display=$("$_jp_command" "$_jp_target")   # execute RESOLVE and ASSOCIATIVE case
+                  printf '%s\n' "${_jp_target} (${_jp_hostname}) is $_jp_display"
+                  ;;
+              esac
+            fi
+          else # not RESOLVE
+            _jp_display=$("$_jp_command" "$_jp_target")   # execute RESOLVE and ASSOCIATIVE case
+            printf '%s\n' "${_jp_target} () is $_jp_display"
+          fi
+        } 2>/dev/null &
+      )   # inside for _jp_target ... do (...) done subshell
+      # Dynamically throttled by validated global $jobs
+      # (this goes mmediately after backgrounding (&) and outside the closing ')'
+      #  for intermediate subshell above so the _jp_count variable will
+      #  be available in the current shell's scope), and before the done keyword)
+      # wait -n waits for a job vs all jobs to finish
+      if (( ++_jp_count % "$jobs" == 0 )); then wait -n; fi
+      done; wait
+      # filter empty lines and sort by status and then address
+    } | sed "/^${W0}$/d" | sort -t' ' -k4,4r -k2,2
+#    } | sed "/^${W0}$/d"  # unsorted for now
+  )    # outer process substitution subshell < <(...)
+
+}
+
+_jping_serial_core() {
+    # common core manual serialization engine - take T/F command function name as input and
+    #   run it in serial sequence for all targets in the target-appropriate manner
+    #   depending on user choices for dns resolution (RESOLVE), use of
+    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
+    #   go fast without lookups if not RESOLVE
+    # Provide common standard colorized and sorted output format
+    local _js_target       # one memger of the original targets array passed to calling function
+    local _js_hostname     # hostname looked up (or provided as target) as appropriate if RESOLVE
+    local _js_tgt_v        # _js_newtarget vecotr derived from _js_hostname if original target is a hostname
+    local _js_newtarget    # one _js_newtarget of _js_tgt_v new target vector
+    local _js_cleanline    # ansi-stripped line to facilitat safer status counting
+    local _js_display      # output of _js_command function
+    local _js_msg          # scratchpad for composition of long message for j_msg
+    local _js_rem          # remainder of parameter expansion parsing
+    local _js_host_status  # host status exatracted from _<tool>_cmd output lines
+    local _js_port_state   # port state extracted from _<tool>_cmd output lines
+    local _js_HOSTNAME     # set $TRUE if target is a hostname
+    local _js_HANDLED      # set $TRUE if print and increment counters is already done
+                           # to ensure the target-is-hostname excpetion is properly handled
+    # receive the name of the function for core connectivity check
+    local _js_command="$1"
+
+    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _js_command: [${_js_command}]"
+    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
+
+    for _js_target in "${targets[@]}"; do
+        _js_HANDLED=$FALSE
+        _js_HOSTNAME=$FALSE
+        if [ "$RESOLVE" ]; then
+          if [ "$ASSOCIATIVE" ]; then  # already have hostname
+            _js_hostname="${a_targets[$_js_target]}"
+            _js_msg="${BMon}${_js_target}${Boff} ${BBon}(${Boff}${Con}${_js_hostname}${BBon})${Boff} is "
+            _js_display=$("$_js_command" "$_js_target")   # execute RESOLVE and ASSOCIATIVE case
+            _js_msg+="${_js_display}"
+          else   # Not ASSOCIATIVE - look up hostname in the background
+            # if this is a hostname rathern than address, look up the address(es) instead
+            case "$_js_target" in
+              *[!0-9a-fA-F.:]*)
+                 _js_HOSTNAME=$TRUE
+                 _js_hostname=${_js_target};
+                 _js_tgt_v=""
+                 _js_newtarget=""
+                 _js_tgt_v=$(getent ahosts "$_js_target" | awk '{print $1}' | sort -u)
+                 # if there were no addresses for this hostname, return now that it is down
+                 if [ -z "$_js_tgt_v" ] ; then
+                   _js_msg="${BMon}${_js_hostname}${Boff} ${BBon}()${Boff} is ${BRon}Unreachable${Boff}"
+                   # append appropriate port state if in enriched mode
+                   [[ "${mode:0:1}" == "E" ]] && _js_msg+=" and port ${port} is ${BOon}Unverified${Boff}"
+                   j_msg "-${notice}" -p "$_js_msg"
+                   ((downs++))
+                   ((unverified++))
+                   _js_HANDLED=$TRUE
+#                   continue  # get next _js_target
+                 fi
+                 for _js_newtarget in $_js_tgt_v; do
+                   # j_msg "-${debug}" -p "_js_command: [$_js_command]  _js_newtarget: [$_js_newtarget]"
+                   _js_msg="${BMon}${_js_hostname}${Boff} ${BBon}(${Boff}${Con}${_js_newtarget}${BBon})${Boff} is "
+                   _js_display=$("$_js_command" "$_js_newtarget")   # execute RESOLVE but not ASSOCIATIVE case with target hostname
+                   _js_msg+="${_js_display}"
+                   _js_cleanline=$( printf '%s\n' "$_js_msg" | strip_ansi )
+                   j_msg "-${notice}" -p "$_js_msg"
+                   # increment appropriate host-status counter
+                   case "$_js_cleanline" in
+                     *is\ Up*                             )  (( ups++ )) ;;
+                     *is\ Down*|*Unreachable*|*Timedout*  )  (( downs++ )) ;;
+                   esac
+                   # increment appropriate port-state counter
+                   case "$_js_cleanline" in
+                     *port*is\ Open                )  (( opened++ )) ;;
+                     *port*is\ Closed              )  (( closed++ )) ;;
+                     *port*is\ Filtered            )  (( filtered++ )) ;;
+                     *port*is\ Unverified          )  (( unverified++ )) ;;
+                     *port*is\ Timedout            )  (( timeouts++ )) ;;
+                   esac
+                 done   # for _js_newtarget
+                 _js_HANDLED=$TRUE
+#                 continue    # had to print completed status for each already; so get next _js_target
+                 ;;
+              *)   # ip address
+                _js_hostname=$(dig -x "$_js_target" +short | sed 's|.$||')
+                _js_msg="${BMon}${_js_target}${Boff} ${BBon}(${Boff}${Con}${_js_hostsname}${BBon})${Boff} is "
+                _js_display=$("$_js_command" "$_js_target")   # execute RESOLVE but not ASSOCIATIVE case with target ip address
+                _js_msg+="${_js_display}"
+                ;;
+            esac
+          fi
+        else   # not RESOLVE
+          _js_msg="${BMon}${_js_target}${Boff} ${BBon}()${Boff} is "
+          _js_display=$("$_js_command" "$_js_target")   # execute non-RESOLVE case
+          _js_msg+="${_js_display}"
+        fi
+#echo "_js_target: [$_js_target]"
+#echo "RESOLVE: [$(TrueFalse $RESOLVE)]"
+#echo "ASSOCIATIVE: [$(TrueFalse $ASSOCIATIVE)]"
+#echo "_js_HOSTNAME: [$(TrueFalse $_js_HOSTNAME)]"
+#[ $_js_HOSTNAME ] && echo "_js_hostname: [$_js_hostname]"
+#echo "_js_HANDLED: [$(TrueFalse $_js_HANDLED)]"
+        if [ ! "$_js_HANDLED" ]; then
+          j_msg "-${notice}" -p "$_js_msg"
+          _js_cleanline=$( printf '%s\n' "$_js_msg" | strip_ansi )
+          # increment appropriate host-status counter
+          case "$_js_cleanline" in
+            *is\ Up*                             )  (( ups++ )) ;;
+            *is\ Down*|*Unreachable*|*Timedout*  )  (( downs++ )) ;;
+          esac
+          # increment appropriate port-state counter
+          case "$_js_cleanline" in
+            *port*is\ Open                )  (( opened++ )) ;;
+            *port*is\ Closed              )  (( closed++ )) ;;
+            *port*is\ Filtered            )  (( filtered++ )) ;;
+            *port*is\ Unverified          )  (( unverified++ )) ;;
+            *port*is\ Timedout            )  (( timeouts++ )) ;;
+          esac
+        fi   # _js_HANDLED ?
+    done   # for _js_target
+
+}
 
 #-----[ native-parallel tools ]-----------------------------------------------------
 _do_fping() {
-#                 ### to to - love the -nA gets both name and address, but make it an option ###
-#                       default to using whichever is provided in the targets array
-#
-    j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  #                 ### to to - love the -nA gets both name and address, but make it an option ###
+  #                       default to using whichever is provided in the targets array
+  #
   # fping -h | grep  '\-[artqc],'
   #  -c, --count=N      count mode: send N pings to each target and report stats
   #  -r, --retry=N      number of retries (default: 3)
@@ -652,6 +919,10 @@ _do_fping() {
   #  - prints “is alive” or “is unreachable” when *neither* -a nor -u is specified.
   #  - -c causes generation of two blocks of output results and summare statistics
   #  - fping uses -t (ms), so we convert 0.5 to 500 (just do integer math)
+
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
+
   local _fp_opts=("-A")          # always show targets by address
   local _int=${waittime%%.*}   # strip longest match for '.*' from right - leaving int part
   local _frac=${waittime#*.}   # strip shortest match for '*.' from left - leaving frac part
@@ -662,7 +933,7 @@ _do_fping() {
   fi
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _int: [$_int] _frac: [$_frac]"
   local _wait_ms=$(( ( _int * 1000 ) + ( _frac * 100 ) ))
-  local ups=0 downs=0 _out=""
+  local _out=""
   # handle user-directed RESOLVE choice
   if [ "$RESOLVE" ] ; then _fp_opts+=("-n"); fi
   # append timing options to _fp_opts
@@ -681,7 +952,7 @@ _do_fping() {
           (( ups++ ))
           line="${Con}${line/(/${BBon}(${BMon}}"
           line="${line/)/${BBon})${Boff}}"
-          line="${line/alive/${BGon}Up${Boff}}"
+          line="${line/alive/${BGon}Alive${Boff}}"
           ;;
         *[uU]nreachable*)
           (( downs++ ))
@@ -689,37 +960,50 @@ _do_fping() {
           line="${line/)/${BBon})${Boff}}"
           line="${line/unreachable/${BRon}Unreachable${Boff}}"
           ;;
+        *not\ known*)
+          (( downs++ ))
+          line="${Con}${line/:*/ ${BBon}()${Boff} is ${BRon}Unreachable${Boff}}"
+          ;;
       esac;
       # buffer the output and print it (faster) after the subshell
       _out+="${line}"$'\n'  # note: append literal newline
-    done < <( fping "${_fp_opts[@]}" "${targets[@]}" )
+    done < <( fping "${_fp_opts[@]}" "${targets[@]}" 2>&1)
     # now print the buffered output | sort to put down last and the rest in alpha order by name
     printf '%b\n' "$_out" | sort -k4,4r -k1,1
   else # serialize
     j_msg "-${warn}" -p "${command} is natively optimized for parallel; serializing it will be significantly slower"
     for target in "${targets[@]}"; do
-#      j_msg "-${notice}" -p -n "${BMon}${target}${Boff} is "
       # run same command as parallel but sed to colorize and strip alive/unreachable and newline
       # to follow w handle_result
-      fping "${_fp_opts[@]}" "$target" 2>/dev/null | \
-        sed 's| alive||' | \
-        sed 's| unreachable||' | \
-        tr -d '\n' | \
-        sed "s|^|${Con}|" | \
-        sed "s|(|${BBon}(${BMon}|" | \
-        sed "s|)|${BBon})${Boff}|"
-      if handle_result $? "Up" "Down" "${notice}"; then
-        (( ups++ ));
-      else
-        (( downs++ ));
-      fi
+      IFS= read -r line < <(fping "${_fp_opts[@]}" "$target" 2>&1)
+      case "$line" in
+        *Up*|*alive*)
+          (( ups++ ))
+          line="${Con}${line/(/${BBon}(${BMon}}"
+          line="${line/)/${BBon})${Boff}}"
+          line="${line/alive/${BGon}Alive${Boff}}"
+          ;;
+        *[uU]nreachable*)
+          (( downs++ ))
+          line="${Con}${line/(/${BBon}(${BMon}}"
+          line="${line/)/${BBon})${Boff}}"
+          line="${line/unreachable/${BRon}Unreachable${Boff}}"
+          ;;
+        *not\ known*)
+          (( downs++ ))
+          line="${Con}${line/:*/ ${BBon}()${Boff} is ${BRon}Unreachable${Boff}}"
+          ;;
+      esac;
+      printf '%s\n' "$line"
     done
   fi
   # summarize results
-  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}alive${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}unreachable${Boff}"
   j_msg "-${notice}" -M "$idx_face_beam" "$msg"
 }
+
+#-----[ native-parallel hybridized tools ]-----------------------------------------------------
 
 _do_nmap() {
   #                 ### to to - love the fast default but also want option for name and address ###
@@ -745,12 +1029,9 @@ _do_nmap() {
   local _frac=${waittime#*.}
   local _wait_ms=$(( (_int * 1000) + (_frac * 100) ))
   local _port="${port:-22}"   # default port should already be done in validate_input
-  local ups=0 downs=0 _filtered=0
-  local _out="" _raw_out="" _family=""
-  local current_host="" current_status="" current_port_state=""
+  local _out=""
   local -a targets_4 targets_6 host_names
   local -a _nm_opts=("--max-retries" "0")
-  local _count=0  # concurrency control variable for manually paralleled processes
 
   # handle user-directed RESOLVE choice
   if [ "$RESOLVE" ] ; then _nm_opts+=("-R"); else _nm_opts+=("-n"); fi
@@ -765,416 +1046,98 @@ _do_nmap() {
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
   j_msg "-${info}" -m "${BWon}(info)${Boff} ipv4 native parallel command: nmap ${_nm_opts[@]} \${targets_4[@]}"
   j_msg "-${info}" -m "${BWon}(info)${Boff} ipv6 manual parallel command: timeout --signal=INT 2 nmap ${_nm_opts[@]} -6 \$target"
+  j_msg "-${debug}" -p "${BYon}(debug)${Boff} mode: [$mode]"
 
   # FUTURE HOOK: add multi-port scanning here
   # _nm_opts+=("-P0[$_proto_list]") or maybe _nm_opts+=("-sO")
   #
 
-  # for parallel, call the function above for each of the now-split target sets
-  #   -in order to maintain paralellism, run both in the background, and the only
-  #    safe way to do that is to run each in its own subshell
-  #   -to facilitate output parsing and buffering, have each subshell write
-  #    to a mktemp file in /dev/shm (faster than /tmp), if it is available
-  #   _to make a summary count of ups, downs, _filtered, don't have the
-  #    subshells to the math (i.e. don't put the math in the helpver function;
-  #    instead, have the parent (this function) do the math after concatenating
-  #    the temp files for the output buffer
-  if [ "$PARALLEL" ]; then
-    # nmap only does one of ipv4 or ipv6 in its parallel mode, so split into target list for each family
-    for target in "${targets[@]}"; do
-      if [[ "$target" =~ : ]]; then targets_6+=("$target")
-      elif [[ "$target" =~ ^[0-9.]+$ ]]; then targets_4+=("$target")
-      else host_names+=("$target")
-      fi
-    done
-    j_msg "-${notice}" -p "targetlist subdivided to optimize for nmap"
-    j_msg "-${notice}" -m "ipv4 target addresses: [${#targets_4[@]}]"
-    j_msg "-${debug}" -m  "ipv4 target addresses: [${targets_4[@]}]"
-    j_msg "-${notice}" -m "ipv6 target addresses: [${#targets_6[@]}]"
-    j_msg "-${debug}" -m  "ipv6 target addresses: [${targets_6[@]}]"
-    j_msg "-${notice}" -m "target hostnames ....: [${#host_names[@]}]"
-    j_msg "-${debug}" -m  "target hostnames ....: [${host_names[@]}]"
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _nmap_cmd() {
+    local _target="$1"
+    local _out
+    local fam=""
 
-    if [ -d /dev/shm ] && [ -w /dev/shm ]; then
-      tmp4=$(mktemp /dev/shm/jping_nmap4.XXXXXX)
-      tmp6=$(mktemp /dev/shm/jping_nmap6.XXXXXX)
-      tmp_h=$(mktemp /dev/shm/jping_nmap_h.XXXXXX)
-    else
-      tmp4=$(mktemp /tmp/jping_nmap4.XXXXXX)
-      tmp6=$(mktemp /tmp/jping_nmap6.XXXXXX)
-      tmp_h=$(mktemp /tmp/jping_nmap_h.XXXXXX)
-    fi
+    case "$_target" in *:* ) fam=("-6") ;; esac
 
-    # use nmaps native parallel ability for ipv4, where it works well due to optimized parallel ipv4 rDNS spt
-    ( nmap "${_nm_opts[@]}" "${targets_4[@]}" ) > "$tmp4" &
-    # Caution: nmap does not have a native/optimized ipv6 reverse dns lookup like it does for ipv4
-    #   and its timing/timeout parameters cannot control what it has to pass to the system dns resolver
-    # So - DON"T use nmap in native-parallel mode for ipv6 -- I'll do it myself
-    #( nmap "${_nm_opts[@]}" -6 "${targets_6[@]}" ) > "$tmp6" &
-    for target in "${targets_6[@]}"; do
-      # wrap nmap with GNU timeout, append to file, and push to background
-      # (SIGTERM default will wipe out nmap's buffer, so use --signal==INT instead, to dump what it has found before dying)
-      timeout --signal=INT 2 nmap "${_nm_opts[@]}" -6 "$target" >> "$tmp6" &
-      # Dynamically throttled by validated global $jobs
-      # (this goes mmediately after backgrounding (&) and outside the closing ')'
-      #  for intermediate subshell above so the _count variable will
-      #  be available in the current shell's scope), and before the done keyword)
-      #  (wait -n waits for a job vs all jobs to finish)
-      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
-    done;  wait  # crucial to wait for all backgrounded jobs to finish
-    # Similary with hostnames - which may fail to resolve, may resolve to ipv6 addresses, etc.
-    for target in "${host_names[@]}"; do
-      # wrap nmap with GNU timeout, append to file, and push to background
-      # (SIGTERM default will wipe out nmap's buffer, so use --signal==INT instead, to dump what it has found before dying)
-      timeout --signal=INT 2 nmap "${_nm_opts[@]}" "$target" >> "$tmp_h" &
-      # Dynamically throttled by validated global $jobs
-      # (this goes mmediately after backgrounding (&) and outside the closing ')'
-      #  for intermediate subshell above so the _count variable will
-      #  be available in the current shell's scope), and before the done keyword)
-      #  (wait -n waits for a job vs all jobs to finish)
-      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
-    done;  wait  # crucial to wait for all backgrounded jobs to finish
+    _out=$(timeout "$timeout" nmap "$fam" "${_nm_opts[@]}" "$_target" 2>&1)
 
-    _raw_out="$(cat "$tmp4" "$tmp6" "$tmp_h")"
-
-    # _finalize_host helper for while loop below
-    _finalize_host() {
-      # adjust for hosts that have status line but no ports line or vice versa
-      if [ -n "$current_status" ] && [ -z "$current_port_state" ]; then
-          current_port_state="closed"
-      fi
-      if [ -z "$current_status" ] && [ -n "$current_port_state" ]; then
-          current_status="Down"
-      fi
-      # colorize custom status output
-      case "$current_status" in
-          Up)   status_color="${BGon}Up${Boff}" ;;
-          Down) status_color="${BRon}Down${Boff}" ;;
-          *)    status_color="${BYon}Unk${Boff}" ;;
-      esac
-      # colorize custom sport state  output
-      case "$current_port_state" in
-          open)      port_color="${BGon}open${Boff}" ;;
-          closed)    port_color="${BRon}closed${Boff}" ;;
-          filtered)  port_color="${BYon}filtered${Boff}" ;;
-          *)         port_color="${BYon}?${Boff}" ;;
-      esac
-      # increment counters
-      if [ "$current_status" = "Up" ]; then
-          (( ups++ ))
-      else
-          (( downs++ ))
-      fi
-      if [ "$current_port_state" = "filtered" ]; then (( _filtered++ )); fi
-
-      # finalize previous host - build one-line colorized output (acommodating hostname) from aggregated data
-      current_host="${BMon}${current_host// / ${BBon}}"
-      current_host="${current_host//\(/\(${Boff}${Con}}"
-      current_host="${current_host//\)/${BBon}\)${Boff}}"
-      host_line="${BMon}${current_host}${Boff} (${status_color})  port ${_port}: ${port_color}"
-      # append to output buffer for fast printf later
-      _out+="${host_line}"$'\n'
-    }   # end of _finalize_host function
-
-    # iterate through lines of output buffer and count stats by
-    # examining the Status and Ports lines for each target
-    # initialize the variables in which we aggregate data
-    # for the host here, before the loop, but do not reset
-    # current_host="" inside the loop - instead, REASSIGN it and
-    # reset current_status="" and current_port_state="" when the
-    # host is known to have changed
-    current_host=""
-    current_status=""
-    current_port_state=""
-
-    while IFS= read -r line; do
-      # example grepable output lines formats (nmap -n; ! $RESOLVE)
-      #   Host: 192.168.62.155 () Status: Up
-      #   Host: 192.168.62.155 () Ports: 22/open/tcp//ssh///
-      # example grepable output lines formats (nmap -R; $RESOLVE)
-      #   Host: 192.168.62.155 (g3nuc01.brendler) Status: Up
-      #   Host: 192.168.62.155 (g3nuc01.brendler) Ports: 22/open/tcp//ssh///
-
-      [[ "$line" == \# ]] && continue  # ignore comment lines
-      [[ -z "$line" ]] && continue     # ignore blank lines
-
-      # count stats and colorize indication in line
-      case "$line" in
-        Host:\ *Status:\ *)
-            # to get here with an empty current_host will only happen at the beginning of the file
-            # afterward, this signals transition from the host we can now finish to a new one, do that below
-            if [ -n "$current_host" ]; then
-                # determine Up/Down based on status + port (variables read in previous "turns"
-                local host_line=""
-                local status_color=""
-                local port_color=""
-
-                # use helper function to finalize the previous host
-                _finalize_host
-
-                current_host=""
-                current_status=""
-                current_port_state=""
-
-            fi  # -n "$current_host"
-
-            # now, start new host - if RESOLVE, include hostname
-            if [ "$RESOLVE" ] ; then
-                current_host=$(printf '%s\n' "$line" | awk '{print $2 " " $3}')
-            else
-                current_host=$(printf '%s\n' "$line" | awk '{print $2}')
-            fi
-            current_status=""; current_port_state=""  # clear these for the new host
-            case "$line" in
-                *Status:\ Up*)   current_status="Up" ;;
-                *Status:\ Down*) current_status="Down" ;;
-                *)               current_status="" ;;
-            esac
-            ;;
-
-        Host:\ *Ports:\ *)
-            case "$line" in
-                # port status line format ends - "... Ports: 22/open/tcp//ssh///"
-                *\/open\/*)      current_port_state="open" ;;
-                *\/closed\/*)    current_port_state="closed" ;;
-                *\/filtered\/*)  current_port_state="filtered" ;;
-            esac
-            ;;
-      esac
-    done <<< "$_raw_out"
-    # use helper function to finalize the last host
-    # - build one-line output from aggregated data (flush the "buffer")
-    _finalize_host
-
-    # print final the buffered output, sorted on port status, then up/down, then address
-    printf '%s\n' "$_out" | LC_COLLATE=en_US.UTF-8 sort -k6,6r -k4,4 -k1,1
-
-    rm -f "$tmp4"
-    rm -f "$tmp6"
-    rm -f "$tmp_h"
-  else  # else searialize the jobs
-    j_msg "-${warn}" -p "${command} is natively optimized for parallel; serializing it will be slower"
-    j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
-    for target in "${targets[@]}"; do
-      # prepaare to pass _family to nmap as an option flag "-4" or "-6"
-      _family=""  # reinitialize each iteration
-      [[ "$target" == *:* ]] && _family="-6"
-      local _result _addr _hostname
-      _result=$(nmap "${_nm_opts[@]}" "$_family" "$target" 2>/dev/null)
-      # use tail to get the last status line from nmap's greppable output
-      # (since with -Pn nmap always first prints a Status: Up line (as -Pn said to assume))
-      _addr=$(printf '%s' "$_result" | grep Status | tail -n 1 | awk '{print $2}')
-      j_msg "-${notice}" -p -n "${BMon}${_addr}"
-      if [ "$RESOLVE" ] ; then
-        if [ "$ASSOCIATIVE" ]; then
-          _hostname="${a_targets[$target]}"
+    # determine provide output format (FAST or ENRICHED) based on the global mode variable --
+    # _core functions compose the preliminary message <target> (<hostname/address>) is " <-- ending space is space
+    # _core functions then append the output of this _<tool>_cmd function with content as follows
+    # FAST: <color><Up/Down><collor_off>
+    # ENRICHED: <color><Up/Down><collor_off> <and/but> port <color><port><color_off> is <color><port_state><color_off>
+    case "${mode:0:1}" in
+      F )
+        if printf '%s\n' "$_out" | grep -qE "open"; then
+          printf '%s\n' "${BGon}Up${Boff}"
+          return 0
         else
-          _hostname=$(printf '%s' "$_result" | grep Status | tail -n 1 | awk '{print $3}')
+          printf '%s\n' "${BRon}Down${Boff}"
+          return 1
         fi
-        j_msg "-${notice}" -mp -n " ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
-      else
-        j_msg "-${notice}" -mp -n "${Boff} is"
-      fi
+        ;;
+      E )
+        # Return rich states
+        if printf '%s\n' "$_out" | grep -qE "open"; then
+          printf '%s and port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BGon}Open${Boff}"
+          return 0
+        elif printf '%s\n' "$_out" | grep -qE "filtered"; then
+          printf '%s but port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BYon}Timedout${Boff}"
+          return 0
+        elif printf '%s\n' "$_out" | grep -qE "closed"; then
+          # nmap got an explicit TCP RST, host is up but port is closed
+          printf '%s but port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BRon}Closed${Boff}"
+          return 0
+        else
+          printf '%s and port %s is %s\n' "${BRon}Down${Boff}" "${BMon}${port}${Boff}" "${BRon}Timedout${Boff}"
+          return 1
+        fi
+        ;;
+      * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+    esac
+  }
 
-      if grep -q "Status: Up" <<< "$_result"; then
-        (( ups++ ))
-        j_msg "-${notice}" -mp -n " (${BGon}Up${Boff})"
-      else
-        (( downs++ ))
-        j_msg "-${notice}" -mp -n " (${BRon}Down${Boff})"
-      fi
-
-      if grep -q "/open/" <<< "$_result"; then
-        j_msg "-${notice}" -mp " port ${_port}: ${BGon}open${Boff}"
-      elif grep -q "/filtered/" <<< "$_result"; then
-        (( _filtered++ ))
-        j_msg "-${notice}" -mp " port ${_port}: ${BYon}filtered${Boff}"
-      else
-        j_msg "-${notice}" -mp " port ${_port}: ${BRon}closed${Boff}"
-      fi
-    done
+  if [ "$PARALLEL" ]; then
+    _jping_parallel_core "_nmap_cmd"
+  else # serialize
+    _jping_serial_core "_nmap_cmd"
   fi
 
-  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff} |"
-  msg+=" ${BBon}[${BMon}$_filtered${BBon}] ${BYon}filtered${Boff}"
-  j_msg "-${notice}" -p -M "$idx_face_beam" "$msg"
+  case "${mode:0:1}" in
+    F )
+      msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      ;;
+    E )
+      msg="${BWon}complete${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      msg=" ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff} |"
+      msg+=" ${BBon}[${BMon}$opened${BBon}] ${BGon}opened${Boff} |"
+      msg+=" ${BBon}[${BMon}$closed${BBon}] ${BRon}closed${Boff} |"
+      msg+=" ${BBon}[${BMon}$filtered${BBon}] ${BYon}filtered${Boff} |"
+      msg+=" ${BBon}[${BMon}$unverified${BBon}] ${BOon}unverified${Boff} |"
+      msg+=" ${BBon}[${BMon}$timeouts${BBon}] ${BRon}timeouts${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      j_msg "-${warn}" -p "Timedout count can include false negatives due to short waits or firewalled ports"
+      j_msg "-${warn}" -m "To be more certain, use this or another tool again, with a longer timeout and check more ports/services"
+      ;;
+    * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+  esac
 
 }
 
 #-----[ manual parallel tools ]-----------------------------------------------------
 
-_jping_parallel_core() {
-    # common core manual parallelization engine - take T/F command function name as input and
-    #   run it in parallel for all targets in the target-appropriate manner
-    #   depending on user choices for dns resolution (RESOLVE), use of
-    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
-    #   go fast without lookups if not RESOLVE
-    # Provide common standard colorized and sorted output format
-    local target    # one memger of the original targets array passed to calling function
-    local _hostname # hostname looked up (or provided as target) as appropriate if RESOLVE
-    local _tgt_v    # _target vecotr derived from _hostname if original target is a hostname
-    local _target   # one _target of _tgt_v new target vector
-    local _count=0  # concurrency control variable for manually paralleled processes
-    local _status   # up/down
-    local line      # one line of raw output of parallelized jobs
-    local cleanline # ansi-stripped line to facilitat safer status counting
-    local _jp_command # name of tool-specific syntaxed command to call with each target
-
-    # receive the name of the function for core connectivity check
-    local _jp_command="$1"
-
-    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _jp_command: [${_jp_command}]"
-    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
-
-    # feed the grouped output (below) into a while loop in the current shell
-    # in order to be able to scan the output and count total ups and downs
-    # (cant be done in subshell because that variable is gone when subshell exits)
-    while read -r line; do
-      # print the colorozed line to stdout (and/or log)
-      line="${BMon}${line//\(/${BBon}\(${Boff}${Con}}"
-      line="${line//\)/${BBon}\)${Boff}}"
-      j_msg "-${notice}" -p "$line"
-      # Strip ANSI colors before checking the status
-      # (Color codes can interfere with "Up" matching)
-      clean_line=$( printf '%s\n' "$line" | strip_ansi )
-      case "$clean_line" in
-        *is\ Up)   (( ups++ )) ;;
-        *is\ Down) (( downs++ )) ;;
-      esac
-    done < <(  # substitute the process below (actual parallel scan) into the while loop above
-    { for target in "${targets[@]}"; do (
-        { if [ "$RESOLVE" ]; then
-            if "$ASSOCIATIVE" ]; then  # already have hostname
-              _hostname="${a_targets[$target]}"
-              if "$_jp_command" "$target"; then   # execute RESOLVE and ASSOCIATIVE case
-                _status="${BGon}Up${Boff}";
-              else
-                _status="${BRon}Down${Boff}"
-              fi
-              printf '%s\n' "${target} (${_hostname}) is $_status"
-            else   # Not ASSOCIATIVE - look up hostname in the background
-              # if this is a hostname rathern than address, look up the address(es) instead
-              case "$target" in
-                *[!0-9a-fA-F.:]*)  # target is a hostname (contains characters not allowed in ip address)
-                    # j_msg  "-${debug}" -p "target [$target] is hostname"
-                   _hostname=${target};
-                   # use getent to look up all ip addresses for this _hostname
-                   _tgt_v=$(getent ahosts "$target" | awk '{print $1}' | sort -u)
-                   for _target in $_tgt_v; do
-                     if "$_jp_command" "$_target" ; then  # execute RESOLVE but not ASSOCIATIVE for target hostname
-                       _status="${BGon}Up${Boff}"
-                     else
-                       _status="${BRon}Down${Boff}"
-                     fi
-                     printf '%s\n' "${_hostname} (${_target}) is $_status"
-                   done
-                   ;;
-                *)   # .......... # target is an ip address (non-ASSOCIATIVE case) - look up hostname with dig
-                  _hostname=$(dig -x "$target" +short | sed 's|.$||')
-                  if "$_jp_command" "$target"; then   # execute RESOLVE but not ASSOCIATIVE for target ip address
-                    _status="${BGon}Up${Boff}"
-                  else
-                    _status="${BRon}Down${Boff}"
-                  fi
-                  printf '%s\n' "${target} (${_hostname}) is $_status"
-                  ;;
-              esac
-            fi
-          else # not RESOLVE
-            if "$_jp_command" "$target" ; then   # execute non-RESOLVE case
-              _status="${BGon}Up${Boff}"
-            else
-              _status="${BRon}Down${Boff}"
-            fi
-            printf '%s\n' "${target} () is $_status"
-          fi
-        } 2>/dev/null &
-      )
-      # Dynamically throttled by validated global $jobs
-      # (this goes mmediately after backgrounding (&) and outside the closing ')'
-      #  for intermediate subshell above so the _count variable will
-      #  be available in the current shell's scope), and before the done keyword)
-      # wait -n waits for a job vs all jobs to finish
-      if (( ++_count % "$jobs" == 0 )); then wait -n; fi
-      done; wait
-      # filter empty lines and sort by status and then address
-    } | sed "/^${W0}$/d" | sort -t' ' -k4,4r -k2,2
-#    } | sed "/^${W0}$/d"  # unsorted for now
-  )
-
-}
-
-_jping_serial_core() {
-    # common core manual serialization engine - take T/F command function name as input and
-    #   run it in serial sequence for all targets in the target-appropriate manner
-    #   depending on user choices for dns resolution (RESOLVE), use of
-    #   associative arrays to obviate lookups (ASSOCIATIVE) - or to just
-    #   go fast without lookups if not RESOLVE
-    # Provide common standard colorized and sorted output format
-    local target    # one memger of the original targets array passed to calling function
-    local _hostname # hostname looked up (or provided as target) as appropriate if RESOLVE
-    local _tgt_v    # _target vecotr derived from _hostname if original target is a hostname
-    local _target   # one _target of _tgt_v new target vector
-    local _count=0  # concurrency control variable for manually paralleled processes
-    local _status   # up/down
-    local line      # one line of raw output of parallelized jobs
-    local cleanline # ansi-stripped line to facilitat safer status counting
-    local _js_command # name of tool-specific syntaxed command to call with each target
-
-    # receive the name of the function for core connectivity check
-    local _js_command="$1"
-
-    j_msg "-${debug}" -p "running ${FUNCNAME[0]} with _js_command: [${_js_command}]"
-    j_msg "-${debug}" -p "global targets array: [${targets[@]}]"
-
-    for target in "${targets[@]}"; do
-        if [ "$RESOLVE" ]; then
-          if [ "$ASSOCIATIVE" ]; then  # already have hostname
-            _hostname="${a_targets[$target]}"
-            # use simpler format of j_msg to set up output line prior and handle_result to close after execution because
-            #   serialized jobs will assemble output pieces properly - unlike parallel which require atomic writes
-            j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
-            "$_js_command" "$target"   # execute RESOLVE and ASSOCIATIVE case
-            if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
-          else   # Not ASSOCIATIVE - look up hostname in the background
-            # if this is a hostname rathern than address, look up the address(es) instead
-            case "$target" in
-              *[!0-9a-fA-F.:]*)
-                 _hostname=${target};
-                 _tgt_v=$(getent ahosts "$target" | awk '{print $1}' | sort -u)
-                 for _target in $_tgt_v; do
-                   j_msg "-${notice}" -p -n "${BMon}${_hostname}${Boff} ${BBon}(${Boff}${Con}${_target}${BBon})${Boff} is"
-                   # j_msg "-${debug}" -p "_js_command: [$_js_command]  _target: [$_target]"
-                   "$_js_command" "$_target"   # execute RESOLVE but not ASSOCIATIVE case with target hostname
-                   if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
-                 done
-                 ;;
-              *)   # ip address
-                _hostname=$(dig -x "$target" +short | sed 's|.$||')
-                j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
-                "$_js_command" "$target"   # execute RESOLVE but not ASSOCIATIVE case with target ip address
-                if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
-                ;;
-            esac
-          fi
-        else   # not RESOLVE
-          j_msg "-${notice}" -p -n "${BMon}${target}${Boff} ${BBon}(${Boff}${Con}${_hostname}${BBon})${Boff} is"
-          "$_js_command" "$target"   # execute non-RESOLVE case
-          if handle_result $? "Up" "Down" "${notice}"; then (( ups++ )); else (( downs++ )); fi
-        fi
-    done
-
-}
-
 _do_devtcp() {
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # timeout notes:
   # /dev/tcp - use GNU timeout "$timeout" | No internal timeout; needs GNU t
-  local ups=0 downs=0
   local _hostname _target _tgt_v
-  local _count=0  # concurrency control variable for manually paralleled processes
   local -a _cmd  # properly constructed command line array, using this tool
+
   if [ -z "$timeout" ]; then
     if [ -n "$waittime" ]; then
       timeout="$waittime"
@@ -1194,35 +1157,47 @@ _do_devtcp() {
   j_msg "-${debug}" -p "checking [${#targets[@]}] targets"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
-  _devtpc_cmd() {
+  _devtcp_cmd() {
     # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
     local _target="$1";
-    timeout "$timeout" "bash" "-c" "</dev/tcp/${_target}/22" &>/dev/null
+    if timeout "$timeout" "bash" "-c" "</dev/tcp/${_target}/${port}" &>/dev/null ; then
+      printf '%s\n' "${BGon}Up${Boff} - port ${port} is ${BGon}Open${Boff}"; return 0
+    else
+      printf '%s\n' "${BRon}Down${Boff} - port ${port} is ${BRon}Closed${Boff}" ; return 1
+    fi
+
   }
 
   if [ "$PARALLEL" ]; then
-    _jping_parallel_core "_devtpc_cmd"
+    _jping_parallel_core "_devtcp_cmd"
   else # serialize
-    _jping_serial_core "_devtpc_cmd"
+    _jping_serial_core "_devtcp_cmd"
   fi
+
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
   msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
-  j_msg "-${notice}" -p -M "$idx_face_beam" "$msg"
+  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+  j_msg "-${warn}" -p "/dev/tcp checks only port state; host status is implied"
+  j_msg "-${warn}" -p "False negatives are possible if timeout/wait times are too short"
+  j_msg "-${warn}" -m "To be more certain, use this or another tool again, with a longer timeout and check more ports/services"
+
 }
 
 _do_netcat() {
+  # nc -h 2>&1 | grep '\-[nvwzpu]'
   #  -n                      numeric-only IP addresses, no DNS
+  #  -p port                 local port number
+  #  -u                      UDP mode
   #  -v                      verbose [use twice to be more verbose]
   #  -w secs                 timeout for connects and final net reads
   #  -z                      zero-I/O mode [used for scanning]
-
+  #
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # timeout notes:
   # nc - recommended to use GNU timeout "$timeout" AND jping waittime (-w ${waittime})
   #      to fortify and version-proof the exit status
-  local ups=0 downs=0
-  local _count=0  # concurrency control variable for manually paralleled processes
   local -a _nc_opts=("-zv")
+
   if [ -z "$timeout" ]; then
     if [ -n "$waittime" ]; then
       timeout="$waittime"
@@ -1262,7 +1237,35 @@ _do_netcat() {
       *:*              ) fam="-6";;
       *.*              ) fam="-4";;
     esac
-    timeout "$timeout" nc "${_nc_opts[@]}" "${fam}" "$target" "$port" &>/dev/null
+    # to capture output from stderr, recirect it to stdout
+    _out=$(timeout "$timeout" nc "${fam}" "${_nc_opts[@]}" "$_target" "$port" 2>&1)
+
+    # determine richness based on the global mode variable
+    case "${mode:0:1}" in
+      F )
+        if printf '%s\n' "$_out" | grep -qE "open"; then
+          printf '%s\n' "${BGon}Up${Boff}"
+          return 0
+        else
+          printf '%s\n' "${BRon}Down${Boff}"
+          return 1
+        fi
+        ;;
+      E )
+        # Return rich states
+        if printf '%s\n' "$_out" | grep -qE "open"; then
+          printf '%s and port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BGon}Open${Boff}"
+          return 0
+        elif printf '%s\n' "$_out" | grep -qE "refused"; then
+          printf '%s but port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BYon}Filtered${Boff}"
+          return 0
+        else
+          printf '%s and port %s is %s\n' "${BRon}Down${Boff}" "${BMon}${port}${Boff}" "${BRon}Closed${Boff}"
+          return 1
+        fi
+        ;;
+      * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+    esac
   }
 
   if [ "$PARALLEL" ]; then
@@ -1270,18 +1273,46 @@ _do_netcat() {
   else # serialize
     _jping_serial_core "_netcat_cmd"
   fi
-  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
-  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+
+  case "${mode:0:1}" in
+    F )
+      msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      ;;
+    E )
+      msg="complete."
+      msg+=" ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff} |"
+      msg+=" ${BBon}[${BMon}$opened${BBon}] ${BGon}opened${Boff} |"
+      msg+=" ${BBon}[${BMon}$closed${BBon}] ${BRon}closed${Boff} |"
+      msg+=" ${BBon}[${BMon}$filtered${BBon}] ${BYon}filtered${Boff} |"
+      msg+=" ${BBon}[${BMon}$unverified${BBon}] ${BOon}unverified${Boff} |"
+      msg+=" ${BBon}[${BMon}$timeouts${BBon}] ${BRon}timeouts${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      j_msg "-${warn}" -p "Timedout count can include false negatives due to short waits or firewalled ports"
+      j_msg "-${warn}" -m "To be more certain, use this or another tool again, with a longer timeout and check more ports/services"
+      ;;
+      * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+  esac
 }
 
 _do_ssh() {
+  # man ssh
+  #  -4      Forces ssh to use IPv4 addresses only.
+  #  -6      Forces ssh to use IPv6 addresses only.
+  #  -o      option
+  #             BatchMode
+  #             StrictHostKeyChecking
+  #             UserKnownHostsFile
+  #  -p      port
+  #  -q      Quiet mode
+  #
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # timeout notes:
   # ssh - recommended to use GNU timeout "$timeout" and -o ConnectTimeout=${waittime} | protects vs protocol/banner hang
-  local ups=0 downs=0 _ssh_wait
-  local _count=0  # concurrency control variable for manually paralleled processes
-  local ssh_opts=("-q" "-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null")
+  local _ssh_wait _msg
+  local ssh_opts=("-q" "-p" "$port" "-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null")
   if [ -z "$timeout" ]; then
     if [ -n "$waittime" ]; then
       timeout="$waittime"
@@ -1298,11 +1329,11 @@ _do_ssh() {
     else
        _ssh_wait="${waittime%.*}"
     fi
-    j_msg "-${warn}" "${BYon}(warning)${Boff} ssh -o ConnectTimeout=\"\${waittime}\" must be integer, waittime [$waittime] rounded to [$_ssh_wait]"
+    _msg="${BYon}(warning)${Boff} ssh -o ConnectTimeout=\"\${waittime}\" must be integer, waittime [$waittime] rounded to [$_ssh_wait]"
+    j_msg "-${warn}" "$_msg"
     waittime="$_ssh_wait"
     # now add that to args
     ssh_opts+=("-o" "ConnectTimeout=${_ssh_wait}")
-
   fi
 
   # handle user-directed RESOLVE choice
@@ -1310,7 +1341,8 @@ _do_ssh() {
   # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ssh ${ssh_opts[*]} -\${fam} \"\$target\" true 2>&1"
+  j_msg "-${debug}" -p "checking [${#targets[@]}] targets"
+  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ssh \${fam} ${ssh_opts[*]} \"\$target\" true 2>&1"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _ssh_cmd() {
@@ -1321,7 +1353,11 @@ _do_ssh() {
       *:*              ) fam="-6";;
       *.*              ) fam="-4";;
     esac
-    timeout "$timeout" ssh "${ssh_opts[@]}" "${fam}" "$target" true 2>&1
+    if timeout "$timeout" ssh "${fam}" "${ssh_opts[@]}" "$_target" true 2>&1 ; then
+      printf '%s\n' "${BGon}Up${Boff} - port ${port} is ${BGon}Open${Boff}"; return 0
+    else
+      printf '%s\n' "${BRon}Down${Boff} - port ${port} is ${BRon}Closed${Boff}" ; return 1
+    fi
   }
 
   if [ "$PARALLEL" ]; then
@@ -1333,28 +1369,32 @@ _do_ssh() {
   msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
   msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
   j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+  j_msg "-${warn}" -p "ssh checks only port state; host status is implied"
+  j_msg "-${warn}" -p "False negatives are possible if timeout/wait times are too short"
+  j_msg "-${warn}" -m "To be more certain, use this or another tool again, with a longer timeout and check more ports/services"
 }
 
 _do_ping() {
-  # -c <count>         stop after <count> replies
-  # -H                 force reverse DNS name resolution (useful for numeric
-  #                    destinations or for -f), override -n
-  # -n                 no reverse DNS name resolution, override -H
-  # -w <deadline>      reply wait <deadline> in seconds
-  # -W <timeout>       time to wait for response
-  # -4                 use IPv4
-  # -6                 use IPv6
+  # ping -h 2>&1 | grep '\-[cHnwW46qt]'
+  #  -c <count>         stop after <count> replies
+  #  -H                 force reverse DNS name resolution (useful for numeric
+  #                     destinations or for -f), override -n
+  #  -n                 no reverse DNS name resolution, override -H
+  #  -q                 quiet output
+  #  -t <ttl>           define time to live
+  #  -w <deadline>      reply wait <deadline> in seconds
+  #  -W <timeout>       time to wait for response
+  #  -4                 use IPv4
+  #  -6                 use IPv6
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # Note: the logic in this function is basically lifted from _do_ssh(); for detailed
   # comments explaining how the parallel and serialized branches work see that function
   # timout notes:
-  # ping use of GNU timeout would be redundant - just use -W ${waittime} | Exits after count/wait reached
-  local ups=0 downs=0
-  local _count=0  # concurrency control variable for manually paralleled processes
-
+  #   for ip addresses, ping use of GNU timeout is redundant - -W ${waittime} | Exits after count/wait reached
+  #   for hostnames though, it limits time-wait for dns-lookup
   # ping uses -W for seconds (standard iputils-ping)
   # -c 1 ensures it sends only one packet
-  # -n turns off reverse DNS name resolution because I'm manually doing that (so ping doesnt need to wait for it
+  # -n turns off reverse DNS name resolution because I'm manually doing that in core functions (so ping doesnt need to wait for it)
   local _ping_opts=("-c" "1" "-W" "$waittime" "-n")
 
   # handle user-directed RESOLVE choice
@@ -1363,6 +1403,7 @@ _do_ping() {
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
   j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ping ${_ping_opts[@]} \$target &>/dev/null"
+  j_msg "-${debug}" -m "${BYon}(debug)${Boff} mode: [$mode]"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _ping_cmd() {
@@ -1374,7 +1415,12 @@ _do_ping() {
       *.*              ) fam="-4";;
     esac
     # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
-    timeout "$timeout" ping "${_ping_opts[@]}" "$target" &>/dev/null
+    # ping does not have an "enriched" mode, so just provide the appropriate output
+    if timeout "$timeout" ping "$fam" "${_ping_opts[@]}" "$_target" &>/dev/null ; then
+      printf '%s\n' "${BGon}Up${Boff}"; return 0
+    else
+      printf '%s\n' "${BRon}Down${Boff}" ; return 1
+    fi
   }
 
   if [ "$PARALLEL" ]; then
@@ -1389,24 +1435,32 @@ _do_ping() {
 }
 
 _do_socat() {
+  # socat -h | grep -E '\-[tTu0]| add| GOPEN| TCP'
+  #  -t<timeout>    wait seconds before closing second channel // use 0 to immediately close when /dev/null sends EOF
+  #  -T<timeout>    total inactivity timeout in seconds        // use GNU timeout $timeout instead
+  #  -u             unidirectional mode (left to right)        // ensure no time wasted on second direction
+  #  -0             do not prefer an IP version                // should be default but specify to ensure both ipv4/6 work
+  #     address-head:
+  #       GOPEN:<filename>                          groups=FD,FIFO,CHR,BLK,REG,SOCKET,NAMED,OPEN,TERMIOS,UNIX
+  #       TCP[-CONNECT]:<host>:<port>                 groups=FD,SOCKET,CHILD,RETRY,IP4,IP6,TCP
+  # man socat
+  #     connect-timeout=<seconds>   Abort the connection attempt after <seconds> [timeval] with error status.
+  #
   # socat is a powerful "data plumber" -- its primary purpose is to weld two pipes together
   #   and keep the water flowing until one side breaks or the pipe runs dry
-  # using it for a port check is like "driving the Winnebago around the corner to see"
-  #   "if the store is open" - but it works well
+  # In my opinion, using it for a port check works well, but it is like
+  #   "driving the Winnebago around the corner to see if the store is open"
   # method: use /dev/null for one pipe and host:port for the other, with a timeout
   #   and read the exit status (works b/c /dev/null provides an immediate EOF when read)
-  # note: host spec is different for ipv4/6 - 6 requres [${_target}] (square brackets)
+  # *** note: host spec is different for ipv4/6 - 6 requres [${_target}] (square brackets)
   #
   # timeout notes:
   # socat - recommended to use GNU timeout "$timeout" and connect-timeout=${waittime}
   #   to protect vs protocol/banner hang
   #
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
-  local ups=0     # accumulated count of up stats
-  local downs=0   # accumulated count of down stats
   local _msg=""
-  local _socat_opts=()
-  local _count=0  # concurrency control variable for manually paralleled processes
+  local _socat_opts=("-0" "-t0" "-u" "GOPEN:/dev/null")
   # guard against empty timeout (should be defaulted)
   if [ -z "$timeout" ]; then
     if [ -n "$waittime" ]; then
@@ -1424,17 +1478,59 @@ _do_socat() {
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
   # formulate _socat_opts array
-  _socat_opts+=("GOPEN:/dev/null")
   _msg="command:  timeout $timeout socat ${_socat_opts[@]}"
   _msg+=" TCP:\"\${target}\":${port},connect-timeout=${waittime} 2>/dev/null"
   j_msg "-${info}" -m "${BWon}(info)${Boff} $_msg"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _socat_cmd() {
+    local _exit_status=0
     # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
     local _target="$1"
+
+    case "$_target" in
+      *:*) _target="[${_target}]"  # socat requires ipv6 address to be wrapped in []
+    esac
     # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
-    timeout "$timeout" socat "${_socat_opts[@]}" TCP:"${target}":"${port}",connect-timeout="${waittime}" 2>/dev/null
+    local _cmd=("timeout" "$timeout" "socat" "${_socat_opts[@]}")
+    _cmd+=("TCP:${_target}:${port},connect-timeout=${waittime}" "2>&1")
+    _out=$(timeout "$timeout" socat "${_socat_opts[@]}" \
+      TCP:"${_target}":"${port}",connect-timeout="${waittime}" 2>&1)
+    _exit_status=$?
+    # determine provide output format (FAST or ENRICHED) based on the global mode variable --
+    # _core functions compose the preliminary message <target> (<hostname/address>) is " <-- ending space is space
+    # _core functions then append the output of this _<tool>_cmd function with content as follows
+    # FAST: <color><Up/Down><collor_off>
+    # ENRICHED: <color><Up/Down><collor_off> <and/but> port <color><port><color_off> is <color><port_state><color_off>
+    case "${mode:0:1}" in
+      F )
+        if [ "$_exit_status" -eq 0 ]; then
+          printf '%s\n' "${BGon}Up${Boff}"
+          return 0
+        else
+          printf '%s\n' "${BRon}Down${Boff}"
+          return 0
+        fi
+        ;;
+      E )
+        # Return rich states
+        if [ "$_exit_status" -eq 0 ]; then
+          printf '%s and port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BGon}Open${Boff}"
+          return 0
+        elif printf '%s\n' "$_out" | grep -qE "refused"; then
+          printf '%s but port %s is %s\n' "${BGon}Up${Boff}" "${BMon}${port}${Boff}" "${BYon}Closed${Boff}"
+          return 0
+        elif printf '%s\n' "$_out" | grep -qE "not known"; then
+          # nmap got an explicit TCP RST, host is up but port is closed
+          printf '%s and port %s is %s\n' "${BGon}Down${Boff}" "${BMon}${port}${Boff}" "${BRon}Unverified${Boff}"
+          return 1
+        else
+          printf '%s and port %s is %s\n' "${BRon}Down${Boff}" "${BMon}${port}${Boff}" "${BRon}Timedout${Boff}"
+          return 1
+        fi
+        ;;
+      * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+    esac
   }
 
   if [ "$PARALLEL" ]; then
@@ -1443,26 +1539,57 @@ _do_socat() {
     _jping_serial_core "_socat_cmd"
   fi
 
-  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
-  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
-  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+  case "${mode:0:1}" in
+    F )
+      msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      ;;
+    E )
+      msg="${BWon}complete${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      msg=" ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+      msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff} |"
+      msg+=" ${BBon}[${BMon}$opened${BBon}] ${BGon}opened${Boff} |"
+      msg+=" ${BBon}[${BMon}$closed${BBon}] ${BRon}closed${Boff} |"
+      msg+=" ${BBon}[${BMon}$filtered${BBon}] ${BYon}filtered${Boff} |"
+      msg+=" ${BBon}[${BMon}$unverified${BBon}] ${BOon}unverified${Boff} |"
+      msg+=" ${BBon}[${BMon}$timeouts${BBon}] ${BRon}timeouts${Boff}"
+      j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+      j_msg "-${warn}" -p "Timedout count can include false negatives due to short waits or firewalled ports"
+      j_msg "-${warn}" -m "To be more certain, use this or another tool again, with a longer timeout and check more ports/services"
+      ;;
+    * ) j_msg "-${err}" -m "${BRon}(error)${Boff} invalid mode in ${FUNCNAME[0]}"; my_usage; exit 1 ;;
+  esac
 
 }
 
 _do_arping() {
-  # -f            quit on first reply
-  # -q            be quiet
-  # -c <count>    how many packets to send
-  # -w <timeout>  how long to wait for a reply
-  # -i <interval> set interval between packets (default: 1 second)
+  #  arping -h 2>&1 | grep '\-[fqcwi]'
+  #  -f            quit on first reply
+  #  -q            be quiet
+  #  -c <count>    how many packets to send
+  #  -w <timeout>  how long to wait for a reply
+  #  -i <interval> set interval between packets (default: 1 second)
+  #
   j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
   # Note: the logic in this function is basically lifted from _do_ssh(); for detailed
   # comments explaining how the parallel and serialized branches work see that function
     # timeout notes:
   # arping use of GNU timeout would be redundant; use -W ${waittime}                   | Layer 2; exits after response
-  local ups=0 downs=0 _arping_wait
-  local _count=0   # concurrency control variable for manually paralleled processes
+  local _arping_wait _msg
   local -a _arping_opts=("-c" "1" "-f" "-q")
+  local -a _my_subnets_4=()
+  local _my_subnet_4=""
+  local _my_interface=""
+  local _my_ips_4=""
+  local -a targets_4=()
+
+  # determine local subnets (to use in _arping_cmd)
+  readarray -t _my_subnets_4 < <(ip route show scope link | awk '{print $1}' | sort -u)
+  # determine local addresses (to use in _arping_cmd)
+  _my_ips_4=$(ip -o -4 addr show scope global  | awk '{print $4}' | cut -d'/' -f1| tr '\n' ' ')
+
   # integerize waittime for arping
   if ! isint "$waittime"; then
     # try to round a decimal up to integer value, but don't round 1 or 1.0 up to 2
@@ -1501,15 +1628,51 @@ _do_arping() {
   j_msg "-${notice}" -p "checking [${#targets_4[@]}] targets"
   # reload targets array with new list
   targets=("${targets_4[@]}")
+  # note that this list may include hostnames that may be resolved by _core functions
+  # to ipv6 addresses or foreign subnets; so _arping_cmd will need to furnter filter each final _target
 
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command:  arping ${_arping_opts[*]} \"\$target\" &>/dev/null"
+  _msg="${BWon}(info)${Boff} command: [timeout $timeout arping ${_arping_opts[@]} -I \"\$_my_interface\" \"\$_target\" &>/dev/null]"
+
+  j_msg "-${info}" -m "$_msg"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _arping_cmd() {
     # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
     local _target="$1"
+    # filter local addresses
+    case "$_my_ips_4" in
+      *"${_target}"*) printf '%s\n' "local address - not ARPable ${BRon}Unreachable${Boff}" ; return 1 ;;
+    esac
+    # filter ipv6 addresses resolved for hostname by _core function
+    case "$_target" in
+      *:* ) printf '%s\n' "wrong family ${BRon}Unreachable${Boff}" ; return 1 ;;
+    esac
+    # filter foreign subnets, or identify interface and scan for _target on local subnet
+    for _my_subnet_4 in "${_my_subnets_4[@]}"; do
+      _my_cidr_4=${_my_subnet_4##*/}
+      _target_subnet_4=$(ipcalc --network "${_target}/${_my_cidr_4}" | cut -d'=' -f2)
+      # filter foreign subnets
+      case "${_my_subnet_4}" in
+        *"${_target_subnet_4}"*)
+           _my_interface=$(ip route show scope link | grep "$_target_subnet_4" | awk '{print $3}' | head -n1)
+           break # match - stop checking and exit for loop
+           ;;
+      esac
+    done
+    # if no matching subnet was found, reject this _target
+    if [ -z "$_my_interface" ] ; then
+      printf '%s\n' "wrong subnet ${BRon}Unreachable${Boff}"
+      return 1
+    fi
     # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
-    timeout "$timeout" arping "${_arping_opts[@]}" "$target" &>/dev/null
+    timeout "$timeout" arping "${_arping_opts[@]}" -I "$_my_interface" "$_target" &>/dev/null
+    case $? in
+      0   ) printf '%s\n' "${BGon}Up${Boff}" ;;
+      1   ) printf '%s\n' "${BRon}Down${Boff}" ;;
+      2   ) printf '%s\n' "${BRon}Unreachable${Boff}" ;;
+      124 ) printf '%s\n' "${BRon}Timedout${Boff}" ;;
+      *   ) printf '%s\n' "${BRon}Timedout${Boff}" ;;
+    esac
   }
 
   if [ "$PARALLEL" ]; then
@@ -1524,21 +1687,170 @@ _do_arping() {
 
 }
 
+_do_ndisc6() {
+  # ndisc6 -h | grep '\-[1nqrw]'
+  #  -1, --single     display first response and exit
+  #  -d, --no-solicit don't send any solicitation messages
+  #  -n, --numeric    don't resolve host names
+  #  -q, --quiet      only print the link-layer address (mainly for scripts)
+  #  -r, --retry      maximum number of attempts (default: 3)
+  #  -w, --wait       how long to wait for a response [ms] (default: 1000)
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]"
+  # Note: the logic in this function is basically lifted from _do_arping(); for detailed
+  # comments explaining how the parallel and serialized branches work see that function
+  local _ndisc6_wait _msg
+  local -a _ndisc6_opts=("-1" "-r" "1" "-q")
+  local -a _my_subnets_6=()
+  local _my_ips_6=""
+  local _my_interface=""
+  local -a targets_6=()
 
-#-----[ tool usage notes ]----------------------------------------------
+  # determine local subnets (to use in _arping_cmd)
+  readarray -t _my_subnets_6 < <(ip -6 route | grep -v 'fe80' | awk '{print $1}' | sort -u | \
+     grep -v '^::1' | grep -v '^2600:')   # filter loopback address and internet uplink (dont scan that!!)
 
-      # actual in-script sytax and results --
-      # tst=socat; case "$target" in *:*) tgt="[${target}]" ;; *.*) gt="${target}" ;; *) tgt="" ;; esac
-      # j_msg -$debug -p "testing tgt: $tgt"
-      # if timeout 0.3 socat - TCP:"$tgt":22,connect-timeout=0.3 \
-      #  1>/dev/null 2>/dev/null < /dev/null; then                                        3.210s (slowest; very finicky)
-      # tst=devtcp; if timeout 0.3 bash -c "echo > /dev/tcp/$target/22" 2>/dev/null; then     1.787s
-      # tst=nc; if nc -z -w 1 "$target" 22 2>/dev/null; then                                  1.348s (fastest)
-      # tst=ping; if ping -W 1 -c 1 "$target" &>/dev/null ; then                              2.602s
+  # determine local addresses (to use in _arping_cmd)
+  _my_ips_6=$(ip -o -6 addr show scope global  | awk '{print $4}' | cut -d'/' -f1| tr '\n' ' ')
+
+  # determine the prefered local interface to use with ndisc6
+  _my_interface=$(ip addr show scope global | head -n1 | awk '{print $2}' | sed 's|:||')
+
+  # convert waittime to milliseconds
+  if [ "${waittime##*.}" -gt 0 ] && [[ "$waittime" == *"."* ]]; then
+    [ -z "${waittime#*.}" ] && waittime="${waittime}0"
+    [ -z "${waittime%.*}" ] && waittime="0${waittime}"
+    _ndisc6_wait=$(( ( ${waittime%.*} * 1000 ) + ( ${waittime#*.} * 100 ) ))
+  else
+    _ndisc6_wait=$(( ${waittime} * 1000 ))
+  fi
+  # now add that to args
+  _ndisc6_opts+=("-w" "$_ndisc6_wait")
+
+  # handle user-directed RESOLVE choice
+  # if [ ! "$RESOLVE" ] ; then ... NA for _ndisc6_opts in this use case (see above); fi
+  # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
+  [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
+
+  # ndisc6 only supports ipv6 - targets can be hostnames or ip addresses; so exclude ipv4 addresses
+  for x in "${targets[@]}"; do
+    case "$x" in
+      *[0-9].[0-9]*) : ;; # ..............# ipv6 address; do nothing with it
+      *  ) targets_6+=("$x");;  # hostname or ipv6 address - add to new list
+    esac
+  done
+  # warn user if targetlist was down-selected to ipv4 only
+  if [ ${#targets_6[@]} -lt ${#targets[@]} ]; then
+    j_msg "-${warn}" -p "${BYon}(Warning)${Boff} ndisc6 supports only ipv6, targetlist downselected"
+  fi
+  j_msg "-${notice}" -p "checking [${#targets_6[@]}] targets"
+  # reload targets array with new list
+  targets=("${targets_6[@]}")
+  # note that this list may include hostnames that may be resolved by _core functions
+  # to ipv6 addresses or foreign subnets; so _arping_cmd will need to furnter filter each final _target
+
+  _msg="${BWon}(info)${Boff} command: [timeout $timeout ndisc6 ${_ndisc6_opts[@]} \"\$_target\" \"\$_my_interface\" &>/dev/null]"
+
+  j_msg "-${info}" -m "$_msg"
+
+  # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
+  _ndisc6_cmd() {
+    # j_msg "-${debug}" -p "in ${FUNCNAME[0]} with arg(s) [$*]";
+    local _target="$1"
+    # filter local addresses - dont have to filter for ndisc6
+    case "$_my_ips_6" in
+      *"${_target}"*) printf '%s\n' "local address - not ndisc6-able ${BRon}Unreachable${Boff}" ; return 1 ;;
+    esac
+    # filter ipv6 addresses resolved for hostname by _core function
+    case "$_target" in
+      *[0-9].[0-9]* ) printf '%s\n' "wrong family ${BRon}Unreachable${Boff}" ; return 1 ;;
+    esac
+    # filter foreign subnets, or identify interface and scan for _target on local subnet
+    _my_interface=""  # (re) initialize
+    for _my_subnet_6 in "${_my_subnets_6[@]}"; do
+      _my_cidr_6=${_my_subnet_6##*/}
+      _target_subnet_6=$(ipcalc --network "${_target}/${_my_cidr_6}" | cut -d'=' -f2)
+      # filter foreign subnets
+      case "${_my_subnet_6}" in
+        *"${_target_subnet_6}"*)
+           # select the first (preferred) interface matching target/my subnet (field 3 is interface)
+           # Format: fd62:6262:6262::/64 dev eth0 proto ra metric 2 expires 86391sec pref medium
+           _my_interface=$(ip -6 route show | grep -v 'fe80' | grep "$_target_subnet_6" | awk '{print $3}' | head -n1)
+           break # match - stop checking and exit for loop
+           ;;
+      esac
+    done
+    # if no matching subnet was found, reject this _target
+    if [ -z "$_my_interface" ] ; then
+      printf '%s\n' "wrong subnet ${BRon}Unreachable${Boff}"
+      return 1
+    fi
+    # use GNU timeout to protect against long delays in dead field case (many non-existent targets)
+    timeout "$timeout" ndisc6 "${_ndisc6_opts[@]}" "$_target" "$_my_interface" &>/dev/null
+    _exit_status=$?
+#echo "_exit_status: [$_exit_status]"
+    case "$_exit_status" in
+      0   ) printf '%s\n' "${BGon}Up${Boff}" ;;
+      1   ) printf '%s\n' "${BRon}Down${Boff}" ;;
+      2   ) printf '%s\n' "${BRon}Unreachable${Boff}" ;;
+      124 ) printf '%s\n' "${BRon}Timedout${Boff}" ;;
+      *   ) printf '%s\n' "${BRon}Timedout${Boff}" ;;
+    esac
+  }
+
+  if [ "$PARALLEL" ]; then
+    _jping_parallel_core "_ndisc6_cmd"
+  else # serialize
+    _jping_serial_core "_ndisc6_cmd"
+  fi
+
+  msg="complete. ${BBon}[${BMon}$ups${BBon}] ${BGon}up${Boff} |"
+  msg+=" ${BBon}[${BMon}$downs${BBon}] ${BRon}down${Boff}"
+  j_msg "-${notice}" -M "$idx_face_beam" "$msg"
+
+}
 
 
+#-----[ notes ]---------------------------------------------------------------------------------
+# Notes:
+# Some tools require or benefit from the use of an external timeout (e.g. GNU timeout)
+#   to manage (and prevent hangs in) their total execution
+# (1) Mandatory for tools built for interactive use -
+#   + /dev/tcp - without an outer timeout, a dropped packet will await system TCP timeout (60+ sec)
+#   + ssh - has ConnectTimeout, but can hang in key exchange or banner grab
+#     (if the port is open but the service is broken)
+# (2) Recommended for tools where it provides a safety net vs hangs in kernel space if network state is wierd
+#   + nc (netcat) - has -w but version dependent may only apply to connection
+#   + socat - has -t/connect-timeout (channel handshake) and -T (inactivity),
+#       (but socat just sits there if it connects but hangs on a protocol string)
+# (3) NOT needed/redundant for tools that are built for scanning and have internal "hard" timeouts
+#   + nmap: use --host-timeout - reliable and handles the entire lifecycle of the probe
+#   + fping: use -t (per-target timeout). It’s designed for high-speed parallel work and won't hang
+#   + ping/arping: use -W (wait) and -c (count) - designed to exit after packet exchange/wait time
+# command   | GNU timeout n       | tool connection timeout   |
+# tool      | (jping $timeout -t) | (jping W="$waittime" -W)  | Logic/Notes
+# ----------|---------------------|---------------------------|---------------------------------
+# /dev/tcp  | timeout "$timeout"  | (N/A)                     | No internal timeout; needs GNU t
+# ssh       | timeout "$timeout"  | -o ConnectTimeout=${W}    | Protects vs protocol/banner hang
+# socat     | timeout "$timeout"  | connect-timeout=${W}      | Protects vs protocol/banner hang
+# nc        | timeout "$timeout"  | -w ${W}                   | Version-proofs the exit status
+# nmap      | Redundant           | --host-timeout ${W}       | Internal timer covers lifecycle
+# fping     | Redundant           | -t ${W_ms}                | Native parallel; very reliable
+# ping      | Redundant           | -W ${W}                   | Exits after count/wait reached
+# arping    | Redundant           | -W ${W}                   | Layer 2; exits after response
 
-#-----[ main script ]--------------------------------------------------
+
+#-----[ tool usage notes ]----------------------------------------------------------------------
+
+# actual in-script sytax and empirical results --
+# tst=socat; case "$target" in *:*) tgt="[${target}]" ;; *.*) gt="${target}" ;; *) tgt="" ;; esac
+# j_msg -$debug -p "testing tgt: $tgt"
+# if timeout 0.3 socat - TCP:"$tgt":22,connect-timeout=0.3 \
+#  1>/dev/null 2>/dev/null < /dev/null; then                                            3.210s (slowest; very finicky)
+# tst=devtcp; if timeout 0.3 bash -c "echo > /dev/tcp/$target/22" 2>/dev/null; then     1.787s
+# tst=nc; if nc -z -w 1 "$target" 22 2>/dev/null; then                                  1.348s (fastest)
+# tst=ping; if ping -W 1 -c 1 "$target" &>/dev/null ; then                              2.602s
+
+#-----[ main script ]---------------------------------------------------------------------------
 #checknotroot  # principle of least privilege (root priv not required for this script)
 
 # Register the cleanup hook to catch Normal exits (0), Interrupts (2), and Terminations (15)
