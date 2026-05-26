@@ -1506,6 +1506,9 @@ BCon="${CSI}${CYAN};${BOLD}m"
 BWon="${CSI}${WHITE};${BOLD}m"
 RVon="${CSI}${REVERSE}m"
 Boff="${CSI}${SGRoff}m"          # Bold off (reset all SGR (e.g. blink, underline)
+BOLDon="${CSI}${BOLD}m"          # 20260525 - added rather than risking regression by replacing BOLD=
+                                 # this enables modular application of BOLD like ${BOLDon}${Gon} equivalent to ${BGon}
+                                 # and facilitates consruction of the 24-bit true color palette functions, below
 #-----[ Here setting background as well ]--------------------------------------------
 BBonY="${CSI}${BLUE};${YBACK};${BOLD}m"
 
@@ -1618,55 +1621,72 @@ CROSS_dbl='\342\225\254'      # ╬ (0x256C)
 #   these values -- every byte of every emoji has bit 8 = 1, so its value
 #   is always > 128 and thus out of range for ascii
 
+color() # (POSIX) set FG $1, optional [bold $2], optional [BG $3]
+{ _FG=""    # Foreground (3x)
+  _BG=""    # Background (4x)
+  _B=""     # Bold (0/1)
+  _V_FG="${1:-39}"  # Default _FG is 39 (terminal default)
+  _V_B="${2:-0}"    # Default Bold is 0 (Normal)
+  _V_BG="${3:-49}"  # Default _BG is 49 (terminal default)
+  # validate foreground (3x) or set default 39; set bold appropriately
+  case "$_V_FG" in
+    3[0-7])  # foreground is set
+      _FG="$_V_FG" ;
+      # validate bold (0/1)
+      case "$_V_B" in
+        1) _B=";1" ;;
+        0) _B="" ;;
+        *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
+      esac  # _B
+      ;;
+    39)     # unset foreground for default
+      _FG="" ;
+      # validate bold (0/1) - omit leading ; since no $1
+      case "$_V_B" in
+        0|1) _B="$_V_B" ;;
+        *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
+      esac  # _B
+      ;;  # allow unset args $(color) to equate to ${Boff}
+    *) echo "$E_BAD_COLOR: Foreground ($_V_FG)(3x)"; return 1 ;;
+  esac # _FG
 
+  # validate background (4x) or set default (unset)
+  case "$_V_BG" in
+    4[0-7]) _BG=";$_V_BG" ;;
+    49) _BG="" ;;  # allow unset _BG to imply terminal default
+    *) echo "$E_BAD_COLOR: Background ($_V_BG)(4x)"; return 1 ;;
+  esac
+  # output the raw ANSI escape sequence
+  printf "%s%s%s%s%s" "${CSI}" "${_FG}" "${_B}" "${_BG}" "m"
+  # Clean up local variables to maintain POSIX hygiene
+  unset -v _FG _BG _B _V_FG _V_B _V_BG
+}
+# @usage color FG [BOLD] [BG]
+# @args $1: FG code (30-37, 39); $2: Bold (0/1); $3: BG code (40-47, 49)
+# @ret Raw ANSI escape sequence (precooked CSI...m)
+# @rule Validates inputs using case; returns E_BAD_COLOR and exit 1 on invalid codes
+# @ex color 31 1 44  # returns Red on Blue, Bold
+# @note Use $(color) with no args to reset to terminal default (equiv to Boff)
+
+#-----[ global 24-bit truecolor functions and codes ]----------------------------------------------
+
+RGB_FG() # (POSIX) set 24-bit truecolor foreground R:$1 G:$2 B:$3
+{ local _FG="38;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%sm' "${CSI}" "${_FG}" "${_R}" "${_G}" "${_B}" ; }
+
+RGB_BG() # (POSIX) set 24-bit truecolor background R:$1 G:$2 B:$3
+{ local _BG="48;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%sm' "${CSI}" "${_BG}" "${_R}" "${_G}" "${_B}" ; }
+
+B_RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local _FG="38;2"; _R=$1; _G=$2; _B=$3;
+  printf '%s%s;%s;%s;%s;%sm' "${CSI}" "${_FG}" "${_R}" "${_G}" "${_B}" "${BOLD}"; }
+Oon=$(RGB_FG 255 165 0)
+BOon="${BOLDon}${Oon}"
+BOonBB=${BOon}$(RGB_BG 0 0 255)
 
 # @note =====[ Section 2: Terminal & Cursor Control Functions ]=====================================================
-color() # (POSIX) set FG $1, optional [bold $2], optional [BG $3]
-{ # @usage color FG [BOLD] [BG]
-  # @args $1: FG code (30-37, 39); $2: Bold (0/1); $3: BG code (40-47, 49)
-  # @ret Raw ANSI escape sequence (precooked CSI...m)
-  # @rule Validates inputs using case; returns E_BAD_COLOR and exit 1 on invalid codes
-  # @ex color 31 1 44  # returns Red on Blue, Bold
-  # @note Use $(color) with no args to reset to terminal default (equiv to Boff)
-    _FG=""    # Foreground (3x)
-    _BG=""    # Background (4x)
-    _B=""     # Bold (0/1)
-    _V_FG="${1:-39}"  # Default _FG is 39 (terminal default)
-    _V_B="${2:-0}"    # Default Bold is 0 (Normal)
-    _V_BG="${3:-49}"  # Default _BG is 49 (terminal default)
-    # validate foreground (3x) or set default 39; set bold appropriately
-    case "$_V_FG" in
-        3[0-7])  # foreground is set
-            _FG="$_V_FG" ;
-            # validate bold (0/1)
-            case "$_V_B" in
-                1) _B=";1" ;;
-                0) _B="" ;;
-                *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
-            esac  # _B
-            ;;
-        39)     # unset foreground for default
-            _FG="" ;
-            # validate bold (0/1) - omit leading ; since no $1
-            case "$_V_B" in
-                0|1) _B="$_V_B" ;;
-                *) echo "$E_BAD_COLOR: Bold attr ($_V_B)(0/1)"; return 1 ;;
-            esac  # _B
-            ;;  # allow unset args $(color) to equate to ${Boff}
-        *) echo "$E_BAD_COLOR: Foreground ($_V_FG)(3x)"; return 1 ;;
-    esac # _FG
 
-    # validate background (4x) or set default (unset)
-    case "$_V_BG" in
-        4[0-7]) _BG=";$_V_BG" ;;
-        49) _BG="" ;;  # allow unset _BG to imply terminal default
-        *) echo "$E_BAD_COLOR: Background ($_V_BG)(4x)"; return 1 ;;
-    esac
-    # output the raw ANSI escape sequence
-    printf "%s%s%s%s%s" "${CSI}" "${_FG}" "${_B}" "${_BG}" "m"
-    # Clean up local variables to maintain POSIX hygiene
-    unset -v _FG _BG _B _V_FG _V_B _V_BG
-}
 
 termwidth() # (POSIX plus) calculate and output the width of the terminal
 { # @usage termwidth
@@ -2203,6 +2223,213 @@ isnumeric() # (POSIX) tests if $1 is any valid numeric type (Dec, Hex, or Float)
 # @deps isint, ishexint, isfloat_posix
 # @ret 0 if input matches any supported POSIX numeric type; 1 if not
 # @note wrapper function for the strict POSIX validation suite
+
+isipv4() # (POSIX) test if $1 is a valit ipv4 address
+{ # ensure it contains exactly 3 dots and fits the basic quad shape
+    case "$1" in
+        .*|*.|*..*) return 1 ;; # reject leading, trailing, or double dots
+        *.*.*.*.*) return 1 ;;  # too many dots
+        *.*.*.*) ;;             # goldilocks dots
+        *) return 1 ;;          # must be too few dots
+    esac
+    # split octets safely using POSIX parameter expansion
+    _i4_o1=${1%%.*}; _i4_rem=${1#*.}
+    _i4_o2=${_i4_rem%%.*}; _i4_rem=${_i4_rem#*.}
+    _i4_o3=${_i4_rem%%.*}; _i4_rem=${_i4_rem#*.}
+    _i4_o4=${_i4_rem}
+    # validate each octet is a number between 0 and 255
+    for _i4_octet in "$_i4_o1" "$_i4_o2" "$_i4_o3" "$_i4_o4"; do
+        isint "$_i4_octet" ||return 1
+        if [ "$_i4_octet" -gt 255 ] || [ "$_i4_octet" -lt 0 ]; then return 1; fi
+        case "$_i4_octet" in 0[0-9]*) return 1 ;; esac   # also reject illegal leading 0 (e.g. 01, 005)
+    done
+    unset -v _i4_o1 _i4_o2 _i4_o3 _i4_o4 _i4_rem _i4_octet
+    return 0
+}
+# @usage isipv4 "input"
+# @args $1: the string to be tested
+# @deps isint
+# @ret 0 if input matches ipv4 format; 1 if not
+
+isipv6() # (POSIX) test if $1 is a valid ipv6 address
+{  _i6_ip=$1; _i6_SINGLE_DOUBLE=$FALSE # pseudo-boolean, only ever =$TRUE or =$FALSE, where TRUE=0; FALSE="" is global
+  # handle optional Link-Local Zone IDs (strip %eth0, etc.)
+  case "$_i6_ip" in *%*) _i6_ip=${_i6_ip%%%*} ;; esac
+  # handle optional prefix lenghts (strip /64, etc.)
+  case "$_i6_ip" in */*) _i6_ip=${_i6_ip%%/*} ;; esac
+  # only Hex digits and colons allowed
+  case "$_i6_ip" in *[!0-9a-fA-F:]*) return 1 ;; esac
+  # only 1 double-colon allowed, never 3+
+  case "$_i6_ip" in *::*::*|*:::*)  return 1 ;; esac
+  case "$_i6_ip" in
+    # allow and account for a one double-colon (e.g. ::1, fd62:6262:6262::, fd62:6262:6262::17)
+    ::*|*::|*::*) _i6_SINGLE_DOUBLE=$TRUE ;;
+    # reject - must be "naked solo" leading/trailing colon to get here
+    :*|*:) return 1 ;;
+  esac
+  case "$_i6_ip" in
+    *:*:*:*:*:*:*:*:*:*) return 1 ;;                      # 9 or more colons -> invalid
+    *:*:*:*:*:*:*:*:*)
+      # only allowed form of 8 colons when there is one leading/trailing double-colon (special 0-compression)
+      case "$_i6_ip" in ::*|*::) : ;; *) return 1 ;; esac ;;
+    *:*:*:*:*:*:*:*)  _i6_colons=7 ;;
+    *:*:*:*:*:*:*)    _i6_colons=6 ;;
+    *:*:*:*:*:*)      _i6_colons=5 ;;
+    *:*:*:*:*)        _i6_colons=4 ;;
+    *:*:*:*)          _i6_colons=3 ;;
+    *:*:*)            _i6_colons=2 ;;
+    *:*)              _i6_colons=1 ;;
+    *)                    return 1 ;; # 0 colons -> invalid
+  esac
+  # enforce other rules for compressed addresses
+  if [ "$_i6_SINGLE_DOUBLE" ]; then
+    # compressed - other than above, must have fewer than 7 colons total unless at absolute outer bounds
+    case "$_i6_ip" in
+      # Allowed only if the compression sits at the absolute outer bounds
+      ::*|*::) : ;;
+      # SINGLE_DOUBLE not one of above must be *::* (inner)
+      *) if [ "$_i6_colons" -ge 7 ] ; then return 1 ; fi ;;
+    esac
+  else
+    # not compressed - must have exactly 7 colons
+    if [ "$_i6_colons" -ne 7 ] ; then return 1; fi
+  fi
+  # remove allowed and checked-above potential leading or trailing : from _i6_ip and then
+  # split hextets safely using POSIX parameter expansion
+  # note: for compressed addresses possibly as short as ::1,
+  #  rem can repeatedly become the last hextet as early as the second assignment
+  #  and _i6_h4+ can "incorrectly" also contain this redundant value
+  # (this is ok because the goal is not to rebuild the address but to check
+  #   if it is valid here we may redundantly validate the last hextet
+  #   but that is safer and probably more efficient than using a loop
+  #   with eval to replace this assignment block)
+  # strip leading colons
+  _i6_tmp="$_i6_ip"
+  while [ "${_i6_tmp%"${_i6_tmp#?}"}" = ":" ]; do _i6_tmp=${_i6_tmp#:}; done
+  # strip trailing colons
+  while [ "${_i6_tmp#"${_i6_tmp%?}"}" = ":" ]; do _i6_tmp=${_i6_tmp%:}; done
+  _i6_h1=${_i6_tmp%%:*}   ; _i6_rem=${_i6_tmp#*:}
+  _i6_h2=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h3=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h4=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h5=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h6=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h7=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h8=${_i6_rem}
+  # validate every hextet
+  for _i6_hextet in "$_i6_h1" "$_i6_h2" "$_i6_h3" "$_i6_h4" "$_i6_h5" "$_i6_h6" "$_i6_h7" "$_i6_h8"; do
+    # reject any hextet 5 or more characters long
+    if [ "${#_i6_hextet}" -gt 4 ]; then return 1 ; fi
+    # reject if not hex integer (prepend 0x0 for ishexint compatibility, even with "")
+    if ! ishexint "0x0$_i6_hextet"; then return 1 ; fi
+    # retained below as instructive, but commented out as redundant to above (no 4-char hex can be bigger than ffff)
+    # reject if greater than 0xffff or negative (prepend 0 to keep "" from failing)
+    #_i6_dec=$(h2d "0$_i6_hextet")
+    #if [ "$_i6_dec" -gt 65535 ] ; then j_msg "-${debug}" -p "too big"; return 1; fi
+  done
+  unset -v _i6_ip _i6_SINGLE_DOUBLE _i6_colons _i6_hextet _i6_dec _i6_tmp
+  unset -v _i6_h1 _i6_h2 _i6_h3 _i6_h4 _i6_h5 _i6_h6 _i6_h7 _i6_h8
+  return 0
+}
+
+isipv6_debug() # (POSIX) test if $1 is a valid ipv6 address
+{ # note j_msg is not defined until far below, but proxy is defined early, just in case this runs before full parsing
+  _i6_ip=$1; _i6_SINGLE_DOUBLE=$FALSE # pseudo-boolean, only ever =$TRUE or =$FALSE, where TRUE=0; FALSE="" is global
+  # handle optional Link-Local Zone IDs (strip %eth0, etc.)
+  case "$_i6_ip" in *%*) _i6_ip=${_i6_ip%%%*} ; j_msg "-${debug}" -p "trimmed %iface" ;; esac
+  # handle optional prefix lenghts (strip /64, etc.)
+  case "$_i6_ip" in */*) _i6_ip=${_i6_ip%%/*} ; j_msg "-${debug}" -p "trimmed /prefix_len" ;; esac
+  # only Hex digits and colons allowed
+  case "$_i6_ip" in *[!0-9a-fA-F:]*) j_msg "-${debug}" -p "only hex and : allowed"; return 1 ;; esac
+  # only 1 double-colon allowed, never 3+
+  case "$_i6_ip" in *::*::*|*:::*) j_msg "-${debug}" -p "only 1 :: allowed"; return 1 ;; esac
+  case "$_i6_ip" in
+    # allow and account for a one double-colon (e.g. ::1, fd62:6262:6262::, fd62:6262:6262::17)
+    ::*|*::|*::*)
+      _i6_SINGLE_DOUBLE=$TRUE;
+      j_msg "-${debug}" -p "allowed double and set _i6_SINGLE_DOUBLE [$(TrueFalse $_i6_SINGLE_DOUBLE)]" ;;
+    # reject - must be "naked solo" leading/trailing colon to get here
+    :*|*:) j_msg "-${debug}" -p "rejected naked solo leading/trailing colon"; return 1 ;;
+  esac
+  case "$_i6_ip" in
+    *:*:*:*:*:*:*:*:*:*)
+      j_msg "-${debug}" -p "rejected 9+ :" ;
+      return 1 ;;                      # 9 or more colons -> invalid
+    *:*:*:*:*:*:*:*:*)
+      # only allowed form of 8 colons when there is one leading/trailing double-colon (special 0-compression)
+      case "$_i6_ip" in
+        ::*|*::) j_msg "-${debug}" -p "allowed 8 : leading/trailing SINGLE_DOUBLE" ;;
+        *) j_msg "-${debug}" -p "rejected 8 : - not leading/trailing SINGLE_DOUBLE" ; return 1 ;;
+      esac ;;
+    *:*:*:*:*:*:*:*)  _i6_colons=7 ;;
+    *:*:*:*:*:*:*)    _i6_colons=6 ;;
+    *:*:*:*:*:*)      _i6_colons=5 ;;
+    *:*:*:*:*)        _i6_colons=4 ;;
+    *:*:*:*)          _i6_colons=3 ;;
+    *:*:*)            _i6_colons=2 ;;
+    *:*)              _i6_colons=1 ;;
+    *)                 return 1 ;; # 0 colons -> invalid
+  esac
+  j_msg "-${debug}" -p "_i6_colons: [$_i6_colons]"
+  # enforce other rules for compressed addresses
+  if [ "$_i6_SINGLE_DOUBLE" ]; then
+    # compressed - other than above, must have fewer than 7 colons total unless at absolute outer bounds
+    case "$_i6_ip" in
+      # Allowed only if the compression sits at the absolute outer bounds
+      ::*|*::) j_msg "-${debug}" -p " *:: or ::* allowed after colon-count check" ;;
+      # SINGLE_DOUBLE not one of above must be *::* (inner)
+      *) if [ "$_i6_colons" -ge 7 ] ; then
+           j_msg "-${debug}" -p "rejected 7+ : - not *:: or ::*"; return 1
+          else
+            j_msg "-${debug}" -p "allowed : *::* (inner SINGLE_DOUBLE) with < 7 :"
+          fi
+        ;;
+    esac
+  else
+    # not compressed - must have exactly 7 colons
+    if [ "$_i6_colons" -ne 7 ] ; then j_msg "-${debug}" -p "non-compressed w lt 7 :"; return 1; fi
+  fi
+  # remove allowed and checked-above potential leading or trailing : from _i6_ip and then
+  # split hextets safely using POSIX parameter expansion
+  # note: for compressed addresses possibly as short as ::1,
+  #  rem can repeatedly become the last hextet as early as the second assignment
+  #  and _i6_h4+ can "incorrectly" also contain this redundant value
+  # (this is ok because the goal is not to rebuild the address but to check
+  #   if it is valid here we may redundantly validate the last hextet
+  #   but that is safer and probably more efficient than using a loop
+  #   with eval to replace this assignment block)
+  # strip leading colons
+  _i6_tmp="$_i6_ip"
+  while [ "${_i6_tmp%"${_i6_tmp#?}"}" = ":" ]; do _i6_tmp=${_i6_tmp#:}; done
+  # strip trailing colons
+  while [ "${_i6_tmp#"${_i6_tmp%?}"}" = ":" ]; do _i6_tmp=${_i6_tmp%:}; done
+  j_msg "-${debug}" -p "after stripping leading/trailing :s _i6_tmp: [$_i6_tmp]"
+  _i6_h1=${_i6_tmp%%:*}   ; _i6_rem=${_i6_tmp#*:}
+  _i6_h2=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h3=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h4=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h5=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h6=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h7=${_i6_rem%%:*}  ; _i6_rem=${_i6_rem#*:}
+  _i6_h8=${_i6_rem}
+  # validate every hextet
+  for _i6_hextet in "$_i6_h1" "$_i6_h2" "$_i6_h3" "$_i6_h4" "$_i6_h5" "$_i6_h6" "$_i6_h7" "$_i6_h8"; do
+    # reject any hextet 5 or more characters long
+    if [ "${#_i6_hextet}" -gt 4 ]; then j_msg "-${debug}" -p "5+ _i6_hextet [$_i6_hextet]"; return 1 ; fi
+    # reject if not hex integer (prepend 0x0 for ishexint compatibility, even with "")
+    if ! ishexint "0x0$_i6_hextet" ; then j_msg "-${debug}" -p "non-hexint [$_i6_hextet]"; return 1 ; fi
+    j_msg "-${debug}" -p "accepted hexint [$_i6_hextet]"
+    # retained below as instructive, but commented out as redundant to above (no 4-char hex can be bigger than ffff)
+    # reject if greater than 0xffff or negative (prepend 0 to keep "" from failing)
+    #_i6_dec=$(h2d "0$_i6_hextet")
+    #if [ "$_i6_dec" -gt 65535 ] ; then j_msg "-${debug}" -p "too big"; return 1; fi
+  done
+  j_msg "-${debug}" -p "isipv6 complete $_i6_ip is ipv6; exiting status 0"
+  unset -v _i6_ip _i6_SINGLE_DOUBLE _i6_colons _i6_hextet _i6_dec _i6_tmp
+  unset -v _i6_h1 _i6_h2 _i6_h3 _i6_h4 _i6_h5 _i6_h6 _i6_h7 _i6_h8
+  return 0
+}
+
 
 isroot() # (POSIX) silent check for root UID
 { # @usage isroot || echo "not root"
