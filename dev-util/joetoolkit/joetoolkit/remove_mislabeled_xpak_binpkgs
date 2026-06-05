@@ -1,0 +1,43 @@
+#!/bin/bash
+#
+# find ... -exec sh -c '...' _ {} +
+# above idiom batches found files and passes them as arguments to an inline shell script (sh)
+# (the underscore (_) acts as a placeholder for the shell name ($0)
+#  the + causes {} to pass ALL found files to sh -c '...' at once)
+
+source /usr/sbin/script_header_joetoo
+
+PN=${0##*/}   #  like =$(basename $0) but w/o subshell and function call
+
+if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
+
+[ -z $verbosity ] && verbosity=${notice}  # assign default if null; allow calling program to dictate
+
+checkroot
+separator "$(hostname)" "${PN}-${BUILD}"
+
+for target in /var/cache/binpkgs/ /var/cache/binhost/; do
+    j_msg "-${notice}" -p "checking/cleaning $target ..."
+    if [ -d "$target" ]; then
+        j_msg "-${notice}" -p "finding removing non-gpkg files ..."
+        find "$target" -type f -iname "*.*" -and -not -iname '*.gpkg.tar'
+        j_msg "-${notice}" -p "finding removing .gpgk.tar files that are actually xpak format ..."
+        find "$target" -type f -name "*.gpkg.tar" -exec sh -c '
+            for file; do
+                if file "$file" | grep -qE "compressed data|bzip2|xz|gzip|XPAK"; then
+                    echo "  [MISMATCH] $file (removing)"
+                    rm -vf "$file" | sed "s|^|    |"
+                fi
+            done
+        ' _ {} +
+    else
+        j_msg "-${warn}" -p "$target not found, skipping"
+    fi
+done
+
+j_msg "-${notice}" -p "running emaint binhost --fix"
+emaint binhost --fix
+handle_result $? '' '' "$notice"
+j_msg "-${notice}" -p "running eclean-pkg -d"
+eclean-pkg -d
+handle_result $? '' '' "$notice"
