@@ -128,6 +128,14 @@ my_usage() {
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -A|--associative${Boff}${Con} .....: from file, form an associve array of ip addrs keyed on hostnames${Boff}"
   j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -v|--louder${Boff}${Con} ..........: Increase verbosity (may repeat)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -q|--quieter${Boff}${Con} .........: Fecrease verbosity (may repeat)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -Q|--quiet${Boff}${Con} ...........: Silence most output (script_header_joetoo quiet mode)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -D|--debug${Boff}${Con} ...........: Enable debug output${Boff}"
+  j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -h|--help${Boff}${Con} ............: print this message${Boff}"
   j_msg "-${notice}" -m "$msg"
   msg="${BYon}Arguments --${Boff}"
@@ -465,6 +473,10 @@ parse_cmdline_and_validate_input() {
     j_msg "-${err}" "too many [$#] args [$*]"
     my_usage; exit 1
   fi
+  # pre-define a dynamic macro for adjusting verbosity (used by script_header_joetoo's _pc_action_verbosity
+  # usage example: _pc_operator="+"; eval "$_pc_adjust_verbosity"
+  _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))"
+
   j_msg "-${debug}" -p "${BYon}cmdlind${Boff}: [$*]"
   # parse command line (validate any $2 arg requested by $1 before assigning
   # ($2 must exist, which is not the case if $1 was the last arg,
@@ -587,6 +599,24 @@ parse_cmdline_and_validate_input() {
           export ASSOCIATIVE="$TRUE"
           j_msg "-${debug}" -p "${BYon}set${Boff} ASSOCIATIVE: [$(TrueFalse "$ASSOCIATIVE")], shifting 1"
           ;;
+
+      -Q|--quiet)  # ................................. # (silence) using using script_header_joetoo _pc_action_quiet
+        _pc_action_quiet
+        j_msg -${debug} -p "(pc)(Q) ran _pc_action_quiet; shifting 1"
+        ;;
+
+      -D|--debug)  # ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, # (debug)
+        export DEBUG=$TRUE; j_msg -${debug} -p "(pc)(D) set DEBUG=\$TRUE; shifting 1" ;;
+
+      -v|--louder)  # ................................ # (increase verbosity) using script_header_joetoo _pc_action_verbosity
+        _pc_operator="+"; _pc_action_verbosity
+        j_msg -${debug} -p "(pc)(v) ran _pc_action_verbosity (op: +); shifting 1"
+        ;;
+
+      -q|--quieter)  # ............................... # (decrease verbosity) using script_header_joetoo _pc_action_verbosity
+        _pc_operator="-"; _pc_action_verbosity
+        j_msg -${debug} -p "(pc)(q) ran _pc_action_verbosity (op: -); shifting 1"
+        ;;
 
       -h|--help           ) my_usage; exit 1 ;;
 
@@ -939,7 +969,7 @@ _do_fping() {
   # append timing options to _fp_opts
   _fp_opts+=("-r" "$_retries" "-i" "$_interval" "-t" "$_wait_ms")
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _fp_opts: [${_fp_opts[@]}]"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: fping ${_fp_opts[@]} \${targets[@]}"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} command: fping ${_fp_opts[@]} \${targets[@]}"
 
   # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
@@ -1044,8 +1074,8 @@ _do_nmap() {
   # (flag and value as separate array elements so they parse properly)
   _nm_opts+=("--host-timeout" "${_wait_ms}ms" "-p" "$_port" "-oG" "-")
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} _nm_opts: [${_nm_opts[*]}]"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} ipv4 native parallel command: nmap ${_nm_opts[@]} \${targets_4[@]}"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} ipv6 manual parallel command: timeout --signal=INT 2 nmap ${_nm_opts[@]} -6 \$target"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} ipv4 native parallel command: nmap ${_nm_opts[@]} \${targets_4[@]}"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} ipv6 manual parallel command: timeout --signal=INT 2 nmap ${_nm_opts[@]} -6 \$target"
   j_msg "-${debug}" -p "${BYon}(debug)${Boff} mode: [$mode]"
 
   # FUTURE HOOK: add multi-port scanning here
@@ -1147,7 +1177,7 @@ _do_devtcp() {
       j_msg "-${warn}" -p "assiigned timeout=1 because it and waittime were both empty"
     fi
   fi
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout bash -c \"</dev/tcp/\${target}/22\""
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} command: timeout $timeout bash -c \"</dev/tcp/\${target}/22\""
 
   # handle user-directed RESOLVE choice
 #  if [ "$RESOLVE" ] ; then _nm_opts+=("-R"); else _nm_opts+=("-n"); fi
@@ -1225,7 +1255,7 @@ _do_netcat() {
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
   j_msg "-${debug}" -p "_nc_opts: [${_nc_opts[@]}]"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout nc ${_nc_opts[@]} \${fam} \$target $port"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} command: timeout $timeout nc ${_nc_opts[@]} \${fam} \$target $port"
 
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
@@ -1342,7 +1372,7 @@ _do_ssh() {
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
   j_msg "-${debug}" -p "checking [${#targets[@]}] targets"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ssh \${fam} ${ssh_opts[*]} \"\$target\" true 2>&1"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} command: timeout $timeout ssh \${fam} ${ssh_opts[*]} \"\$target\" true 2>&1"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _ssh_cmd() {
@@ -1402,7 +1432,7 @@ _do_ping() {
   # for associateive array ${!var[@]} lists all keys (i.e. ips in this case)
   [ "$ASSOCIATIVE" ] && targets=("${!a_targets[@]}")
 
-  j_msg "-${info}" -m "${BWon}(info)${Boff} command: timeout $timeout ping ${_ping_opts[@]} \$target &>/dev/null"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} command: timeout $timeout ping ${_ping_opts[@]} \$target &>/dev/null"
   j_msg "-${debug}" -m "${BYon}(debug)${Boff} mode: [$mode]"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
@@ -1480,7 +1510,7 @@ _do_socat() {
   # formulate _socat_opts array
   _msg="command:  timeout $timeout socat ${_socat_opts[@]}"
   _msg+=" TCP:\"\${target}\":${port},connect-timeout=${waittime} 2>/dev/null"
-  j_msg "-${info}" -m "${BWon}(info)${Boff} $_msg"
+  j_msg "-${notice}" -m "${BWon}(notice)${Boff} $_msg"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _socat_cmd() {
@@ -1631,9 +1661,9 @@ _do_arping() {
   # note that this list may include hostnames that may be resolved by _core functions
   # to ipv6 addresses or foreign subnets; so _arping_cmd will need to furnter filter each final _target
 
-  _msg="${BWon}(info)${Boff} command: [timeout $timeout arping ${_arping_opts[@]} -I \"\$_my_interface\" \"\$_target\" &>/dev/null]"
+  _msg="${BWon}(notice)${Boff} command: [timeout $timeout arping ${_arping_opts[@]} -I \"\$_my_interface\" \"\$_target\" &>/dev/null]"
 
-  j_msg "-${info}" -m "$_msg"
+  j_msg "-${notice}" -m "$_msg"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _arping_cmd() {
@@ -1748,9 +1778,9 @@ _do_ndisc6() {
   # note that this list may include hostnames that may be resolved by _core functions
   # to ipv6 addresses or foreign subnets; so _arping_cmd will need to furnter filter each final _target
 
-  _msg="${BWon}(info)${Boff} command: [timeout $timeout ndisc6 ${_ndisc6_opts[@]} \"\$_target\" \"\$_my_interface\" &>/dev/null]"
+  _msg="${BWon}(notice)${Boff} command: [timeout $timeout ndisc6 ${_ndisc6_opts[@]} \"\$_target\" \"\$_my_interface\" &>/dev/null]"
 
-  j_msg "-${info}" -m "$_msg"
+  j_msg "-${notice}" -m "$_msg"
 
   # form the "unloaded" command as a function taking ${target} as its arg, to be evaluated at load/run time
   _ndisc6_cmd() {
@@ -1857,7 +1887,7 @@ _do_ndisc6() {
 trap '_jping_terminal_sanity' EXIT INT TERM
 
 separator "$(hostname)" "${PN}-${BUILD}"
-j_msg "-${info}" -M "$idx_rocket" "Starting"
+j_msg "-${notice}" -M "$idx_rocket" "Launching ..."
 
 parse_cmdline_and_validate_input "$@" || die "failed to parse_cmdline_and_validate_input"
 
@@ -1873,4 +1903,4 @@ fi
 time "_do_${command}"
 wait  # allow parallel/backgrounded jobs to finish (in case I forgot to have them do this internally)
 
-j_msg "-${info}" -p -M "$idx_face_grin" "Complete"
+j_msg "-${notice}" -p -M "$idx_face_grin" "Complete"
