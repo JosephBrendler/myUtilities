@@ -24,10 +24,10 @@ signing_lock="${signing_pubkey_dir%/}/pubring.db.lock"
 separator "$(hostname)" "${PN}-${BUILD}"
 
 # start with the proper tools to properly terminate all active GnuPG components
-for x in "$signing_keyring_dir" "$verification_keyring_dir"' do
-  j_msg "-${notice}" -p "Running gpgconf --homedir=\"$x\" --kill all ..."
+for x in "$signing_keyring_dir" "$verification_keyring_dir"; do
+  j_msg "-${notice}" -p "Running gpgconf --homedir=$x --kill all ..."
   gpgconf --homedir="${x}" --kill all
-  handle_result $? '' '' "$notice"
+  handle_result $? "" "" "$notice"
 done
 
 # the lockout this script corrects is usually caused by stale keyboxd, gpg, or gpg-agent processes
@@ -66,14 +66,19 @@ fi
 
 # verify lock(s) cleared
 j_msg "-${notice}" -p -n "Verifying signing key is unlocked"
-gpg --homedir "${signing_keyring_dir}" --list-keys > /dev/null
+gpg --homedir "${signing_keyring_dir}" --list-keys &>/dev/null
 right_status $? "$notice"
 
-# clean out Portage's temporary workspace
+# clean out portage temporary workspace
 j_msg "-${notice}" -p -n "cleaning out portage temp workspace"
-PORTAGE_TMPDIR=$(source /etc/portage/make.conf; printf '%s\n' "$PORTAGE_TMPDIR")
-rm -rf "${PORTAGE_TMPDIR%/}/portage/"* 2>/dev/null
-right_status $? "$notice"
+PORTAGE_TMPDIR=$(source /etc/portage/make.conf; echo "$PORTAGE_TMPDIR")
+if [ -n "$PORTAGE_TMPDIR" ] ; then
+  rm -rf "${PORTAGE_TMPDIR%/}/portage/"* 2>/dev/null && \
+  rm -rf "${PORTAGE_TMPDIR%/}/portage/".* 2>/dev/null
+  right_status $? "$notice"
+else
+  handle_result 1 "" "invalid PORTAGE_TMPDIR [$PORTAGE_TMPDIR]" "$notice"
+fi
 
 # now unlock the keyring for upcoming emerge operations (joetoo_script_header ask_pass)
 j_msg "-${notice}" -p -n "Re-starting gpg-agent"
@@ -82,8 +87,8 @@ right_status $? "$notice"
 
 j_msg "-${notice}" -p "Presetting cached passphrase ..."
 pass_phrase="$(ask_pass "    Enter signing keyring passphrase: ")"
-printf '%s\n' "$pass_phrase" | /usr/libexec/gpg-preset-passphrase --preset "${signing_keygrip}"
+echo "$pass_phrase" | /usr/libexec/gpg-preset-passphrase --preset "${signing_keygrip}"
 j_msg "-${notice}" -p -n "Done presetting cached passphrase; result:"
-handle_result $? '' '' "$notice"
+handle_result $? "" "" "$notice"
 
 j_msg "-${notice}" -m "Done"
