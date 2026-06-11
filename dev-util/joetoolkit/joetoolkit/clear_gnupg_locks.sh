@@ -65,7 +65,7 @@ right_status $? "$notice"
 j_msg "-${notice}" -p "Presetting cached passphrase ..."
 pass_phrase="$(ask_pass "    Enter signing keyring passphrase: ")"
 printf '%s\n' "$pass_phrase" | /usr/libexec/gpg-preset-passphrase --preset "${signing_keygrip}"
-j_msg "-${notice}" -p "Done presetting cached passphrase; result:"
+j_msg "-${notice}" -p -n "Done presetting cached passphrase; result:"
 handle_result $? '' '' "$notice"
 
 j_msg "-${notice}" -m "Done"
