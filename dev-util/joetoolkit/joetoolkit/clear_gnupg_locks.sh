@@ -23,13 +23,16 @@ separator "$(hostname)" "${PN}-${BUILD}"
 
 # the lockout this script corrects is usually caused by stale keyboxd, gpg, or gpg-agent processes
 # holding a lock on the signing keys ...
-# if there are gpg, keyboxd, or gpg-agent processes, kill them
+# if there are gpg, keyboxd, scdaemon, dirmngr, or gpg-agent processes, kill them
 # (keyboxd and gpg-agent are transient daemons managed completely on-demand by GnuPG,
 #  it is safe to forcefully terminate them when no cryptographic tasks are actively processing;
 #  they will cleanly respawn on next package build)
 # (-9 causes this to use SIGKILL - more forcefull vs SIGTERM w/o -9)
-for x in keyboxd gpg-agent gpg; do
-  if pgrep "$x" &>/dev/null; then
+# use -x to be exact about name
+# gpg is the front end (kill first), gpg-agent is the master back end (kill last)
+# scdaemon is a child-worker, dirmngr is a network-worker, keyboxd is database manager (for gpg-agent)
+for x in gpg scdaemon dirmngr keyboxd gpg-agent ; do
+  if pgrep -x "$x" &>/dev/null; then
     j_msg "-${notice}" -p -n "running killall $x"
     killall -9 "$x" 2>/dev/null
     right_status $? "$notice"
