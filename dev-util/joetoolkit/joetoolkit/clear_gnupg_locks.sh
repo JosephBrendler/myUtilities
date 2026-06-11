@@ -10,6 +10,8 @@ if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0
 signing_keyring_dir="/root/.gnupg"
 signing_key_email="joseph.brendler@gmail.com"
 
+verification_keyring_dir="/etc/portage/gnupg"
+
 # to read your signing keygrip, do e.g. -
 # gpg --homedir="${signing_keyring_dir}" --with-keygrip -K "${signing_key_email}"
 # (note: pick the "sec" keygrip, not the "ssb"
@@ -20,6 +22,13 @@ signing_pubkey_dir="${signing_keyring_dir%/}/public-keys.d"
 signing_lock="${signing_pubkey_dir%/}/pubring.db.lock"
 
 separator "$(hostname)" "${PN}-${BUILD}"
+
+# start with the proper tools to properly terminate all active GnuPG components
+for x in "$signing_keyring_dir" "$verification_keyring_dir"' do
+  j_msg "-${notice}" -p "Running gpgconf --homedir=\"$x\" --kill all ..."
+  gpgconf --homedir="${x}" --kill all
+  handle_result $? '' '' "$notice"
+done
 
 # the lockout this script corrects is usually caused by stale keyboxd, gpg, or gpg-agent processes
 # holding a lock on the signing keys ...
@@ -58,6 +67,12 @@ fi
 # verify lock(s) cleared
 j_msg "-${notice}" -p -n "Verifying signing key is unlocked"
 gpg --homedir "${signing_keyring_dir}" --list-keys > /dev/null
+right_status $? "$notice"
+
+# clean out Portage's temporary workspace
+j_msg "-${notice}" -p -n "cleaning out portage temp workspace"
+PORTAGE_TMPDIR=$(source /etc/portage/make.conf; printf '%s\n' "$PORTAGE_TMPDIR")
+rm -rf "${PORTAGE_TMPDIR%/}/portage/"* 2>/dev/null
 right_status $? "$notice"
 
 # now unlock the keyring for upcoming emerge operations (joetoo_script_header ask_pass)
