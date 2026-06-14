@@ -33,7 +33,7 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
 # note: to also force a "recook" of ui assets, remove
 #   /dev/shm/.joetoo_ui_asset_cache_${user} and
 #   /var/lib/joetoo/.joetoo_ui_asset_store, set JOETOO_FORCE_RELOAD=$TRUE, and then source this file
-if [ -z "$JOETOO_FORCE_RELOAD" ]; then
+if [ -z "$JOETOO_FORCE_RELOAD:-${FALSE}" ]; then
   # primary guard against recursive or excessive sourcing of this header file (use function check)
   # use command -v to check for function defined by header (more portable/faster POSIX than using type)
   if command -v emit &>/dev/null; then return; fi
@@ -42,7 +42,7 @@ if [ -z "$JOETOO_FORCE_RELOAD" ]; then
 fi
 
  # if here, past the guards, sourcing is underway, set this false
-JOETOO_ENVIRONMENT_ALREADY_SOURCED=$FLASE
+JOETOO_ENVIRONMENT_ALREADY_SOURCED=$FALSE
 
 #-----[ cleanup hookiInfrastructure ]-----------------------------------------
 # list of cleanup functions to run on die() or leave()
@@ -169,7 +169,8 @@ debug=7	  #   Debug	Debug-level messages. Detailed information typically only us
 # check set null vs unset and assign default verbosity and loglevel
 loglevel="${loglevel:-"${notice}"}"
 #  but only if not yet assigned by calling program
-verbosity="${verbosity:-"${notice}"}"  # Set default (2) if verbosity is UNSET or NULL
+verbosity="${verbosity:-"${notice}"}"  # Set default if verbosity is UNSET or NULL
+DEBUG="${DEBUG:-"${FALSE}"}"  # Set default if DEBUG is UNSET or NULL
 # synchronized deprecation strategy for "$VERBOSE" (redundant to any verbosity -gt 0)
 # 20260126 - transitioned to computed $VERBOSE retained only for compatibility
 # if legacy VERBOSE is *unset, initialize it from verbosity
@@ -199,6 +200,15 @@ fi
 
 is_utf8_terminal()   # (POSIX) return 0 if terminal can print utf-8, 1 otherwise
 { iut_ret=1
+  TERM="${TERM:-}"
+  SSH_TTY="${SSH_TTY:-}"
+  SSH_CLIENT="${SSH_CLIENT:-}"
+  STY="${STY:-}"
+  DISPLAY="${DISPLAY:-}"
+  WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
+  LC_ALL="${LC_ALL:-}"
+  LC_CTYPE="${LC_CTYPE:-}"
+  LANG="${LANG:-}"
   # careful - this runs every time the header is loaded. dont be too verbose
   if [ "$DEBUG" ] || [ "$verbosity" -ge 7 ]; then
     printf "%s\n" "TERM: $TERM"
@@ -260,7 +270,6 @@ is_utf8_terminal()   # (POSIX) return 0 if terminal can print utf-8, 1 otherwise
   # detect whether psmisc pstree is available
   HAVE_PSMISC_PSTREE="$FALSE"
   /usr/bin/pstree -s $$ &>/dev/null && HAVE_PSMISC_PSTREE="$TRUE"
-
   if [ "$STY" ]; then
     _iut_be_pid=$(printf "%s" "$STY" | cut -d. -f1) # pid of back end (first part of e.g. 1459228.tty1.yorsqui)
     # find backend PTY (/dev/pts/ or /dev/tty entries in the backend's file descriptors in /proc/$PID/fd/)
@@ -321,6 +330,8 @@ is_utf8_terminal()   # (POSIX) return 0 if terminal can print utf-8, 1 otherwise
   # final evaluation
 #  j_msg -${debug} -p "final score for confidence in terminal unicode capability [$_iut_score]"
 
+  bin_trophy="${bin_trophy:-}"
+ idx_check_mark_button="${idx_check_mark_button:-}"
   if [ "$_iut_score" -gt 0 ]; then
     _iut_msg="CAPABLE $bin_trophy"
     _iut_args="-M $idx_check_mark_button -p"
@@ -2703,6 +2714,8 @@ utf8_string_width() # (POSIX) compute display width of a UTF-8 string
 
 get_msg_len() # (POSIX) compute display width of a message string
 { gml_ret=0
+  gml_last_str="${gml_last_str:-}"
+  gml_last_width="${gml_last_width:-}"
   # require at least one argument
   [ $# -lt 1 ] && return 1
   # tier 4 optimization - memoizaton (single entry cache) to speed up repeat-calls
@@ -4007,7 +4020,7 @@ emit() # (POSIX) consolidated msg engine in subshell isolates positional paramet
 
   # assemble and prepend log metadata timestamp and severity; space only if there actaully is content in ts
   # (and only if this is not a suppressed-prefix/timestamp call - like right_status)
-
+   log_prefix="${log_prefix:-}"
   if [ "$_TIMESTAMP" -eq 1 ] || [ "$_PREFIX" -eq 1 ]; then
     _sev_mark=$(get_severity "$_SEVERITY")
     # combine timestamp (if exists) + severity mark (space only if there actaully is content in ts)
@@ -4299,6 +4312,7 @@ j_msg() # (POSIX) universal messaging entry point
   _jm_lm_bitmask=$(( CONDITIONAL | ( $notice << SEVERITY_OFFSET ) ))
 
   # apply environment for logging to set default state of timestamp, but CLI can override
+  LOGGING="${LOGGING:-}"
   if [ "$LOGGING" ]; then
     _jm_sm_base=$(( _jm_sm_base | LOG | TIMESTAMP ))   # timestamp default-on
   fi
@@ -4332,6 +4346,7 @@ j_msg() # (POSIX) universal messaging entry point
   # combine remainin#   usage: _parse_msg_options <initial_bitmask> [options...]
   _jm_msg="$*"
   # apply stage of global environment variables ( but don't force timestamp )
+  QUIET="${QUIET:-}"
   [ "$LOGGING" ] && _jm_sm_bitmask=$(( _jm_sm_bitmask | LOG ))
   [ "$DEBUG" ]   && _jm_sm_bitmask=$(( _jm_sm_bitmask | FORCE ))
   [ "$QUIET" ]   && _jm_sm_bitmask=$(( _jm_sm_bitmask | SILENCE ))
@@ -4685,7 +4700,7 @@ get_severity() # (POSIX) map integer $1 severity levels to RFC 5424 keywords and
   esac
   _gs_msg="$_gs_level"
   # maybe also append description, if $2 = d
-  case $2 in [dD]* ) _gs_msg="${_gs_msg} - ${_gs_desc}" ;; esac
+  case  ${2:-} in [dD]* ) _gs_msg="${_gs_msg} - ${_gs_desc}" ;; esac
   printf '%s\n' "$_gs_msg" ; gs_ret=$?
 
   unset -v _gs_level _gs_desc _gs_msg
