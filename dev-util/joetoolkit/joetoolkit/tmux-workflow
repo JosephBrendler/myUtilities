@@ -1,0 +1,294 @@
+#!/bin/bash
+# tmux-workflow
+# hardened root-maintenance tmux workflow
+# normal quick ops: ssh user@<host> -> tmux (as user) -> sudo <root-task>
+# long root ops: ssh user@<host> -> sudo -i ->  tmux-workflow start -> <tasks> [detach]
+# exit immediately on any error; treat unset var as error; fail pipe if any part fails
+set -euo pipefail
+# note: with set -e, there is no benefit in using 2>/dev/null unless $? is consumed immediately (else script exits)
+# joetoo idiom announce/act/report-result is intended to consume $? immediately
+# any of the following satisfy immediate consumption of the result code of command "act" --
+#   act; handle_result $? '' ''
+#   act; rc=$?; echo "placeholder"; right_status $rc
+#   act || die "failed to ..."
+#   act && echo "success" || echo "fail"
+#   act | act2 ...
+#   if act; then...
+#   while act; do ...
+
+#-----[ variables ]------------------------------------------------------------------
+
+TRUE=0; FALSE=''
+JOETOO_FORCE_RELOAD=$TRUE
+source /usr/sbin/script_header_joetoo
+
+PN=${0##*/}
+
+SESSION_BASENAME="maint"
+
+SOCK_DIR="/run/root-tmux"
+
+SOCK_PATH="${SOCK_DIR}/${SESSION_BASENAME}_1.sock"  # this is a placeholder showing format; not used; assigned below
+
+
+#-----[ functions ]------------------------------------------------------------------
+
+usage() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    local _u_msg=""
+    j_msg "-${notice}" -p "${BRon}Usage${Boff}: ${PN} <ACTION>"
+    j_msg "-${notice}" -m "${BYon}Actions${Boff} --"
+    j_msg "-${notice}" -mp "   ${BCon}ls|l|list${Boff}${Con} ............:${Boff} list private root-only $PN sessions"
+    j_msg "-${notice}" -mp "   ${BCon}i|info${Boff}${Con} ...............:${Boff} show info on all $PN servers (id'd by socket path)"
+    j_msg "-${notice}" -mp "   ${BCon}s|start [d[etach]]${Boff}${Con} ...:${Boff} create private root-only $PN socket and start session"
+    j_msg "-${notice}" -mp "   ${BCon}a|attach${Boff}${Con} .............:${Boff} attach to the $PN root session"
+    j_msg "-${notice}" -mp "   ${BCon}k|kill${Boff}${Con} ...............:${Boff} terminate $PN root session and clean up socket"
+    j_msg "-${notice}" -mp "   ${BCon}c|cleanup${Boff}${Con} ............:${Boff} clean up dead sockets and related vestigial pids"
+    j_msg "-${notice}" -m "${BYon}Notes${Boff} --"
+    _u_msg="   ${Con}Default behavior of ${Gon}$PN ${BMon}start${Boff}${Con} is to attach;"
+    _u_msg+=" use ${Gon}sudo $PN ${BMon}start detach${Boff}${Con} to background the session${Boff}"
+    j_msg "-${notice}" -mp "$_u_msg"
+    j_msg "-${notice}" -m "${BYon}Example${Boff} --"
+    _u_msg="   ${BCon}Normal root ops${Boff}${Con} ....: ${Boff}ssh user@<host> -> tmux (as user) -> sudo <root-task>${Boff}"
+    j_msg "-${notice}" -mp "$_u_msg"
+    _u_msg="   ${BCon}Longer root ops${Boff}${Con} ....: ${Boff}ssh user@<host> ->"
+    _u_msg+=" sudo tmux-workflow start -> <start-root-task> -> [detach]${Boff}"
+    j_msg "-${notice}" -mp "$_u_msg"
+    _u_msg="   ${BCon}Continue root ops${Boff}${Con} ..: ${Boff}ssh user@<host> ->"
+    _u_msg+=" sudo tmux-workflow attach -> <complete-root-task> -> [kill|detach]${Boff}"
+    j_msg "-${notice}" -mp "$_u_msg"
+    _u_msg="   ${BCon}Clean up root ops${Boff}${Con} ..: ${Boff}ssh user@<host> -> sudo tmux-workflow kill${Boff}"
+    j_msg "-${notice}" -mp "$_u_msg"
+
+    exit 1
+}
+
+start_new_session() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    # NOTE: SOCK_DIR must exist first; onus on caller to ensure
+    local i=1
+    local session sock
+    # loop until i is an un-used session number and start a session with that index
+    while [ $TRUE ]; do
+        session="${SESSION_BASENAME}_${i}"; sock="${SOCK_DIR}/${session}.sock"
+        # try to create a new tmux server with this socket+session
+        if LC_CTYPE=en_US.utf8 tmux -S "$sock" new-session -d -s "$session" 2>/dev/null; then
+            # assign globals to be used by caller
+            SESSION="$session"; SOCK_PATH="$sock"
+            return 0
+        fi
+        i=$((i+1))
+    done
+}
+
+cmd_start() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    # tmux can support multiple sessions, each with multiple windows, each with multiple panes
+    # (but to stay simple, tmux-workflow creates tmux servers with --
+    #  exactly one session, with one window, wtih one pane, with one shell, with one pid)
+    # (the commands below, together with the start_new_session function
+    #  create a new server (new socket) for every new session; i.e. 1:1:1:1:1 -
+    #  peered multiple server|sessions|pid; rather than complex nested multiples)
+    local mode="${1:-attach}" _s_result=0
+    # guard - validate mode
+    case "$mode" in
+        a|attach|d|de|det|deta|detac|detach) j_msg "-${debug}" -p "${BYon}(debug)${Boff} mode [$mode] is valid";;
+        *) j_msg "-${err}" "${BRon}Error${Boff}: invalid start mode [$mode]"; usage ;;
+    esac
+    SESSION="${SESSION:-}"; SOCK_PATH="${SOCK_PATH:-}"
+    j_msg "-${notice}" -p -n "Creating root-only socket directory"
+    mkdir -p "${SOCK_DIR}"
+    handle_result $? "Directory: ${SOCK_DIR}" "Failed to mkdir -p ${SOCK_DIR}"
+
+    j_msg "-${notice}" -p -n "Setting chmod 700 on socket directory"
+    chmod 700 "${SOCK_DIR}"
+    handle_result $? "$(stat -c %a "${SOCK_DIR}")" "Failed to chmod 700 ${SOCK_DIR}"
+
+    j_msg "-${notice}" -p -n "Setting chown root:root on socket directory"
+    chown root:root "${SOCK_DIR}"
+    handle_result $? "$(stat -c %U:%G "${SOCK_DIR}")" "Failed to chown root:root ${SOCK_DIR}"
+
+    # default to starting attached; detach if user requested
+    case "$mode" in
+        d|de|det|deta|detac|detach)
+            j_msg "-${notice}" -p -n "Starting new root-only tmux session (detached)"
+            start_new_session
+            handle_result $? "Session started; socket: ${SOCK_PATH}" "Failed to start new root tmux"
+            ;;
+        *)
+            # announce/act/report-result - attach will follow quickly, so the result will be visible after detach/kill
+            j_msg "-${notice}" -p -n "Starting new root-only tmux session (attached)"
+            start_new_session
+            handle_result $? "Session started; socket: ${SOCK_PATH}" "Failed to start new root tmux"
+            # "pre-position" an "attached" message in the session
+            LC_CTYPE=en_US.utf8 tmux -S "$SOCK_PATH" send-keys "j_msg -${notice} -p 'Successfully attached to session: $SESSION'" C-m
+            LC_CTYPE=en_US.utf8 tmux -S "$SOCK_PATH" attach -t "$SESSION"
+            # this wont run until user detaches from or kills from inside the session, so report detachment or failure to attach
+            _s_ressult=$?
+            j_msg "-${notice}" -p -n "tmux result:"
+            handle_result $_s_result "tmux exited status [$_s_result]" "Failed to attach to root tmux"
+            ;;
+    esac
+}
+
+cmd_attach() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    # attach to session specified by $2 (default to highest #d)
+    local session="${1:-$(latest_session)}" _a_result=0
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} session: $session"
+    # guard - validate session name
+    case "$session" in
+        "${SESSION_BASENAME}_"*) j_msg "-${debug}" -p "${BYon}(debug)${Boff} session: $session is valid" ;;
+        *) j_msg "-${err}" "${BRon}Error${Boff}: invalid session name [$session]"; usage ;;
+    esac
+    # define SOCK_PATH for this session
+    SOCK_PATH="${SOCK_DIR}/${session}.sock"
+
+    # "pre-position" an "attached" message in the session
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} about to send-keys to SOCK_PATH [$SOCK_PATH]"
+    LC_CTYPE=en_US.utf8 tmux -S "$SOCK_PATH" send-keys "j_msg -${notice} -p 'Attached successfully'" C-m
+    j_msg "-${notice}" -p "Attaching to root tmux ..."
+    LC_CTYPE=en_US.utf8 tmux -S "$SOCK_PATH" attach -t "$session"
+    # this wont run until user detaches from or kills from inside the session, so report detachment or failure to attach
+    _a_ressult=$?
+    j_msg "-${notice}" -p -n "tmux result:"
+    handle_result $_a_result "tmux exited status [$_a_result]" "Failed to attach to root tmux"
+}
+
+cmd_kill() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    local session="${1:-$(latest_session)}" _k_result=0
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} session: $session"
+    # guard - validate session name
+    case "$session" in
+        "${SESSION_BASENAME}_"*) j_msg "-${debug}" -p "${BYon}(debug)${Boff} session: $session is valid" ;;
+        *) j_msg "-${err}" "${BRon}Error${Boff}: invalid session name [$session]"; usage ;;
+    esac
+    # define SOCK_PATH for this session
+    SOCK_PATH="${SOCK_DIR}/${session}.sock"
+
+    j_msg "-${notice}" -p "Killing root tmux session [$session]"
+    confirm_continue_or_exit
+    tmux -S "$SOCK_PATH" kill-session -t "$session" ; _k_result=$?
+    j_msg  "-${notice}" -p -n "Done killing session; result: "
+    handle_result $_k_result "Root tmux session killed" "Failed to kill root tmux session"
+    j_msg "-${notice}" -p -n "Removing root-only socket"
+    rm -f "$SOCK_PATH"
+    handle_result $? "Removed socket" "Failed to remove socket"
+    # remove socket directory only if other sockets do not exist (empty dir)
+    if [ -d "${SOCK_DIR}" ] && [ -z "$(ls -A "${SOCK_DIR}" 2>/dev/null)" ]; then
+        j_msg  "-${notice}" -p -n "Removing root-only socket directory"
+        rmdir "${SOCK_DIR}"
+        handle_result $? "Removed socket directory" "Failed to remove socket directory"
+    else
+        j_msg "-${notice}" -p "root-only socket directory is not empty; not removing"
+    fi
+}
+
+cmd_list() {
+    j_msg "-${debug}" -p "${BYon}(debug)${Boff} in ${FUNCNAME[0]} with arg(s) [$*]"
+    j_msg "-${notice}" -p "listing root tmux sessions on all tmux-workflow servers"
+    for s in "${SOCK_DIR%/}/"*.sock; do tmux -S "$s" ls 2>/dev/null; done
+}
+
+latest_session() {
+    cmd_list | grep "^${SESSION_BASENAME}_" | cut -d':' -f1 | sort -r | head -n 1
+}
+
+cmd_info() {
+    j_msg "-${notice}" -p "status of all running tmux-workflow servers"
+    local session="" pid="" created="" created_human=""
+    # iterate over all .sock files
+    for sock in "${SOCK_DIR%/}/"*.sock ; do
+        # check if tmux server is alive
+        if tmux -S "$sock" ls >/dev/null 2>&1; then
+            # extract session name
+            session=$(basename "$sock" .sock)
+            # extract PID of tmux server
+            pid=$(pgrep -f "tmux -S $sock" || echo "unknown")
+            # extract creation time
+            created=$(tmux -S "$sock" display-message -p "#{session_created}")
+            created_human=$(date --date="@${created}" "+%Y-%m-%d %H:%M:%S")
+            # tmux can support multiple sessions, each with multiple windows, each with multiple panes
+            # (but to stay simple, tmux-workflow creates tmux servers with --
+            #  exactly one session, with one window, wtih one pane, with one shell, with one pid)
+            j_msg "-${notice}" -m "tmux server (socket): ${sock} | session: ${session} | pid: ${pid} | created: ${created_human}"
+        fi
+    done
+}
+
+cmd_cleanup() {
+    j_msg "-${notice}" -p "cleaning up broken/dead/zombied tmux-workflow sockets and processes"
+    local sock="" cmdline="" rem=""
+    # remove suffixless sockets (invalid)
+    for sock in "${SOCK_DIR%/}/"*; do
+        case "$sock" in
+            *.sock) j_msg "-${debug}" -p "${BYon}(debug)${Boff} sock [$sock] is valid"  ;;  # valid
+            *)
+                j_msg "-${notice}" -p -n "removing invalid socket: $sock"
+                rm -f "$sock" 2>/dev/null
+                right_status $? "$notice"
+                ;;
+        esac
+    done
+    # remove dead .sock sockets
+    for sock in "${SOCK_DIR%/}/"*.sock ; do
+        if ! tmux -S "$sock" ls >/dev/null 2>&1; then
+            j_msg "-${notice}" -p -n "removing dead socket: $sock"
+            rm -f "$sock" 2>/dev/null
+            right_status $? "$notice"
+        fi
+    done
+    # kill zombie tmux processes
+    for pid in $(pgrep -f "tmux -S ${SOCK_DIR%/}/"); do
+        # extract the socket path from the process command line
+        cmdline=$(tr '\0' ' ' < /proc/$pid/cmdline)
+        # extract socket pathname (which cant contain whitespace b/c I own it)
+        # from the commandline whose format I dictated in the pgrep search)
+        # format: cmdline="tmux -S /run/root-tmux/maint_3.sock new-session -d -s maint_3"
+        # where sock="/run/root-tmux/maint_3.sock"
+        rem="${cmdline#tmux -S }"
+        sock="${rem%% *}"
+        # if socket doesnt exist OR tmux cant talk to it => zombie
+        if [ ! -S "$sock" ] || ! tmux -S "$sock" ls >/dev/null 2>&1; then
+            j_msg "-${notice}" -p -n "killing zombie tmux process: $pid (socket: $sock)"
+            kill -9 "$pid" 2>/dev/null
+            right_status $? "$notice"
+        fi
+    done
+    # remove directory if empty
+    if [ -d "$SOCK_DIR" ] && [ -z "$(ls -A "$SOCK_DIR")" ]; then
+        j_msg "-${notice}" -p -n "removing empty socket directory"
+        rmdir "$SOCK_DIR" 2>/dev/null
+        right_status $? "$notice"
+    fi
+}
+
+
+
+#-----[ main script ]------------------------------------------------------------------
+
+# user must run via sudo (re-auth enforced by Zero Trust)
+checkroot
+
+# guard - no more than two args
+[ $# -gt 2 ] && { j_msg "-${err}" "${BRon}Error${Boff}: Too many args [$#]"; usage ; }
+# guard - two args required for all but list action start (a|d) or attach|kill (session), but only one arg for all other actions
+action="${1:-}"
+arg="${2:-}"
+
+j_msg "-${debug}" -p "action: $action"
+j_msg "-${debug}" -p "arg: $arg"
+case "$action" in
+    l|ls|list) if [ ! -z "${2-}" ] ; then j_msg "-${err}" "${BRon}Error${Boff}: Too many args [$#] for action [${1-}]"; usage ; fi ;;
+esac
+
+case "$action" in
+    ls|l|list)  cmd_list ;;
+    i|info)     cmd_info ;;
+    c|cleanup)  cmd_cleanup ;;
+    s|start)    cmd_start "$arg";;
+    a|attach)   cmd_attach "$arg";;
+    k|kill)     cmd_kill "$arg";;
+    *)          j_msg "-${err}" "${BRon}Error${Boff}: Invalid command line action [$1]"; usage ;;
+esac
