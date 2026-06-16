@@ -1,4 +1,4 @@
-Instructions for use in building a gentoo (joetoo) system:
+Instructions for use in building a gentoo (joetoo) system:<b>
 (1) boot the device from a Gentoo liveUSB or liveCD image
 (2) follow the Gentoo handbook up through preparation of the disks to lay out storage for your new system (assumed to be mounted at /mnt/gentoo in these instructions). Note that you can tune and use the mount-the-rest tool from joetoobuild-tools to mount all LVs in an lvm on LUKS system... then continue --
     cd /mnt/gentoo
