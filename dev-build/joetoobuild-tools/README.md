@@ -7,11 +7,11 @@ Instructions for use in building a gentoo (joetoo) system:<br>
 <b>(3)(b)</b> extract content to the root of your new system (probably /mnt/gentoo/<br>
     tar -xvjpf joetoobuild-tools-0.0.7.tbz2 -C /mnt/gentoo/<br>
 <b>(4)</b> download script_header_joetoo and its helpers script_header_joetoo_compat and script_header_joetoo_unicode and move them to the livecd's /usr/sbin/directory<br>
-    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo<br>
-    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_compat<br>
-    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_unicode<br>
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo<br>
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_compat<br>
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_unicode<br>
 <b>(5)</b> also download script_header_joetoo_extended and copy it to /usr/sbin/ to enable its run_array() functionality - automating the command sequences in joetoo-system-install and finalize-chroot-joetoo
-    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_extended<br>
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_extended<br>
     mv script_header_joetoo* /usr/sbin<br>
 <b>(6)</b> You can use the joetoobuild-tools "content_for_" file structures to have the joetoo-system-install script load custom or sensitive personal content (like ssh keys, etc) by populating the file system tree in directories pointed to by the script's mkenv_files and mkimg_files directories; examples are provided by the script, and the dev-sbc/collect-system-files package at https://github.com/JosephBrendler/myUtilities/tree/master/dev-sbc/collect-system-files can automate the collection of such information from existing systems (enabling fast rebuild)
 <b>(7)</b> run the joetoo-system-install program (located in /mnt/gentoo/joetoobuild-tools/<br>
