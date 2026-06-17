@@ -1,41 +1,50 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_extended
-PN=$(basename $0)
 
-varlist="root_dev root_dev_type root_dev_disk root_dev_part bool.LUKS root_dev_crypt BREAK user collection_directory build_host BOARD DEVICE DEVTYPE ENC"
+PN=${0##*/}
+
+[ -z "$verbosity" ] && verbosity=5
+
+varlist="root_dev root_dev_type root_dev_disk root_dev_part"
+varlist+=" bool.LUKS root_dev_crypt BREAK user collection_directory"
+varlist+=" build_host BOARD DEVICE DEVTYPE ENC"
 
 #-----[ functions ]-----------------------------------------------------------------------
 
 usage() {
-    echo
-    E_message "usage: ${PN} <BOARD>"
-    echo
-    message "${BYon}where BOARD is one of these --${Boff}"
+    j_msg "-${notice}" -mp ""
+    j_msg "-${err}" "${BRon}usage${Boff}: ${PN}"
+    j_msg "-${notice}" -m "(no arguments needed nor allowed)"
+    j_msg "-${notice}" -mp ""
+    j_msg "-${notice}" -p "${BYon}Note: BOARD is one of these --${Boff}"
     joetoo-sbc-list | sed 's|^|    |'
-    echo
-    message "(and BOARD will now be determined analytically)"
+    j_msg "-${notice}" -mp ""
+    j_msg "-${notice}" -p "(and BOARD will now be determined analytically)"
     exit 1
 }
 
 determine-board() {
-    message_n "looking up machine ..."
+    j_msg "-${notice}" -p -n "looking up machine ..."
     machine=$(uname -m) || die "failed to look up machine"
-    echo -en " (${machine})"; right_status $TRUE
+   j_msg "-${notice}" -mp -n " (${machine})"; right_status $TRUE "$notice"
 
     if [[ "${machine}" == "x86_64" ]] ; then
-        message_n "assigning BOARD ..."
+        j_msg "-${notice}" -p -n "assigning BOARD ..."
         BOARD="generic-amd64"
-        echo -en " (${BOARD})"; right_status $TRUE
+       j_msg "-${notice}" -mp -n " (${BOARD})"; right_status $TRUE "$notice"
     else
-        message_n "looking up /proc/device-tree/model ..."
+        j_msg "-${notice}" -p -n "looking up /proc/device-tree/model ..."
         model="$(tr -d '\0' < /proc/device-tree/model)" || die "failed to look up model"
-        echo -en " (${model})"; right_status $TRUE
+       j_msg "-${notice}" -mp -n " (${model})"; right_status $TRUE "$notice"
 
-        message_n "looking up BOARD ..."
-        BOARD="$(joetoo-sbc-list | grep "${model}" | awk '{print $1}')"  || \
+        j_msg "-${notice}" -p -n "looking up BOARD ..."
+#        BOARD="$(joetoo-sbc-list | grep "${model}" | awk '{print $1}')"  || \
+        # strip the Rev number from board models that have one
+        # (e.g. match Raspberry Pi 4 Model B Rev 1.1 OR Rev 1.5)
+        BOARD="$(joetoo-sbc-list | grep "${model% *}" | awk '{print $1}')"  || \
             die "failed to look up BOARD"
-        echo -en " (${BOARD})"; right_status $TRUE
+       j_msg "-${notice}" -mp -n " (${BOARD})"; right_status $TRUE "$notice"
     fi
 }
 
@@ -44,34 +53,34 @@ initialize-variables() {
     initialize_vars ${varlist}
 
     # (re)set default values
-    PN=$(basename $0)
+    PN=${0##*/}
     user=joe
     collection_directory="/home/${user}/collect-layout-data"
     build_host="gmki91:/home/${user}/"
-    VERBOSE=$TRUE
-    verbosity=2
 #    BOARD=${myBOARD}     # now set by determine-board()
 }
 
 collect_root_dev_data() {
+    local _lsblk_out=""
     # identify the device that is mounted at root /
     root_dev=$(findmnt -lno SOURCE /) || die "failed to set root_dev"
 
-    # determine the type of this device (disk, part, crypt, lvm ...)
-    eval $(lsblk -P -o NAME,TYPE,MOUNTPOINTS $root_dev) && root_dev_type=$TYPE || die "failed to set root_dev_type"
+    # gather information aobut the root device from lsblk (l: list format, n: no heading, s: inverse dependencies)
+    _lsblk_out=$(lsblk -nlso NAME,TYPE "$root_dev")
 
-    # determine the disk that this device is part of (sda, mmcblk0, nvme0n1 ...)
-    # (this is what we will collect layout data from)
-    root_dev_disk=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "disk"' | awk '{print $1}')  || die "failed to set root_dev_disk"
+    # determine the type of this device (disk, part, crypt, lvm ...)(always the first line of above lsblk command)
+    root_dev_type=$(printf '%s' "$_lsblk_out" | head -n1 | awk '{print $2}') || die "failed to set root_dev_type"
+    # determine the name of the disk for this root device
+    root_dev_disk=$(printf '%s' "$_lsblk_out" | grep 'disk' | cut -d' ' -f1) || die "failed to set root_dev_disk"
+    # determine the name of the partition for this root device
+    root_dev_part=$(printf '%s' "$_lsblk_out" | grep 'part' | cut -d' ' -f1) || die "failed to set root_dev_part"
 
-    # determine the partition name of root_dev (will be the same as root_dev if root_dev_type = part)
-    root_dev_part=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "part"' | awk '{print $1}') || die "failed to set root_dev_part"
     # determine if root_dev_part is formatted for LUKS encryption
-    LUKS=$FALSE; [[ $(blkid  /dev/$root_dev_part | grep -i luks) ]] && LUKS=$TRUE
+    LUKS=$FALSE; [[ $(blkid  "/dev/${root_dev_part}" | grep -i luks) ]] && LUKS=$TRUE
 
     # if LUKS, determine the name of the encrypted LUKS container
     if [ $LUKS ] ; then
-        root_dev_crypt=$(lsblk -lso NAME,TYPE $root_dev | awk '$2 == "crypt"' | awk '{print $1}') || die "failed to set root_dev_crypt"
+        root_dev_crypt=$(printf '%s' "$_lsblk_out" | grep 'crypt' | cut -d' ' -f1) || die "failed to set root_dev_crypt"
     else
         root_dev_crypt="N/A" || die "failed to set root_dev_type to N/A"
     fi
@@ -88,43 +97,36 @@ collect_root_dev_data() {
 
     # set DEVTYPE
     medium=${DEVICE:5:3}
-    case $medium in
+    case "$medium" in
         "sd"[a-zA-Z] ) DEVTYPE="usb" ;;
         "mmc"        ) DEVTYPE="mmc" ;;
         "nvm"        ) DEVTYPE="nvme" ;;
         *            ) die "invalid medium [$medium]" ;;
     esac || die "failed to set DEVTYPE for medim [${medium}]"
 
-    d_echo "" 3
-    d_message "root_dev: ${root_dev}" 3
-    d_message "root_dev_type: ${root_dev_type}" 3
-    d_message "root_dev_disk: ${root_dev_disk}" 3
-    d_message "root_dev_part: ${root_dev_part}" 3
-    d_message "root_dev_crypt: ${root_dev_crypt}" 3
-    d_message "DEVICE: ${DEVICE}" 3
-    d_message "medium: ${medium}" 3
-    d_message "DEVTYPE: ${DEVTYPE}" 3
-    d_echo "" 3
+    j_msg "-${info}" -mp ""
+    j_msg "-${info}" -m "root_dev: ${root_dev}"
+    j_msg "-${info}" -m "root_dev_type: ${root_dev_type}"
+    j_msg "-${info}" -m "root_dev_disk: ${root_dev_disk}"
+    j_msg "-${info}" -m "root_dev_part: ${root_dev_part}"
+    j_msg "-${info}" -m "root_dev_crypt: ${root_dev_crypt}"
+    j_msg "-${info}" -m "DEVICE: ${DEVICE}"
+    j_msg "-${info}" -m "medium: ${medium}"
+    j_msg "-${info}" -m "DEVTYPE: ${DEVTYPE}"
+    j_msg "-${info}" -mp ""
 
-    return 0
-}
-
-display-config() {
-    longest=$(get_longest ${varlist})
-    display_configuration ${longest} ${varlist}
-    echo
     return 0
 }
 
 validate_collection_directory() {
     if [ -d ${collection_directory} ] ; then
-         echo -en " (${BGon}exists${Boff})"
+        j_msg "-${notice}" -mp -n " (${BGon}exists${Boff})"
     else
-         echo -en " (${BRon}not found${Boff})"
+        j_msg "-${notice}" -mp -n " (${BRon}not found${Boff})"
          mkdir -p ${collection_directory} || die "failed to mkdir -p ${collection_directory}"
-         echo -en " (${BGon}created${Boff})"
+        j_msg "-${notice}" -mp -n " (${BGon}created${Boff})"
     fi
-    right_status $TRUE
+    right_status $TRUE "$notice"
     return 0
 }
 
@@ -136,50 +138,54 @@ validate_board() {
 checkroot
 separator $(hostname) ${PN}
 [ $# -ne 0 ] && usage
-#myBOARD="$1"
 
 # initialize and set defaults
 initialize-variables || die "failed to initialize-variables"
 
 determine-board || die "failed to determine BOARD"
 
-message_n "validating BOARD [${BOARD}]..."
+j_msg "-${notice}" -p -n "validating BOARD [${BOARD}]..."
 validate_board || die "failed to validate_target [${BOARD}]"
-right_status $?
+right_status $? "$notice"
 
-message_n "validating collection_directory ..."
+j_msg "-${notice}" -p -n "validating collection_directory ..."
 validate_collection_directory || die "failed to validate_collection_directory"
 
 collect_root_dev_data || die "failed to collect_root_dev_data"
 
-display-config || die "failed to display-config"
+show_config || die "failed to show_config"
 
-message "about to collect sfdisk, blkid, and lsblk data"
+j_msg "-${notice}" -p "about to collect sfdisk, blkid, and lsblk data"
 confirm_continue_or_exit
 
-message_n "collecting sfdisk data ..."
-sfdisk -d ${DEVICE} > ${collection_directory%/}/sfdisk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect sfdisk data"
-right_status $?
+j_msg "-${notice}" -p -n "collecting sfdisk data ..."
+sfdisk -d "${DEVICE}" > "${collection_directory%/}/sfdisk.${BOARD}.${DEVTYPE}.${ENC}" || die "failed to collect sfdisk data"
+right_status $? "$notice"
 
-message_n "collecting blkid data ..."
-blkid | grep $(echo ${DEVICE} | sed 's|^/dev/||') > ${collection_directory%/}/blkid.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect blkid data"
-right_status $?
+j_msg "-${notice}" -p -n "collecting blkid data ..."
+blkid | grep $(printf '%s\n' "${DEVICE}" | sed 's|^/dev/||') > "${collection_directory%/}/blkid.${BOARD}.${DEVTYPE}.${ENC}" || \
+    die "failed to collect blkid data"
+right_status $? "$notice"
 
-message_n "collecting lsblk data ..."
-lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS ${DEVICE} > ${collection_directory%/}/lsblk.${BOARD}.${DEVTYPE}.${ENC} || die "failed to collect lsblk data"
-right_status $?
+j_msg "-${notice}" -p -n "collecting lsblk data ..."
+lsblk -l -o NAME,SIZE,TYPE,MOUNTPOINTS "${DEVICE}" > "${collection_directory%/}/lsblk.${BOARD}.${DEVTYPE}.${ENC}" || \
+    die "failed to collect lsblk data"
+right_status $? "$notice"
 
-message_n "changing ownership of collected files ..."
-chown -R ${user}:${user} ${collection_directory%/} || die "failed to change ownership"
-right_status $?
+j_msg "-${notice}" -p -n "changing ownership of collected files ..."
+chown -R "${user}":"${user}" "${collection_directory%/}" || die "failed to change ownership"
+right_status $? "$notice"
 
-echo
-message "${PN} produced these output files --"
-ls -al ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} | sed 's|^|    |'
+j_msg "-${notice}" -mp ""
+j_msg "-${notice}" -p "${PN} produced these output files --"
+find "${collection_directory%/}" -name "*.${BOARD}.${DEVTYPE}.${ENC}" -printf '%f\n' | sed 's|^|    |'
 
-message "about to transfer these files to build_host [${build_host}]"
+# to do - add config file and multi-remote host capability like collect-system-files
+j_msg "-${notice}" -p "about to transfer these files to build_host [${build_host}]"
 confirm_continue_or_exit
-sudo -u ${user} scp ${collection_directory%/}/*.${BOARD}.${DEVTYPE}.${ENC} "${build_host}" || die "failed to transfer data to build host [${build_host}]"
+# note - do not quote the * wildcard in source name or it will be treated literally
+sudo -u "${user}" scp "${collection_directory%/}/"*".${BOARD}.${DEVTYPE}.${ENC}" "${build_host}" || \
+    die "failed to transfer data to build host [${build_host}]"
 
-echo
-message "${BWon}${PN} ${BGon}Done${Boff}"
+j_msg "-${notice}" -mp ""
+j_msg "-${notice}" -p "${BWon}${PN} ${BGon}Done${Boff}"

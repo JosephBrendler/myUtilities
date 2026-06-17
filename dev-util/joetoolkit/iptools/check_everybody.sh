@@ -1,17 +1,18 @@
 #!/bin/bash
 source /usr/sbin/script_header_joetoo
-checknotroot
+#checknotroot
 
 PN=${0##*/}   # basename
 if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.1"; fi
 
 dns="elrond.brendler"
+user="joe"
 
 separator "$(hostname)" "${PN}-${BUILD}"
 
 # use an indexed array to ingest all of the dns's hosts files at once
 declare -a lines
-readarray -t lines < <(ssh -q "$dns" cat /etc/hosts.d/*)
+readarray -t lines < <(sudo -u "$user" ssh -q "$dns" cat /etc/hosts.d/*)
 
 # use an associative array (hostnames keyed on ip addr) to thus hold both values in one array
 declare -A targets
