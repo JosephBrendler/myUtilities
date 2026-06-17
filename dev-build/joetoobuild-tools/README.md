@@ -10,17 +10,19 @@ Instructions for use in building a gentoo (joetoo) system:<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_compat<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_unicode<br>
+<b>(5)</b> also download script_header_joetoo_extended and copy it to /usr/sbin/ to enable its run_array() functionality - automating the command sequences in joetoo-system-install and finalize-chroot-joetoo
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo_extended<br>
     mv script_header_joetoo* /usr/sbin<br>
-<b>(5)</b> You can use the joetoobuild-tools "content_for_" file structures to have the joetoo-system-install script load custom or sensitive personal content (like ssh keys, etc) by populating the file system tree in directories pointed to by the script's mkenv_files and mkimg_files directories; examples are provided by the script, and the dev-sbc/collect-system-files package at https://github.com/JosephBrendler/myUtilities/tree/master/dev-sbc/collect-system-files can automate the collection of such information from existing systems (enabling fast rebuild)
-<b>(6)</b> run the joetoo-system-install program (located in /mnt/gentoo/joetoobuild-tools/<br>
+<b>(6)</b> You can use the joetoobuild-tools "content_for_" file structures to have the joetoo-system-install script load custom or sensitive personal content (like ssh keys, etc) by populating the file system tree in directories pointed to by the script's mkenv_files and mkimg_files directories; examples are provided by the script, and the dev-sbc/collect-system-files package at https://github.com/JosephBrendler/myUtilities/tree/master/dev-sbc/collect-system-files can automate the collection of such information from existing systems (enabling fast rebuild)
+<b>(7)</b> run the joetoo-system-install program (located in /mnt/gentoo/joetoobuild-tools/<br>
     Important: tune the script to ensure it selects and downloads a stage3 tarball matching the profile you intend to use.  Note: if you intend to use joetoo's hardened desktop profile, start by downloading the Gentoo hardened openrc stage3 tarball, and switch to joetoo's hardened-desktop profile after installation<br>
-<b>(7)</b> when joetoo-system-install is complete, run the chroot-prep script, then
+<b>(8)</b> when joetoo-system-install is complete, run the chroot-prep script, then
     run cat chroot-commands and copy/paste the lines of its output into the
     command line to execute them in line<br>
-<b>(8)</b> note that when you chroot into your system, the /root/.bashrc provided by
+<b>(9)</b> note that when you chroot into your system, the /root/.bashrc provided by
     joetoo-system-install should automatically run the finalize-chroot-joetoo
     script it also provided in /usr/sbin<br>
-<b>(9)</b> afterward, you may still need to build a kernel and bootloader
+<b>(10)</b> afterward, you may still need to build a kernel and bootloader
     (for amd64 systems, you should have a gentoo-kernel if you populated
      a savedconfig, but you will still need to install grub and run grub-mkconfig.
      note that if you use a custom initramfs, you will also have to install
