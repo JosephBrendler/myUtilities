@@ -1,0 +1,540 @@
+#!/bin/bash
+#   script header with basic functions
+# Author: joe brendler 26 Jan 2017
+#         24 June 2025 - v1.0.0 moved to /usr/sbin/ and renamed/consolidated script_header_joetoo_extended
+#
+# NOTE: to use this header, you must first source the basic script_header_joetoo
+#
+
+# note: this header expects this to be assigned already
+#script_header_installed_dir=/usr/sbin
+
+
+#-----[ non-cli stuff ------------------------------------------------------------------------------------------------------
+
+isnumeric() # wrapper for broadest determination
+{ # @rule will over-ride the POSIX version of isnumeric if sourced afterwards
+  isint "$1" || ishexint "$1" || isfloat_posix "$1" || isfloat_regex "$1"; }
+
+isfloat() # deprecated (now a wrapper for isfloat_regex
+{ isfloat_regex "$@"; }
+
+isfloat_regex() # regex (non-POSIX) test if $1 is a floating point number; return true/false
+{ inputstring="$1"
+  if  [[ "$inputstring" =~ ^[+-]?([0-9]*\.)?[0-9]+([eE][+-]?[0-9]+)?$ ]] ; then
+    return 0; else return 1; fi; }
+# @usage legacy isfloat_regex "input"
+# @args $1: the string to be validated
+# @ret 0 if valid float; 1 if not
+# @rule supports scientific notation (e.g., 1.2e+10); requires Bash/Ksh/Zsh
+# @note broader than isfloat_posix; will return true for integers (e.g., 123)
+# @rule isfloat moved here due to ash-incompatibility (uses regex compare =~)
+
+map()           # linearly map input number from input range to output range
+{ # trap non-numeric input
+! isfloat $1 && j_msg -${err} "invalid map_val for ${FUNCNAME[0]} [$1]" && return 1
+! isfloat $2 && j_msg -${err} "invalid from_lower bound for ${FUNCNAME[0]} [$2]" && return 1
+! isfloat $3 && j_msg -${err} "invalid from_upper bound for ${FUNCNAME[0]} [$3]" && return 1
+! isfloat $4 && j_msg -${err} "invalid to_lower bound for ${FUNCNAME[0]} [$4]" && return 1
+! isfloat $5 && j_msg -${err} "invalid to_upper bound for ${FUNCNAME[0]} [$5]" && return 1
+[ ! -z "$6" ] && ! isfloat $6 && echo "invalid scale for ${FUNCNAME[0]} [$6]" && return 1
+ map_val=$1 ; from_lower=$2 ; from_upper=$3 ; to_lower=$4 ; to_upper=$5
+ scale=${6:-1} # Set default scale to 1 if not provided (number of digits after .)
+# trap invalid map_val (not within input range) (( $(... | bc) )) for float #s
+(( $(echo "$map_val < $from_lower" | bc -l) )) || \
+    (( $(echo "$map_val > $from_upper" | bc -l) )) && \
+    j_msg -${err} "invalid map_val [${map_val}], not w/in input range [${from_lower} - ${from_upper}]" && return 1
+# trap invalid input or output ranges - leave this unless prohibiting "reverse mapping"
+#[ $to_upper -lt $to_lower ] && j_msg -${err} "invalid input range [ $to_upper - $to_lower ]" && return 1
+#[ $from_upper -lt $from_lower ] && j_msg -${err} "invalid input range [ $from_upper - $from_lower ]" && return 1
+# initialize result variable
+result=999999
+# calculate scaling factor
+ from_delta=$(echo "scale=$scale; $from_upper - $from_lower" | bc -l)
+ to_delta=$(echo "scale=$scale; $to_upper - $to_lower" | bc -l)
+ from_offset=$(echo "scale=$scale; $map_val - $from_lower" | bc -l)   # how far (above from_lower) offest into from-range
+ map_factor=$(echo "scale=$scale; $to_delta / $from_delta" | bc -l)
+# ratio > 1 means scaling up to a "wider" range (even if lower numbers)
+# ratio < 1 means scaling down to a "narrower" range (even if higher numbers)
+# scale the input offset against the output range
+ to_offset=$(echo "scale=$scale; $from_offset * $map_factor" | bc -l)
+# now offset (above the to_lower bound) the scaled number into the output range
+result=$(echo "scale=$scale; $to_lower + $to_offset" | bc -l)
+return 0
+}
+
+
+#---[ RGB ]--------------------------------------------------------
+#ToDo: experiment with rgb methods for color-setting
+# NOTE: this might work in a Konsole or Gnome terminal, but not lxterminal!!
+# see "well known" triplet values at https://en.wikipedia.org/wiki/ANSI_escape_code
+#  RED=(205, 0, 0)
+#  ESC[ ... 38;2;<r>;<g>;<b> ... m Select RGB foreground color
+#  ESC[ ... 48;2;<r>;<g>;<b> ... m Select RGB background color
+RGB_FG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local FG="38;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${FG};${R};${G};${B}m" ; }
+RGB_BG()    # echo esc seq color as RGB. (OK in Konsole/Gnome term, but not lxterminal)
+{ local BG="48;2"; R=$1; G=$2; B=$3; echo -e "${CSI}${BG};${R};${G};${B}m" ; }
+
+list_unused_disks()    # list block devices with no active mountpoint
+{  # set TERMWIDTH now, or it would be an inappropriate use of io control
+   # for stdin during while loop's redirection for "read line"
+   TERMWIDTH=$(termwidth)
+    # read every line of lsblk (NAME, TYPE, MOUNTPOINT columns)
+    while read line ; do
+        # use eval to interpret the -P pairs as variable assignments
+        eval ${line}
+        if [[ "${TYPE}" == "disk" ]] ; then
+            # look for disks with no children (TYPE crypt, part, lvm) mounted
+            candidate_name=$NAME ; candidate_type=$TYPE
+            INUSE=$FALSE
+            info_msg_n "checking ${candidate_type} ${candidate_name} ..."
+            while read innerline; do
+                eval ${innerline}
+                if [[ ! -z ${MOUNTPOINTS} ]] || [[ ! -z "$(findmnt | grep ${NAME})" ]] ; then
+                    INUSE=$TRUE
+                fi
+            done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS /dev/${candidate_name})
+            if [[ ! $INUSE ]] ; then
+                echo -en "${BGon}(not in use) ${BMon}/dev/${candidate_name}${Boff}"
+                non-stty-right_status $TRUE
+                lsblk /dev/${candidate_name} | sed 's|^|    |'
+            else
+                echo -en "${BRon}(in use)${Boff}"
+                non-stty-right_status 1
+            fi
+        fi
+    done <<<$(lsblk -P -o NAME,TYPE,MOUNTPOINTS)
+    return 0
+}
+
+## parking this here until I figure out what I want to do with it
+progress() # show progress arrow (visualize $1 of $2 steps complete)
+{ # intended to be called in each iteration of some monitored process
+  # e.g. # for x in $(seq 0 250); do progress $x 250; sleep .1; done
+  [ $# -ne 2 ] && { j_msg -${err} "${BRon}Error: step and total required${Boff}"; return 1; }
+  # use these common variables for width/height if they exist, else call function
+  # (should exist already, if user called progress_init() first)
+  _p_tw=${COLUMNS:-$(termwidth)}; _p_th=${LINES:-$(termheight)}
+  _p_step="$1"; _p_total="${2:-100}"  # default to 100 steps
+  _p_margin=$(( _p_tw / 4 ));         # margin at termidth / 4 to leave room for text
+  _p_marker="-"         # this is the element used to draw the progress bar (a line of these)
+  # analytical math
+  _p_range=$(( _p_tw - ( _p_margin * 2 ) - 3 ))    # num physical cols between screen margins - safety buffer (3)
+  _p_percent=$(( (100 * _p_step) / _p_total ))     # process progress as a percent of total num steps
+  _p_fill=$(( (_p_range * _p_step) / _p_total ))   # num physical cols to fill with marker to represent progress
+  _p_start=$(( _p_margin + 1 ))                    # starting physical column number
+  _p_end=$(( _p_tw - _p_margin ))                  # ending physical column number
+  # determine which color to use for the text NN% marker in the center
+  if [ "$_p_percent" -ge 90 ]; then _p_color="${BGon}"    # green if over 90%
+  elif [ "$_p_percent" -lt 70 ]; then _p_color="${BRon}"  # red if less than 70%
+  else _p_color="${BYon}"; fi                             # yellow otherwise (0-70%)
+  # POSIX repeat (just build it here to save a function call to repeat()
+  _p_bar=$(printf "%${_p_fill}s" | tr ' ' "$_p_marker")
+  _p_unbar=$(printf "%$(( _p_range - _p_fill ))s" )
+  # save cursor position, move to Row
+#  SCP; CUP "$_p_th" "$_p_start"
+  SCP; printf '\r'; CUF "$_p_start"  # start on current line rather than bottom indent margin + 1
+  # draw the structure: |---( 50% )--->| # 4 buckets: (part-built-by-format-string), bucket#:content[type]
+  # (wall '|') 1:color[ansi] , 2:_p_bar[string], 3:color-reset[ansi], (arrow head '>'), 4:spaces[string], (wall'\')
+  printf "|%b%s>%s%b%s|" "$_p_color" "$_p_bar" "$_p_unbar" "${Boff}" "$_p_spaces"
+  EL  # ANSI erase from cursor to end of line (clear any leftovers from a previous wider bar)
+#  _p_mid=$(( _p_tw / 2 - 3 )); CUP "$_p_th" "$_p_mid"     # Jump to middle and overlay percentage; then resore cursor to saved position
+  _p_mid=$(( _p_tw / 2 - 3 )); printf '\r'; CUF "$_p_mid"     # Jump to middle and overlay percentage; then resore cursor to saved position
+  printf "( %b%3d%%%b )" "$_p_color" "$_p_percent" "$Boff"; RCP
+  if [ "$_p_step" -eq "$_p_total" ]; then printf '\n'; fi
+
+  unset -v _p_step _p_total _p_margin _p_marker _p_tw _p_th _p_range _p_mid
+  unset -v _p_percent _p_fill _p_start _p_end _p_color _p_bar _p_unbar
+  return 0 ; }
+
+bs()                   # recursive binary search for $1 target(s) from $2 start(d) to $3 end(d) in search_list $@ (after 3 shifts)
+{
+  # return the index number of the entry in the list, or -1 if not found
+  # expects VERBOSE, verbosity, and initial depth=0 to be set externally before first call to bs
+  target="$1"; shift;  start="$1"; shift;  end="$1"; shift; remainder="$@"
+  search_list=($(alpha_words ${remainder}))   # alphabetize the list so the binary search can work
+  if [ $verbosity -ge "$info" ] ; then
+    info_msg_n "search_list: ["
+    info_echo_msg_n "${search_list[@]}"
+    info_echo_msg "]"
+    j_msg -${notice} -p  "search_list length is [${#search_list[@]}]"
+  fi
+  let "result=-1"
+  if [[ $depth -gt ${#search_list[@]} ]]
+  then
+    j_msg -${err} "Something is wrong here -- depth [$depth] exceeds search_list [${#search_list[@]}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+  diff=$(( $end - $start ))
+  middle=$(( $start + $(( $diff / 2 )) ))
+  ## guarantee to look at both start and end before giving up
+  if [[ ${diff} -eq 1 ]]; then let "middle+=$(( ${depth} % 2 ))"; else DIFF1UPPER=$FALSE; DIFF1LOWER=$FALSE; fi
+  j_msg -${debug} -p " depth=[$depth]";  j_msg -${debug} -p " start=[$start]";  j_msg -${debug} -p "   end=[$end]";  j_msg -${debug} -p "middle=[$middle]"
+  j_msg -${debug} -p ">> [${search_list[${middle}]}] <<"
+  if [[ "${search_list[${middle}]}" == "${target}" ]]; then
+    result=$middle   # equal
+  else  # not yet equal, so search either the upper or lower half of the remaining range
+    [[ $start -eq $end ]] && return 1
+    let "depth+=1"   # increment recursive depth and then recurse
+    if [[ "${search_list[${middle}]}" > "${target}" ]]; then   # found element is greater than target (search lower half next)
+      [[ $diff -eq 1 ]] && DIFF1UPPER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then
+         j_msg -${debug} -p "both diff=1 cases examined. not found"
+         return 1
+      else
+         j_msg -${debug} -p "DIFF1 flags not yet both true"
+      fi
+      j_msg -${debug} -p "candidate [${search_list[${middle}]}] at position [${middle}] is GREATER than target [${target}], DIFF1UPPER is now [$(TrueFalse $DIFF1UPPER)] -- search lower half next"
+      bs $target $start $middle ${search_list[@]}
+    else   # found element is less than target (search upper half next)
+      [[ $diff -eq 1 ]] && DIFF1LOWER=$TRUE
+      # if we've examined both the even and odd cases of diff=1, and not found it, then return not found
+      if [[ $DIFF1UPPER && $DIFF1LOWER ]]; then
+        j_msg -${debug} -p "both diff=1 cases examined. not found"
+        return 1
+      else
+        j_msg -${debug} -p "DIFF1 flags not yet both true"
+      fi
+      j_msg -${debug} -p "candidate [${search_list[${middle}]}] at position [${middle}] is LESS than target [${target}], DIFF1LOWER is now [$(TrueFalse $DIFF1LOWER)] -- search upper half next"
+      bs $target $middle $end ${search_list[@]}
+    fi
+  fi
+  j_msg -${debug} -p "about to return from depth [$depth]"
+  [ $depth -eq 0 ] && j_msg -${debug} -p "result: [$result]"
+  let "depth-=1";  return 0
+}
+
+bs_2() # (BASH) binary recursive search of array named by $1 for tartet $2 between start $3 and end $4
+{
+  # return the index number of the entry in the list, or -1 if not found
+
+  # read the global array referred to by local name "range" and recursively refine search start/end
+  [ -z "$1" ] && die "error null input rangge array name \$1"
+  [ -z "$2" ] && die "error null target \$2"
+
+  local -n range="$1"           # name reference to the array to search
+  local target="$2"             # string target sought
+  local start=${3:-0}           # int index start of new search range
+  local end=${4:-${#range[@]}}  # int index end of new search range
+  (( depth += 1 ))              # global recursive depth
+  ! isint $start && die "bs() requires integer start index number"
+  ! isint $end && die "bs() requires integer end index number"
+  if (( depth > ${#range[@]} ))
+  then
+    j_msg -${notice} -p "Something is wrong here -- recursive depth [$depth] exceeds range [${limit}]"
+    return 1  # can't go deeper than the length of the list
+  fi
+
+  j_msg -${debug} -p " depth=[$depth]"
+  j_msg -${debug} -p " start=[$start]"
+  j_msg -${debug} -p "   end=[$end]"
+
+  diff=$(( end - start ))
+  middle=$(( start + ( diff / 2 ) ))
+  j_msg -${debug} -p "  diff=[$diff]"
+  ## guarantee to look at both start and end before giving up
+#  [[ $diff -eq 1 ]] && (( middle += (depth % 2) )) # this form is equivalent
+  [[ $diff -eq 1 ]] && middle=$(( middle + (depth % 2) ))
+  j_msg -${debug} -p "new middle=[$middle]"
+  j_msg -${debug} -p ">> [${range[middle]}] <<"
+  if [[ "${range[middle]}" == "${target}" ]]
+  then
+    result=$middle   # equal
+  else
+    (( start == end )) && return 1
+    # is the string in range[middle] lexicographically greater than the string in target?
+    if [[ "${range[middle]}" > "${target}" ]]
+    then
+      j_msg -${debug} -p "candidate [${range[middle]}] is GREATER than target [${target}] -- search lower half next"
+      # recurse with the oritinal array name ($1)
+      bs_2 "$1" "$target" $start $middle
+    else
+      j_msg -${debug} -p "candidate [${range[middle]}] is LESS than target [${target}] -- search upper half next"
+      # recurse with the oritinal array name ($1)
+      bs_2 "$1" "$target" $middle $end
+    fi
+  fi
+  j_msg -${debug} -p "about to exit at depth [$depth], result is [$result]"
+  return 0
+}
+# @usage  bs2 <array_name> <target> [<start>] [<end>]
+# @args   $1  name of global array to search (string, required)
+# @append  must be an indexed array visible in caller's scope
+# @args   $2  target string to search for (required)
+# @args   $3  start index (integer, optional, default 0)
+# @args   $4  end index (integer, optional, default array length)
+# @vars   depth   global recursion depth counter (integer)
+# @vars   result  global search result index, or -1 if not found
+# @ret    exit 0 on completion; exit 1 on structural error
+# @ret    sets global 'result' to index of match or -1 if not found
+# @deps   requires Bash 4.3+ for nameref (local -n)
+# @req    array named by $1 must be sorted lexicographically
+# @req    caller must initialize: depth=0; result=-1
+# @rule   $1 must be the literal array name, not a nameref variable,
+# @append and recursive calls must pass "$1" unchanged to avoid
+# @append circular name-reference errors
+# @rule   end index is treated as an exclusive upper bound
+# @note   bs2 performs lexicographic (ASCII) comparisons only
+# @note   array elements must be simple strings without newlines
+# @ex     readarray -t items < <(sort -u file.txt)
+# @cont      depth=0; result=-1; bs2 items "needle"; echo "$result"
+
+run_array() # (BASH) run command sequence stored in 0-indexed ${command_sequence[@]}; $1=status_file, $2=start, $3=stop
+{ ra_ret=0
+  # guard 1 - minimum arguments check (status, start, stop, + at least 1 cmd)
+  [ $# -lt 3 ] && { j_msg -${err} "usage: run_array <status_file> <start> <stop>"; return 1; }
+  local _ra_status_file="$1"           # assign the status file
+  [ ! -w "$_ra_status_file" ] && { j_msg -${err} "error: _ra_status_file: [$_ra_status_file] is not writable by user [$USER]"; return 1; }
+  local _ra_start="${2:-0}"            # guard 2 - start step (default to zero but ensure it is an integer in range)
+  local _ra_count=0
+  local _ra_step=0
+  local _ra_msg=""
+  local _ra_result=""
+  # should have been set globally; but assign just to be sure
+  num_cmds="${#command_sequence[@]}"
+  ! isint "$_ra_start" && { j_msg -${err} "run_array: start_step '$2' must be an integer 1 - ${num_cmds}"; return 1; }
+  if [ "$_ra_start" -lt 0 ] || [ "$_ra_start" -gt "$num_cmds" ]; then
+     j_msg -${err} "run_array: start_step '$2' must be an integer 0 - $(( num_cmds -1 ))"; return 1; fi
+  _ra_stop="${3:-$(( num_cmds - 1 ))}" # guard 3 - stop step (default to num cmds but ensure it is an integer in range)
+  ! isint "$_ra_stop" && { j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; }
+  if [ "$_ra_stop" -lt 0 ] || [ "$_ra_stop" -gt "$(( num_cmds - 1 ))" ]; then
+    j_msg -${err} "run_array: stop_step '$3' must be '' or an integer 0 - $(( num_cmds - 1 ))"; return 1; fi
+  # initialize both starting step (command) and loop counter
+  _ra_step="$_ra_start"   # points to the number of the actual command that is "up" next (gets wrapped to 1 after num_cmds)
+  _ra_count="$_ra_start"  # points to current step + 1 (does NOT wrap at num_cmds; so loop can detect completion)
+  while [ "$_ra_count" -le "$_ra_stop" ]; do        # enforce upper bound
+    if [ "$_ra_step" -lt "$_ra_start" ]; then       # enforce lower bound (shift into range)
+      _ra_count=$(( _ra_count + 1 )); _ra_step=$(( _ra_step + 1 )); continue; fi
+    # assign commadn and description from input, delimitted by unit separator ($US)
+    _ra_cmd="${command_sequence[${_ra_step}]}"  # the actual command
+    _ra_desc="${msg1_sequence[${_ra_step}]}"    # human readable description
+    _ra_clean_cmd=$(printf -- '%b' "$_ra_cmd" | strip_ansi | _translate_escapes)
+
+    j_msg -${debug} -p "_ra_start: $_ra_start"
+    j_msg -${debug} -p "_ra_stop: $_ra_stop"
+    j_msg -${debug} -p "_ra_step: $_ra_step"
+    j_msg -${debug} -p "_ra_clean_cmd: $_ra_clean_cmd"
+    j_msg -${debug} -p "_ra_desc: $_ra_desc"
+    j_msg -${debug} -p "termwidth: $(termwidth)"
+    j_msg -${debug} -p "_ra_status_file: $_ra_status_file"
+
+    # if INTERACTIVE, confirm before executing the step
+    if [ "$INTERACTIVE" ]; then
+      _ra_msg="${BYon}Are you ready to [${_data_color}${_ra_step}${BYon}]"
+      _ra_msg="${_ra_msg} (${_op_color}${_ra_desc}${BYon}) ? ${Boff}"
+      yns_prompt "$_ra_msg"
+      _ra_response="$response"
+    else
+      _ra_response="yes"
+    fi  # INTERACTIVE?
+    # execute according to response
+    case "$_ra_response" in
+      [Yy]* )
+        # start with a separator for every step
+        separator "$PN" "(step [$_ra_step]: $_ra_desc)"
+        j_msg -${notice} -p -M $idx_hammer "${BCon}Executing step [${Mon}$_ra_step${BCon}]: ${BYon}${_ra_clean_cmd}${Boff}"
+        # eval expands variables inside the string
+        eval "$_ra_cmd"; _ra_result=$?
+        ### don't die - let the calling script decide what to do based on return
+        ### handle_result $_ra_result || die "failed to execute step [$_ra_step]: $_ra_clean_cmd"
+        # display/log result and set bit in ra_ret status binary bitmask
+        j_msg -${notice} -n -p "${BWon}step [${Mon}$_ra_step${BWon}] result:"
+        handle_result $_ra_result '' "failed with exit code [$_ra_result]" ${notice} || \
+            ra_ret=$(( ra_ret | 1 << _ra_step )) ;;
+      [Ss]* )
+        _ra_msg="${BYon}Skipping step [${_data_color}${_ra_step}${BYon}]:"
+        _ra_msg="${_ra_msg} ${_op_color}${_ra_desc}${BYon} as instructed${Boff}"
+        j_msg -${notice} -p "$_ra_msg" ;;
+      * )
+        j_msg -${notice} -p "${BRon}Aborting array, as instructed${Boff}"
+        ra_ret=1; break ;;
+    esac
+    # use 1-indexed modular increment to wrap _ra_step back to 1 at num_cmds
+    # but just increment _ra_count w/o wrap, so loop can detect completion
+    _ra_step=$(( (_ra_step % num_cmds) + 1 ))
+    _ra_count=$(( _ra_count + 1 ))
+    # store the pointer to the command that is actually "up" next (not the loop counter)
+    j_msg -${info} -n -m "writing step (next up) to _ra_status_file =>"
+    printf '%s\n' "$_ra_step" > "$_ra_status_file"
+#    handle_result $? "$_ra_step" "failed to write step [$_ra_step] to _ra_status_file [$_ra_status_file]" ${info} || ra_ret=1
+  done
+  unset -v _ra_status_file _ra_step _ra_cmd _ra_result _ra_entry _ra_desc
+  unset -v _ra_response _ra_clean_cmd _ra_start _ra_stop _ra_msg _ra_result
+  return $ra_ret
+}
+# @usage: run_array <status_file> <start> <stop>
+# @args: $1 (string) path to status file
+# @args: $2 (int) starting step (0-indexed)
+# @rule: $2 start must be '' or integer 0(default) - num_cmds
+# @args: $3 (int) stopping step (0-indexed)
+# @rule: $3 stop must be '' or integer num_cmds - 1 (defaault)
+# @vars: INTERACTIVE, logFile, PN, US, _data_color, _op_color
+# @ret: 0 on success, 1 on abort, or bitmask of failed steps
+# @deps: isint, yns_prompt, separator, j_msg -${notice}, handle_result, strip_ansi, _translate_escapes
+
+validate_subnet()  # (BASH) validate a subnet by delegation
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+
+    if [[ "$sn" == *:* ]]; then
+        validate_ipv6_subnet "$sn"
+    else
+        validate_ipv4_subnet "$sn"
+    fi
+}
+# @usage  validate_subnet SUBNET
+# @args   SUBNET  CIDR-formatted IPv4 or IPv6 subnet string
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   validate_ipv4_subnet validate_ipv6_subnet j_msg
+# @vars   debug  severity level for j_msg diagnostics
+# @rule   Delegates validation to IPv4 or IPv6 validator based on presence of ':'
+# @note   This function performs no syntax checks itself; it only dispatches
+# @ex     validate_subnet "192.168.1.0/24"
+# @ex     validate_subnet "fd62:6262:6262::/64"
+
+validate_ipv6_subnet()  # (BASH) validate an IPv6 subnet
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+    local addr mask
+    # split address/mask
+    IFS='/' read -r addr mask <<< "$sn"
+    # mask must exist
+    if [[ -z "$mask" ]]; then
+        j_msg -${err} "missing IPv6 mask in [$sn]"
+        return 1
+    fi
+    # mask must be numeric 0–128
+    if [[ ! "$mask" =~ ^[0-9]{1,3}$ ]] || (( mask < 0 || mask > 128 )); then
+        j_msg -${err} "IPv6 mask [$mask] out of range in [$sn]"
+        return 1
+    fi
+    # address must contain only hex, colons, and at most one '::'
+    if [[ "$addr" =~ [^0-9a-fA-F:] ]]; then
+        j_msg -${err} "invalid characters in IPv6 address [$addr]"
+        return 1
+    fi
+    # only one '::' allowed
+    if [[ $(grep -o "::" <<< "$addr" | wc -l) -gt 1 ]]; then
+        j_msg -${err} "IPv6 address [$addr] contains multiple '::'"
+        return 1
+    fi
+    # validate each group (except the compressed '::')
+    local group
+    IFS=':' read -ra groups <<< "$addr"
+    for group in "${groups[@]}"; do
+        [[ -z "$group" ]] && continue  # part of ::
+        if [[ ${#group} -gt 4 ]]; then
+            j_msg -${err} "IPv6 group [$group] too long in [$addr]"
+            return 1
+        fi
+    done
+    j_msg -${info} -m "ipv6 subnet $sn is ${BGon}VALID${Boff}"
+    return 0
+}
+# @usage  validate_ipv6_subnet SUBNET
+# @args   SUBNET  IPv6 CIDR string (address/mask)
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   j_msg grep wc
+# @vars   debug err info  severity levels for j_msg diagnostics
+# @rule   Mask must be numeric 0–128; address may contain hex and colons only
+# @rule   At most one '::' compression sequence is allowed
+# @rule   Each non-empty group must be <=4 hex digits
+# @note   Does not expand or normalize IPv6 addresses; validation only
+# @note   Accepts compressed and uncompressed IPv6 forms
+# @ex     validate_ipv6_subnet "fd62:6262:6262::/64"
+# @ex     validate_ipv6_subnet "2001:db8:1:2:3:4:5:6/128"
+
+validate_ipv4_subnet()  # (BASH) validate an IPv4 subnet
+{
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    local sn="$1"
+    local o1 o2 o3 o4 mask
+    # basic IPv4 CIDR regex
+    if [[ ! "$sn" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+        j_msg -${err} "invalid IPv4 subnet syntax: [$sn]"
+        return 1
+    fi
+    # split
+    IFS='./' read -r o1 o2 o3 o4 mask <<< "$sn"
+    # validate octets
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+        if (( o < 0 || o > 255 )); then
+            j_msg -${err} "IPv4 octet [$o] out of range in [$sn]"
+            return 1
+        fi
+    done
+    # validate mask
+    if (( mask < 0 || mask > 32 )); then
+        j_msg -${err} "IPv4 mask [$mask] out of range in [$sn]"
+        return 1
+    fi
+    j_msg -${info} -m "ipv4 subnet $sn is ${BGon}VALID${Boff}"
+    return 0
+}
+# @usage  validate_ipv4_subnet SUBNET
+# @args   SUBNET  IPv4 CIDR string (address/mask)
+# @ret    0 if SUBNET is valid; non-zero if invalid
+# @deps   j_msg
+# @vars   debug err info  severity levels for j_msg diagnostics
+# @rule   Address must match N.N.N.N/M where octets are 0–255 and mask 0–32
+# @rule   Rejects malformed IPv4 strings before numeric validation
+# @note   Does not check network/broadcast semantics; syntax only
+# @ex     validate_ipv4_subnet "192.168.1.0/24"
+# @ex     validate_ipv4_subnet "10.0.0.0/8"
+
+extract_distccd_settings() {
+    j_msg -${debug} -p "in ${FUNCNAME[0]}"
+    # note: uses global $distccd_conf
+    default_subnets=()
+    distcc_port=3632   # fallback
+    local opts token next
+
+    if [[ ! -f "$distccd_conf" ]]; then
+        j_msg -${warn} -p "distccd config [$distccd_conf] not found"
+        j_msg -${warn} -m "using fallback port [$distcc_port] and no default subnets"
+        return 0
+    fi
+    # source in a subshell to avoid polluting environment
+    opts=$(source "$distccd_conf" 2>/dev/null; echo "$DISTCCD_OPTS")
+    j_msg -${debug} -p "raw DISTCCD_OPTS: [$opts]"
+    # tokenize - read space-delimited string into array of form: (--opt val --opt val)
+    read -ra tokens <<< "$opts"
+    # iterate through tokens to identify port and allowed subnet values
+    for ((i=0; i<${#tokens[@]}; i++)); do
+        token="${tokens[i]}"
+        next="${tokens[i+1]}"
+        case "$token" in
+            --port)  # if next is not --opt, assign as distcc_port val
+                if [[ -n "$next" && "$next" != --* ]]; then
+                    distcc_port="$next"
+                    j_msg -${debug} -p "(distccd) port=$distcc_port"
+                fi
+                ;;
+            --allow)  # if next is not --opt, assign as a default_subnet array val
+                if [[ -n "$next" && "$next" != --* ]]; then
+                    default_subnets+=("$next")
+                    j_msg -${debug} -p "(distccd) allow subnet=$next"
+                fi
+                ;;
+        esac
+    done
+    return 0
+}
+# @usage  extract_distccd_settings
+# @ret    0 always; sets distcc_port and default_subnets[] based on config
+# @vars   distccd_conf  path to distccd config file
+# @vars   distcc_port   output port number extracted or fallback
+# @vars   default_subnets  array of --allow subnets extracted from config
+# @deps   j_msg source grep awk  # uses subshell sourcing and token parsing
+# @rule   Must not pollute caller environment; config is sourced in subshell
+# @rule   If distccd_conf missing, fallback port=3632 and no subnets are used
+# @rule   Only tokens following --port or --allow are consumed as values
+# @note   DISTCCD_OPTS is parsed as a flat token list; no quoting semantics
+# @note   Function performs no validation of extracted subnets or port
+# @warn   Unexpected or malformed DISTCCD_OPTS entries are silently ignored
+# @ex     extract_distccd_settings
+# @ex     echo "$distcc_port" ; printf "%s\n" "${default_subnets[@]}"

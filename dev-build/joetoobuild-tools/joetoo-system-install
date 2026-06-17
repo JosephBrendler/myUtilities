@@ -3,39 +3,66 @@
 # based on the author's work in the dev-sbc/crossbuild-tools::joetoo package
 #
 
+newroot_mountpoint="/mnt/gentoo"
+
+# This script needs you to provide this header and its _compat and _unicode helpers
+#   in the /usr/sbin/ directory of your build system (likely a livecd, wherein your newroot_mountpoint=/mnt/gentoo)
+# This script itself will install these in the target system -- in ${newroot_mountpoint%/}/usr/sbin/
+#   as part of install_files (mkenv) phase, so the finalize-chroot-joetoo script can find them after chroot
+# IMPORTANT: to get this working, copy all three to the livecd's /usr/sbin/ --
+#   script_header_joetoo
+#   script_header_joetoo_compat
+#   script_header_joetoo_unicode
+# IMPORTANT: also copy script_header_joetoo_extended to /usr/sbin to enable its run_array() functionality
+# to /usr/sbin (where the script expects the header, and where the header expects its helpers to be)
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_extended
+
+#-----[ variables ]------------------------------------------------------------------------------------
+INTERACTIVE=$TRUE  # force this true
+[ -z "$verbosity" ] && verbosity=5
+verbosity_str=$(get_severity "$verbosity")
+
+mkenv_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkenv_gmki91"
+mkimg_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkimg_retro"
+
+PN=${0##*/}
+
+# set these static here for $PN; they would be set by validate_target() in crossbuild-tools
+BOARD=generic_amd64
+TARGET=x86_64-pc-linux-gnu
 TARGET_ARCH=amd64
+QEMU_ARCH=x86_64
+#STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop in joetoo profile
+#default_profile="default/linux/amd64/23.0"
+LLVM_TARGET="X86-64"
+target_url=""
+stage3_tarball=""
+
 # amd64 hardened openrc link looks like this
 # https://...amd64/autobuilds/current-stage3-amd64-hardened-openrc/
 #STAGE3_SELECTOR=stage3-amd64-openrc-[0-9]
-STAGE3_SELECTOR=stage3-amd64-hardened-openrc-[0-9]
-newroot_mountpoint="/mnt/gentoo"
+STAGE3_SELECTOR='stage3-amd64-hardened-openrc-[0-9]'
 #profile_number=48
-profile_number=21     # hardened
+#profile_number=21     # hardened ## /// no - they change the numbers
+default_profile="default/linux/amd64/23.0/hardened"
 
-# This script needs you to provide this header
-#   but it should also load a copy in /usr/sbin/ as part of install_files (mkenv)
-#   so the finalize-chroot-joetoo script won't need this copy any more
-#source /usr/sbin/script_header_joetoo
-source ${newroot_mountpoint%/}/script_header_joetoo
+status_file="${newroot_mountpoint%/}/${PN}-status"
+# make sure it is writable
+if [ ! -w "$status_file" ]; then
+  rm -f "$status_file"
+  touch "$status_file"
+  chmod 644 "$status_file"
+fi
 
-#-----[ variables ]------------------------------------------------------------------------------------
-INTERACTIVE=$TRUE
-VERBOSE=$TRUE
-verbosity=3
-
-#mkenv_files="/home/joe/stuff_for_mkenv_Thuvia"
-#mkimg_files="/home/joe/stuff_for_mkimg_Thuvia"
-mkenv_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkenv_gmki91"
-mkimg_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkimg_gmki91"
-
-PN=$(basename $0)
-
-varlist="bool.INTERACTIVE bool.VERBOSE verbosity BREAK TARGET_ARCH STAGE3_SELECTOR newroot_mountpoint profile_number"
-varlist+=" mkenv_files mkimg_files"
+varlist="bool.INTERACTIVE boot.DEBUG verbosity verbosity_str"
+varlist+=" TARGET_ARCH STAGE3_SELECTOR newroot_mountpoint default_profile"
+varlist+=" mkenv_files mkimg_files start_step stop_step"
 
 command_sequence=(
 'wget-stage3'
 'verify-stage3-hashes'
+'verify_stage3_signature'
 'untar-stage3'
 "install_files_from_source ${mkenv_files}"
 "install_files_from_source ${mkimg_files}"
@@ -50,6 +77,7 @@ command_sequence=(
 msg1_sequence=(
 'wget stage3'
 'verify stage3 hashes'
+'verify_stage3_signature'
 'untar stage3'
 "install ${mkenv_files} files"
 "install ${mkimg_files} files"
@@ -60,262 +88,470 @@ msg1_sequence=(
 'prepare to finalize chroot'
 'print next steps'
 )
+
+start_step=0
+stop_step=$(( ${#command_sequence[@]} - 1 ))
+
 #-----[ functions ]------------------------------------------------------------------------------------
 
-display_configuration()  {
-    # will pick up PN, BUILD, varlist from the environment of whatever script sources cb>
-    separator ${PN} "${FUNCNAME[0]})"
-    longest=$(get_longest ${varlist})
-    display_vars ${longest} ${varlist}
-    return 0
+my_usage() {
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  local msg="${BRon}usage${Boff}: ${_func_color}$PN${Boff} [options]"
+  j_msg "-${notice}" -p "$msg"
+
+  msg="${BYon}Options --${Boff}"
+  j_msg "-${notice}" -p "$msg"
+  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -v|--louder${Boff}${Con} ..........: Increase verbosity (may repeat)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -q|--quieter${Boff}${Con} .........: Fecrease verbosity (may repeat)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -Q|--quiet${Boff}${Con} ...........: Silence most output (script_header_joetoo quiet mode)${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -D|--debug${Boff}${Con} ...........: Enable debug output${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  msg="${BMon}  -h|--help${Boff}${Con} ............: print this message${Boff}"
 }
 
 print_next_steps() {
-    separator ${PN} "${FUNCNAME[0]})"
-    message "${BYon}Next Steps should include the following --${Boff}"
-    message "${LBon}(1)${Boff} edit .bashrc, make.conf (follow handbook; below at a minimum)"
-    message "${LBon}(2)${Boff} chroot [run chroot-prep ; cat chroot-commands (copy/paste)]"
-    message "${LBon}(3)${Boff} run finalize-chroot-joetoo script should auto-run on first chroot"
-    message "${LBon}(4)${Boff} after script finishes, run chown -R ${user}:${user} /home/${user}"
-    message "${LBon}(5)${Boff} if not already complete, emerge @system; emerge @world"
-    message "${LBon}(6)${Boff} *** build kernel, initramfs, and update /etc/fstab and bootloader --"
-    message "     ${BMon}Hint:${Boff} blkid | grep \${filter} >> /etc/fstab ; nano /etc/fstab"
-    message "     bootloader files could include --"
-    message "         /boot/cmdline.txt, /boot/config.txt (raspi)"
-    message "         /boot/joetooEnv.txt (rockchip)"
-    message "         /etc/default/grub (amd64)"
-    message "${LBon}(8)${Boff} validate apache ssl, vpn keys, etc. reboot ..."
+    separator "${PN}" "(${FUNCNAME[0]})"
+    j_msg "-${notice}" -p "${BYon}Next Steps should include the following --${Boff}"
+    j_msg "-${notice}" -p "${LBon}(1)${Boff} edit .bashrc, make.conf (follow handbook; below at a minimum)"
+    j_msg "-${notice}" -p "${LBon}(2)${Boff} chroot [run chroot-prep ; cat chroot-commands (copy/paste)]"
+    j_msg "-${notice}" -p "${LBon}(3)${Boff} run finalize-chroot-joetoo script should auto-run on first chroot"
+    j_msg "-${notice}" -p "${LBon}(4)${Boff} after script finishes, run chown -R ${user}:${user} /home/${user}"
+    j_msg "-${notice}" -p "${LBon}(5)${Boff} if not already complete, emerge @system; emerge @world"
+    j_msg "-${notice}" -p "${LBon}(6)${Boff} *** build kernel, initramfs, and update /etc/fstab and bootloader --"
+    j_msg "-${notice}" -p "     ${BMon}Hint:${Boff} blkid | grep \${filter} >> /etc/fstab ; nano /etc/fstab"
+    j_msg "-${notice}" -p "     bootloader files could include --"
+    j_msg "-${notice}" -p "         /boot/cmdline.txt, /boot/config.txt (raspi)"
+    j_msg "-${notice}" -p "         /boot/joetooEnv.txt (rockchip)"
+    j_msg "-${notice}" -p "         /etc/default/grub (amd64)"
+    j_msg "-${notice}" -p "${LBon}(8)${Boff} validate apache ssl, vpn keys, etc. reboot ..."
     echo
     return 0
 }
 
 prepare-to-finalize-chroot() {
-    separator ${PN} "${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
     # install /usr/sbin/finalize-chroot (should have been installed install_files (mkenv) above
-    message "validating availability of /usr/sbin/finalize-chroot-joetoo ..."
-    if [[ ! -x ${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo ]] ; then
-        E_message "executable ${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo not found - please provide"
+    j_msg "-${notice}" -p "validating availability of /usr/sbin/finalize-chroot-joetoo ..."
+    if [[ ! -x "${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo" ]] ; then
+        j_msg "-${err}" "executable ${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo not found - please provide"
         return 1
     else
-        message "${BGon}Confirmed${Boff}"
+        j_msg "-${notice}" -p "${BGon}Confirmed${Boff}"
     fi
     # mod /root/.bashrc to run /usr/sbin/finalize-chroot if /root/firstlogin exists
-    echo "" >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "install_my_local_ca_certificates"  >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "" >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "rerunmsg=\"first-run chroot configuration not requested by presense of marker\"" >> ${newroot_mountpoint%/}/root/.bashrc
+    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "install_my_local_ca_certificates"  >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "rerunmsg=\"first-run chroot configuration not requested by presense of marker\"" >> "${newroot_mountpoint%/}/root/.bashrc"
     # finalize-chroot-joetoo is in /usr/sbin which should be in PATH
-    echo -n "[ -e /root/firstlogin ] && finalize-chroot-joetoo ||"  >> ${newroot_mountpoint%/}/root/.bashrc
-    echo " \\"  >> ${newroot_mountpoint%/}/root/.bashrc
-    echo 'echo -e "${rerunmsg} /root/firstlogin;\nre-run if needed with /usr/sbin/finalize-chroot-joetoo"'  >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "" >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "" >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "E_message \"edit /root/.bashrc after first boot of real image, to modify prompt, etc.\""  >> ${newroot_mountpoint%/}/root/.bashrc
-    echo  "" >> ${newroot_mountpoint%/}/root/.bashrc
-    echo "export PS1=\"(chroot) \${PS1}\""  >> ${newroot_mountpoint%/}/root/.bashrc
+    echo -n "[ -e /root/firstlogin ] && finalize-chroot-joetoo ||"  >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo " \\"  >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo 'echo -e "${rerunmsg} /root/firstlogin;\nre-run if needed with /usr/sbin/finalize-chroot-joetoo"'  >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "j_msg \"-${err}\" \"edit /root/.bashrc after first boot of real image, to modify prompt, etc.\""  >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo  "" >> "${newroot_mountpoint%/}/root/.bashrc"
+    echo "export PS1=\"(chroot) \${PS1}\""  >> "${newroot_mountpoint%/}/root/.bashrc"
 
     # create /root/firstlogin
-    message_n "creating firstrunmarker /root/firstlogin"
-    echo "true" >> ${newroot_mountpoint%/}/root/firstlogin
-    result=$?
-    right_status $result
-    [ ! $result -eq 0 ] && return 1
+    j_msg "-${notice}" -p -n "creating firstrunmarker /root/firstlogin"
+    echo "true" >> "${newroot_mountpoint%/}/root/firstlogin"
+    right_status $? "$notice" || return 1
     return 0
 }
 
 # removed sync-repo in this non-crossbuilding scenario.  Run it in chroot
 
 make-repo-dirs() {
-    separator ${PN} "${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
     for x in gentoo joetoo crossdev; do
-        message_n "examining repo [$x] ..."
-        if [ ! -d ${newroot_mountpoint%/}/var/db/repos/$x ] ; then
+        j_msg "-${notice}" -p -n "examining repo [$x] ..."
+        if [ ! -d "${newroot_mountpoint%/}/var/db/repos/${x}" ] ; then
             echo -en "${BRon} missing${Boff} creating ..."
-            mkdir -p ${newroot_mountpoint%/}/var/db/repos/$x
-            right_status $?
+            mkdir -p "${newroot_mountpoint%/}/var/db/repos/${x}"
+            right_status $? "$notice"
         else
             echo -en "${BGon} exists${Boff}"
-            right_status $TRUE
+            right_status $TRUE "$notice"
         fi
     done
     return 0
 }
 
 copy-resolve-conf() {
-    separator ${PN} "${FUNCNAME[0]})"
-    message_n "copying /etc/resolve.conf to newroot_mountpoint ..."
-    cp -a /etc/resolv.conf ${newroot_mountpoint}/etc/ ; result=$?
-    right_status $result
-    return $result
+    separator "${PN}" "(${FUNCNAME[0]})"
+    j_msg "-${notice}" -p -n "copying /etc/resolve.conf to newroot_mountpoint ..."
+    cp -a /etc/resolv.conf "${newroot_mountpoint%/}/etc/"
+    right_status $? "$notice" || return 1
+    return 0
 }
 
 install_files_from_source() {
-    separator ${PN} "(install_files_from_source)"
+    separator "${PN}" "(install_files_from_source)"
     # SOURCE = (in this context) staged data already collected to enable joetoo system image generation for this board
     SOURCE="$1"
     # strip source directory name from each pathname to use relative to destination
-    d_message "SOURCE: $SOURCE" 3
-    d_message "about to run find ${SOURCE} -type f | sed \"s|${SOURCE}||\"" 3
-    for x in $(find ${SOURCE} -type f | sed "s|${SOURCE}||") ; do
+    j_msg "-${notice}" -p "SOURCE: $SOURCE"
+    j_msg "-${notice}" -p "about to run find ${SOURCE} -type f | sed \"s|${SOURCE}||\""
+    for x in $(find "${SOURCE}" -type f | sed "s|${SOURCE}||") ; do
         DESTINATION="${newroot_mountpoint%/}/$(dirname ${x})"
         FILE="$(basename ${x})"
-        if [ ! -d ${DESTINATION} ] ; then
-	    d_echo "" 3
-            d_message "TARGET......: ${TARGET}" 3
-            d_message "SOURCE......: ${SOURCE}" 3
-            d_message "x...........: ${x}" 4
-            d_message "dirname x...: $(dirname $x)" 4
-            d_message "basename x..: $(basename $x)" 4
-            d_message "DESTINATION.: ${DESTINATION}" 3
-            d_message "FILE........: ${FILE}" 3
-            d_echo "" 3
-            message_n "creating destination directory ${DESTINATION} ..."
-            mkdir -p ${DESTINATION} && right_status $? || ( right_status $? && exit 1 )
+        if [ ! -d "${DESTINATION}" ] ; then
+            j_msg "-${notice}" -mp ""
+            j_msg "-${notice}" -p "TARGET......: ${TARGET}"
+            j_msg "-${notice}" -p "SOURCE......: ${SOURCE}"
+            j_msg "-${debug}" -p "x...........: ${x}"
+            j_msg "-${debug}" -p "dirname x...: $(dirname $x)"
+            j_msg "-${debug}" -p "basename x..: $(basename $x)"
+            j_msg "-${notice}" -p "DESTINATION.: ${DESTINATION}"
+            j_msg "-${notice}" -p "FILE........: ${FILE}"
+            j_msg "-${notice}" -mp ""
+            j_msg "-${notice}" -p -n "creating destination directory ${DESTINATION} ..."
+            mkdir -p "${DESTINATION}"
+            right_status $? "$notice" || { echo; j_msg "-${err}" "failed to mkdir -p ${DESTINATION}" ; exit 1 ; }
         fi
-        message_n "populating ${x} ..."
-        cp ${SOURCE}${x} ${DESTINATION}/${FILE} && right_status $? || ( right_status $? && exit 1 )
+        j_msg "-${notice}" -p -n "populating ${x} ..."
+        cp "${SOURCE}${x}" "${DESTINATION}/${FILE}"
+        right_status $? "$notice" || { echo; j_msg "-${err}" "failed to cp ${SOURCE}${x} ${DESTINATION}/${FILE}" ; exit 1 ; }
     done
     return 0
 }
 
-new_prompt()        # set external variable $response based on reponse to prompt $1
-{ ps=$1; echo; echo; CUU; SCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; # '>
-while ! expr "${response:0:1}" : [yYnNsS] >/dev/null;  # response not a regex match
-do RCP; echo -en "$(repeat ' ' $(termwidth))";  ## blank the line
-RCP; message_n "$ps [Yes/no/skip|Yns]: " && read response; done; }
+old_get-max-profile-number() {
+#    validate_target ${BOARD} # set TARGET, TARGET_ARCH just in case not already set
+## for joetoo-system-install, set these static at the top
+    cmd="ARCH=${TARGET_ARCH}"
+    cmd+=" PORTAGE_CONFIGROOT=/usr/${TARGET}/"
+    cmd+=" eselect profile list |"
+    cmd+=" grep '\[[0-9]\+\]' |"
+    cmd+=" awk '{print \$1}' |"
+    cmd+=" sed 's/\[//' |"
+    cmd+=" sed 's/\]//' |"
+    cmd+=" sort -n |"
+    cmd+=" tail -n 1"
+    result=$(eval ${cmd})
+    echo $result
+    return $result
+}
+
+get-max-profile-number() {
+    # Extract the highest profile number directly using environment variables and a single awk command
+    local result
+    # use awk to read the result of eselect profile list and store the highest profile number
+    #   /\[[0-9]+\]/: Filters lines to only look for the profile brackets
+    #   gsub(/[\[\]]/, "", $1): Strips both [ and ] chars from the first column
+    #   add 0 to force numeric evaluation, then keep the bigger number
+    result=$(
+        ARCH="${TARGET_ARCH}"
+        PORTAGE_CONFIGROOT="/usr/${TARGET}/"
+        eselect profile list | \
+            awk '
+                /\[[0-9]+\]/ {
+                    gsub(/[\[\]]/, "", $1);
+                    val = $1 + 0; # Force numeric evaluation
+                    if (val > max) max = val
+                }
+                END {print max}
+            '
+    )
+    echo "$result"
+    return "$result"
+}
 
 profile_number_prompt()  {
-    ps=$1; echo; echo; CUU; SCP;
+    # leave one blank line after previous output and save left margin cursor position
+    ps="$1"; echo; echo; CUU; SCP;
 #    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
-    get-max-profile-number ${BOARD} >/dev/null ; max_num=$?
-    message_n "$ps [0-${max_num}]: " && read profile_number;
-    isnumber $profile_number ; result=$?
+    get-max-profile-number "${BOARD}" >/dev/null ; max_num=$?
+    j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+    isnumber "$profile_number" ; result=$?
     while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt ${max_num} ] ; do
-        RCP; echo -en "$( repeat ' ' $( termwidth ) )"; RCP;
-        message_n "$ps [0-${max_num}]: " && read profile_number;
-        isnumber $profile_number ; result=$? ; done
+        RCP; EL;  # restore cursor position and erase the line
+        # (re)print the prompt and allowed profile number range
+        j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+        isnumber "$profile_number" ; result=$?
+    done
 }
 
 eselect-profile() {
-    separator ${PN} "${FUNCNAME[0]})"
-    message "setting default profile ..."
+    separator "${PN}" "(${FUNCNAME[0]})"
+    j_msg "-${notice}" -p "setting default profile ..."
 #    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
 #    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
-    PORTAGE_CONFIGROOT=${newroot_mountpoint} eselect profile set ${profile_number}
-    PORTAGE_CONFIGROOT=${newroot_mountpoint} eselect profile list | grep '\*'
-    d_message "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}" 3
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
+    j_msg "-${notice}" -p "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
     if [[ $INTERACTIVE ]] ; then
         msg="${BYon}Would you like to select a different profile?\n"
         msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
-        response="" ; new_prompt "${msg}"
+        response="" ; yns_prompt "${msg}"
     else
         response="s"  # keep default profile and continue
     fi
     case ${response:0:1} in
         [yY] )
-            message "${BMon}Available profiles --${Boff}"
+            j_msg "-${notice}" -p "${BMon}Available profiles --${Boff}"
 #            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
-            PORTAGE_CONFIGROOT=${newroot_mountpoint} eselect profile list
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
             profile_number_prompt "${BYon}Select profile: ${Boff}"
 #            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
 #            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
-            PORTAGE_CONFIGROOT=${newroot_mountpoint} eselect profile set ${profile_number}
-            PORTAGE_CONFIGROOT=${newroot_mountpoint} eselect profile list
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
             ;;
-        [nN] ) E_message "exiting as instructed"; return 0;;
-        [sS] ) E_message "skipping; profile remains ${profile_number}" ;;
-        * ) E_message "invalid response [ ${response} ]"; exit 1 ;;
+        [nN] ) j_msg "-${err}" "exiting as instructed"; return 0;;
+        [sS] ) j_msg "-${err}" "skipping; profile remains ${profile_number}" ;;
+        * ) j_msg "-${err}" "invalid response [ ${response} ]"; exit 1 ;;
     esac
     return 0
 }
 
 untar-stage3() {
-    separator ${PN} "${FUNCNAME[0]})"
-    message_n "extracting stage3 from tar.xz archive ..."
-    tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C ${newroot_mountpoint}/
-    result=$? ; right_status $result ; return $result
+    separator "${PN}" "(${FUNCNAME[0]})"
+    local result=0
+    j_msg "-${notice}" -p "extracting stage3 from tar.xz archive ..."
+    tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C "${newroot_mountpoint%/}/"
+    result=$?
+    j_msg "-${notice}" -p -n "Done extracting stage3 from tar.xz archive. Result:"
+    handle_result $result '' ''  "$notice" || return 1
+    return 0
+}
+
+verify_stage3_signature() {
+    local gpg_home="" gpg_out=""
+    local -a results
+    local result
+    # check/set this in case steps were skipped or script was resumed at this step
+    if [ -z "$stage3_tarball" ] ; then
+        get_stage3_tarball_filename || die "failed to get_stage3_tarball_filename"
+    fi
+
+    # set up a temporary gpg keyring directory
+    gpg_home=$(mktemp -d)
+    trap 'rm -rf "$gpg_home"' RETURN
+
+    j_msg "-${notice}" -p "using wget | gpg --import to download Gentoo release keys (please wait) ..."
+    # -q is quiet, -O outputs to a file as named by the download source but -O- outputs to stdout (piped)
+    # | gpg --homedir "$gpg_home" --import imports that content directly to the gpg_home temp dir
+    wget -qO- \
+        https://qa-reports.gentoo.org/output/service-keys.gpg \
+        | gpg -q --homedir "$gpg_home" --import 2>/dev/null
+    # capture the result codes from the pipeline
+    results=("${PIPESTATUS[@]}")
+    j_msg "-${debug}" -p "gpg output: [$gpg_out]"
+    j_msg "-${debug}" -p "pipline results[@]: [${results[@]}]"
+
+    j_msg "-${notice}" -m -n "wget status:"
+    handle_result ${results[0]} "" "wget failed" "$notice" || return 1
+    j_msg "-${notice}" -m -n "gpg import status:"
+    handle_result ${results[1]} "keys loaded at [$gpg_home]" "gpg import failed" "$notice" || return 2
+
+    j_msg "-${debug}" -p "stage3_tarball: $stage3_tarball"
+    j_msg "-${debug}" -p "gpg_home: $gpg_home"
+    j_msg "-${debug}" -p "pwd: $(pwd)"
+
+    j_msg "-${notice}" -p "Verifying gentoo release signature on stage3 tarball (please wait) ..."
+    gpg_out=$(gpg -q --homedir "$gpg_home" --verify "${stage3_tarball}.asc" "${stage3_tarball}" 2>/dev/null)
+    result=$?
+    j_msg "-${debug}" -p "gpg output: [$gpg_out]"
+    j_msg "-${notice}" -m -n "Done; result:"
+    handle_result $result "Verified!" "Failed!" "$notice" || return 3
+
+    return 0
 }
 
 verify-stage3-hashes() {
-    separator ${PN} "${FUNCNAME[0]})"
+    separator "${PN}" "(${FUNCNAME[0]})"
+    local FLAGGED=$FALSE
+    local result=0 selector=""
+    local SHA512_DIGEST="" SHA512_HASH="" BLAKE2B_DIGEST="" BLAKE2B_HASH=""
+
+    get_stage3_tarball_filename || die "failed to get_stage3_tarball_filename"
+
+    j_msg "-${notice}" -p "calculating sha512 and blake2b hash with openssl (please wait) ..."
     selector='SHA512'
-    SHA512_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
-                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
+    SHA512_DIGEST="$(grep -A1 "${selector}" "${stage3_tarball}.DIGESTS" | \
+        grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}' )"
     SHA512_HASH="$(openssl dgst -r -sha512 stage3-*.tar.xz | awk '{print $1}')"
 
     selector='BLAKE2B'
-    BLAKE2B_DIGEST=$(grep -A1 ${selector} $(basename ${href}).DIGESTS | \
-                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')
+    BLAKE2B_DIGEST="$(grep -A1 "${selector}" "${stage3_tarball}.DIGESTS" | \
+                  grep -v "CONTENTS\|${selector}\|--" | awk '{print $1}')"
     BLAKE2B_HASH="$(openssl dgst -r -blake2b512 stage3-*.tar.xz | awk '{print $1}')"
-    d_message "SHA512_DIGEST..: ${SHA512_DIGEST}" 3
-    d_message "SHA512_HASH....: ${SHA512_HASH}" 3
-    d_message "BLAKE2B_DIGEST.: ${BLAKE2B_DIGEST}" 3
-    d_message "BLAKE2B_HASH...: ${BLAKE2B_HASH}" 3
+    j_msg "-${info}" -m "SHA512_DIGEST..: ${SHA512_DIGEST}"
+    j_msg "-${info}" -m "SHA512_HASH....: ${SHA512_HASH}"
+    j_msg "-${info}" -m "BLAKE2B_DIGEST.: ${BLAKE2B_DIGEST}"
+    j_msg "-${info}" -m "BLAKE2B_HASH...: ${BLAKE2B_HASH}"
 
-    if [[ "${SHA512_DIGEST}" != "${SHA512_HASH}" ]] ; then
-        E_message "openssl sha512 hash has does not match digest"
-        return 1
-    elif [[ "${BLAKE2B_DIGEST}" != "${BLAKE2B_HASH}" ]] ; then
-        E_message "openssl blake2b512 hash has does not match digest"
-        return 1
-    else
-        message_n "openssl sha512 and blake2b512 hashes both ${BGon}match${Boff} digest"
-        right_status $TRUE
-    fi
+    j_msg "-${notice}" -p -n "checking openssl sha512 hash ..."
+    [[ "${SHA512_DIGEST}" == "${SHA512_HASH}" ]]
+    handle_result $? "match" "mis-match" "$notice" || FLAGGED=$TRUE
+
+    j_msg "-${notice}" -p -n "checking openssl blake2b hash ..."
+    [[ "${BLAKE2B_DIGEST}" == "${BLAKE2B_HASH}" ]]
+    handle_result $? "match" "mis-match" "$notice" || FLAGGED=$TRUE
+    [ $FLAGGED ] && return 1
     return 0
 }
-
+get_stage3_tarball_filename() {
+    j_msg "-${notice}" -p "getting name of stage3 tarball ..."
+    # use find to identify the new tarball and set the *** global *** stage3_tarball ***
+    # find with printf %T to timestamp %f filename only, then sort reverse numeric
+    # cut to drop the timestamp after sorted, filter for pattern, and take the top one
+    stage3_tarball=$(
+        find . -maxdepth 1 -type f -printf '%T@ %f\n' \
+            | sort -nr \
+            | cut -d' ' -f2- \
+            | grep -E "^${STAGE3_SELECTOR}.*\.tar\.xz$" \
+            | head -n1
+    ) ; result=$?
+    j_msg "-${notice}" -p -n "filename: "
+    handle_result $result "$stage3_tarball" '' "$notice" || return 1
+    return 0
+}
 
 wget-stage3() {
-    FLAGGED=$FALSE
-    separator ${PN} "${FUNCNAME[0]})"
-    message "now getting stage3 in newroot_mountpoint: [${Mon}$(pwd)${Boff}] ..."
-#    eval "$(grep ${STAGE3_SELECTOR} <<< $(curl -s https://www.gentoo.org/downloads/#${TARGET_ARCH}) | awk '{print $2}')"
-    eval "$(curl -s https://www.gentoo.org/downloads/#${TARGET_ARCH} | awk '{print $2}' | grep ${STAGE3_SELECTOR})"
-    message_n "running wget ${href} ..."
-    wget ${href} ; result=$?
-    right_status $result ; [ $result -eq 0 ] || FLAGGED=$TRUE
-    message_n "running wget ${href}.DIGESTS ..."
-    wget ${href}.DIGESTS ; result=$?
-    right_status $result ; [ $result -eq 0 ] || FLAGGED=$TRUE
-    return $?
-}
+    local FLAGGED=$FALSE result=0
+    separator "${PN}" "(${FUNCNAME[0]})"
+    # use curl to get the html from the #stages section of the gentoo downloads page
+    # it has format: href="https://distfiles.gentoo.org/releases/amd64/autobuilds/20260531T160106Z/stage3-amd64-hardened-openrc-20260531T160106Z.tar.xz"
+    # Note: there should be a tar.xz archive and tar.xz.asc pgp signature file
+    j_msg "-${notice}" -p -n "using curl to get html string for target_url ..."
+    local html_str="$(
+        curl -s "https://www.gentoo.org/downloads/${TARGET_ARCH}/#stages" | \
+        awk '{print $2}' | grep "${STAGE3_SELECTOR}" | grep -v "tar.xz.asc" | head -n1
+    )"
+    handle_result $? '' '' "$notice" || die "failed to curl html string"
+    # set global target_url by stripping the 'href=\"' from prefix of html_str, leaving the target url, and strip the trailing '\"'
+    j_msg "-${notice}" -p -n "extracting target_url from html string ..."
+    target_url="${html_str#href=\"}" && target_url="${target_url%\"}"
+    handle_result $? '' '' "$notice" || die "failed to extract target_url from html string"
+    j_msg "-${debug}" -p "${BWon}(debug)${Boff} target_url: [${target_url}]"
 
-run-sequence() {
-    for ((i=0; i<${#command_sequence[@]}; i++)); do
-        response=""
-        msg="${BYon}are you ready to ${msg1_sequence[$i]}?${Boff}"
-        new_prompt "${msg}"
-        case ${response:0:1} in
-            [yY] ) eval "${command_sequence[$i]}" || die "failed to ${msg1_sequence[$i]}" ;;
-            [sS] ) message "skipping this step as instructed" ;;
-            [nN] ) die "negative response [${response}] from user; quitting" ;;
-            * ) die "invalid response in run-sequene"
-        esac
-    done
+    # download the stage3 tarball
+    j_msg "-${notice}" -p "downloading stage3 in newroot_mountpoint: [${BMon}$(pwd)${Boff}] ..."
+    if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
+        j_msg "-${notice}" -p -n "running wget ${target_url} ..."
+        wget "${target_url}"; result=$?
+    else
+        j_msg "-${notice}" -p -n "running wget to download stage3 tarball from target_url (please wait) ..."
+        wget -q "${target_url}"; result=$?
+    fi
+    right_status $result "$notice" || FLAGGED=$TRUE
+    # now download the corresponding .DIGESTS (hashes) and .asc (pgp signature) files
+    if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
+        j_msg "-${notice}" -p -n "running wget ${target_url}.DIGESTS ..."
+        wget "${target_url}.DIGESTS"; result=$?
+    else
+        j_msg "-${notice}" -p -n "running wget to download .DIGESTS file from target_url ..."
+        wget -q "${target_url}.DIGESTS"; result=$?
+    fi
+    right_status $result "$notice" || FLAGGED=$TRUE
+    if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
+        j_msg "-${notice}" -p -n "running wget ${target_url}.asc ..."
+        wget "${target_url}.asc"; result=$?
+    else
+        j_msg "-${notice}" -p -n "running wget to download pgp signature file from target_url ..."
+        wget -q "${target_url}.asc"; result=$?
+    fi
+    right_status $result "$notice" || FLAGGED=$TRUE
+    [ $FLAGGED ] && return 1
     return 0
 }
 
-die() {
-    msg="${1}"
-    E_message "${msg}"
-    exit 1
+parse_commandline() {
+  j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
+  local args=()
+  local msg
+  # early-exit guard max cmdline is - jping <tgtlst> -c d -p 1 -P -j 2 -W 1 -t 1 -f
+  if [ $# -gt 3 ] ; then
+    j_msg "-${err}" "too many [$#] args [$*]"
+    my_usage; exit 1
+  fi
+  # pre-define a dynamic macro for adjusting verbosity (used by script_header_joetoo's _pc_action_verbosity
+  # usage example: _pc_operator="+"; eval "$_pc_adjust_verbosity"
+  _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))"
+
+  j_msg "-${debug}" -p "${BYon}cmdline${Boff}: [$*]"
+  # parse command line (validate any $2 arg requested by $1 before assigning
+  # ($2 must exist, which is not the case if $1 was the last arg,
+  #  and $2 must not be an option - must not start with '-' )
+  while [ $# -gt 0 ] ; do
+    j_msg "-${debug}" -p "${BYon}parsing parameter${Boff}: [$1] of ${BYon}existing cmdline${Boff} [$*]"
+    case "$1" in
+      -- ) args+=("$@"); break ;;  # ................. # remainder of cmdline is arg(s)
+
+      -I|--interactive )  # .......................... # number of parallel jobs
+        INTERACTIVE="$TRUE"
+        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
+        ;;
+
+      -N|--noninteractive )  # ....................... # number of parallel jobs
+        INTERACTIVE="$FALSE"
+        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
+        ;;
+
+      -Q|--quiet)  # ................................. # (silence) using using script_header_joetoo _pc_action_quiet
+        _pc_action_quiet
+        j_msg -${debug} -p "(pc)(Q) ran _pc_action_quiet; shifting 1"
+        ;;
+
+      -D|--debug)  # ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, # (debug)
+        export DEBUG=$TRUE; j_msg -${debug} -p "(pc)(D) set DEBUG=\$TRUE; shifting 1" ;;
+
+      -v|--louder)  # ................................ # (increase verbosity) using script_header_joetoo _pc_action>
+        _pc_operator="+"; _pc_action_verbosity
+        j_msg -${debug} -p "(pc)(v) ran _pc_action_verbosity (op: +); shifting 1"
+        ;;
+
+      -q|--quieter)  # ............................... # (decrease verbosity) using script_header_joetoo _pc_action>
+        _pc_operator="-"; _pc_action_verbosity
+        j_msg -${debug} -p "(pc)(q) ran _pc_action_verbosity (op: -); shifting 1"
+        ;;
+
+      -h|--help     ) my_usage; exit 1 ;;
+
+      *             )  # ............................. # fall-through (either arg or bad flag)
+        case "${1:0:1}" in   # if - then this is an invalid flag
+          "-") j_msg "-${err}" "${BRon}(error)${Boff}: invalid option flag [$1]"; my_usage; exit 1 ;;
+          *  )  # hold to return unhandled arg to positional parameters
+            args+=("$1")
+            j_msg "-${debug}" -p "${BYon}appended${Boff} \$1 [$1] ${BYon}to args:${Boff} [${args[*]}], shifting 1"
+            ;;
+        esac
+        ;;
+    esac
+    shift
+  done
+  j_msg "-${debug}" -p "remaining argument(s): [${args[*]}]"
 }
 
 #-----[ main script ]------------------------------------------------------------------------------------
 checkroot
-separator $(hostname) ${PN}
-[ $# -ne 0 ] && E_message "no arguments allowed" && exit 1
+separator "$(hostname)" "${PN}"
+
+parse_commandline "$@" || die "failed to parse_commandline"
+
+show_config || die "failed to show_config"
 
 old_dir="$(pwd)"
-message_n "moving from ${old_dir} to newroot_mountpoint: [${newroot_mountpoint}] ..."
-cd ${newroot_mountpoint} ; right_status $?
+j_msg "-${notice}" -p -n "moving from ${old_dir} to newroot_mountpoint: [${newroot_mountpoint}] ..."
+cd "${newroot_mountpoint}" ; right_status $? "$notice"
 
-display_configuration || die "failed to display configuration"
+run_array "$status_file" "$start_step" "$stop_step" || die "failed to complete command sequence with run_array"
 
-run-sequence || "failed to run sequence"
-
-message_n "moving from $(pwd) back to ${old_dir} ..."
-cd ${old_dir} ; right_status $?
+j_msg "-${notice}" -p -n "moving from $(pwd) back to ${old_dir} ..."
+cd "${old_dir}" ; right_status $? "$notice"
 
 exit 0
+
+#debug_marker
+
+# work in progress
