@@ -1,7 +1,9 @@
 #!/bin/bash
 # wget-stage3-amd64   (c) joe brendler 2025-2055
 # based on the author's work in the dev-sbc/crossbuild-tools::joetoo package
-#
+# but tuned for use installing a new or rebuilt system on hardware running a liveCD/liveUSB
+# so unlike cb-mkenv (which sets up repos and selects a profile), those steps must
+# be handled after chroot (as per gentoo handbook install sequence)
 
 newroot_mountpoint="/mnt/gentoo"
 
@@ -68,7 +70,6 @@ command_sequence=(
 "install_files_from_source ${mkimg_files}"
 'copy-resolve-conf'
 'make-repo-dirs'
-'eselect-profile'
 'prepare-to-finalize-chroot'
 'print_next_steps'
 )
@@ -82,7 +83,6 @@ msg1_sequence=(
 "install ${mkimg_files} files"
 'copy resolve.conf'
 'make repo directories'
-'eselect profile'
 'prepare to finalize chroot'
 'print next steps'
 )
@@ -102,9 +102,9 @@ my_usage() {
 
   msg="${BYon}Options --${Boff}"
   j_msg "-${notice}" -p "$msg"
-  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff}(default)"
+  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff} (default)"
   j_msg "-${notice}" -m "$msg"
-  msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})${Boff}"
+  msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately${Boff}"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -v|--louder${Boff}${Con} ..........: Increase verbosity (may repeat)${Boff}"
   j_msg "-${notice}" -m "$msg"
@@ -128,33 +128,49 @@ my_usage() {
 print_next_steps() {
     separator "${PN}" "(${FUNCNAME[0]})"
     j_msg "-${notice}" -p "${BYon}Next Steps should include the following --${Boff}"
-    j_msg "-${notice}" -p "${LBon}(1)${Boff} edit .bashrc, make.conf (follow handbook; below at a minimum)"
-    j_msg "-${notice}" -p "${LBon}(2)${Boff} chroot [run chroot-prep ; cat chroot-commands (copy/paste)]"
-    j_msg "-${notice}" -p "${LBon}(3)${Boff} run finalize-chroot-joetoo script should auto-run on first chroot"
-    j_msg "-${notice}" -p "${LBon}(4)${Boff} after script finishes, run chown -R ${user}:${user} /home/${user}"
-    j_msg "-${notice}" -p "${LBon}(5)${Boff} if not already complete, emerge @system; emerge @world"
-    j_msg "-${notice}" -p "${LBon}(6)${Boff} *** build kernel, initramfs, and update /etc/fstab and bootloader --"
-    j_msg "-${notice}" -p "     ${BMon}Hint:${Boff} blkid | grep \${filter} >> /etc/fstab ; nano /etc/fstab"
-    j_msg "-${notice}" -p "     bootloader files could include --"
-    j_msg "-${notice}" -p "         /boot/cmdline.txt, /boot/config.txt (raspi)"
-    j_msg "-${notice}" -p "         /boot/joetooEnv.txt (rockchip)"
-    j_msg "-${notice}" -p "         /etc/default/grub (amd64)"
-    j_msg "-${notice}" -p "${LBon}(8)${Boff} validate apache ssl, vpn keys, etc. reboot ..."
+    j_msg "-${notice}" -p "${BCon}(${BMon}1${BCon})${Boff} edit .bashrc, make.conf (follow handbook; below at a minimum)"
+    j_msg "-${notice}" -p "${BCon}(${BMon}2${BCon})${Boff} chroot [run chroot-prep ; cat chroot-commands (copy/paste)]"
+    j_msg "-${notice}" -p "${BCon}(${BMon}3${BCon})${Boff} run finalize-chroot-joetoo script (should auto-run on first chroot)"
+    j_msg "-${notice}" -p "${BCon}(${BMon}4${BCon})${Boff} after script finishes, run chown -R root:root /root"
+    j_msg "-${notice}" -p "${BCon}(${BMon}5${BCon})${Boff} after script finishes, run chown -R \${user}:\${user} /home/\${user}"
+    j_msg "-${notice}" -p "${BCon}(${BMon}6${BCon})${Boff} if not already complete, emerge @system; emerge @world"
+    j_msg "-${notice}" -p "${BCon}(${BMon}7${BCon})${Boff} *** build kernel, initramfs, and update /etc/fstab and bootloader --"
+    j_msg "-${notice}" -p "    ${BMon}Hint:${Boff} blkid | grep \${filter} >> /etc/fstab ; nano /etc/fstab"
+    j_msg "-${notice}" -p "    bootloader files could include --"
+    j_msg "-${notice}" -p "        /boot/cmdline.txt, /boot/config.txt (raspi)"
+    j_msg "-${notice}" -p "        /boot/joetooEnv.txt (rockchip)"
+    j_msg "-${notice}" -p "        /etc/default/grub (amd64)"
+    j_msg "-${notice}" -p "${BCon}(${BMon}8${BCon})${Boff} validate apache ssl, vpn keys, etc. reboot ..."
+    j_msg "-${notice}" -p "${BCon}(${BMon}9${BCon})${Boff} validate apache ssl, vpn keys, etc. reboot ..."
     echo
     return 0
 }
 
 prepare-to-finalize-chroot() {
     separator "${PN}" "(${FUNCNAME[0]})"
+    local finalize_chroot_joetoo_file="${newroot_mountpoint%/}/joetoobuild-tools/finalize-chroot-joetoo"
+    local finalize_chroot_joetoo_destination="${newroot_mountpoint%/}/usr/sbin/"
     # install /usr/sbin/finalize-chroot (should have been installed install_files (mkenv) above
     j_msg "-${notice}" -p "validating availability of /usr/sbin/finalize-chroot-joetoo ..."
     if [[ ! -x "${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo" ]] ; then
-        j_msg "-${err}" "executable ${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo not found - please provide"
-        return 1
+        j_msg "-${err}" "executable ${newroot_mountpoint%/}/usr/sbin/finalize-chroot-joetoo not found - copying"
+        j_msg "-${notice}" -p -n "looking for \$finalize_chroot_joetoo_file [$finalize_chroot_joetoo_file]"
+        [[ -f "$finalize_chroot_joetoo_file" ]]
+        handle_result $? "found it" "not found" "$notice" || return 1
+        j_msg "-${notice}" -p -n "copying \$finalize_chroot_joetoo_file to destination [$finalize_chroot_joetoo_destination]"
+        cp -a "$finalize_chroot_joetoo_file" "${finalize_chroot_joetoo_destination %/}/"
+        handle_result $? "" "" "$notice" || return 1
+        j_msg "-${notice}" -p -n "setting permissions"
+        # set permissions by appending basenamed sourcefile to dest dir/
+        chmod +x "${finalize_chroot_joetoo_destination%/}/${finalize_chroot_joetoo_file##*/}"
+        handle_result $? "" "" "$notice" || return 1
     else
         j_msg "-${notice}" -p "${BGon}Confirmed${Boff}"
     fi
-    # mod /root/.bashrc to run /usr/sbin/finalize-chroot if /root/firstlogin exists
+    d_do 'ls -al "${finalize_chroot_joetoo_destination%/}/${finalize_chroot_joetoo_file##*/}"' "$info"
+
+    # mod /root/.bashrc (likely installed already by content_for_mkenv_generic_amd64)
+    #  to run /usr/sbin/finalize-chroot if /root/firstlogin exists
     echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
     echo "install_my_local_ca_certificates"  >> "${newroot_mountpoint%/}/root/.bashrc"
     echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
@@ -172,7 +188,7 @@ prepare-to-finalize-chroot() {
     # create /root/firstlogin
     j_msg "-${notice}" -p -n "creating firstrunmarker /root/firstlogin"
     echo "true" >> "${newroot_mountpoint%/}/root/firstlogin"
-    right_status $? "$notice" || return 1
+    handle_result $? "" "" "$notice" || return 1
     return 0
 }
 
@@ -452,32 +468,38 @@ wget-stage3() {
     j_msg "-${debug}" -p "${BWon}(debug)${Boff} target_url: [${target_url}]"
 
     # download the stage3 tarball
+    # wget flags:
+    #   --progress=bar:force - when the output is not a TTY, the progress bar always falls back to "dot"
+    #   --show-progress - force wget to display the progress bar in any verbosity
     j_msg "-${notice}" -p "downloading stage3 in newroot_mountpoint: [${BMon}$(pwd)${Boff}] ..."
     if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
-        j_msg "-${notice}" -p -n "running wget ${target_url} ..."
-        wget "${target_url}"; result=$?
+        j_msg "-${notice}" -p "running wget ${target_url} ..."
+        wget --progress=bar:force --show-progress "${target_url}"; result=$?
     else
-        j_msg "-${notice}" -p -n "running wget to download stage3 tarball from target_url (please wait) ..."
-        wget -q "${target_url}"; result=$?
+        j_msg "-${notice}" -p "running wget to download stage3 tarball from target_url (please wait) ..."
+        wget -q --progress=bar:force --show-progress "${target_url}"; result=$?
     fi
-    right_status $result "$notice" || FLAGGED=$TRUE
+    j_msg "-${notice}" -p -n "done downloading stage3 tarball; result:"
+    handle_result $result '' '' "$notice" || FLAGGED=$TRUE
     # now download the corresponding .DIGESTS (hashes) and .asc (pgp signature) files
     if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
-        j_msg "-${notice}" -p -n "running wget ${target_url}.DIGESTS ..."
-        wget "${target_url}.DIGESTS"; result=$?
+        j_msg "-${notice}" -p "running wget ${target_url}.DIGESTS ..."
+        wget --progress=bar:force --show-progress "${target_url}.DIGESTS"; result=$?
     else
-        j_msg "-${notice}" -p -n "running wget to download .DIGESTS file from target_url ..."
-        wget -q "${target_url}.DIGESTS"; result=$?
+        j_msg "-${notice}" -p "running wget to download .DIGESTS file from target_url ..."
+        wget -q --progress=bar:force --show-progress "${target_url}.DIGESTS"; result=$?
     fi
-    right_status $result "$notice" || FLAGGED=$TRUE
+    j_msg "-${notice}" -p -n "done downloading .DIGESTS file; result:"
+    handle_result $result '' '' "$notice" || FLAGGED=$TRUE
     if [ "$DEBUG" ] || [ "$verbosity" -ge "$info" ] ; then
-        j_msg "-${notice}" -p -n "running wget ${target_url}.asc ..."
-        wget "${target_url}.asc"; result=$?
+        j_msg "-${notice}" -p "running wget ${target_url}.asc ..."
+        wget --progress=bar:force --show-progress "${target_url}.asc"; result=$?
     else
-        j_msg "-${notice}" -p -n "running wget to download pgp signature file from target_url ..."
-        wget -q "${target_url}.asc"; result=$?
+        j_msg "-${notice}" -p "running wget to download pgp signature file from target_url ..."
+        wget -q --progress=bar:force --show-progress "${target_url}.asc"; result=$?
     fi
-    right_status $result "$notice" || FLAGGED=$TRUE
+    j_msg "-${notice}" -p -n "done downloading pgp signature file; result:"
+    handle_result $result '' '' "$notice" || FLAGGED=$TRUE
     [ $FLAGGED ] && return 1
     return 0
 }
@@ -531,77 +553,102 @@ parse_commandline() {
   j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
   local args=()
   local msg
+  local _pc_arg=""
   # early-exit guard max cmdline is - jping <tgtlst> -c d -p 1 -P -j 2 -W 1 -t 1 -f
-  if [ $# -gt 3 ] ; then
-    j_msg "-${err}" "too many [$#] args [$*]"
-    my_usage; exit 1
-  fi
+  if [ $# -gt 3 ] ; then j_msg "-${err}" "too many [$#] args [$*]"; my_usage; exit 1; fi
+  # guard - early return no action if no args
+  if [ $# -eq 0 ] ; then j_msg "-${info}" "zero [$#] args [$*] (ok)"; return 0; fi
+  # guard - null arg $1 is invalid
+  if [ -z "$1" ] ; then j_msg "-${err}" "\$1 is null [$1]"; my_usage; exit 1; fi
+
   # pre-define a dynamic macro for adjusting verbosity (used by script_header_joetoo's _pc_action_verbosity
   # usage example: _pc_operator="+"; eval "$_pc_adjust_verbosity"
   _pc_adjust_verbosity="verbosity=\$(( verbosity \${_pc_operator} 1 ))"
 
-  j_msg "-${debug}" -p "${BYon}cmdline${Boff}: [$*]"
+  j_msg "-${debug}" -p "${BYon}top of ${FUNCNAME[0]}; cmdline${Boff}: [$*]"
+  j_msg "-${debug}" -p "\$#: [$#]"
+  j_msg "-${debug}" -p "\$1: [$1]"
   # parse command line (validate any $2 arg requested by $1 before assigning
   # ($2 must exist, which is not the case if $1 was the last arg,
   #  and $2 must not be an option - must not start with '-' )
   while [ $# -gt 0 ] ; do
-    j_msg "-${debug}" -p "${BYon}parsing parameter${Boff}: [$1] of ${BYon}existing cmdline${Boff} [$*]"
-    case "$1" in
-      -- ) args+=("$@"); break ;;  # ................. # remainder of cmdline is arg(s)
-
-      -r|--resume )   # .............................. # resume script at saved next step
-            j_msg -${debug} "pa -[rR]): [running _pc_array_action_resume]";
+    j_msg "-${debug}" -p "top of while loop: \$1: [$1]"
+    if [[ "$1" == "--" ]]; then
+        # '--' indicates "end of options; all else is arguments"
+        args+=("$@"); break;
+    fi
+    # strip first char(s) if leading - or --, and process the rest
+    # (recursively if needed for compound art in * case below)
+    _pc_arg="$1"
+    if [ "${_pc_arg:0:1}" = "-" ] ; then
+       _pc_arg="${_pc_arg#?}"   # strip shortest match for ? (any single char) from prefix
+       j_msg "-${debug}" -p "stripped - so new _pc_arg: $_pc_arg"
+    fi
+    if [ "${_pc_arg:0:1}" = "-" ] ; then
+       _pc_arg="${_pc_arg#?}"   # strip shortest match for ? (any single char) from prefix
+       j_msg "-${debug}" -p "stripped another - so new _pc_arg: $_pc_arg"
+    fi
+    j_msg "-${debug}" -p "${BYon}parsing parameter${Boff}: [$_pc_arg] of ${BYon}existing cmdline${Boff} [$*]"
+    case "$_pc_arg" in
+      r|resume )   # .............................. # resume script at saved next step
+            j_msg -${debug} "pa -[rR]): [running _pc_array_action_resume], shifting 2";
             _pc_array_action_resume;     # use bash equiv ov script_header_joetoo's _pc_action_resume helper
+            shift
         ;;
-      -*[0-9]*)
-            j_msg -${debug} "pa 0-9)  with $1";
-            _pc_arg="${1#?}";  # strip first char (-), twice if necessary
-            j_msg -${debug} "pa 0-9) stripped 1st char; _pc_arg: $_pc_arg";
-            [ "${_pc_arg%${_pc_arg#?}}" = "-" ] && _pc_arg="${1#?}";
+      *[0-9]*)
+            j_msg -${debug} "pa 0-9)  with $_pc_arg";
             if isint "$_pc_arg"; then
                 _pc_array_action_number "$_pc_arg";  # use bash equiv of script_header_joetoo _pc_action_number helper
             else
-                j_msg -${err} "invalid cmdline arg [$1] in pa case -*[0-9]* (ignoring)" ;
+                j_msg -${err} "invalid cmdline arg [$_pc_arg] in pa case -*[0-9]* (ignoring)" ;
             fi
         ;;
-      -I|--interactive )  # .......................... # number of parallel jobs
+      I|interactive )  # .......................... # number of parallel jobs
         INTERACTIVE="$TRUE"
-        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
+        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$INTERACTIVE")], shifting 1"
         ;;
 
-      -N|--noninteractive )  # ....................... # number of parallel jobs
+      N|noninteractive )  # ....................... # number of parallel jobs
         INTERACTIVE="$FALSE"
-        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
+        j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$INTERACTIVE")], shifting 1"
         ;;
 
-      -Q|--quiet)  # ................................. # (silence) using using script_header_joetoo _pc_action_quiet
+      Q|quiet)  # ................................. # (silence) using using script_header_joetoo _pc_action_quiet
         _pc_action_quiet
         j_msg -${debug} -p "(pc)(Q) ran _pc_action_quiet; shifting 1"
         ;;
 
-      -D|--debug)  # ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, # (debug)
+      D|debug)  # ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, # (debug)
         export DEBUG=$TRUE; j_msg -${debug} -p "(pc)(D) set DEBUG=\$TRUE; shifting 1" ;;
 
-      -v|--louder)  # ................................ # (increase verbosity) using script_header_joetoo _pc_action>
+      v|louder)  # ................................ # (increase verbosity) using script_header_joetoo _pc_action>
         _pc_operator="+"; _pc_action_verbosity
         j_msg -${debug} -p "(pc)(v) ran _pc_action_verbosity (op: +); shifting 1"
         ;;
 
-      -q|--quieter)  # ............................... # (decrease verbosity) using script_header_joetoo _pc_action>
+      q|quieter)  # ............................... # (decrease verbosity) using script_header_joetoo _pc_action>
         _pc_operator="-"; _pc_action_verbosity
         j_msg -${debug} -p "(pc)(q) ran _pc_action_verbosity (op: -); shifting 1"
         ;;
 
-      -h|--help     ) my_usage; exit 1 ;;
+      h|help     ) my_usage; exit 1 ;;
 
-      *             )  # ............................. # fall-through (either arg or bad flag)
-        case "${1:0:1}" in   # if - then this is an invalid flag
-          "-") j_msg "-${err}" "${BRon}(error)${Boff}: invalid option flag [$1]"; my_usage; exit 1 ;;
-          *  )  # hold to return unhandled arg to positional parameters
-            args+=("$1")
-            j_msg "-${debug}" -p "${BYon}appended${Boff} \$1 [$1] ${BYon}to args:${Boff} [${args[*]}], shifting 1"
-            ;;
-        esac
+      *             )  # ............................. # fall-through (either arg, compound flags, or bad flag)
+        j_msg -${debug} -p "(pc)(*) _pc_arg not recognized, falling through to * case"
+        # if there is only 1 char in $1, it must have recursed and failed to match above (return 1: failed)
+        if [ ${#_pc_arg} -eq 1 ] ; then j_msg "-${err}" "failed to match _pc_char_flag [$_pc_char_flag]"; return 1; fi
+        # process as potential compound flag (e.g. originally -Nvv)
+        local _pc_flags="$_pc_arg" _pc_char_flag="" result=0
+        while [ ${#_pc_flags} -gt 0 ]; do
+          # strip first character and process it recursively
+          _pc_char_flag="${_pc_flags:0:1}"
+          j_msg -${debug} -p "current _pc_flags: [$_pc_flags]; about to recurse to examine _pc_char_flag [$_pc_char_flag]"
+          parse_commandline "$_pc_char_flag"
+          result=$?
+          j_msg "-${debug}" -p -n "done checking single char [$_pc_char_flag]; result:"
+          handle_result $result "[$_pc_char_flag] is ok" "[$_pc_char_flag] is not valid" || return 1
+          _pc_flags="${_pc_flags#?}"
+        done
         ;;
     esac
     shift
@@ -612,6 +659,9 @@ parse_commandline() {
 #-----[ main script ]------------------------------------------------------------------------------------
 checkroot
 separator "$(hostname)" "${PN}"
+
+j_msg "-${debug}" -p "DEBUG: $(TrueFalse $DEBUG)"
+j_msg "-${debug}" -p "verbosity: $verbosity"
 
 parse_commandline "$@" || die "failed to parse_commandline"
 
