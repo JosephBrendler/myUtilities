@@ -55,9 +55,9 @@ if [ ! -w "$status_file" ]; then
   chmod 644 "$status_file"
 fi
 
-varlist="bool.INTERACTIVE boot.DEBUG verbosity verbosity_str"
+varlist="bool.INTERACTIVE boot.DEBUG bool.RESUME verbosity verbosity_str"
 varlist+=" TARGET_ARCH STAGE3_SELECTOR newroot_mountpoint default_profile"
-varlist+=" mkenv_files mkimg_files start_step stop_step"
+varlist+=" mkenv_files mkimg_files status_file starting_step stopping_step"
 
 command_sequence=(
 'wget-stage3'
@@ -68,7 +68,6 @@ command_sequence=(
 "install_files_from_source ${mkimg_files}"
 'copy-resolve-conf'
 'make-repo-dirs'
-'emerge-webrsync'
 'eselect-profile'
 'prepare-to-finalize-chroot'
 'print_next_steps'
@@ -83,14 +82,16 @@ msg1_sequence=(
 "install ${mkimg_files} files"
 'copy resolve.conf'
 'make repo directories'
-'run emerge-webrsync'
 'eselect profile'
 'prepare to finalize chroot'
 'print next steps'
 )
 
-start_step=0
-stop_step=$(( ${#command_sequence[@]} - 1 ))
+# set globals required by script_header_joetoo_extended run_array function
+starting_step=0
+stopping_step=$(( ${#command_sequence[@]} - 1 ))
+# set global num_cmds required by script_header_joetoo process argument helpers _pc_action_resume and _number
+num_cmds="${#command_sequence[@]}"
 
 #-----[ functions ]------------------------------------------------------------------------------------
 
@@ -101,7 +102,7 @@ my_usage() {
 
   msg="${BYon}Options --${Boff}"
   j_msg "-${notice}" -p "$msg"
-  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff}"
+  msg="${BMon}  -I|--interactive${Boff}${Con} .....: show config and confirm before executing command${Boff}(default)"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -N|--noninteractive${Boff}${Con} ..: execute immediately (${Won}default${Con})${Boff}"
   j_msg "-${notice}" -m "$msg"
@@ -114,6 +115,14 @@ my_usage() {
   msg="${BMon}  -D|--debug${Boff}${Con} ...........: Enable debug output${Boff}"
   j_msg "-${notice}" -m "$msg"
   msg="${BMon}  -h|--help${Boff}${Con} ............: print this message${Boff}"
+  j_msg "-${notice}" -m "$msg"
+  # enumerate command sequence
+  msg="${BYon}Command Sequence --${Boff}"
+  j_msg "-${notice}" -p "$msg"
+  for ((i=0; i<${#command_sequence[@]}; i++)); do
+      msg="     ${BBon}[${BMon}${i}${BBon}]${Boff}${Con} ${msg1_sequence[$i]}${Boff}"
+      j_msg "-${notice}" -mp "$msg"
+  done
 }
 
 print_next_steps() {
@@ -172,14 +181,14 @@ prepare-to-finalize-chroot() {
 make-repo-dirs() {
     separator "${PN}" "(${FUNCNAME[0]})"
     for x in gentoo joetoo crossdev; do
-        j_msg "-${notice}" -p -n "examining repo [$x] ..."
+        j_msg "-${notice}" -p -n "examining repo [$x]"
         if [ ! -d "${newroot_mountpoint%/}/var/db/repos/${x}" ] ; then
-            echo -en "${BRon} missing${Boff} creating ..."
+            j_msg "-${notice}" -mp -n " (${BRon}missing${Boff}) creating"
             mkdir -p "${newroot_mountpoint%/}/var/db/repos/${x}"
-            right_status $? "$notice"
+            handle_result $? '' '' "$notice" || return 1
         else
-            echo -en "${BGon} exists${Boff}"
-            right_status $TRUE "$notice"
+            j_msg "-${notice}" -mp -n " (${BGon}exists${Boff})"
+            handle_result 0 '' '' "$notice"
         fi
     done
     return 0
@@ -187,40 +196,51 @@ make-repo-dirs() {
 
 copy-resolve-conf() {
     separator "${PN}" "(${FUNCNAME[0]})"
-    j_msg "-${notice}" -p -n "copying /etc/resolve.conf to newroot_mountpoint ..."
-    cp -a /etc/resolv.conf "${newroot_mountpoint%/}/etc/"
-    right_status $? "$notice" || return 1
+    # to-do make this a choice - static or dynamic; for now set up for dynamic
+    j_msg "-${notice}" -p "copying /etc/resolve.conf to newroot_mountpoint ..."
+    j_msg "-${notice}" -p -n "creating ${newroot_mountpoint%/}/run/resolvconf ..."
+    mkdir -p "${newroot_mountpoint%/}/run/resolvconf"
+    handle_result $? '' '' "$notice" || return 1
+    j_msg "-${notice}" -p -n "copying to /run/resolvconf/resolv.conf ..."
+    cp -a /etc/resolv.conf "${newroot_mountpoint%/}/run/resolvconf/"
+    handle_result $? '' '' "$notice" || return 1
+    j_msg "-${notice}" -p -n "linking /etc/resolv.conf ..."
+    ln -sf ../run/resolvconf/resolv.conf "${newroot_mountpoint%/}/etc/resolv.conf"
+    handle_result $? '' '' "$notice" || return 1
+    d_do 'ls -al ${newroot_mountpoint%/}/etc/resolv.conf | sed "s|^|    |"' "$info"
     return 0
+}
+
+rsync_verbosity_flags() {
+    loudness="$verbosity"
+    [ "$DEBUG" ] && loudness=7
+    [ "$QUIET" ] && loudness=0
+    # set and return via stdout the appropriate info flags for rsync
+    case "$loudness" in
+        [0-4]) printf '%s\n' "--info=none" ;;  #................. # emerg, alert, crit, err, warn (errors only)
+        5) printf '%s\n' "--info=progress2" ;; #................. # notice
+        6) printf '%s\n' "--info=progress1,stats1" ;; #.......... # info
+        7) printf '%s\n' "-vv --info=progress1,stats2,flist2" ;;  # debug
+        *) printf '%s\n' "--info=progress2" ;; #................. # fall-through catch-all
+    esac
 }
 
 install_files_from_source() {
     separator "${PN}" "(install_files_from_source)"
-    # SOURCE = (in this context) staged data already collected to enable joetoo system image generation for this board
-    SOURCE="$1"
-    # strip source directory name from each pathname to use relative to destination
+    local result=0
+    # SOURCE = (in this context) staged data already collected to enable
+    #           joetoo system image generation for this platform)
+    # strip any trailing / for assurance to safely append / in rsync command
+    SOURCE="${1%/}"
+    DESTROOT="${newroot_mountpoint%/}"
     j_msg "-${notice}" -p "SOURCE: $SOURCE"
-    j_msg "-${notice}" -p "about to run find ${SOURCE} -type f | sed \"s|${SOURCE}||\""
-    for x in $(find "${SOURCE}" -type f | sed "s|${SOURCE}||") ; do
-        DESTINATION="${newroot_mountpoint%/}/$(dirname ${x})"
-        FILE="$(basename ${x})"
-        if [ ! -d "${DESTINATION}" ] ; then
-            j_msg "-${notice}" -mp ""
-            j_msg "-${notice}" -p "TARGET......: ${TARGET}"
-            j_msg "-${notice}" -p "SOURCE......: ${SOURCE}"
-            j_msg "-${debug}" -p "x...........: ${x}"
-            j_msg "-${debug}" -p "dirname x...: $(dirname $x)"
-            j_msg "-${debug}" -p "basename x..: $(basename $x)"
-            j_msg "-${notice}" -p "DESTINATION.: ${DESTINATION}"
-            j_msg "-${notice}" -p "FILE........: ${FILE}"
-            j_msg "-${notice}" -mp ""
-            j_msg "-${notice}" -p -n "creating destination directory ${DESTINATION} ..."
-            mkdir -p "${DESTINATION}"
-            right_status $? "$notice" || { echo; j_msg "-${err}" "failed to mkdir -p ${DESTINATION}" ; exit 1 ; }
-        fi
-        j_msg "-${notice}" -p -n "populating ${x} ..."
-        cp "${SOURCE}${x}" "${DESTINATION}/${FILE}"
-        right_status $? "$notice" || { echo; j_msg "-${err}" "failed to cp ${SOURCE}${x} ${DESTINATION}/${FILE}" ; exit 1 ; }
-    done
+    # use rsync to copy the entire source tree into the destination root, preserving structure
+    # flags: -a: archive; -H: hardlinks; -A: acls; -X: xattrs
+    #   for --info=  progress2 is signle line running %; 0 is silent; 1 is individual files
+    j_msg "-${notice}" -p "populating destination [$DESTROOT] with content from source [$SOURCE] ..."
+    rsync -aHAX $(rsync_verbosity_flags) --numeric-ids --exclude='lost+found' "$SOURCE/" "$DESTROOT/"
+    j_msg "-${notice}" -p -n "Done populating; result:"
+    handle_result $result '' "error; rsync exited with status [$result]" "$notice" || return 1
     return 0
 }
 
@@ -283,14 +303,13 @@ profile_number_prompt()  {
 eselect-profile() {
     separator "${PN}" "(${FUNCNAME[0]})"
     j_msg "-${notice}" -p "setting default profile ..."
-#    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
-#    ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list | grep '\*'
-    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${default_profile}"
     PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
     j_msg "-${notice}" -p "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
     if [[ $INTERACTIVE ]] ; then
+        j_msg "-${notice}" -p "${BMon}Carefully examine selected profile ${BYon}(e.g. merged|split-usr|hardened|desktop)${Boff}"
         msg="${BYon}Would you like to select a different profile?\n"
-        msg+="${BWon}    y: yes select new | s: no; continue with default | n: no; exit${Boff}"
+        msg+="${BWon}( y: yes select new | s: no; continue with default | n: no; exit )${Boff}"
         response="" ; yns_prompt "${msg}"
     else
         response="s"  # keep default profile and continue
@@ -298,11 +317,8 @@ eselect-profile() {
     case ${response:0:1} in
         [yY] )
             j_msg "-${notice}" -p "${BMon}Available profiles --${Boff}"
-#            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
             PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
             profile_number_prompt "${BYon}Select profile: ${Boff}"
-#            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile set ${profile_number}
-#            ARCH="${TARGET_ARCH}" PORTAGE_CONFIGROOT="/usr/${TARGET}/" eselect profile list
             PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
             PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
             ;;
@@ -466,6 +482,51 @@ wget-stage3() {
     return 0
 }
 
+# to_do: migrate this to script_header_joetoo_extended
+_pc_array_action_resume() {
+    par_ret=0;
+    if [ -f "$status_file" ]; then
+        j_msg -${info} "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}";
+        read _par_val < "$status_file";
+        if ! isint "$_par_val" || [ "$_par_val" -lt 1 ] || [ "$_par_val" -ge "$num_cmds" ]; then
+            j_msg "-${warn}" -p "${BYon}(warning)${Boff} status_file contained invalid starting_step [$_par_val]; resetting to 0"
+            _par_val=0;  # default to zero index
+        fi;
+    else
+        die "_pc_action_resume finds no status file exists";
+    fi;
+    export RESUME=$TRUE;
+    export starting_step="$_par_val";
+#   # convert posix _pc_action_resume to bash
+#    _par_desc=$(_get_entry "$starting_step" 1);
+    _par_desc="${msg1_sequence[$_par_val]}"
+    _par_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]";
+    _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BYon} )${Boff}";
+    j_msg -${info} "${_par_msg}";
+    unset -v _par_msg _par_desc _par_val;
+    return $par_ret
+}
+# to_do: migrate this to script_header_joetoo_extended
+_pc_array_action_number() {
+    pan_ret=0 _pan_arg="$1";
+    j_msg -${debug} "pc_an with $1";
+    if isint "$_pan_arg" && [ "$_pan_arg" -ge 1 ] && [ "$_pan_arg" -le "$num_cmds" ]; then
+        export RESUME=$TRUE;
+        export starting_step="$_pan_arg";
+    else
+        j_msg -${err} "invalid starting_step [${starting_step}]";
+        usage;
+    fi;
+#   # convert posix _pc_action_resume to bash
+#    _par_desc=$(_get_entry "$starting_step" 1);
+    _par_desc="${msg1_sequence[$_par_val]}"
+    _pan_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]";
+    _pan_msg="${_pan_msg} ( ${BGon}${_pan_desc}${BYon} )${Boff}";
+    j_msg -${info} "${_pan_msg}";
+    unset -v _pan_desc _pan_msg _pan_arg;
+    return $pan_ret
+}
+
 parse_commandline() {
   j_msg "-${debug}" -p "in ${FUNCNAME[0]}"
   local args=()
@@ -488,6 +549,21 @@ parse_commandline() {
     case "$1" in
       -- ) args+=("$@"); break ;;  # ................. # remainder of cmdline is arg(s)
 
+      -r|--resume )   # .............................. # resume script at saved next step
+            j_msg -${debug} "pa -[rR]): [running _pc_array_action_resume]";
+            _pc_array_action_resume;     # use bash equiv ov script_header_joetoo's _pc_action_resume helper
+        ;;
+      -*[0-9]*)
+            j_msg -${debug} "pa 0-9)  with $1";
+            _pc_arg="${1#?}";  # strip first char (-), twice if necessary
+            j_msg -${debug} "pa 0-9) stripped 1st char; _pc_arg: $_pc_arg";
+            [ "${_pc_arg%${_pc_arg#?}}" = "-" ] && _pc_arg="${1#?}";
+            if isint "$_pc_arg"; then
+                _pc_array_action_number "$_pc_arg";  # use bash equiv of script_header_joetoo _pc_action_number helper
+            else
+                j_msg -${err} "invalid cmdline arg [$1] in pa case -*[0-9]* (ignoring)" ;
+            fi
+        ;;
       -I|--interactive )  # .......................... # number of parallel jobs
         INTERACTIVE="$TRUE"
         j_msg "-${debug}" -p "${BYon}set${Boff} INTERACTIVE: [$(TrueFalse "$FILE")], shifting 1"
@@ -545,7 +621,7 @@ old_dir="$(pwd)"
 j_msg "-${notice}" -p -n "moving from ${old_dir} to newroot_mountpoint: [${newroot_mountpoint}] ..."
 cd "${newroot_mountpoint}" ; right_status $? "$notice"
 
-run_array "$status_file" "$start_step" "$stop_step" || die "failed to complete command sequence with run_array"
+run_array "$status_file" "$starting_step" "$stopping_step" || die "failed to complete command sequence with run_array"
 
 j_msg "-${notice}" -p -n "moving from $(pwd) back to ${old_dir} ..."
 cd "${old_dir}" ; right_status $? "$notice"
@@ -554,4 +630,3 @@ exit 0
 
 #debug_marker
 
-# work in progress
