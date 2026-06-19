@@ -27,3 +27,22 @@ Instructions for use in building a gentoo (joetoo) system:<br>
      a savedconfig, but you will still need to install grub and run grub-mkconfig.
      note that if you use a custom initramfs, you will also have to install
      that before rebooting)<br>
+<b>(11)</b> If you need to iterate parts of the build process, these tools may be helpful --<br>
+    <b>umount-chroot</b> - commands needed to umount and comments about how to deal w possible "busy" error<br>
+    <b>reformat_joetoo_LVs</b> - after un-mounting LVs, this will reformat some or all of them<br>
+    Then remount the root lv with e.g. <code>mount /dev/mapper/vg_barracuda-root /mnt/gentoo</code><br>
+    and use <b>prune_joetoo_root</b> (if you want to preserve some content (such as joetoobuild-tools) on the root LV,
+    and you used reformat_joetoo_LVs --all-but-root<br>
+    Then use <b>prune_joetoo_root</b> (which defaults to --dry-run) to delete non-whitelisted content on the root LV<br>
+    Then use e.g. <b>../mount-the-rest.retro</b> to re-mount the rest of the new system's filesystem,
+    and begin again with <b>joetoo-system-install</b><br><br>
+
+Summary of reset (example run from livecd /mnt/gentoo/joetoobuild-tools # on new system "retro"-<br>
+umount -R /mnt/gentoo/* 2>/dev/null<br>
+./reformat_joetoo_LVs --all-but-root<br>
+./prune_joetoo_root --go<br>
+../mount-the-rest.retro <br>
+./joetoo-system-install<br><br>
+
+Complete build-reset on one line:<br>
+<code>umount -R /mnt/gentoo/* 2>/dev/null; ./reformat_joetoo_LVs --all-but-root; ./prune_joetoo_root --go; ../mount-the-rest.retro</code><br>

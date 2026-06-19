@@ -71,7 +71,7 @@ command_sequence=(
 'copy-resolve-conf'
 'make-repo-dirs'
 'prepare-to-finalize-chroot'
-'print_next_steps'
+'print_next_steps | tee "${newroot_mountpoint%/}/joetoobuild-tools/_joetoo-system-install_next_steps"'
 )
 
 msg1_sequence=(
@@ -142,7 +142,9 @@ print_next_steps() {
     j_msg "-${notice}" -p "        /etc/default/grub (amd64)"
     j_msg "-${notice}" -p "${BCon}(${BMon}8${BCon})${Boff} validate apache ssl, vpn keys, etc. reboot ..."
     j_msg "-${notice}" -p "${BCon}(${BMon}9${BCon})${Boff} validate apache ssl, vpn keys, etc. reboot ..."
-    echo
+    j_msg "-${notice}" -mp ""
+    j_msg "-${notice}" -p "${BYon}Note${Boff}: to reprint these next_steps instructions, run --"
+    j_msg "-${notice}" -mp "    ${BBon}cat ${BMon}${newroot_mountpoint%/}/joetoobuild-tools/_joetoo-system-install_next_steps${Boff}"
     return 0
 }
 
@@ -347,9 +349,29 @@ eselect-profile() {
 
 untar-stage3() {
     separator "${PN}" "(${FUNCNAME[0]})"
-    local result=0
+    local result=0 total=0 extracted=0 initial=0 now=0
     j_msg "-${notice}" -p "extracting stage3 from tar.xz archive ..."
-    tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C "${newroot_mountpoint%/}/"
+    if [ $DEBUG ] || [ "$verbosity" -ge "$info" ]; then
+        # use this noisy "show every filename" version of extraction
+        tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C "${newroot_mountpoint%/}/"
+    else
+        # determine the initial size of the tree (for comparison as extraction is executed)
+        initial=$(du -sb "$newroot_mountpoint" | awk '{print $1}')
+        # background the extraction task, and monitor its progress "manually"
+        # use xz to get the uncopressed total size of the archive (dont quote the * - need it to wildcard)
+        total=$(xz --robot --list "${newroot_mountpoint%/}"/stage3-*.tar.xz | awk '/totals/ {print $5}')
+        # background a quieter (no -v) form of extraction and note the process id
+        tar xpf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C "${newroot_mountpoint%/}/" & pid=$!
+        # poll to measure the size of the extracted destination tree
+        while kill -0 "$pid" 2>/dev/null; do
+            now=$(du -sb "$newroot_mountpoint" | awk '{print $1}')
+            extracted=$(( now - initial ))
+            progress_inline "$extracted" "$total"
+            sleep 1
+        done
+        # loop exits before last update can occur, so do it manually
+        progress_inline "$total" "$total"
+    fi
     result=$?
     j_msg "-${notice}" -p -n "Done extracting stage3 from tar.xz archive. Result:"
     handle_result $result '' ''  "$notice" || return 1
@@ -679,4 +701,3 @@ cd "${old_dir}" ; right_status $? "$notice"
 exit 0
 
 #debug_marker
-
