@@ -6,7 +6,7 @@ Instructions for use in building a gentoo (joetoo) system:<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-build/joetoobuild-tools-0.0.9.tbz2<br>
     (do browse first, identify, and download the latest version of the package tarball)
 <b>(3)(b)</b> extract content to the root of your new system (probably /mnt/gentoo/<br>
-    tar -xvjpf joetoobuild-tools-0.0.7.tbz2 -C /mnt/gentoo/<br>
+    tar -xvjpf joetoobuild-tools-0.0.9.tbz2 -C /mnt/gentoo/<br>
 <b>(4)</b> download script_header_joetoo and its helpers script_header_joetoo_compat and script_header_joetoo_unicode and move them to the livecd's /usr/sbin/directory<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_compat<br>
