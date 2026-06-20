@@ -10,9 +10,10 @@ Instructions for use in building a gentoo (joetoo) system:<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_compat<br>
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_unicode<br>
-<b>(5)</b> also download script_header_joetoo_extended and copy it to /usr/sbin/ to enable its run_array() functionality - automating the command sequences in joetoo-system-install and finalize-chroot-joetoo
+<b>(5)(a)</b> also download script_header_joetoo_extended and copy it to /usr/sbin/ to enable its run_array() functionality - automating the command sequences in joetoo-system-install and finalize-chroot-joetoo
     wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo/script_header_joetoo_extended<br>
-    mv script_header_joetoo* /usr/sbin<br>
+<b>(5)(b)</b>copy the script_header files to the cannonical location in PATH --<br>
+cp script_header_joetoo* /usr/sbin/<br>
 <b>(6)</b> You can use the joetoobuild-tools "content_for_" file structures to have the joetoo-system-install script load custom or sensitive personal content (like ssh keys, etc) by populating the file system tree in directories pointed to by the script's mkenv_files and mkimg_files directories; examples are provided by the script, and the dev-sbc/collect-system-files package at https://github.com/JosephBrendler/myUtilities/tree/master/dev-sbc/collect-system-files can automate the collection of such information from existing systems (enabling fast rebuild)
 <b>(7)</b> run the joetoo-system-install program (located in /mnt/gentoo/joetoobuild-tools/<br>
     Important: tune the script to ensure it selects and downloads a stage3 tarball matching the profile you intend to use.  Note: if you intend to use joetoo's hardened desktop profile, start by downloading the Gentoo hardened openrc stage3 tarball, and switch to joetoo's hardened-desktop profile after installation<br>
@@ -45,4 +46,6 @@ umount -R /mnt/gentoo/* 2>/dev/null<br>
 ./joetoo-system-install<br><br>
 
 Complete build-reset on one line:<br>
-<code>umount -R /mnt/gentoo/* 2>/dev/null; ./reformat_joetoo_LVs --all-but-root; ./prune_joetoo_root --go; ../mount-the-rest.retro</code><br>
+<code>umount -R /mnt/gentoo/* 2>/dev/null; ./reformat_joetoo_LVs --all-but-root; ./prune_joetoo_root --go; ../mount-the-rest.retro</code><br><br>
+
+<b>Note:</b> if you reboot the livecd, you will need to resume the process at step (5)(b) above, copying script header files to /usr/sbin/; mount the root device at /mnt/gentoo; mount the rest of the LVs; and then run joetoo-system-install
