@@ -3,7 +3,8 @@ Instructions for use in building a gentoo (joetoo) system:<br>
 <b>(2)</b> follow the Gentoo handbook up through preparation of the disks to lay out storage for your new system (assumed to be mounted at /mnt/gentoo in these instructions). Note that you can tune and use the mount-the-rest tool from joetoobuild-tools to mount all LVs in an lvm on LUKS system... then continue --<br>
     cd /mnt/gentoo<br>
 <b>(3)(a)</b> download the tarball for the joetoobuild-tools project --<br>
-    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-build/joetoobuild-tools-0.0.5.tbz2<br>
+    wget https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-build/joetoobuild-tools-0.0.9.tbz2<br>
+    (do browse first, identify, and download the latest version of the package tarball)
 <b>(3)(b)</b> extract content to the root of your new system (probably /mnt/gentoo/<br>
     tar -xvjpf joetoobuild-tools-0.0.7.tbz2 -C /mnt/gentoo/<br>
 <b>(4)</b> download script_header_joetoo and its helpers script_header_joetoo_compat and script_header_joetoo_unicode and move them to the livecd's /usr/sbin/directory<br>
