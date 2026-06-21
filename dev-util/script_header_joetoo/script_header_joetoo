@@ -4,6 +4,8 @@
 # Author: joe brendler 19 Jul 2014
 #         24 June 2025 - legacy header v1.0.0 moved to /usr/sbin/ and consolidated as script_header_joetoo v0.1.0
 #         10-28 January 2026 - major update, reorganization in v0.2.0
+#         20 June 2026 - generalized to allow sourcing scripts to first set JOETOO_HEADER_DIR, thus
+#             informing it where to find its helpers (and itself)
 
 # @note =====[ Section 0: Global Instructions ]===========================================
 # @ note
@@ -27,7 +29,6 @@ FALSE=""  # will evaluate to be logically false in a boolean operation
   # result=1; [ "$result" ] && echo true || echo false  {status 1 == failure; but this will return "true"}
   # to test an exit status, use [ "$result" -eq 0 ]
   # VAR=$TRUE or VAR=$FALSE; [ $VAR ] && echo true || echo false ; will always work as expected
-
 
 # allow a 'FORCE_RELOAD' variable - set $TRUE to bypass anti-recursion guards
 # note: to also force a "recook" of ui assets, remove
@@ -53,7 +54,7 @@ toc() # table of contents (this fn just calls summarize_header
 { summarize_header; printf "\n"
   j_msg -${notice} "That's all I have to say about that"
 }
-# @usage source /usr/sbin/script_header_joetoo
+# @usage source ${JOETOO_HEADER_DIR}/script_header_joetoo
 # @deps package dependencies are managed by the dev-util/script_header_joetoo ebuild
 # @req linux shell
 # @note all functions in script_header_joetoo are designed to work in any POSIX shell
@@ -108,11 +109,16 @@ die()    # DUMMY assignment of die until it is actaully defined in section 2 aft
 
 BUILD="0.0.0 (19620207)"  #redefine in base script
 ROOT_UID=0       # Only users with $UID 0 have root privileges
-script_header_installed_dir="/usr/sbin"
-#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
-#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo/testing
 
-non_interactive_header="${script_header_installed_dir%/}/script_header_joetoo_noninteractive"
+# enable script_header_joetoo to load its helper headers from other than just /usr/sbin
+# : "${JOETOO_HEADER_DIR:=/usr/sbin}"  # shorthand version of below
+JOETOO_HEADER_DIR="${JOETOO_HEADER_DIR:-/usr/sbin}"
+# @rule JOETOO_HEADER_DIR should not be set in the header but by the script that is about to source it
+# @append  which can thus inform it that it and its helpers are located somewhere other than default /usr/sbin
+#JOETOO_HEADER_DIR=/home/joe/myUtilities/dev-util/script_header_joetoo
+#JOETOO_HEADER_DIR=/home/joe/myUtilities/dev-util/script_header_joetoo/testing
+
+non_interactive_header="${JOETOO_HEADER_DIR%/}/script_header_joetoo_noninteractive"
 
 # POSIX does not mandate the use of the $USER variable, so
 #   use id -un to assign a default value for the global $user variable
@@ -444,7 +450,7 @@ BF1='^[_[:alpha:]][[:alnum:]_-]*' # regex match for one+ characters allowed in B
 
 #-----[ raw hex Unicode/Emojis ]--------------------------------------------------------------
 # source the 2026-0303-refactored script_header_joetoo_unicode
-. /usr/sbin/script_header_joetoo_unicode
+. "${JOETOO_HEADER_DIR}/script_header_joetoo_unicode"
 
 #-----[ Global Active Emoji Registry ]---------------------------------------
 # format: "index:name:hexvalue:log_translation" (Space or Newline separated)
@@ -1297,7 +1303,7 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
     fi  # store dir
   fi  # strore file
   # define the source of truth (this header itself)
-  _joetoo_header="${script_header_installed_dir%/}/script_header_joetoo"
+  _joetoo_header="${JOETOO_HEADER_DIR%/}/script_header_joetoo"
   # "hydration" strategy - if cache exists and is newer than the header, use it
   if [ -f "$_joetoo_cache" ] && [ "$_joetoo_cache" -nt "$_joetoo_header" ]; then
       # tier 1 - memory cache is fresh, so load it immediately
@@ -7106,7 +7112,7 @@ _sh_render_buffered_tag() {
 
 
 summarize_header() # (POSIX) list functions and notes in installed headers
-{ _sh_ret=0; _sh_dir="/usr/sbin"
+{ _sh_ret=0; _sh_dir="${JOETOO_HEADER_DIR}"
   _sh_QUIET="$FALSE"; _sh_target_fn=""; _sh_filter=""; _sh_buffer=""
   # parse "command line" options
   while [ $# -gt 0 ]; do
@@ -7129,7 +7135,7 @@ summarize_header() # (POSIX) list functions and notes in installed headers
     esac
     shift  # shift to get next cmdline opt/arg
   done
-  # Note: script_header_installed_dir may be defined in/prior to function call
+  # Note: JOETOO_HEADER_DIR may be defined in/prior to function call
   #   to enable testing development versions
   # define some regex search patterns --
   # _sh_FUNCTION_REGEX: matches any legal POSIX filename
@@ -7140,11 +7146,11 @@ summarize_header() # (POSIX) list functions and notes in installed headers
   # so look for zero+ whitespace, followed by one+ #,
   # followed by one+ whitespce, followed by @, followed by one+ alphanum
   _sh_METADATA_REGEX="^${W0}#+${W1}@${A1}"
-  # default to all script_header_joetoo modules installed in /usr/sbin/
-  if [ -d "$script_header_installed_dir" ] ; then
-    _sh_dir="${script_header_installed_dir%/}"
+  # default to all script_header_joetoo modules installed in ${JOETOO_HEADER_DIR} (normally /usr/sbin/)
+  if [ -d "$JOETOO_HEADER_DIR" ] ; then
+    _sh_dir="${JOETOO_HEADER_DIR%/}"
   else
-    _sh_dir="/usr/sbin"
+    _sh_dir="${JOETOO_HEADER_DIR}"
   fi
   [ ! -d "$_sh_dir" ] && { j_msg -${err} "invalid _sh_dir [$_sh_dir]"; return 1 ; }
 
@@ -7329,7 +7335,7 @@ summarize_header() # (POSIX) list functions and notes in installed headers
 
 # load the compatibility header (wrappers to redirect calls to
 #    legacy functions to new capability
-. ${script_header_installed_dir%/}/script_header_joetoo_compat
+. ${JOETOO_HEADER_DIR%/}/script_header_joetoo_compat
 
  # if here, sourcing is complete
 JOETOO_ENVIRONMENT_ALREADY_SOURCED=$TRUE
