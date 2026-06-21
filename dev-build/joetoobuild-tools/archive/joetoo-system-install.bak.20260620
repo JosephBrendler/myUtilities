@@ -1,12 +1,11 @@
 #!/bin/bash
-# joetoo-system-install   (c) joe brendler 2025-2055
+# wget-stage3-amd64   (c) joe brendler 2025-2055
 # based on the author's work in the dev-sbc/crossbuild-tools::joetoo package
 # but tuned for use installing a new or rebuilt system on hardware running a liveCD/liveUSB
 # so unlike cb-mkenv (which sets up repos and selects a profile), those steps must
 # be handled after chroot (as per gentoo handbook install sequence)
 
 newroot_mountpoint="/mnt/gentoo"
-initial_script_dir="${newroot_mountpoint%/}/joetoobuild-tools"
 
 # This script needs you to provide this header and its _compat and _unicode helpers
 #   in the /usr/sbin/ directory of your build system (likely a livecd, wherein your newroot_mountpoint=/mnt/gentoo)
@@ -18,150 +17,16 @@ initial_script_dir="${newroot_mountpoint%/}/joetoobuild-tools"
 #   script_header_joetoo_unicode
 # IMPORTANT: also copy script_header_joetoo_extended to /usr/sbin to enable its run_array() functionality
 # to /usr/sbin (where the script expects the header, and where the header expects its helpers to be)
-
-#-----[ pre-requisite function ]------------------------------------------------------------------------------------
-
-install_script_headers() {
-    # script headers are needed in the livecd and target filesystems PATH
-    local target="${1%/}"   # normalize w/o trailing /
-    # guard - refuse to proceed if target dir (or link to dir) does not exist
-    # (should be present on livecd and on target system after stage3 is extracted)
-    echo "checking if target dir [$target] exists"
-    [ -d "$target" ] || return 1
-    # cover all four headers in comments above
-    local -a headers=(
-        "script_header_joetoo"
-        "script_header_joetoo_compat"
-        "script_header_joetoo_unicode"
-        "script_header_joetoo_extended"
-    )
-    local header_url="https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/script_header_joetoo"
-    local dest perms
-    # iterate in nested for loops each suffix for each tartet
-    for header in "${headers[@]}"; do
-        dest="${target}/${header}"
-        # skip this header (continue) if it is already downloaded and sourceable in this target and has proper syntax
-        echo -n "Is $header already installed w proper syntax?"
-        if [[ "$header" == "script_header_joetoo" ]] ; then
-            # check script_header_joetoo for POSIX syntax compliance
-            if [ -r "${dest}" ] && sh -n "${dest}" ; then
-                echo " (yes; ok to continue)"
-                continue
-            else
-                echo " (no: will install)"
-            fi
-        else
-            # check other headers for bash syntax
-            if [ -r "${dest}" ] && bash -n "${dest}" ; then
-                echo " (yes; ok to continue)"
-                continue
-            else
-                echo " (no: will install)"
-            fi
-        fi
-        # no form of download to temp file and do safe write works with cp -f, mv, nor install
-        # (livecd overlayfs + tmpfs layers complains about all with "cannot remove"  and "stale file handle" errors
-        # (so download directly and verify)
-        # wget flags for one line progress bar and output to file:
-        #   --progress=bar:force - when the output is not a TTY, the progress bar always falls back to "dot"
-        #   --show-progress - force wget to display the progress bar in any verbosity
-        #   -O - output to file'  --timeout and --tries limitted to prevent hangs
-        echo "downloading ${header} ->  ${dest}"
-        wget -q --progress=bar:force --show-progress --timeout=20 --tries=3 \
-            "${header_url}/${header}" \
-            -O "${dest}" || return 2
-        # confirm the download apears valid
-        echo -n "validating shell syntax in $dest"
-        if [[ "$header" == "script_header_joetoo" ]] ; then
-            # check script_header_joetoo for POSIX syntax compliance
-            sh -n "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 3; fi
-        else
-            # check script_header_joetoo for Bash syntax compliance
-            bash -n "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 3; fi
-        fi
-        # ensure proper permissions are set (644 is good for sourced files; dont need x)
-        echo -n "checking permissions on $dest"
-        perms=$(stat -c '%a' "$dest" 2>/dev/null)
-        if [[ "$perms" == "644" ]] ; then
-            echo " (ok: $perms)"
-        else
-            echo -n "(wrong: $perms; resetting)"
-            chmod 644 "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 4; fi
-        fi
-        done
-}
-
-report_script_header_install_results() {
-    local result="$1"
-    case $result in
-        0) echo "install_script_headers completed successfully" ;;
-        1) echo "install_script_headers failed because target dir does not exist" ;;
-        2) echo "install_script_headers failed to wget header for target as shown" ;;
-        3) echo "install_script_headers failed to validate syntax of downloaded header as shown" ;;
-        4) echo "install_script_headers failed to set permissions on header in target as shown" ;;
-        *) echo "install_script_headers failed for unknown reason [$result]" ;;
-    esac
-    # propagate the script header function exit status
-    return $result
-}
-
-# Note: legacy version wrote to /usr/sbin and stuggled with overlayfs issues
-#   put ${initial_script_dir} in the PATH instead, and install there
-install_script_headers "${initial_script_dir}"; result=$?
-report_script_header_install_results $result || { echo "install_script_headers failure"; exit 1 ; }
-echo -n "updating PATH"
-export PATH="${PATH}:${initial_script_dir}"
-if [ $? -eq 0 ] ; then
-    echo " (ok)"
-    printf '%s\n' $(echo $PATH | tr ':' ' ') | sed 's|^|   |'
-else
-    echo " (fail)"
-fi
-
-# script_header_joetoo will expect script_header_joetoo_unicode and script_header_joetoo_compat
-# to be at /usr/sbin, so put them there
-echo -n "prepositioning unicode header script_header_joetoo_unicode at /usr/sbin"
-cat "${initial_script_dir%/}/script_header_joetoo_unicode" > /usr/sbin/script_header_joetoo_unicode
-if [ $? -eq 0 ]; then
-    echo " (ok)"
-else
-    echo " (fail)"
-    echo "Warning: sourcing script_header_joetoo will throw error nonfatal)"
-fi
-echo -n "prepositioning compatibility header script_header_joetoo_compat at /usr/sbin"
-cat "${initial_script_dir%/}/script_header_joetoo_compat" > /usr/sbin/script_header_joetoo_compat
-if [ $? -eq 0 ]; then
-    echo " (ok)"
-else
-    echo " (fail)"
-    echo "Warning: sourcing script_header_joetoo will throw error nonfatal)"
-fi
-
-source "${initial_script_dir%/}/script_header_joetoo"
-if command -v j_msg &>/dev/null; then
-    j_msg "-${notice}" -p "sourced script_header_joetoo"
-else
-    echo "error: failed to source script_header_joetoo; cannot continue"
-    exit 1
-fi
-source "${initial_script_dir%/}/script_header_joetoo_extended"
-if command -v j_msg &>/dev/null; then
-    j_msg "-${notice}" -p "sourced script_header_joetoo_extended"
-else
-    echo "error: failed to source script_header_joetoo_extended; cannot continue"
-    exit 1
-fi
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_extended
 
 #-----[ variables ]------------------------------------------------------------------------------------
 INTERACTIVE=$TRUE  # force this true
 [ -z "$verbosity" ] && verbosity=5
 verbosity_str=$(get_severity "$verbosity")
 
-mkenv_files="${initial_script_dir%/}/content_for_mkenv_gmki91"
-mkimg_files="${initial_script_dir%/}/content_for_mkimg_retro"
+mkenv_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkenv_gmki91"
+mkimg_files="${newroot_mountpoint%/}/joetoobuild-tools/content_for_mkimg_retro"
 
 PN=${0##*/}
 
@@ -193,7 +58,7 @@ if [ ! -w "$status_file" ]; then
 fi
 
 varlist="bool.INTERACTIVE boot.DEBUG bool.RESUME verbosity verbosity_str"
-varlist+=" TARGET_ARCH STAGE3_SELECTOR newroot_mountpoint initial_script_dir default_profile"
+varlist+=" TARGET_ARCH STAGE3_SELECTOR newroot_mountpoint default_profile"
 varlist+=" mkenv_files mkimg_files status_file starting_step stopping_step"
 
 command_sequence=(
@@ -203,13 +68,10 @@ command_sequence=(
 'untar-stage3'
 "install_files_from_source ${mkenv_files}"
 "install_files_from_source ${mkimg_files}"
-'install_script_headers_newroot'
-'install_bash_aliases_joetoo'
-'copy_tools_to_newroot'
 'copy-resolve-conf'
 'make-repo-dirs'
 'prepare-to-finalize-chroot'
-'print_next_steps | tee "${initial_script_dir%/}/_joetoo-system-install_next_steps"'
+'print_next_steps | tee "${newroot_mountpoint%/}/joetoobuild-tools/_joetoo-system-install_next_steps"'
 )
 
 msg1_sequence=(
@@ -219,9 +81,6 @@ msg1_sequence=(
 'untar stage3'
 "install ${mkenv_files} files"
 "install ${mkimg_files} files"
-'install script headers in_newroot'
-'install bash_aliases for joetoo'
-'copy tools to newroot'
 'copy resolve.conf'
 'make repo directories'
 'prepare to finalize chroot'
@@ -285,13 +144,13 @@ print_next_steps() {
     j_msg "-${notice}" -p "${BCon}(${BMon}9${BCon})${Boff} validate apache ssl, vpn keys, etc. reboot ..."
     j_msg "-${notice}" -mp ""
     j_msg "-${notice}" -p "${BYon}Note${Boff}: to reprint these next_steps instructions, run --"
-    j_msg "-${notice}" -mp "    ${BBon}cat ${BMon}${initial_script_dir%/}/_joetoo-system-install_next_steps${Boff}"
+    j_msg "-${notice}" -mp "    ${BBon}cat ${BMon}${newroot_mountpoint%/}/joetoobuild-tools/_joetoo-system-install_next_steps${Boff}"
     return 0
 }
 
 prepare-to-finalize-chroot() {
     separator "${PN}" "(${FUNCNAME[0]})"
-    local finalize_chroot_joetoo_file="${initial_script_dir%/}/finalize-chroot-joetoo"
+    local finalize_chroot_joetoo_file="${newroot_mountpoint%/}/joetoobuild-tools/finalize-chroot-joetoo"
     local finalize_chroot_joetoo_destination="${newroot_mountpoint%/}/usr/sbin/"
     # install /usr/sbin/finalize-chroot (should have been installed install_files (mkenv) above
     j_msg "-${notice}" -p "validating availability of /usr/sbin/finalize-chroot-joetoo ..."
@@ -368,74 +227,6 @@ copy-resolve-conf() {
     handle_result $? '' '' "$notice" || return 1
     d_do 'ls -al ${newroot_mountpoint%/}/etc/resolv.conf | sed "s|^|    |"' "$info"
     return 0
-}
-
-copy_tools_to_newroot() {
-    # copy joetoobuild-tools core utilities to newroot_mountpoint
-    local -a utils=(
-        mount-the-rest.template
-        umount-chroot
-        umount-busy-chroot-commands
-        chroot-commands
-        chroot-prep
-    )
-    local joetoobuild_dir="${initial_script_dir}"
-    local FLAGGED=$FALSE
-
-    for util in "${utils[@]}"; do
-        j_msg "-${notice}" -p -n "copying [$util] to [$newroot_mountpoint]"
-        cp "${joetoobuild_dir%/}/${util}" "${newroot_mountpoint%/}/"
-        handle_result $? '' '' "$notice" || FLAGGED=$TRUE
-    done
-    [ $FLAGGED ] && return 1
-    return 0
-}
-
-install_bash_aliases_joetoo() {
-    # install other file(s) needed for things like aliases for joetoo systems
-    # (download to PATH targets like install_script_headers)
-    # ** possible todo - have this function retrieve finalize-chroot-common-functions from crossbuild-tools **
-    local -a targets=(
-        "/usr/sbin"
-        "${newroot_mountpoint%/}/usr/sbin"
-        "${initial_script_dir}"
-    )
-    # cover all four headers in comments above
-    local -a files=(
-        "bashrc_aliases_include_joe_brendler"
-    )
-    local file_url="https://raw.githubusercontent.com/JosephBrendler/myUtilities/master/dev-util/joetoolkit/joetoolkit"
-    local dest
-    # iterate in nested for loops each suffix for each tartet
-    for target in "${targets[@]}"; do
-        for file in "${filess[@]}"; do
-            # create target directory if needed (should only be needed for newroot_mountpoint target)
-            mkdir -p "${target}" || return 1
-            # skip this header (continue) if it is already downloaded and executable in this target and has proper syntax
-            [ -x "${target}/${file}" ] && sh -n "${target}/${file}" && continue
-            # download directly and verify
-            dest="${target}/${file}"
-            # wget flags for one line progress bar and output to file:
-            #   --progress=bar:force - when the output is not a TTY, the progress bar always falls back to "dot"
-            #   --show-progress - force wget to display the progress bar in any verbosity
-            #   -O - output to file'  --timeout and --tries limitted to prevent hangs
-            j_msg "-${notice}" -p "downloading ${file} ->  ${dest}"
-            wget -q --progress=bar:force --show-progress --timeout=20 --tries=3 \
-                "${file_url}/${file}" \
-                -O "${dest}" || return 2
-            # confirm the download apears valid
-            sh -n "$dest"   || return 3   # check bashrc_aliases_include_joe_brendler for POSIX syntax compliance
-            # set permission on file file (executable)
-            chmod 644 "${dest}" || return 4
-        done
-    done
-}
-
-install_script_headers_newroot() {
-    local result=0
-    install_script_headers "${newroot_mountpoint%/}/usr/sbin"; result=$?
-    report_script_header_install_results $result
-    return $result
 }
 
 rsync_verbosity_flags() {
@@ -581,7 +372,6 @@ untar-stage3() {
         # loop exits before last update can occur, so do it manually
         progress_inline "$total" "$total"
     fi
-    wait "$pid"
     result=$?
     j_msg "-${notice}" -p -n "Done extracting stage3 from tar.xz archive. Result:"
     handle_result $result '' ''  "$notice" || return 1
@@ -911,4 +701,3 @@ cd "${old_dir}" ; right_status $? "$notice"
 exit 0
 
 #debug_marker
-
