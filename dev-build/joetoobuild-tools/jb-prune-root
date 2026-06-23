@@ -1,0 +1,135 @@
+#!/bin/bash
+# carefully prune_joetoo_root LV
+#
+
+# possible to-dos --
+#    add a -w|--whitelist flag to provide whitelist on the cmdline
+#    add a -f|--filename flag to name the path to a file containing a whitelist
+
+# preserve the contents of this much of the $newroot_mountpoint (/mnt/gentoo) tree
+#/mnt/gentoo/
+#|-- chroot-commands
+#|-- chroot-prep
+#|-- joetoo-system-install-status
+#|-- joetoobuild-tools
+#|-- joetoobuild-tools-0.0.7.tbz2
+#|-- mount-the-rest.retro
+#|-- root
+#|-- umount-chroot
+
+set -eu
+
+TRUE=0; FALSE=''
+JOETOO_FORCE_RELOAD="$FALSE"
+
+newroot_mountpoint="/mnt/gentoo"
+JOETOO_HEADER_DIR="${newroot_mountpoint%/}/joetoobuild-tools"
+
+source /usr/sbin/script_header_joetoo
+command -v toc &>/dev/null || { echo "failed to source ${JOETOO_HEADER_DIR%/}/usr/sbin/script_header_joetoo"; exit 1 ; }
+
+# guard - early exit if too many args
+[ $# -gt 1 ] && {  j_msg "-${err}" "too many args [$*]" ; exit 1 ; }
+
+#-----[ variables ]---------------------------------------------------------------------------------
+
+PN=${0##*/}
+DOIT=$FALSE
+
+newroot_mountpoint="/mnt/gentoo"
+
+# whitelist array (newroot_mountpoint content to keep when "reformatting"
+whitelist=(
+"${newroot_mountpoint%/}/chroot-commands"
+"${newroot_mountpoint%/}/chroot-prep"
+"${newroot_mountpoint%/}/joetoo-system-install-status"
+"${newroot_mountpoint%/}/joetoobuild-tools"*
+"${newroot_mountpoint%/}/joetoobuild-tools-0.0.7.tbz2"
+"${newroot_mountpoint%/}/mount-the-rest.retro"
+"${newroot_mountpoint%/}/root"
+"${newroot_mountpoint%/}/umount-chroot"
+)
+
+#-----[ functions ]---------------------------------------------------------------------------------
+
+my_usage() {
+    local msg=""
+    j_msg "-${notice}" -p "${BRon}usage${Boff}: ${BGon}$PN ${Boff}[${BMon}--go${Boff}]"
+    j_msg "-${notice}" -mp ""
+    j_msg "-${notice}" -m "${BYon}Options --${Boff}"
+    msg="   ${BMon}-d|--dry-run${Boff}${Con} ..: dry-run; show what would have been deleted ${Boff}(default)"
+    j_msg "-${notice}" -mp "$msg"
+    msg="   ${BMon}-g|--go${Boff}${Con} .......: execute; actually perform deletions${Boff}"
+    j_msg "-${notice}" -mp "$msg"
+    msg="   ${BMon}-h|--help${Boff}${Con} .....: display this message${Boff}"
+    j_msg "-${notice}" -mp "$msg"
+}
+
+check_mounts() {
+    # confirm nothing is mounted on mountpoints under $1, or return 1
+    local root="${1:-/mnt/gentoo}"; root="${root%/}"    # normalize trailing slash
+    local -a mounts=()   # array of all mounts under $root (including $root itself)
+    local -a filtered=() # array of mounts that are not whitelisted
+    local WHITELISTED=$FALSE    # pseudo-boolean; set true if whitelisted
+    readarray -t mounts < <(findmnt -Rno TARGET --target "$root")
+    # remove the root mount itself
+    mounts=("${mounts[@]:1}")
+    # filter out whitelisted paths
+    for m in "${mounts[@]}"; do
+        WHITELISTED=$FALSE
+        for w in "${whitelist[@]}"; do
+            if [[ "$m" == "$w" ]]; then
+                WHITELISTED=$TRUE
+                break   # exit the whitelist loop and act on filter logic
+            fi
+        done
+        # filter logic - add to filtered array if not whitelisted
+        [ $WHITELISTED ] || filtered+=("$m")
+    done
+
+  # if more than one entry, something is mounted inside
+    j_msg "-${debug}" -p "\${#filtered[@]}: [${#filtered[@]}]"
+    j_msg "-${debug}" -p "\${filtered[@]}: [${filtered[@]}]"
+    if [ "${#filtered[@]}" -gt 0 ]; then
+        j_msg "-${err}" "${BRon}Error${Boff}: mounts exist under examination root [$root]; un-mount them and retry"
+        printf "  %s\n" "${filtered[@]}"
+        return 1
+    fi
+    return 0
+}
+
+#-----[ main script ]---------------------------------------------------------------------------------
+
+# first confirm nothing is mounted under any non-whitelisted mountpoint
+check_mounts || die "failed check_mounts"
+# parse cmdline input (todo: move to function if expanding)
+case "${1:-}" in
+    ''|-d|--dry-run ) DOIT=$FALSE ;;
+    -g|--go         ) DOIT=$TRUE ;;
+    -h|--help       ) my_usage; exit 0 ;;
+    *) j_msg "-${err}" "Unknown option: $1" >&2; my_usage; exit 1 ;;
+esac
+
+# Build the whitelist-pruning expression as an array (-o is POSIX -or)
+expr=()
+for keeper in "${whitelist[@]}"; do
+    expr+=( -path "$keeper" -o )
+done
+unset 'expr[-1]'   # remove trailing -o
+
+if [ ! $DOIT ]; then
+    j_msg "-${warn}" -p "${BYon}(warning) ${BCon}Dry run${Boff}: showing what would be deleted"
+    find "${newroot_mountpoint}" -mindepth 1 \( "${expr[@]}" \) -prune -o -print
+    j_msg "-${notice}" -p "${BCon}Note${Boff}: to confirm whitelist filters, pipe dry-run output to e.g. | grep 'root'"
+    j_msg "-${warn}" -p -n "${BYon}(warning) ${BCon}Run for real, right now? ${Boff}[y/n] "
+    confirm_continue_or_exit
+    find "${newroot_mountpoint}" -mindepth 1 \( "${expr[@]}" \) -prune -o -exec rm -rf {} +
+else
+    j_msg "-${warn}" -p "${BYon}(warning) ${BCon}Live run${Boff}: will delete everything in ${newroot_mountpoint%/}/ not matching whitelist"
+    j_msg "-${warn}" -p -n "${BYon}(warning) ${BCon}Run for real, right now? ${Boff}[y/n] "
+    confirm_continue_or_exit
+    find "${newroot_mountpoint}" -mindepth 1 \( "${expr[@]}" \) -prune -o -exec rm -rf {} +
+fi
+
+j_msg "-${notice}" -p "${BCon}Done${Boff}: below is what is preserved (tree -L 2 ${newroot_mountpoint%/}/"
+tree -L 2 "${newroot_mountpoint%/}/"

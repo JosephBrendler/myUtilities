@@ -1,0 +1,134 @@
+#!/bin/bash
+#
+# jb-chroot-sys   (c) joe.brendler  2026-2072
+#
+newroot_mountpoint="/mnt/gentoo"
+JOETOO_HEADER_DIR="${newroot_mountpoint%/}/joetoobuild-tools"
+
+[[ -r "${JOETOO_HEADER_DIR%/}/script_header_joetoo" ]] || \
+    { echo "script_header_joetoo not found in JOETOO_HEADER_DIR [$JOETOO_HEADER_DIR]" ; exit 1 ; }
+
+echo -n "sourcing script_header_joetoo"
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
+if command -v j_msg &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo " (failed)"
+    echo "error: failed to source script_header_joetoo; cannot continue"
+    exit 1
+fi
+
+echo -n "sourcing script_header_joetoo_extended"
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
+if command -v j_msg &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo " (failed)"
+    echo "error: failed to source script_header_joetoo_extended; cannot continue"
+    exit 1
+fi
+
+# set default verbosity only if it is not already set
+[ -z "$verbosity" ] && verbosity="$notice"
+
+PN=${0##*/}
+
+## set these static here for $PN; they would be set by validate_target() in crossbuild-tools
+## (this info will be saved in /root/.cb-config on the new system)
+BOARD=generic_amd64
+TARGET=x86_64-pc-linux-gnu
+TARGET_ARCH=amd64
+QEMU_ARCH=x86_64
+#STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop in joetoo profile
+#default_profile="default/linux/amd64/23.0"
+LLVM_TARGET="X86-64"
+target_url=""
+stage3_tarball=""
+# amd64 hardened openrc link looks like this
+# https://...amd64/autobuilds/current-stage3-amd64-hardened-openrc/
+#STAGE3_SELECTOR=stage3-amd64-openrc-[0-9]
+STAGE3_SELECTOR='stage3-amd64-hardened-openrc-[0-9]'
+#profile_number=48
+#profile_number=21     # hardened ## /// no - they change the numbers
+default_profile="default/linux/amd64/23.0/hardened"
+
+#-----[ functions ]-----------------------------------------------
+
+my_usage() {
+    j_msg "-${notice}" -p "${BRon}usage: ${BGon}${PN}${Boff}"
+}
+
+# populate_repo() - moved to jb-mksys
+
+#-----[ main script ]---------------------------------------------
+checkroot
+separator "$(hostname)" "$PN"
+[ $# -ge 1 ] && { j_msg "-${err}" "${BRon}Error${Boff}: $PN accepts no arguments"; my_usage; exit 1 ; }
+
+old_dir="$(pwd)"
+cd "$newroot_mountpoint"
+j_msg "-${notice}" -p "now working in newroot_mountpoint: [${Mon}$(pwd)${Boff}]"
+
+# double check that jb-mksys created /etc/resolv.conf
+j_msg "-${notice}" -p -n "verifying /etc/resolv.conf for chroot target ..."
+cat "${newroot_mountpoint%/}/etc/resolv.conf" &>/dev/null
+handle_result $? "ok" "not found" "$notice"
+if [ ! $? -eq 0 ]  ; then
+    j_msg "-${notice}" -p -n "copying ..."
+    mkdir -p "${newroot_mountpoint%/}/run/resolvconf" && \
+    cp /etc/resolv.conf "${newroot_mountpoint%/}/run/resolvconf/resolv.conf"
+    handle_result $? '' '' "$notice" || die "failed to copy /etc/resolv.conf for chroot target";
+else
+    handle_result 0 "done" "" "$notice"
+fi
+# cb-chroot- scripts use  to cb-common-functions validate-chroot-mountpoint-dirlist function
+# because the dirlist includes repositories - n/a here
+# preposition and call chroot-prep to create if needed, and then mount, chroot mountpoints
+j_msg "-${notice}" -p -n "checking chroot-prep chroot target ..."
+cat "${newroot_mountpoint%/}/chroot-prep" &>/dev/null
+handle_result $? "ok" "not found" "$notice"
+if [ ! $? -eq 0 ] ; then
+    j_msg "-${notice}" -p -n "copying ...";
+    cp "${newroot_mountpoint%/}/joetoobuild-tools/chroot-prep" "${newroot_mountpoint%/}/"
+    handle_result $? "done" "" "$notice" || \
+        die "failed to copy chroot-prep for chroot target";
+fi
+
+j_msg "-${notice}" -p "running chroot-prep ..."
+"${newroot_mountpoint%/}/chroot-prep"; result=$?
+j_msg "-${notice}" -p -n "Done running chroot-prep; result:"
+handle_result $result '' '' "$notice" || die "failed to chroot-prep"
+
+# construct an explicit chroot command to tightly control the environtment
+# fresh environment for the chroot (zero out the livecd's environment)
+chroot_cmd=( env -i )
+# set up root user for new environment
+chroot_cmd+=( USER=root HOME=/root LOGNAME=root SHELL=/bin/bash )
+chroot_cmd+=( TERM="$TERM" )       # ensure the terminal will function
+chroot_cmd+=( PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ) # minimal complete path
+chroot_cmd+=( chroot "${newroot_mountpoint%/}" /bin/bash --login )
+#chroot_cmd+=( chroot "${newroot_mountpoint%/}" /bin/bash )
+
+j_msg "-${notice}" -p "Launching chroot command [${chroot_cmd[@]}]"
+
+exec "${chroot_cmd[@]}"
+
+FLAGGED=$FALSE
+# preposition and call umount-chroot
+j_msg "-${notice}" -p -n "checking umount-chroot ..."
+cat "${newroot_mountpoint%/}/umount-chroot" &>/dev/null
+if ! handle_result $? "ok" "not found" ; then
+    j_msg "-${notice}" -p -n "copying ...";
+    cp "${newroot_mountpoint%/}/joetoobuild-tools/umount-chroot" "${newroot_mountpoint%/}/" || \
+        die "failed to copy umount-chroot for chroot target";
+    handle_result 0 "done" "" "$notice"
+fi
+"${newroot_mountpoint%/}/umount-chroot"
+
+[ $FLAGGED ] && ( j_msg "-${err}" "failed clean exit; note red flags above" && exit 1 )
+
+echo
+cd $old_dir
+j_msg "-${notice}" -p "now working in previous directory: [${Mon}$(pwd)${Boff}]"
+exit 0
+

@@ -1,0 +1,49 @@
+#!/bin/bash
+# reformat_joetoo_LVs
+#
+[ $# -eq 0 ] && { echo "please provide a quoted list of LVs to reformat or one of --all, --all-but-root"; exit 1 ; }
+
+
+newroot_mountpoint="/mnt/gentoo"
+JOETOO_HEADER_DIR="${newroot_mountpoint%/}/joetoobuild-tools"
+
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
+command -v toc &>/dev/null || { echo "failed to source ${JOETOO_HEADER_DIR%/}/script_header_joetoo"; exit 1 ; }
+
+root_vg=vg_barracuda
+[ -n "$(vgs --noheadings -o vg_name --select "vg_name=${root_vg}" 2>/dev/null)" ] || die "root_vg [$root_vg] not found"
+
+lvs_command=(lvs)
+lvs_command+=(--select "vg_name=${root_vg}")  # select only LVs belonging to root_vg
+lvs_command+=(--noheadings -o lvname)         # include no heading row in output, and show only the lvname column
+lvs_command+=(--separator '' --unquoted)      # use null field separator and no quoting to facilitate removing whitespace
+# remove whitespace below with sed "s|^${W1}||" , using script_header_joetoo's W0="[[:space:]]*"; W1="[[:space:]]${W0}"
+separator "$(hostname)" "$PN"
+case "$1" in
+    --all          )
+        readarray -t lv_list < <( "${lvs_command[@]}" | grep -v 'swap' | sed "s|^${W1}||" ) ;;
+    --all-but-root )
+        readarray -t lv_list < <( "${lvs_command[@]}" | grep -E -v 'swap|root' | sed "s|^${W1}||" ) ;;
+    *              ) lv_list=($1) ;; # unquoted to word-split into array
+esac
+echo "root_vg: [$root_vg]"
+echo "lv count: [${#lv_list[@]}]"
+echo "lv_list:"
+printf '[%s]\n' "${lv_list[@]}"
+confirm_continue_or_exit
+
+# interate through lv_list and reformat each
+for x in "${lv_list[@]}"; do
+    block_dev="/dev/mapper/${root_vg%/}-${x}"
+    # guard - check if block_dev is still mounted
+    if findmnt -S "${block_dev}" &>/dev/null; then
+        j_msg "-${err}" "block device [${block_dev}] is still mounted"
+        j_msg "-${notice}" -p "maybe run something like one of these --"
+        j_msg "-${notice}" -p "${Gon}cd; umount -R /mnt/gentoo${Boff} -- un-mount everything"
+        j_msg "-${notice}" -p "${Gon}cd /mnt/gentoo; umount -R /mnt/gentoo/* 2>/dev/null${Boff} -- un-mount everything but root"
+    fi
+    # verify there is such a block device
+    [ -b "${block_dev}" ] || { j_msg "-${err}" "block device [${block_dev}] not found"; exit 1; }
+    fs="${x}_fs"
+    yes | mkfs.ext4 -L "$fs" "${block_dev}"
+done
