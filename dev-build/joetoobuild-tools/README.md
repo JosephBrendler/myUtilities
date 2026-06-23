@@ -82,7 +82,7 @@ Then remount the root LV as in step 2 above, and use <code>jb-prune-root</code> 
 </code><br><br>
 
 <b>Complete build-reset on one line:</b><br>
-<code>umount -R /mnt/gentoo/* 2>/dev/null; ./reformat_joetoo_LVs --all-but-root; ./prune_joetoo_root --go; ../mount-the-rest.retro</code><br><br>
+<code>umount -R /mnt/gentoo/* 2>/dev/null; ./jb-reformat-LVs --all-but-root; ./jb-prune-root --go; ../mount-the-rest.retro</code><br><br>
 
 <b>Note:</b> If you reboot the livecd, you will need to resume the process at step (2) above, but you will not need to repeat step 3 if you whitelisted that content when using jb-prune-root.<br> Mount the root device at /mnt/gentoo; mount the rest of the LVs; and then run joetoo-system-install<br><br>
 
