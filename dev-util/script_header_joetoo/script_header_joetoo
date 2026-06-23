@@ -1284,8 +1284,19 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
   if [ -f "$joetoo_store" ] && [ ! -r "$joetoo_store" ]; then
     # file existence implies dir existence, but make sure it is searchable
     printf "*** >>> [sudo] setting permission on store file and dir [%s] (sudo password may be required) <<< ***\n" "$joetoo_store"
-    # combined sudo call for efficiency
-    sudo sh -c "chmod 644 '$joetoo_store' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=$(( hua_ret + 2 ))   # bit 1 = chmod 644 fail
+    # on newly build systems, there is no sudo but login is root anyway - check for that first
+    if isroot ; then
+      chmod 644 "$joetoo_store" && chmod 755 "$_store_dir" &>/dev/null
+      if [ $? -eq 0 ] ; then
+        printf '%s\n' "successfully set perms as root"
+      else
+        printf '%s\n' "failed to set perms as root"
+        hua_ret=$(( hua_ret + 2 ))
+      fi
+    else
+      # combined sudo call for efficiency
+      sudo sh -c "chmod 644 '$joetoo_store' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=$(( hua_ret + 2 ))   # bit 1 = chmod 644 fail
+    fi
   else
     # if the file does not exist or is not readable,
     # then ensure the directory exists and is searchable (755)
@@ -1298,8 +1309,18 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
       #  pki authentication is not being used and the sshd is asking for
       #  the password). so be clear about why this is about to happen
       printf "*** >>> [sudo] creating _store_dir [%s] (sudo password may be required) <<< ***\n" "$_store_dir"
-      # combined sudo call for efficiency
-      sudo sh -c "mkdir -p '$_store_dir' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=1   # bit 0 = joetoo_store mkdir/chmod fail
+      if isroot ; then
+        mkdir -p "$_store_dir" && chmod 755 "$_store_dir" &>/dev/null
+        if [ $? -eq 0 ] ; then
+          printf '%s\n' "successfully created store as root"
+        else
+          printf '%s\n' "failed to create store as root"
+          hua_ret=1
+        fi
+      else
+        # combined sudo call for efficiency
+        sudo sh -c "mkdir -p '$_store_dir' && chmod 755 '$_store_dir'" &>/dev/null || hua_ret=1   # bit 0 = joetoo_store mkdir/chmod fail
+      fi
     fi  # store dir
   fi  # strore file
   # define the source of truth (this header itself)
@@ -1320,10 +1341,21 @@ _hydrate_ui_assets() # (POSIX) encapsulates ui asset cache/store strategy
       else
           # if cook succeeded, update the persistent store for future Tier 1 & 2 hydration
           # copy to temp file in store dir, set permissions, then mv for atomic write
-          sudo sh -c "cp '$_joetoo_cache' '${joetoo_store}.tmp' && \
+          if isroot ; then
+            cp "$_joetoo_cache" "${joetoo_store}.tmp" && chmod 644 "${joetoo_store}.tmp" && \
+              mv "${joetoo_store}.tmp" "${joetoo_store}" > /dev/null 2>&1
+            if [ $? -eq 0 ] ; then
+              printf '%s\n' "successfully wrote store as root"
+            else
+              printf '%s\n' "failed to write store as root"
+              hua_ret=1
+            fi
+          else
+            sudo sh -c "cp '$_joetoo_cache' '${joetoo_store}.tmp' && \
                       chmod 644 '${joetoo_store}.tmp' && \
                       mv '${joetoo_store}.tmp' '${joetoo_store}'" > /dev/null 2>&1 || \
                           hua_ret=$(( hua_ret + 64 )) # bit 6 = _joetoo_store write fail
+          fi
           # source the asset cache
           . "$_joetoo_cache" || hua_ret=$(( hua_ret + 128 ))   # bit 6 = _joetoo_cache from cook source fail
       fi
