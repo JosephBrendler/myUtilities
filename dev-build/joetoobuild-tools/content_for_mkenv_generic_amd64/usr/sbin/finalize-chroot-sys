@@ -1,0 +1,788 @@
+#!/bin/bash
+#
+# finalize-chroot-sys    joe brendler 12 June 2025
+#
+# NOTEs:
+# can be run separately by user at any time when in proper context
+# should be run automatically by /root/.bashrc if file ${firstrunmarker} exists
+# this program is similar to but NOT the same as counterparts written for running inside a qemu-chroot
+#
+# if all goes well, remove the ${firstrunmarker} file
+#   so .bashrc won't try to run it again
+#
+JOETOO_HEADER_DIR="/usr/sbin"
+
+firstrunmarker=/root/firstlogin
+[ ! -e ${firstrunmarker} ] && exit 0
+
+[[ -r "${JOETOO_HEADER_DIR%/}/script_header_joetoo" ]] || \
+    { echo "script_header_joetoo not found in JOETOO_HEADER_DIR [$JOETOO_HEADER_DIR]" ; exit 1 ; }
+
+echo "sourcing script_header_joetoo"
+# shellcheck source=/usr/sbin/script_header_joetoo
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
+if command -v j_msg &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo "error: failed to source script_header_joetoo; cannot continue"
+    exit 1
+fi
+
+#-----[ variables ]---------------------------------------------------------------------
+
+j_msg "-${info}" -p -n "assigning PN = ${0##*/} ..."
+PN="${0##*/}"
+right_status $TRUE "$info" || die "failed to assign PN"
+
+j_msg "-${info}" -p -n "sourcing BUILD ..."
+source /etc/joetoobuild-tools/BUILD
+right_status $TRUE "$info"  || die "failed to source BUILD"
+
+j_msg "-${info}" -p -n "sourcing BPN ..."
+source /etc/joetoobuild-tools/BPN
+right_status $TRUE "$info"  || die "failed to source BPN"
+
+echo "sourcing script_header_joetoo_extended"
+# shellcheck source=/usr/sbin/script_header_joetoo_extended
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
+if command -v j_msg &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo "error: failed to source script_header_joetoo_extended; cannot continue"
+    exit 1
+fi
+
+# set default verbosity only if it is not already set
+[ -z "$verbosity" ] && verbosity="$notice"
+PN=${0##*/}
+
+COMPLETE=$TRUE  # (tentatively; any step below can change this)
+FLAGGED=$FALSE
+result=0
+mytimezone=America/New_York
+
+
+## set these static here for $PN; they would be set by validate_target() in crossbuild-tools
+export BOARD=generic_amd64
+export TARGET=x86_64-pc-linux-gnu
+export TARGET_ARCH=amd64
+export QEMU_ARCH=x86_64
+#STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop >
+#default_profile="default/linux/amd64/23.0"
+export LLVM_TARGET="X86-64"
+export target_url=""
+export stage3_tarball=""
+
+varlist="PN BPN BUILD BOARD TARGET"
+varlist+=" starting_step stopping_step status_file"
+varlist+=" bool.RESUME bool.INTERACTIVE"
+varlist+=" bool.COMPLETE bool.FLAGGED"
+varlist+=" BREAK bool.VERBOSE verbosity"
+varlist+=" BREAK lv.chroot_emerge"
+
+command_sequence=(
+'validate-prerequisites'
+'run-locale-gen'
+'check-reload-config'
+'set-password root'
+'set-timezone'
+'set-hostname'
+'remove-kernelsources-mountpoint'
+'prep-eix-db-dir'
+'sync-repo gentoo'
+'emerge-git-eselect-repo'
+'sync-repo joetoo'
+'add-user'
+'fix-inittab'
+'write-fstab'
+'make-mountpoints'
+'edit-91joetoo_platform'
+'emerge-platform-meta'
+'run-dispatch-conf'
+'emerge-common-meta'
+'run-dispatch-conf'
+'edit-80joetoo_common'
+'emerge-world'
+'run-dispatch-conf'
+'add-default-runlevel-services'
+'setup-clock'
+'install-grub'
+'display-next-steps'
+)
+
+msg1_sequence=(
+'validate prerequisites'
+'run locale-gen'
+'check and reload config'
+'set root password'
+'set timezone'
+'set hostname'
+'remove kernel sources mountpoint'
+'prepare eix database directory'
+'sync repo gentoo'
+'emerge git eselect-repo'
+'sync repo joetoo'
+'add user'
+'fix inittab'
+'write fstab'
+'make mountpoints'
+'edit package.use/91joetoo_platform'
+'emerge platform-meta'
+'run dispatch-conf'
+'emerge common-meta'
+'run dispatch-conf'
+'edit 80joetoo_common'
+'chroot_emerge world'
+'run dispatch-conf'
+'add default runlevel services'
+'set up clock'
+'install grub'
+'display next steps'
+'complete'
+)
+
+#-----[ functions ]---------------------------------------------------------------------
+
+initialize_variables() {
+    if [ "$verbosity" -lt "$info" ] ; then
+        j_msg "-${notice}" -p -n "initializing ..."
+    else
+        j_msg "-${info}" -p "initializing ..."
+    fi
+    # newer versions of initialize_vars protect standard joetoo variables like verbosity and INTERACTIVE
+    initialize_vars "${varlist}"
+
+    # set default values
+    FLAGGED=$FALSE
+    j_msg "-${info}" -p -n "sourcing BUILD ..."
+    source /etc/joetoobuild-tools/BUILD
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "sourcing BPN ..."
+    source /etc/joetoobuild-tools/BPN
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "initializing default starting_step = 0"
+    export starting_step=0
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "initializing default stopping_step = $(( ${#command_sequence[@]} - 1 ))"
+    export stopping_step=$(( ${#command_sequence[@]} - 1 ))
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "initializing default status_file = /root/bin/finalizechrootjoetoo_status"
+    export status_file="/root/bin/finalizechrootjoetoo_status"
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting PN = ${0##*/}"
+    PN=${0##*/}
+    right_status $? "$info" || FLAGGED=$TRUE
+
+    if [[ $FLAGGED ]] ; then
+        j_msg "-${err}" "failed clean exit; note red flags above"
+        return 1
+    else
+        j_msg "-${notice}" -p "initialization complete"
+        return 0
+    fi
+}
+
+get-target() {
+    # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
+    j_msg "-${notice}" -p -n "determining TARGET ..."
+    apparent_TARGET=$(portageq envvar CHOST)
+    right_status $? "$notice" || die "failed to assign apparent_TARGET"
+    j_msg "-${notice}" -p "apparent_TARGET: $apparent_TARGET"
+    return 0
+}
+
+get-check-config() {
+    # source /root/.cb-config and validate TARGET (fatal if failure)
+    # also assign BOARD, etc. I am ... (non-fatal if failure)
+    j_msg "-${notice}" -p -n "checking /root/.cb-config"
+    if [ -e /root/.cb-config ] ; then
+        # shellcheck source=/dev/null
+        source /root/.cb-config
+        right_status $? "$notice" || die "failed to source /root/.cb-config"
+    else
+        right_status 1 "$notice"
+        j_msg "-${err}" "/root/.cb-config not found; exiting"
+        return 1
+    fi
+    j_msg "-${notice}" -p -n "validating BOARD, TARGET and qemu-chroot config ..."
+    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
+        handle_result 0 "match" "" "$notice"
+        j_msg "-${debug}" -p "  BOARD ........: $BOARD"
+        j_msg "-${debug}" -p "  TARGET .......: $TARGET"
+        j_msg "-${debug}" -p "  TARGET_ARCH ..: $TARGET_ARCH"
+        j_msg "-${debug}" -p "  QEMU_ARCH ....: $QEMU_ARCH"
+     else
+        handle_result 1 "" "mismatch" "$notice"
+        j_msg "-${err}" "TARGET mismatch; exiting"
+        FLAGGED=$TRUE
+    fi
+    [ $FLAGGED ] && return 1
+    return 0
+}
+
+build-chroot_emerge-command() {
+    # in a chroot, the emerge command is a native operation (no special environment modification)
+    export chroot_emerge="emerge"
+}
+
+validate-prerequisites() {
+    # Validate prerequisite expectations -
+    ### we should be running inside a chroot
+    j_msg "-${notice}" -p -n "Verifying we are inside a chroot ..."
+    # Get device and inode numbers for the current root (/)
+    current_root_dev_inode=$(stat -c "%d:%i" /)
+    # Get device and inode numbers for the root of the init process (/proc/1/root)
+    init_root_dev_inode=$(stat -c "%d:%i" /proc/1/root/.)
+    # of these do not differ, assume we are NOT in a chroot
+    [[ "${current_root_dev_inode}" == "${init_root_dev_inode}" ]] && die "looks like we are NOT in a chroot"
+    right_status 0 "$notice"
+
+    ### make.conf should be built for chroot/liveOS rather than crossbuilding
+    j_msg "-${notice}" -p -n "Verifying make.conf is built for chroot/liveOS ..."
+    validate_make_conf || die "failed to validate_make_conf"
+    right_status 0 "$notice"
+    return 0
+}
+
+validate_make_conf() {
+    source /etc/portage/make.conf
+    j_msg "-${debug}" -p "ROOT: ${ROOT}"
+#    [[ "${ROOT}" == "/" ]] && j_msg "-${debug}" -p "ROOT [${ROOT}] == \"/\""
+    case "${ROOT}" in
+        "/"      ) j_msg "-${notice}" -p -n " (${BGon}Ok${Boff})" ; return 0 ;;
+        "/usr/"* ) j_msg "-${notice}" -p " (${BRon}for crossbuilding${Boff})" ; return 1 ;;
+        *        ) j_msg "-${notice}" -p " (${BRon}invalid ROOT [${ROOT}]${Boff})" ;  return 1 ;;
+    esac
+}
+
+run-locale-gen() {
+    local result=0
+    # /etc/locale.gen and /etc/env.d/02locale were updated by populate-target script
+    j_msg "-${notice}" -p "running locale-gen ..."
+    locale-gen; result=$?
+    right_status $result "$notice" || COMPLETE=$FALSE
+    return $result
+}
+
+check-reload-config() {
+    local result=0
+    # check/reload config
+    j_msg "-${notice}" -p "checking/reloading config ..."
+    gcc-config -l && \
+    ldconfig -v && \
+    ROOT=/ env-update && \
+    source /etc/profile ; result=$?
+    right_status $result "$notice" || COMPLETE=$FALSE
+    return $result
+}
+
+set-password() {
+    local result=0
+    # set passwd for user $1
+    [ $# -ne 1 ] && j_msg "-${err}" "invalid argument for set-password()" && return 1
+    user="$1"
+    j_msg "-${notice}" -p "please set the password for user [${user}] on this image"
+    passwd "${user}" ; result=$?
+    handle_result $result "success" "failed to set passwd for user [${user}]" "$notice" || FLAGGED=$TRUE
+    return $result
+}
+
+set-timezone() {
+    local result=0
+    #  set timezone
+    j_msg "-${notice}" -p -n "setting local timezone (America/New_York) for joetoo ..."
+    ln -sf "../usr/share/zoneinfo/${mytimezone}" /etc/localtime && \
+    handle_result $result "success" "fail" "$notice" || FLAGGED=$TRUE
+    return $result
+}
+
+set-hostname() {
+    local result=0
+    #  set hostname
+    response=""
+    j_msg "-${notice}" -p "${BYon}Please identify the hostname for this system${Boff}"
+    j_msg "-${notice}" -p "${BMon}Note:${Boff} If you are providing apache ssl or openvpn keys"
+    j_msg "-${notice}" -p "via the /etc/joetoobuild-tools/mkimg-files/ structure of this build,"
+    j_msg "-${notice}" -p "then they must correspond to this hostname"
+    j_msg "-${notice}" -mp ""
+    while [[ ! "${response}" == [yYsS] ]] ; do
+        j_msg "-${notice}" -p -n "${BGon}*${Boff} set hostname for this image: "
+        read -r candidate
+        j_msg "-${notice}" -p "you responded [ ${candidate} ]"
+        new_prompt "is this correct?"
+    done
+    if [[ "${response}" == [yY] ]] ; then
+        j_msg "-${notice}" -p -n "setting hostname: ${candidate}"
+        echo "${candidate}" > /etc/hostname
+        # shellcheck disable=SC2320
+        handle_result $? "success" "fail" "$notice" || FLAGGED=$TRUE
+    else
+        j_msg "-${err}" "candidate hostname provided, then rejected"
+        j_msg "-${notice}" -p "please make a note to manually run the following command when you have time --"
+        j_msg "-${notice}" -p "    ${BBon}echo ${BYon}<hostname> ${BGon}> ${Boff}/etc/hostname"
+        return 2
+    fi
+    return $result
+}
+
+remove-kernelsources-mountpoint() {
+    local result=0
+    j_msg "-${notice}" -p -n "maybe removing kernel sources mountpoint"
+    if [ -d /usr/src/linux ] ; then
+        rm -r /usr/src/linux ; result=$?
+        handle_result $result "success" "fail" "$notice" || FLAGGED=$TRUE
+    else
+        handle_result 0 "un-necessary" "" "$notice"
+    fi
+    return $result
+}
+
+prep-eix-db-dir() {
+    local result=0
+    SOFARSOGOOD=$TRUE
+    # prepare the directory that will hold the eix database
+    j_msg "-${notice}" -p "preparing the eix database directory ..."
+    j_msg "-${notice}" -p -n "looking for /var/cache/eix"
+    if [ -d /var/cache/eix ] ; then
+        handle_result 0 "found" "" "$notice"
+    else
+        j_msg "-${notice}" -p -n " (creating)"
+        mkdir -p /var/cache/eix/ ; result=$?
+        handle_result $result "success" "fail" "$notice" || SOFARSOGOOD=$FALSE
+    fi
+    j_msg "-${notice}" -p -n "setting permissions for /var/cache/eix"
+    chown portage:portage /var/cache/eix ; result=$?
+    handle_result $result "success" "fail" "$notice" || SOFARSOGOOD=$FALSE
+    if [[ ! $SOFARSOGOOD ]] ; then
+        FLAGGED=$TRUE
+        return 1
+    fi
+    return 0
+}
+
+emerge-git-eselect-repo() {
+    local result=0
+    # use an array to construct the emerge command
+    local -a emerge_command=( "${chroot_emerge}" -av1 )
+    # before sync-repo joetoo, we need git (and eselect-repo for form)
+    j_msg "-${notice}" -p "emerging dev-vcs/git and eselect-repository"
+    emerge_command+=( dev-vcs/git eselect-repository )
+    "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done emerging git and eselect-repository; result:"
+    handle_result $result '' '' "$notice"
+    return $result
+}
+
+sync-repo() {
+    # use emerge to sync this repository
+    local result=0
+    local -a emerge_command=( "${chroot_emerge}" -av --sync )
+    REPO="$1"
+    emerge_command+=( "$REPO" )
+    # if the eix database directory does not exist, create it and give portage permission to use it
+    if [ ! -d /var/cache/eix ] ; then
+        j_msg "-${notice}" -p -n "eix database directory does not exist; creating ..."
+        mkdir -p /var/cache/eix
+        handle_result $? '' '' "$notice" || die "failed to mkdir -p /var/cache/eix"
+        j_msg "-${notice}" -p -n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix
+        handle_result $? '' '' "$notice" || die "failed to chown -R portage:portage /var/cache/eix"
+    else
+        j_msg "-${notice}" -p "eix database /var/cache/eix already exists"
+        j_msg "-${notice}" -p -n "setting permissions on eix database directory ..."
+        chown -R portage:portage /var/cache/eix ; right_status $?
+    fi
+    # just notify which case we have - empty or existing repo
+    if [[ -z $(find "/var/db/repos/${REPO}/" -mindepth 1) ]] ; then
+        j_msg "-${err}" "Repository ${REPO} is empty"
+    else
+        j_msg "-${notice}" -p "Repository ${REPO} exists"
+    fi
+    # run ${chroot_emerge} --sync (explicitly rather than with alias) for this repo
+    j_msg "-${notice}" -p "synchronizing portage tree with ${chroot_emerge} -av --sync ${REPO} ..."
+    j_msg "-${debug}" -p "chroot_emerge = ${chroot_emerge}"
+
+    "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done syncing repo [$REPO]; result:"
+    handle_result $result "" "failed: exit status [$result]" || return 1
+    return 0
+}
+
+add-user() {
+    local result=0 au_result=0
+    # populate-user -- cb-populate-image should have loaded whatever structure
+    #    was found in /etc/joetoobuild-tools/mkimg-files ...
+    #    including .bashrc, .ssh/keys...
+    #    as long as user populated that structure after emerging joetoobuild-tools
+    response=""
+    while [[ ! "${response}" == [yYsS] ]] ; do
+        j_msg "-${notice}" -mp ""
+        j_msg "-${notice}" -p -n "${BGon}*${Boff} set username for routine daily user: "
+        read -r candidate
+        j_msg "-${notice}" -p "you responded [ ${candidate} ]"
+        new_prompt "is this correct?"
+    done
+    if [[ "${response}" == [yY] ]] ; then
+        j_msg "-${notice}" -p -n "setting up user ${candidate}"
+        useradd -m -G wheel,console,audio,cdrom,video,cdrw,usb,users,portage -s /bin/bash "${candidate}"
+        result=$?
+        handle_result $result "" "" "$notice" || { FLAGGED=$TRUE; au_result=1 ; }
+    else
+        j_msg "-${err}" "candidate username provided, then rejected"
+        j_msg "-${notice}" -p "please make a note to manually run the following command when you have time --"
+        j_msg "-${notice}" -p "    useradd ${BMon}-m -G${Boff} wheel,console,audio,cdrom,video,cdrw,usb,users,portage ${BMon}-s${Boff} /bin/bash ${BRon}\${username}${Boff}"
+        au_result=$(( au_result | 2 ))
+    fi
+
+    if [ "$au_result" -eq 0 ] ; then
+        # set password for this user
+        set-password "${candidate}" ; result=$?
+        j_msg "-${notice}" -p -n "Done setting password; result:"
+        handle_result $result "" "" "$notice" || { FLAGGED=$TRUE; au_result=$(( au_result | 4 )); }
+    fi
+    return $au_result
+}
+
+fix-inittab() {
+    local result=0 fi_result=0
+    j_msg "-${notice}" -p -n "fixing /etc/inittab s0..."
+    sed -i 's|^s0:|#s0:|' /etc/inittab ; result=$?
+    handle_result $result "" "" "$notice" || { FLAGGED=$TRUE; fi_result=1 ; }
+
+    j_msg "-${notice}" -p -n "fixing /etc/inittab f0..."
+    sed -i 's|^f0:|#f0:|' /etc/inittab ; result=$?
+    handle_result $result "" "" "$notice" || { FLAGGED=$TRUE; fi_result=$(( fi_result | 2 )) ; }
+    return 0
+}
+
+write-fstab() {
+    local result=0 temp_str=""
+    # get root_dev (-P produces assignable var/val pairs; grep mountpoint ensures output TARGET matches mountpoint)
+    j_msg "-${notice}" -p -n "determining root_dev ..."
+    local root_mountpoint="/" SOURCE="" TARGET=""
+    # use read with process substitution to get the SOURCE volume for root_mountpoint
+    read -r SOURCE TARGET < <(findmnt -no SOURCE,TARGET --target "${root_mountpoint}")
+    [ ! -z "$SOURCE" ] && root_dev="${SOURCE}"
+    handle_result $? "$root_dev" "" "$notice" || die "failed to assign root_dev"
+    # get boot_dev (-P produces assignable var/val pairs; grep mountpoint ensures output TARGET matches mountpoint)
+
+    j_msg "-${notice}" -p -n "determining boot_dev ..."
+    local boot_mountpoint="/boot"
+    SOURCE=""; TARGET=""
+    read -r SOURCE TARGET < <(findmnt -no SOURCE,TARGET --target "${boot_mountpoint}")
+    [ ! -z "$SOURCE" ] && boot_dev="${SOURCE}"
+    handle_result $? "$boot_dev" "" "$notice" || die "failed to assign boot_dev"
+
+    # get blkid data for root_dev
+    j_msg "-${notice}" -p -n "getting blkid data for root_dev"
+    # use blkid directly on the device and parse the key=value pairs safely
+    while IFS='=' read -r key value; do
+        case "$key" in
+            TYPE)     root_fstype="$value" ;;
+            UUID)     root_uuid="$value" ;;
+            PARTUUID) root_partuuid="$value" ;;
+        esac
+    done < <(blkid -o export "${root_dev}")
+    handle_result $? "" "" "$notice" || die "failed to get blkid data for root_dev"
+    j_msg "-${notice}" -p "    fstype: ...: [${root_fstype}]"
+    j_msg "-${notice}" -p "    uuid: .....: [${root_uuid}]"
+    j_msg "-${notice}" -p "    partuuid ..: [${root_partuuid}]"
+    # set fstab opts and dump-pass strings for root
+    root_opts="noatime"
+    root_dp="0 1"
+
+    # get blkid data for boot_dev
+    while IFS='=' read -r key value; do
+        case "$key" in
+            TYPE)     boot_fstype="$value" ;;
+            UUID)     boot_uuid="$value" ;;
+            PARTUUID) boot_partuuid="$value" ;;
+        esac
+    done < <(blkid -o export "${boot_dev}")
+    handle_result $? "" "" "$notice" || die "failed to get blkid data for boot_dev"
+    j_msg "-${notice}" -p "    fstype: ...: [${boot_fstype}]"
+    j_msg "-${notice}" -p "    uuid: .....: [${boot_uuid}]"
+    j_msg "-${notice}" -p "    partuuid ..: [${boot_partuuid}]"
+    # set fstab opts and dump-pass strings for boot
+    boot_opts="noatime,noauto,nodev,nosuid,noexec"
+    boot_dp="1 2"
+
+    # write (append) fstab line for /boot
+    # (for img or upd chroots, PARTUUIDs will have to be changed wen image is written to new media, e.g. sd card)
+    if [ ! -z "${boot_dev}" ] ; then
+        # prefer PARTUUID if available
+        if [ ! -z "$boot_partuuid" ] ; then
+            temp_str="PARTUUID=${boot_partuuid}"
+        elif [ ! -z "$boot_uuid" ] ; then
+            temp_str="PARTUUID=${boot_uuid}"
+        else
+            die "no valid boot device id found for fstab construction"
+        fi
+        j_msg "-${notice}" -p -n "writing (appending) fstab line for /boot ..."
+        printf '%s\t%s\t\t%s\t\t%s\t\t%s' "${temp_str}" "${boot_mountpoint}" "${boot_fstype}" "${boot_opts}" "${boot_dp}" >> /etc/fstab
+        handle_result $? "" "" "$notice" || { FLAGGED=$TRUE ; j_msg "-${err}" "failed to write boot line of fstab" ; }
+    fi
+
+    # write (append) fstab line for /
+    # (for img or upd chroots, PARTUUIDs will have to be changed wen image is written to new media, e.g. sd card)
+    if [ ! -z "${root_dev}" ] ; then
+        # prefer PARTUUID if available
+        if [ ! -z "$root_partuuid" ] ; then
+            temp_str="PARTUUID=${root_partuuid}"
+        elif [ ! -z "$root_uuid" ] ; then
+            temp_str="PARTUUID=${root_uuid}"
+        else
+            die "no valid root device id found for fstab construction"
+        fi
+        j_msg "-${notice}" -p -n "writing (appending) fstab line for / ..."
+        printf '%s\t%s\t\t%s\t\t%s\t\t%s' "${temp_str}" "${root_mountpoint}" "${root_fstype}" "${root_opts}" "${root_dp}" >> /etc/fstab
+        handle_rtemp_stresult $? "" "" "$notice" || { FLAGGED=$TRUE ; j_msg "-${err}" "failed to write root line of fstab" ; }
+    fi
+
+    # write (append) a placeholder fstab line for swap
+    j_msg "-${notice}" -p -n "writing (appending) fstab placeholder line for /var/cache/swap/swap1 ..."
+    printf '%s\t%s\t\t%s\t\t%s\t\t%s' "/var/cache/swap/swap1" "none" "swap" "sw" "0 0" >> /etc/fstab
+    handle_result $? "" "" "$notice" || { FLAGGED=$TRUE ; j_msg "-${err}" "failed to write swap line of fstab" ; }
+    # shellcheck disable=SC2086
+    [ $FLAGGED ] && return 1
+    return 0
+}
+
+make-mountpoints() {
+    #make standard joetoo mountpoints in /mnt/
+    for x in card stick thumb image gentoo from to key temp ; do
+        j_msg "-${notice}" -p -n "mountpoint ${x}"
+        if [ ! -d "/mnt/${x}" ] ; then
+            j_msg "-${notice}" -p -n " (making)"
+            mkdir -p "/mnt/${x}" ; right_status $? "$notice"
+        else
+            j_msg "-${notice}" -p -n " (exists)" ; right_status 0 "$notice"
+        fi
+    done
+}
+
+edit-91joetoo_platform() {
+    nano /etc/portage/package.use/91joetoo_amd64
+    return $?
+}
+
+emerge-platform-meta() {
+    # use an array to construct the emerge command
+    local -a emerge_command=( "${chroot_emerge}" -av )
+    emerge_command+=( joetoo-platform-meta )
+    j_msg "-${notice}" -p "emerging joetoo-platform-meta"
+    "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done emerging joetoo-platform-meta; result:"
+    handle_result $? "" "" "$notice" || return 1
+    return 0
+}
+
+emerge-common-meta() {
+    # use an array to construct the emerge command
+    local -a emerge_command=( "${chroot_emerge}" -av )
+    emerge_command+=( joetoo-common-meta )
+    j_msg "-${notice}" -p "emerging joetoo-common-meta"
+    "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done emerging joetoo-common-meta; result:"
+    handle_result $? "" "" "$notice" || return 1
+    return 0
+}
+
+edit-80joetoo_common() {
+    nano /etc/portage/package.use/80joetoo_common
+    return $?
+}
+
+emerge-world() {
+    # re-run chroot_emerge -uavDN @world --keep-going
+    # use an array to construct the emerge command
+    local -a emerge_command=( "${chroot_emerge}" -uavDN )
+    emerge_command+=( @world )
+    j_msg "-${notice}" -p "emerging @world (-uavDN) ..."
+    "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done emerging @world; result:"
+    handle_result $? "" "" "$notice" || return 1
+    j_msg "-${notice}" -p "about to run chroot_emerge -uavDN @world --keep-going"
+    [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
+    eval "${chroot_emerge} ${emerge_opts} @world --keep-going" ; result=$?
+    if [ $result -eq 0 ] ; then
+        j_msg "-${notice}" -p "emerge-world ${BGon}succeeded${Boff}"
+    ekse
+        j_msg "-${err}" "emerge-world ${BRon}failed${Boff}"
+    fi
+    return $result
+}
+
+run-dispatch-conf() {
+    j_msg "-${notice}" -p "about to run dispatch-conf"
+    ROOT=/ dispatch-conf ; result=$?
+    if [ $result -eq 0 ] ; then
+        j_msg "-${notice}" -p "run-dispatch-conf ${BGon}succeeded${Boff}"
+    else
+        j_msg "-${err}" "run-dispatch-conf ${BRon}failed${Boff}"
+    fi
+    return $result
+}
+
+add-default-runlevel-services() {
+    local -a list=()
+    # add all services to default runlevel (should have merged with world)
+    SOFARSOGOOD=$TRUE
+    # add prerequisite networking links in /etc/init.d
+    j_msg "-${notice}" -p "Adding prerequisite network interface links in /etc/init.d ..."
+    list=( eth0 wlan0 )
+    for x in "${list[@]}" ; do
+        j_msg "-${notice}" -p -n "interface ${x}"
+        if [ ! -L "/etc/init.d/net.${x}" ] ; then
+            j_msg "-${notice}" -p -n " (linking)"
+            ln -s /etc/init.d/net.lo "/etc/init.d/net.${x}"
+            handle_result $? "" "" "$notice" || SOFARSOGOOD=$FALSE
+        else
+            handle_result 0 "already linked" "" "$notice"
+        fi
+    done
+    # add links for services in default runlevel
+    j_msg "-${notice}" -p "Adding services to the default runlevel ..."
+    list=( apache2 chronyd cronie dbus ddns distccd gpm mysql net.eth0 net.wlan0 php-fpm rsyncd sshd sysklogd )
+    for x in "${list[@]}" ; do
+        j_msg "-${notice}" -p -n "examining ${x}"
+        if [ ! -L "/etc/runlevels/default/${x}" ] ; then
+            j_msg "-${notice}" -p -n " (linking)"
+            ln -s "/etc/init.d/${x}" "/etc/runlevels/default/${x}"
+            handle_result $? "" "" "$notice" || SOFARSOGOOD=$FALSE
+        else
+            handle_result 0 "already linked" "" "$notice" || SOFARSOGOOD=$FALSE
+        fi
+    done
+    if [[ ! $SOFARSOGOOD ]] ; then
+        j_msg "-${err}" "add-default-runlevel-services ${BRon}completed with errors${Boff}"
+        FLAGGED=$TRUE
+        return 1
+    else
+        j_msg "-${notice}" -p "add-default-runlevel-services ${BGon}succeeded${Boff}"
+        return 0
+    fi
+}
+
+setup-clock() {
+    # determine what is presently set up, query user to fix
+    currentclock=$(find /etc/runlevels/boot/ -iname "*clock" -exec basename {} \;)
+    case "${currentclock}" in
+        [sh]"wclock" )
+            j_msg "-${notice}" -p "boot runlevel current clock: ${currentclock}" ;
+            case "${currentclock:0:1}" in
+                "h" ) otherclock="swclock" ;;
+                "s" ) otherclock="hwclock" ;;
+                * ) j_msg "-${err}" "invalid currentclock" ; return 1 ;;
+            esac
+            response="" ;
+            msg="would you like to change to ${otherclock} ?\n"
+            msg+="  y = yes; change | [s|n] = no; keep"
+            new_prompt "${msg}"
+            case "${response:0:1}" in
+                [yY] )
+                    j_msg "-${notice}" -p -n "removing current boot runlevel clock service ..." ;
+                    rm "/etc/runlevels/boot/${currentclock}"
+                    right_status $? "$notice" || FLAGGED=$TRUE
+                    j_msg "-${notice}" -p -n "adding new boot runlevel clock service [${otherclock}] ..."
+                    ln -s "/etc/init.d/${otherclock}" "/etc/runlevels/boot/${otherclock}"
+                    right_status $? "$notice" || FLAGGED=$TRUE
+                    ;;
+                [nNsS] ) ;;
+                * ) j_msg "-${err}" "invalid response" ; return 1 ;;
+            esac
+            ;;
+        * ) j_msg "-${err}" "invalid clock for boot runlevel: [{currentclock}]" ; return 1 ;;
+    esac
+    # shellcheck disable=SC2086
+    [ $FLAGGED ] && return 1
+    return 0
+}
+
+install-grub() {
+    local result=0
+    # this should have been installed in /usr/sbin/ (in PATH) by joetoolkit
+    # ( maybe add step to edit make.conf and remind user to look at this)
+    j_msg "-${notice}" -p "Installing grub ..."
+    grub_install_both_ways; result=$?
+    j_msg "-${notice}" -p "Done installing grub; result:"
+    handle_result $result "" "" || FLAGGED=$TRUE
+    j_msg "-${notice}" -p "Setting permissions on grub files ..."
+    chmod +x /etc/grub.d/10_linux && \
+    chmod +x /etc/grub.d/20_linux_xen; result=$?
+    j_msg "-${notice}" -p "Done setting permissions on grub files; result:"
+    handle_result $result "" "" || FLAGGED=$TRUE
+    j_msg "-${notice}" -p "Running grub-mkconfig ..."
+    grub-mkconfig -o /boot/grub/grub.cfg
+    j_msg "-${notice}" -p "Done running grub-mkconfig; result:"
+    handle_result $result "" "" || FLAGGED=$TRUE
+    # shellcheck disable=SC2086
+    [ $FLAGGED ] && return 1
+    return 0
+}
+
+
+display-next-steps() {
+    # source the list of things yet-to-do
+    # re-read at any time by issuing the same command manually
+    source /etc/joetoobuild-tools/README_next_steps
+}
+
+#-----[ main script ]-------------------------------------------------------------------
+checkroot
+separator "$(hostname)" "${PN}-${BUILD} (starting)"
+
+initialize_variables     # set defaults
+
+j_msg "-${debug}" -p "cmdline: $*"
+j_msg "-${debug}" -p "processing cmdline args: $*"
+
+if [ "$verbosity" -lt "$info" ] ; then
+    j_msg "-${notice}" -p -n "processing cmdline ..."
+else
+    j_msg "-${info}" -p "processing cmdline ..."
+fi
+process_cmdline "${@}"  || die "failed to process_cmdline"
+
+# call script_header_joetoo validate_root_file function to ensure status_file exists
+validate_root_file "${status_file}"
+
+# get-target will need to run "portageq envvar CHOST" which needs a the
+# chroots own repo to be syncd first, and that needs chroot_emerge variable defined
+build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
+sync-repo gentoo || die "failed to sync-repo gentoo"
+
+# check CTARGET - CBUILD - CHOST configuration
+get-target || die "failed to get-target"
+
+# reload /root/.cb-config to check BOARD against CTARGET
+get-check-config || die "failed to get-check-config"
+
+show_config || die "failed to show_config"
+
+
+run_array "$status_file" "$starting_step" "$stopping_step" || die "failed to complete command sequence with run_array"
+
+# maybe, when run_sequence is done, set up another command_sequence for sbcs, with
+# 'install-boot-firmware' and
+# 'install-sbc-boot-config'
+# I saved the functions above, for now
+
+j_msg "-${notice}" -p -n "removing ${firstrunmarker} ..."
+rm ${firstrunmarker}
+right_status $? "$notice" || COMPLETE=$FALSE
+
+[[ $FLAGGED ]] && COMPLETE=$FALSE
+
+if [[ $COMPLETE ]] ; then
+    j_msg "-${notice}" -p "chroot firstlogin configuration completed successfully"
+else
+    j_msg "-${err}" "chroot firstlogin configuration completed with errors; check red flags in output above"
+fi
+j_msg "-${notice}" -mp ""
+separator "${PN}-${BUILD}" "(complete)"

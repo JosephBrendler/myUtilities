@@ -146,14 +146,14 @@ fi
 #fi
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
 if command -v j_msg &>/dev/null; then
-    j_msg "-${notice}" -p "sourced script_header_joetoo"
+    handle_result 0 '' '' "${notice}"
 else
     echo "error: failed to source script_header_joetoo; cannot continue"
     exit 1
 fi
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
 if command -v j_msg &>/dev/null; then
-    j_msg "-${notice}" -p "sourced script_header_joetoo_extended"
+    handle_result 0 '' '' "${notice}"
 else
     echo "error: failed to source script_header_joetoo_extended; cannot continue"
     exit 1
@@ -336,23 +336,27 @@ prepare-to-finalize-chroot() {
 
     # mod /root/.bashrc (likely installed already by content_for_mkenv_generic_amd64)
     #  to run /usr/sbin/finalize-chroot if /root/firstlogin exists
-    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "install_my_local_ca_certificates"  >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "rerunmsg=\"first-run chroot configuration not requested by presense of marker\"" >> "${newroot_mountpoint%/}/root/.bashrc"
-    # finalize-chroot-sys is in /usr/sbin which should be in PATH
-    echo -n "[ -e /root/firstlogin ] && finalize-chroot-sys ||"  >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo " \\"  >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo 'echo -e "${rerunmsg} /root/firstlogin;\nre-run if needed with /usr/sbin/finalize-chroot-sys"'  >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "" >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "j_msg \"-${err}\" \"edit /root/.bashrc after first boot of real image, to modify prompt, etc.\""  >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo  "" >> "${newroot_mountpoint%/}/root/.bashrc"
-    echo "export PS1=\"(chroot) \${PS1}\""  >> "${newroot_mountpoint%/}/root/.bashrc"
+    #  so check and only append lines not already posted
+    local -a lines=(
+        '/usr/sbin/install_my_local_ca_certificates'
+        'rerunmsg="first-run chroot configuration not requested by presense of marker"'
+        'if cat /root/firstlogin 2>/dev/null ; then /usr/sbin/finalize-chroot-sys; else j_msg -5 "$rerunmsg"; fi'
+        'j_msg "-${warn}" -p "edit /root/.bashrc after first boot of new system, to modify prompt, etc."'
+        'export PS1="(chroot) ${PS1}"'
+    )
+    for line in "${lines[@]}"; do
+        j_msg "-${notice}" -p -n "checking for line [${line:0:10} ...]"
+        if grep -q "^${line}" "${newroot_mountpoint%/}/root/.bashrc"; then
+            j_msg "-${notice}" -mp " (${BGon}confirmed${Boff})"
+        else
+            j_msg "-${notice}" -mp " (${BYon}appending${Boff})"
+            echo "${line}" >> "${newroot_mountpoint%/}/root/.bashrc"
+        fi
+    done
 
     # create /root/firstlogin
     j_msg "-${notice}" -p -n "creating firstrunmarker /root/firstlogin"
-    echo "true" >> "${newroot_mountpoint%/}/root/firstlogin"
+    echo "true" > "${newroot_mountpoint%/}/root/firstlogin"
     handle_result $? "" "" "$notice" || return 1
     return 0
 }

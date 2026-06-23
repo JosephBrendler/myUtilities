@@ -6358,7 +6358,14 @@ validate_root_file()  # (POSIX) validate existence and readability of a root-own
   fi
   # check root writability
   j_msg -${notice} -m -n "(sudo) checking root writability"
-  if ! sudo test -w "$_vr_rootFile" ; then
+  # new system early chroot wont have sudo but user is likely root - try first
+  WRITABLE=$FALSE
+  if isroot; then
+    test -w "$_vr_rootFile" && WRITABLE=$TRUE
+  else
+    sudo test -w "$_vr_rootFile" && WRITABLE=$TRUE
+  fi
+  if [ ! $WRITABLE ] ; then
     handle_result 1 "" "no" "$notice"
     j_msg -${err} "_vr_rootFile is not writable by root"
     j_msg -${err} "the file could be immutable, on a ro filesystem, ACL/Security restricted, etc."
@@ -6389,23 +6396,35 @@ validate_root_file()  # (POSIX) validate existence and readability of a root-own
 # @rule emits colored "corrective" instructions to stderr on failure
 
 fix_root_file() # (POSIX) create or repair a root-owned file
-{ [ $# -ne 1 ] && { j_msg -${err} "fix_root_file: must specify file"; return 1; }
+{ fr_ret=0
+[ $# -ne 1 ] && { j_msg -${err} "fix_root_file: must specify file"; return 1; }
   rootFile="$1"
   # create file if missing
   if [ ! -f "$rootFile" ]; then
     _fr_fix_cmd="touch '$rootFile' && chown 'root:root' '$rootFile'"
     _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
-    sudo sh -c "$_fr_fix_cmd"
-    return $?
+    # new system early chroot wont have sudo but user is likely root - try first
+    if isroot; then
+        "$_fr_fix_cmd"
+    else
+        sudo sh -c "$_fr_fix_cmd"
+    fi
+    [ $? -ne 0 ] && fr_ret=1
   fi
   # fix ownership and permission if needed
   if [ ! -w "$rootFile" ]; then
     _fr_fix_cmd="chattr -i '$rootFile' 2>/dev/null && chown 'root:root' '$rootFile'"
     _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
-    sudo sh -c "$_fr_fix_cmd"
-    return $?
+    # new system early chroot wont have sudo but user is likely root - try first
+    if isroot; then
+        "$_fr_fix_cmd"
+    else
+        sudo sh -c "$_fr_fix_cmd"
+    fi
+    [ $? -ne 0 ] && fr_ret=$(( fr_ret | 2 ))
   fi
-  return 0
+  unset -v _fr_fix_cmd
+  return $fr_ret
 }
 # @usage fix_rootfile
 # @rule only used when the user explicitly asks for repair.
@@ -6517,21 +6536,27 @@ validate_logfile()  # validate existence and ownership of logFile
 
 
 fix_logfile() #(POSIX) minimalist validation of logfile
-{
+{   fl_ret=0
     # create file if missing
     if [ ! -f "$logFile" ]; then
         _fl_fix_cmd="touch '$logFile' && chown '$user:$user' '$logFile'"
         _fl_fix_cmd="${_fl_fix_cmd} && chmod 644 '$logFile'"
-        sudo sh -c "$_fl_fix_cmd"
-        return $?
+        # new system early chroot wont have sudo but user is likely root - try first
+        if isroot; then
+            "$_fl_fix_cmd"
+        else
+            sudo sh -c "$_fl_fix_cmd"
+        fi
+        [ $? -ne 0 ] && fl_ret=1
     fi
     # fix ownership and permission if needed
     if [ ! -w "$logFile" ]; then
         _fl_fix_cmd="chown '$user:$user' '$logFile' && chmod 644 '$logFile'"
         sudo sh -c "$_fl_fix_cmd"
-        return $?
+        [ $? -ne 0 ] && fl_ret=$(( fl_ret | 2 ))
     fi
-    return 0
+    unset -v _fl_fix_cmd
+    return $fl_ret
 }
 # @usage fix_logfile
 # @note safe alternative to using validate_file which calls validate_dir
