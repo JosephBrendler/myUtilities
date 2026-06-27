@@ -1,0 +1,178 @@
+
+# globally set up filters to normalize an input string string with a filter pipeline
+# Note: grep '^W0=' /usr/sbin/script_header_joetoo -->
+#   W0="[[:space:]]*" # POSIX regex match for zero+ whitespaces
+#   W1="[[:space:]]${W0}" # POSIX regex match for one+ whitespaces ([[:space:]]+ is not portable)
+
+# lexical normalization - change the meaningful text while preserving the word/token structure
+space_filter=( sed 's/^[[:space:]]*//;s/[[:space:]]*$//' ) # # trim leading/trailing whitespace
+case_filter=( tr '[:upper:]' '[:lower:]' ) # ............... # convert upper to lower case chars
+mark_filter=( sed -E 's/\(tm\)|\(r\)|\(c\)//g' ) # ......... # remove trademark, copyright, etc
+plus_filter=( sed -E 's/\+/plus/g' ) # ..................... # translate + sign to "plus"
+alnum_filter=( sed -E 's/[^a-z0-9]+/-/g' ) # ............... # replace non-alphanum strings w '-' delimiter
+# structural normalization - change only representation of separators and boundaries
+hyphen_filter=( sed -E 's/-+/-/g' ) # ...................... # change "--[-]" to "-" (multi- to single-hyhen)
+dash_filter=( sed -E 's/^-//; s/-+$//' ) # ................. # remove leading/trailing dashes ('-')
+u_score_filter_int=( sed -E 's/_+/_/g' ) # ................. # change "__[_]" to "_" (multi- to single underscore)
+u_score_filter_tl=( sed -E 's/^_+|_+$//g' ) # .............. # remove all leading or trailing underscore ('_')
+# structural transforms specific to cpu model name strings
+cpu_filter=( sed -E 's/\<cpu\>//gI' ) # .................... # remove word <> 'cpu', gI: global case insensitive
+freq_filter=( sed -E "s/${W0}[0-9.]+ghz$//gI" ) # .......... # remove words ending 'ghz'
+gen_filter=( sed -E 's/\<gen\>//gI' ) # .................... # remove word <> 'gen'
+th_filter=( sed -E "s/${W0}[0-9.]+th$//gI" ) # ............. # remove words ending 'th' (e.g. 12th)
+
+# filter input text strings with a series of simple transforms
+# dont use array structure internally, but build so output can easily be fed to one
+normalize_lexical() {
+    # if arguments are passed, use printf; otherwise, read from stdin (cat)
+    { [ $# -gt 0 ] && printf '%s\n' "$@" || cat; } | \
+        "${space_filter[@]}" |
+        "${case_filter[@]}" |
+        "${mark_filter[@]}" |
+        "${plus_filter[@]}"
+}
+
+normalize_structural() {
+    # if arguments are passed, use printf; otherwise, read from stdin (cat)
+    { [ $# -gt 0 ] && printf '%s\n' "$@" || cat; } | \
+        "${alnum_filter[@]}" |
+        "${hyphen_filter[@]}" |
+        "${dash_filter[@]}"
+}
+
+resolve_board_x86() {
+    local arch cpu_raw cpu_clean cpu_class sys_vendor board_vendor board_name
+    local product_name product_sku vendor board_model board
+    arch="x86_64"
+    # read raw cpu model name from /proc/cpuinfo as space-delimitted elements
+    IFS=' ' read -r -a cpu_raw < <(
+        grep -m1 "model name" /proc/cpuinfo 2>/dev/null | \
+        cut -d: -f2- )
+    # render raw - should be multi-line array output (so line-ending filters freq/th will work)
+    printf '%s' "cpu_raw words: "; printf '[%s] ' "${cpu_raw[@]}"; printf '\n'
+
+    # use normalization filters to extract model name from cpu_raw
+    readarray -t cpu_clean < <( printf '%s\n' "${cpu_raw[@]}" |
+        normalize_lexical |
+        "${cpu_filter[@]}" |
+        "${freq_filter[@]}" |
+        "${gen_filter[@]}" |
+        "${th_filter[@]}" |
+        normalize_structural
+    )
+    # render clean - should be multi-line array output (so line-ending filters freq/th will work)
+#    printf '%s' "cpu_clean words: "; printf '[%s] ' "${cpu_clean[@]}"; printf '\n'
+    cpu_string=""
+    for word in "${cpu_clean[@]}"; do
+        [[ -n $word ]] || continue
+        # append new word, delimitted by - if the existing string is not empty
+        cpu_string+="${cpu_string:+-}$word"
+    done
+    printf 'cpu_string: [%s]\n' "$cpu_string"
+#-----[ classify the cpu interoperability domain ]--------------------------------------------
+# note: Intel codenames both platform/SoC (the lakes)
+#       and cpu core microarchitecture (the coves)
+# so intel chips all have two codenames
+    alderlake_sku5_glob='*intel-core-i[3579]-1[2-4][0-9][0-9][0-9][puhxk]*'
+    alderlake_sku4_glob='*intel-core-i[3579]-1[2-4][0-9][0-9][puhxk]*'
+    # maybe to-do: add 10th, 11th gen (icelake, cometlake, tigerlake, rocketlake)
+    covelake_avx512_glob='*intel-core-i[3579]-1[01][0-9][0-9]*'
+    nocovelake_avx2_10gen_glob='*intel-core-i[3579]-10[0-9][0-9][0-9][puhxk]*'
+    alderlake_n_glob='*intel-n[0-579]*'
+    alderlake_core_n_glob='*intel-core-i[35]-n30*'
+    skylake_glob='*intel-core-i[579]-6[0-9][0-9][0-9]*'
+    haswell_glob='*intel-core-i[579]-4[0-9][0-9][0-9]*'
+    ivybridge_glob='*intel-core-i[579]-3[0-9][0-9][0-9]*'
+    athlon_x2_glob='*athlon*64*-x2*'
+    athlon_glob='*athlon*64*'
+    case "$cpu_string" in
+        # alderlake-hybrid class (AVX2, FMA3, and BMI2 - !! no AVX512)
+        # intel double-digit gen 12, 13, 14 followed by 3 (performance) or 2 (mobile) digit tier
+        ${alderlake_sku5_glob} | ${alderlake_sku4_glob} )
+            cpu_class="alderlake-hybrid"; march_flag="-march=alderlake" ;;
+        # alderlake-n class (AVX, no AVX2, no AVX512)
+        ${alderlake_n_glob} | ${alderlake_core_n_glob} )
+            cpu_class="alderlake-n"; march_flag="-march=alderlake" ;;
+        # maybe to-do: insert gen 10, 11 here (with AVX512)(or use march=skylake to strip AVX512)
+        # 11th gen and 10th G series // Ice Lake, Tiger Lake, Rocket Lake (Sunny Cove, Willow Cove, Cypress Cove)
+        ${covelake_avx512_glob} )
+            cpu_class="intel-cove-avx512";
+#           march_flag="-march=icelake" ;;  # or
+#           march_flag="-march=tigerlake" ;;
+            march_flag="march=skylake" ;;    # strip avx512 while preserving others of skylake
+        # 10th Gen avx2 (comet lake / no-cove)
+        ${nocovelake_avx2_10gen_glob} )
+            cpu_class="cometlake";
+            march_flag="march=skylake" ;;
+        # skylake class (AVX2, FMA3, BMI2, SGX)
+        ${skylake_glob} )
+            cpu_class="skylake"; march_flag="-march=skylake" ;;
+        # haswell class (avx2, FMA3, BMI2)
+        ${haswell_glob} )
+            cpu_class="haswell"; march_flag="-march=haswell" ;;
+        # ivybridge class (AVX, No AVX2)
+        ${ivybridge_glob} )
+            cpu_class="ivybridge"; march_flag="-march=ivybridge" ;;
+        # amd k8 athlon class (Mnemonic Extensions, SSE3, No AVX)
+        ${athlon_x2_glob} )
+            cpu_class="amd-k8-athlon-x2"; march_flag="-march=k8-sse3" ;;
+        # safe generic fallback
+        * ) cpu_class="generic-x86"; march_flag="-march=x86-64" ;;
+    esac
+    printf 'cpu class: [%s]\n' "${cpu_class}"
+
+#-----[ extract useful info from dmi ]------------------------------------------------------
+    local target="" # value to look up
+    vals=(
+    sys_vendor
+    board_vendor
+    board_name
+    product_name
+    product_sku
+    )
+    # note: '< file cmd' connects file to cmd instead of stdin; like 'cat file | cmd' but 1 process vs 2
+    for val in "${vals[@]}"; do
+        target="/sys/devices/virtual/dmi/id/${val}"
+        [ -f "$target" ] && read -r "${val}" < <( normalize_lexical < "$target" | normalize_structural )
+        # render output for each consumed variable
+        [ -n "${!val}" ] && printf "${val}: [%s]\n" "${!val}"
+    done
+
+    if [[ -n "$board_vendor" && "$board_vendor" != "default-string" && "$board_vendor" != "system-manufacturer" ]] ; then
+        vendor="${board_vendor}"
+    elif [[ -n "$sys_vendor" && "$sys_vendor" != "default-string" && "$sys_vendor" != "system-manufacturer" ]] ; then
+        vendor="${sys_vendor}"
+    else
+        # fall back to "unknown"
+        vendor="unknown"
+        # fallback: take first word from cpu model name
+        #vendor=${cpu_clean%%-*}
+    fi
+    printf 'vendor: [%s]\n' "${vendor}"
+
+#-----[ select board_model for board ]-------------------------------------------------------------
+    if [[ -n "$board_name" && "$board_name" != "default_string" ]] && \
+            [[ "$board_name" != "system-manufacturer" && "$board_name" != "system-product-name" ]] && \
+            [[ ! "${vendor%%-*}" == "dell" && "$board_name" =~ ^0[0-9a-zA-Z]{5}$ ]] && \
+            [[ "$board_name" != "$sys_vendor" && "$board_name" != "$board_vendor" ]]; then
+        board_model="$board_name"
+    elif [[ -n "$product_name" ]] && [[ "$product_name" != "system_product_name" ]] && \
+         [[ "$product_name" != "system-product-name" ]] && [[ "$product_name" != "default-string" ]]; then
+        board_model="$product_name"
+echo product_name
+    elif [[ -n "$product_sku" && "$product_sku" != "default_string" && "$product_sku" != "sku" ]]; then
+        board_model="$product_sku"
+    else
+        # fall back to cpu_string if none of the above work
+        board_model="$cpu_string"
+    fi
+    printf 'board_model: [%s]\n' "${board_model}"
+
+    # assemble board string
+    board="${arch}:${vendor}:${cpu_class}:${board_model}"
+    # render board string
+    printf 'board: [%s]\n' "$board"
+}
+
+#-----[ main script ]----------------------------------------
+resolve_board_x86

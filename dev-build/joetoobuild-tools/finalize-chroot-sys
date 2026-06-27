@@ -13,12 +13,12 @@
 JOETOO_HEADER_DIR="/usr/sbin"
 
 firstrunmarker=/root/firstlogin
-[ ! -e ${firstrunmarker} ] && exit 0
+[ ! -e "${firstrunmarker}" ] && exit 0
 
 [[ -r "${JOETOO_HEADER_DIR%/}/script_header_joetoo" ]] || \
     { echo "script_header_joetoo not found in JOETOO_HEADER_DIR [$JOETOO_HEADER_DIR]" ; exit 1 ; }
 
-echo "sourcing script_header_joetoo"
+echo -n "Sourcing script_header_joetoo"
 # shellcheck source=/usr/sbin/script_header_joetoo
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
 if command -v j_msg &>/dev/null; then
@@ -42,7 +42,11 @@ j_msg "-${info}" -p -n "sourcing BPN ..."
 source /etc/joetoobuild-tools/BPN
 right_status $TRUE "$info"  || die "failed to source BPN"
 
-echo "sourcing script_header_joetoo_extended"
+j_msg "-${info}" -p -n "assigning default INTERACTIVE = |$TRUE ..."
+export INTERACTIVE=$TRUE
+right_status $TRUE "$info"  || die "failed to assign INTERACTIVE"
+
+echo -n "Sourcing script_header_joetoo_extended"
 # shellcheck source=/usr/sbin/script_header_joetoo_extended
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
 if command -v j_msg &>/dev/null; then
@@ -59,8 +63,10 @@ PN=${0##*/}
 COMPLETE=$TRUE  # (tentatively; any step below can change this)
 FLAGGED=$FALSE
 result=0
-mytimezone=America/New_York
-
+timezone=America/New_York
+emerge_features=""           # initialize below
+emerge_opts=""
+emerge_trail_opts=""
 
 ## set these static here for $PN; they would be set by validate_target() in crossbuild-tools
 export BOARD=generic_amd64
@@ -74,11 +80,11 @@ export target_url=""
 export stage3_tarball=""
 
 varlist="PN BPN BUILD BOARD TARGET"
-varlist+=" starting_step stopping_step status_file"
+varlist+=" starting_step stopping_step num_cmds status_file"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" bool.COMPLETE bool.FLAGGED"
-varlist+=" BREAK bool.VERBOSE verbosity"
-varlist+=" BREAK lv.chroot_emerge"
+varlist+=" verbosity timezone"
+varlist+=" lv.chroot_emerge emerge_features emerge_opts emerge_trail_opts"
 
 command_sequence=(
 'validate-prerequisites'
@@ -90,7 +96,6 @@ command_sequence=(
 'remove-kernelsources-mountpoint'
 'prep-eix-db-dir'
 'sync-repo gentoo'
-'emerge-git-eselect-repo'
 'sync-repo joetoo'
 'add-user'
 'fix-inittab'
@@ -120,7 +125,6 @@ msg1_sequence=(
 'remove kernel sources mountpoint'
 'prepare eix database directory'
 'sync repo gentoo'
-'emerge git eselect-repo'
 'sync repo joetoo'
 'add user'
 'fix inittab'
@@ -143,12 +147,41 @@ msg1_sequence=(
 
 #-----[ functions ]---------------------------------------------------------------------
 
+# to_do: migrate this to script_header_joetoo_extended
+# (it should enable bash array/run_array scripts to continue using the POSIX process_cmdline functions
+#  because it should override the definition of this function in script_header_joetoo by being loaded AFTER)
+_get_entry() # (BASH) get human readable description for command sequence step number
+{ ge_ret=0; if ! isint "$1"; then j_msg -${err} "error: zero args; _get_desc requires $1 step number"; return 1; fi
+  _ge_raw_cmd="${command_sequence[${1}]}"  # the actual command
+  _ge_desc="${msg1_sequence[${1}]}"  # human readable description
+  _ge_clean_cmd=$(printf -- '%b' "$_pa_cmd" | strip_ansi | _translate_escapes)
+#  j_msg -${debug} "_ge_entry: $_ge_entry"
+#  j_msg -${debug} "_ge_desc: $_ge_desc"
+  case $2 in
+    1 ) printf '%s' "$_ge_desc" ;;
+    2 ) printf '%s' "$_ge_clean_cmd" ;;
+    3 ) printf '%s' "$_ge_raw_cmd" ;;
+    * ) j_msg -${err} "invalid format [$2]"; ge_ret=1
+  esac
+  unset -v _ge_entry _ge_desc _ge_raw_cmd _ge_clean_cmd
+  return $ge_ret
+}
+# @usage _get_entry <step_number> <format_type>
+# @args $1 (int) the 0-indexed step number to retrieve from the command sequence
+# @args $2 (int) format type: 1=description, 2=cleaned command, 3=raw command
+# @vars cmd_seq_file (global) path to the temporary command sequence file
+# @vars US (global) Unit Separator character used as the delimiter
+# @vars ret (global) initialized to 0 for exit status tracking
+# @deps isint, j_msg -${err}, sed, printf, strip_ansi, _translate_escapes
+# @rule extracts specific lines from the command sequence file and parses by $US delimiter
+# @ret 0 on success (prints requested string to stdout); 1 on invalid arguments
+# @note uses _ge_ prefix for local variables; unsets all before returning
+# @note format 2 uses strip_ansi and _translate_escapes for log-safe output
+
+
 initialize_variables() {
-    if [ "$verbosity" -lt "$info" ] ; then
-        j_msg "-${notice}" -p -n "initializing ..."
-    else
-        j_msg "-${info}" -p "initializing ..."
-    fi
+    j_msg "-${notice}" -p "initializing ..."
+
     # newer versions of initialize_vars protect standard joetoo variables like verbosity and INTERACTIVE
     initialize_vars "${varlist}"
 
@@ -170,6 +203,10 @@ initialize_variables() {
     export stopping_step=$(( ${#command_sequence[@]} - 1 ))
     right_status $? "$info" || FLAGGED=$TRUE
 
+    j_msg "-${info}" -p -n "initializing num_cmds ${#command_sequence[@]}"
+    export num_cmds="${#command_sequence[@]}"
+    right_status $? "$info" || FLAGGED=$TRUE
+
     j_msg "-${info}" -p -n "initializing default status_file = /root/bin/finalizechrootjoetoo_status"
     export status_file="/root/bin/finalizechrootjoetoo_status"
     right_status $? "$info" || FLAGGED=$TRUE
@@ -177,6 +214,23 @@ initialize_variables() {
     j_msg "-${info}" -p -n "setting PN = ${0##*/}"
     PN=${0##*/}
     right_status $? "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting timezone"
+    timezone=America/New_York
+    handle_result $? "$timezone" "" "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting emerge_features"
+    emerge_features="buildpkg"
+    handle_result $? "$timezone" "" "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting emerge_opts"
+    if [ $INTERACTIVE ] ; then emerge_opts="-uavDNg"; else emerge_opts="-uvDNg"; fi
+    handle_result $? "$emerge_opts" "" "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting emerge_trail_opts"
+    emerge_trail_opts="--keep-going --verbose-conflicts --with-bdeps=y"
+    return 0
+    handle_result $? "$emerge_opts" "" "$info" || FLAGGED=$TRUE
 
     if [[ $FLAGGED ]] ; then
         j_msg "-${err}" "failed clean exit; note red flags above"
@@ -199,35 +253,108 @@ get-target() {
 get-check-config() {
     # source /root/.cb-config and validate TARGET (fatal if failure)
     # also assign BOARD, etc. I am ... (non-fatal if failure)
-    j_msg "-${notice}" -p -n "checking /root/.cb-config"
+    # validation moved to validate_CHOST(); consider these tentative assignments
+    j_msg "-${notice}" -p -n "sourcing /root/.cb-config"
     if [ -e /root/.cb-config ] ; then
-        # shellcheck source=/dev/null
-        source /root/.cb-config
-        right_status $? "$notice" || die "failed to source /root/.cb-config"
+        source /root/.cb-config || die "failed to source /root/.cb-config"
+        echo -e -n " (${BGon}ok${Boff})"
+        right_status 0 "${notice}"
     else
-        right_status 1 "$notice"
-        j_msg "-${err}" "/root/.cb-config not found; exiting"
+        echo -e -n " (${BRon}not found${Boff})"
+        right_status 1 "${notice}"
+        j_msg "-${err}" "/root/.cb-config not found"
         return 1
     fi
-    j_msg "-${notice}" -p -n "validating BOARD, TARGET and qemu-chroot config ..."
-    if [[ "${apparent_TARGET}" == "${TARGET}" ]] ; then
-        handle_result 0 "match" "" "$notice"
-        j_msg "-${debug}" -p "  BOARD ........: $BOARD"
-        j_msg "-${debug}" -p "  TARGET .......: $TARGET"
-        j_msg "-${debug}" -p "  TARGET_ARCH ..: $TARGET_ARCH"
-        j_msg "-${debug}" -p "  QEMU_ARCH ....: $QEMU_ARCH"
-     else
-        handle_result 1 "" "mismatch" "$notice"
-        j_msg "-${err}" "TARGET mismatch; exiting"
-        FLAGGED=$TRUE
-    fi
-    [ $FLAGGED ] && return 1
+
+    # use indirect variable assignment to load data from name-spaced
+    # variables with values stored in /root/.cb-config
+    # (e.g. cb_BOARD has val for BOARD)
+    # necessary because cb-config is sourced by /root/.bashrc to enable
+    # chroot-update automation AND (e.g.) the TARGET_ARCH variable name used here
+    # is also used for implicit functionality by MANY ebuilds.
+    # (run grep -iR target_arch /var/db/repos/gentoo/ to see this)
+    configvarlist="BOARD TARGET TARGET_ARCH QEMU_ARCH"
+    configvarlist+=" STAGE3_SELECTOR default_profile LLVM_TARGET"
+#    for x in ${configvarlist}; do varname="cb_${x}" ; eval $x=${!varname}; done
+# replace unsafe eval method
+    j_msg "-${notice}" -p -n "performing indirect variable assigments"
+    for x in ${configvarlist}; do
+        varname="cb_${x}"
+        # Use printf -v for safe, indirect assignment
+        # This assigns the value of ${!varname} to the variable named by $x
+        printf -v "$x" "%s" "${!varname}" || die "failed indirect variable assignment for $x"
+        j_msg "-${notice}" -mp -n " ."
+    done
+    right_status 0 "${notice}"
+
+    j_msg "-${notice}" -p "${BYon}tentatively assigned these globals${Boff} --"
+    j_msg "-${notice}" -p "  ${LBon}BOARD ............: ${Mon}${BOARD}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}TARGET ...........: ${Mon}${TARGET}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}TARGET_ARCH ......: ${Mon}${TARGET_ARCH}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}QEMU_ARCH ........: ${Mon}${QEMU_ARCH}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}STAGE3_SELECTOR ..: ${Mon}${STAGE3_SELECTOR}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}default_profile ..: ${Mon}${default_profile}${Boff}"
+    j_msg "-${notice}" -p "  ${LBon}LLVM_TARGET ......: ${Mon}${LLVM_TARGET}${Boff}"
+
     return 0
 }
 
 build-chroot_emerge-command() {
     # in a chroot, the emerge command is a native operation (no special environment modification)
     export chroot_emerge="emerge"
+}
+
+emerge-me() {
+    # guard - reject invalid arg (payload required)
+    if [ $# -lt 1 ] || [ $# -gt 2 ] ; then
+        j_msg "-${err}" "one arg (payload) required by ${FUNCNAME[0]}"
+        return 1
+    fi
+    local payload="$1"          # quote here to assemble, but not below, to split into args
+    local extra_opts="${2:-}"   # default null
+    # use an array to construct the emerge command - dont quote cmd, payload, opts - need to split
+    local -a emerge_command=(
+        ${chroot_emerge} ${emerge_opts} ${extra_opts} ${payload} ${emerge_trail_opts}
+    )
+    j_msg "-${notice}" -p "emerging payload with command [${emerge_command[@]}] ..."
+    FEATURES="${emerge_features}" "${emerge_command[@]}" ; result=$?
+    j_msg "-${notice}" -p -n "Done emerging $payload; result:"
+    handle_result $? "" "" "$notice" || return 1
+    return 0
+
+}
+# legacy commnad that what part of the command sequence - obsolete now that it is a pre-requisite
+emerge-git-eselect-repo() {
+    local result=0
+    # format: emerge-me "quoted payload" "quoted extra args"
+    emerge-me "dev-vcs/git eselect-repositor" "-1"; result=$?
+#    # use an array to construct the emerge command
+#    local -a emerge_command=( "${chroot_emerge}" -av1 )
+#    # before sync-repo joetoo, we need git (and eselect-repo for form)
+#    j_msg "-${notice}" -p "emerging dev-vcs/git and eselect-repository"
+#    emerge_command+=( dev-vcs/git eselect-repository )
+#    "${emerge_command[@]}" ; result=$?
+#    j_msg "-${notice}" -p -n "Done emerging git and eselect-repository; result:"
+#    handle_result $result '' '' "$notice"
+    return $result
+}
+
+get-git-and-eselect-repository() {
+    # emerge dev-vcs/git and eselect-repository so sync-type = git will work for sync-repo
+    # Note: use FEATURES="-buildpkg -getbinpkg" because neither binpkg signing nor verification
+    # is set up yet
+    local result=0
+    local real_features="$emerge_features"  #save global features
+    emerge_features="-buildpkg -getbinpkg"  # set temp_features
+    # format: emerge-me "quoted payload" "quoted extra args"
+    emerge-me "dev-vcs/git eselect-repositor" "-1"; result=$?
+    emerge_features="$real_features"        # restore global features
+#    j_msg "-${notice}" -p "Running emerge git eselect-repository ..."
+#    FEATURES="-buildpkg -getbinpkg" emerge -uav1 dev-vcs/git app-eselect/eselect-repository
+#    result=$?
+#    j_msg "-${notice}" -p "Done running emerge; result:"
+#    handle_result $result '' '' "$notice" || return 1
+    return 0
 }
 
 validate-prerequisites() {
@@ -296,7 +423,7 @@ set-timezone() {
     local result=0
     #  set timezone
     j_msg "-${notice}" -p -n "setting local timezone (America/New_York) for joetoo ..."
-    ln -sf "../usr/share/zoneinfo/${mytimezone}" /etc/localtime && \
+    ln -sf "../usr/share/zoneinfo/${timezone}" /etc/localtime && \
     handle_result $result "success" "fail" "$notice" || FLAGGED=$TRUE
     return $result
 }
@@ -365,25 +492,11 @@ prep-eix-db-dir() {
     return 0
 }
 
-emerge-git-eselect-repo() {
-    local result=0
-    # use an array to construct the emerge command
-    local -a emerge_command=( "${chroot_emerge}" -av1 )
-    # before sync-repo joetoo, we need git (and eselect-repo for form)
-    j_msg "-${notice}" -p "emerging dev-vcs/git and eselect-repository"
-    emerge_command+=( dev-vcs/git eselect-repository )
-    "${emerge_command[@]}" ; result=$?
-    j_msg "-${notice}" -p -n "Done emerging git and eselect-repository; result:"
-    handle_result $result '' '' "$notice"
-    return $result
-}
-
 sync-repo() {
     # use emerge to sync this repository
     local result=0
-    local -a emerge_command=( "${chroot_emerge}" -av --sync )
-    REPO="$1"
-    emerge_command+=( "$REPO" )
+    local REPO="$1"
+    local -a emerge_command=( "${chroot_emerge}" -av --sync "$REPO" )
     # if the eix database directory does not exist, create it and give portage permission to use it
     if [ ! -d /var/cache/eix ] ; then
         j_msg "-${notice}" -p -n "eix database directory does not exist; creating ..."
@@ -572,25 +685,17 @@ edit-91joetoo_platform() {
 }
 
 emerge-platform-meta() {
-    # use an array to construct the emerge command
-    local -a emerge_command=( "${chroot_emerge}" -av )
-    emerge_command+=( joetoo-platform-meta )
-    j_msg "-${notice}" -p "emerging joetoo-platform-meta"
-    "${emerge_command[@]}" ; result=$?
-    j_msg "-${notice}" -p -n "Done emerging joetoo-platform-meta; result:"
-    handle_result $? "" "" "$notice" || return 1
-    return 0
+    local result=0
+    # format: emerge-me "quoted payload" "quoted extra args"
+    emerge-me "joetoo-platform-meta" ""; result=$?
+    return $result
 }
 
 emerge-common-meta() {
-    # use an array to construct the emerge command
-    local -a emerge_command=( "${chroot_emerge}" -av )
-    emerge_command+=( joetoo-common-meta )
-    j_msg "-${notice}" -p "emerging joetoo-common-meta"
-    "${emerge_command[@]}" ; result=$?
-    j_msg "-${notice}" -p -n "Done emerging joetoo-common-meta; result:"
-    handle_result $? "" "" "$notice" || return 1
-    return 0
+    local result=0
+    # format: emerge-me "quoted payload" "quoted extra args"
+    emerge-me "joetoo-common-meta" ""; result=$?
+    return $result
 }
 
 edit-80joetoo_common() {
@@ -599,22 +704,9 @@ edit-80joetoo_common() {
 }
 
 emerge-world() {
-    # re-run chroot_emerge -uavDN @world --keep-going
-    # use an array to construct the emerge command
-    local -a emerge_command=( "${chroot_emerge}" -uavDN )
-    emerge_command+=( @world )
-    j_msg "-${notice}" -p "emerging @world (-uavDN) ..."
-    "${emerge_command[@]}" ; result=$?
-    j_msg "-${notice}" -p -n "Done emerging @world; result:"
-    handle_result $? "" "" "$notice" || return 1
-    j_msg "-${notice}" -p "about to run chroot_emerge -uavDN @world --keep-going"
-    [[ $INTERACTIVE ]] && emerge_opts="-uavDNg" || emerge_opts="-uvDNg"
-    eval "${chroot_emerge} ${emerge_opts} @world --keep-going" ; result=$?
-    if [ $result -eq 0 ] ; then
-        j_msg "-${notice}" -p "emerge-world ${BGon}succeeded${Boff}"
-    ekse
-        j_msg "-${err}" "emerge-world ${BRon}failed${Boff}"
-    fi
+    local result=0
+    # format: emerge-me "quoted payload" "quoted extra args"
+    emerge-me "@world" ""; result=$?
     return $result
 }
 
@@ -742,11 +834,7 @@ initialize_variables     # set defaults
 j_msg "-${debug}" -p "cmdline: $*"
 j_msg "-${debug}" -p "processing cmdline args: $*"
 
-if [ "$verbosity" -lt "$info" ] ; then
-    j_msg "-${notice}" -p -n "processing cmdline ..."
-else
-    j_msg "-${info}" -p "processing cmdline ..."
-fi
+j_msg "-${notice}" -p "processing cmdline ..."
 process_cmdline "${@}"  || die "failed to process_cmdline"
 
 # call script_header_joetoo validate_root_file function to ensure status_file exists
@@ -755,6 +843,10 @@ validate_root_file "${status_file}"
 # get-target will need to run "portageq envvar CHOST" which needs a the
 # chroots own repo to be syncd first, and that needs chroot_emerge variable defined
 build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
+
+# get dev-vcs/git and eselect-repository so sync-type = git will work for next step
+get-git-and-eselect-repository || die "failed to get-git-and-eselect-repository"
+
 sync-repo gentoo || die "failed to sync-repo gentoo"
 
 # check CTARGET - CBUILD - CHOST configuration
