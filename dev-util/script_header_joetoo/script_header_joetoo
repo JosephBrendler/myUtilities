@@ -1903,7 +1903,7 @@ CUB() # (ANSI) Move the cursor back/left ($1 cells)
 # @args $1: Number of cells to move (default 1)
 # @ret 0 if moved; 1 if arg is not an integer
 
-CPR() # (POSIX) [r|c|s] - Cursor Position Report
+CPR() # (POSIX) CPR [r|c|s] - Cursor Position Report
 { cpr_ret=0; _cpr_opt="$1"; _cpr_pos=""; _cpr_old_stty=""; _cpr_QUERY="${CSI}6n"
   # save state and disable canonical mode
   # (switch to "cbreak" mode (to read without a newline)
@@ -1953,13 +1953,15 @@ CPR() # (POSIX) [r|c|s] - Cursor Position Report
 # @cont any context where /dev/tty is not available
 # @note see "stty --help" (fascinatingly arcane detail on tty driver)
 
-QCR() { CPR s; echo "$CPR_ROW"; }
+QCR() # (POSIX) use CPR to query cursor row
+{ CPR s; echo "$CPR_ROW"; }
 # @usage QCR
 # @vars CPR_ROW (updated via CPR s)
 # @ret emitted: current cursor row index
 # @deps CPR
 
-QCC() { CPR s; echo "$CPR_COL"; }
+QCC() # (POSIX) use CPR to query cursor column
+{ CPR s; echo "$CPR_COL"; }
 # @usage QCC
 # @vars CPR_COL (updated via CPR s)
 # @ret emitted: current cursor column index
@@ -5483,8 +5485,8 @@ _get_luks_edev_name()  # (POSIX) determine an edev name to use with this device
 # @note example: nvme0n1p2 -> ev012; sda2 -> eda2; mmcblk0p2 -> em02
 # @note operates at DEBUG severity
 
-_unlock_device() {
-    ud_ret=0
+_unlock_device() # (POSIX) helper for unlock_luks_devices
+{   ud_ret=0
     # for version 4.x+, this is a complete re-write of the unlocking procedure.
     # The unlock method has already been determined, and the script now calls _unlock_device
     # to unlock one device, employing _get_luks_edev_name() as a helper
@@ -5670,7 +5672,8 @@ _get_luks_keyfile() # (POSIX) find and mount keydev and confirm it has key
 # @note exports the $keyfile variable for use by cryptsetup or other LUKS tools
 # @note operates at debug severity
 
-_maybe_select_keying_device() {
+_maybe_select_keying_device() # (POSIX) helper for unlock_luks_devices
+{
     # go through the list of devices presented as argv -- select the first one that
     #   has a valid type, actually exists, mounts successfully, and contains a key,
     #   else fail upon exhaustion of the list
@@ -5751,7 +5754,7 @@ _maybe_select_keying_device() {
 # @cont to an "authorized" state for LUKS decryption
 # @note operates at debug severity
 
-_get_unlock_method()
+_get_unlock_method() # (POSIX) helper for unlock_luks_devices
 {   gum_ret=0
     j_msg -${info} -n "Checking if crypt_keydev_list was specified ..."
     if [ ! -z "$crypt_keydev_list" ]; then _gum_PDL=$TRUE; else _gum_PDL=$FALSE; fi
@@ -5792,7 +5795,7 @@ _get_unlock_method()
 # @rule if no candidate in crypt_keydev_list that actaully has a key, use prompt method
 # @note operates at INFO severity
 
-unlock_luks_devices()
+unlock_luks_devices() # (POSIX) unlock one or more LUKS devices
 {   ulds_ret=0; _ulds_device=""
     separator "${PN}-${BUILD}" "(unlock_luks_devices)"
     # guard: reject empty device list
@@ -6225,29 +6228,77 @@ usage() # (POSIX) explain default usage; extensible with local "usage module"
 # @ret calls die, resulting in exit 1 (non-zero) from script
 # @note uses _u_ prefix for internal loop variables; unsets before termination
 
+safe_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R, rm -rf, etc)
+{ sfo_ret=0
+  _sfo_op="$1"   # rm, chown, etc
+  _sfo_flags="$2"
+  _sfo_target="$3"
+  # path existence guard
+  [ -z "${_sfo_target}" ] && die "Operation [${_sfo_op}] aborted: Dangerous target [${_sfo_target}]"
+  [ ! -d "${_sfo_target}" ] && die "Operation [${_sfo_op}] aborted: Dangerous target [${_sfo_target}]"
+  # leftmost char = / ? ; reject if not a clean, absolute path (prevent relative path traversal)
+  [ "${_sfo_target%${_sfo_target#?}}" != "/" ] && die "Operation [${_sfo_op}] aborted: Must be absolute path [${_sfo_target}]"
+
+  case "${_sfo_target}" in
+    *".."*)   # prevent relative path traversal
+      die "Operation [${_sfo_op}] aborted: relative path traversal attempted [${_sfo_target}]" ;;
+    /|/.|/bin*|/sbin*|/etc*|/var*|/usr*|/boot*)    # critical system path guardrail
+      die "Operation [${_sfo_op}] aborted: Protected system path [${_sfo_target}]" ;;
+  esac
+  # execution
+  ${_sfo_op} ${_sfo_flags} "${_sfo_target}"; sfo_ret=$?
+  unset -v _sfo_op _sfo_flags _sfo_target
+  return $sfo_ret
+}
+
+safe_sudo_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R, rm -rf, etc)
+{ ssf_ret=0
+  _ssf_op="$1"   # rm, chown, etc
+  _ssf_flags="$2"
+  _ssf_target="$3"
+  # path existence guard
+  [ -z "${_ssf_target}" ] && die "Operation [${_ssf_op}] aborted: Dangerous target [${_ssf_target}]"
+  [ ! -d "${_ssf_target}" ] && die "Operation [${_ssf_op}] aborted: Dangerous target [${_ssf_target}]"
+  # leftmost char = / ? ; reject if not a clean, absolute path (prevent relative path traversal)
+  [ "${_ssf_target%${_ssf_target#?}}" != "/" ] && die "Operation [${_ssf_op}] aborted: Must be absolute path [${_ssf_target}]"
+
+  case "${_ssf_target}" in
+    *".."*)   # prevent relative path traversal
+      die "Operation [${_ssf_op}] aborted: relative path traversal attempted [${_ssf_target}]" ;;
+    /|/.|/bin*|/sbin*|/etc*|/var*|/usr*|/boot*)    # critical system path guardrail
+      die "Operation [${_ssf_op}] aborted: Protected system path [${_ssf_target}]" ;;
+  esac
+  # execution
+  sudo sh -c "${_ssf_op} ${_ssf_flags} '${_ssf_target}' >/dev/null 2>&1 "; ssf_ret=$?
+  unset -v _ssf_op _ssf_flags _ssf_target
+  return $ssf_ret
+}
+
 validate_dir()  # validate or create a directory $1
 {   vd_ret=0
-    [ $# -ne 1 ] && { j_msg -${err} "Error: must specify dir_to_validate" ; return 1 ; }
-    _vd_dir_to_validate=$1
-    j_msg -${info} -n -m "validating dir ${_vd_dir_to_validate}"
-    if [ -d "${_vd_dir_to_validate}" ] ; then
-        d_do 'printf "%b%s%b" "${BGon}" " (valid)" "${Boff}"; right_status $TRUE' "$info"
-    else
-        # use sudo in case current user is not root
-        j_msg -${info} -nmp "${BYon} (creating)${Boff}"
-        sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "
-        handle_result $? "created" "failed to create $_vd_dir_to_validate" "$info" || \
-          { unset -v _vd_dir_to_validate; return 1 ; }
-    fi
-    # set ownership either way, using sudo in case current user is not root
-    # (note: chown -R to give all contents to user)
-    j_msg -${info} -n -m "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
-    sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
-    handle_result $? "ownership set" "failed to set ownership" "$info" || \
+  [ $# -ne 1 ] && { j_msg -${err} "Error: must specify dir_to_validate" ; return 1 ; }
+  _vd_dir_to_validate=$1
+  j_msg -${info} -n -m "validating dir ${_vd_dir_to_validate}"
+  if [ -d "${_vd_dir_to_validate}" ] ; then
+    d_do 'printf "%b%s%b" "${BGon}" " (valid)" "${Boff}"; right_status $TRUE' "$info"
+  else
+    # use sudo in case current user is not root
+    j_msg -${info} -nmp "${BYon} (creating)${Boff}"
+    sudo sh -c " mkdir -p '${_vd_dir_to_validate}' >/dev/null 2>&1 "
+    handle_result $? "created" "failed to create $_vd_dir_to_validate" "$info" || \
       { unset -v _vd_dir_to_validate; return 1 ; }
-    [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
-    unset -v _vd_dir_to_validate
-    return $vd_ret
+  fi
+  # set ownership either way, using sudo in case current user is not root
+  # (note: chown -R to give all contents to user)
+  j_msg -${info} -n -m "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
+  # *** CAUTION: chown -R is dangerous! sudo sh -c "chown -R ..." makes it worse ***
+  safe_sudo_fs_op chown "-R '${user}:${user}'" "${_vd_dir_to_validate}"
+#  sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
+  handle_result $? "ownership set" "failed to set ownership" "$info" || \
+    { unset -v _vd_dir_to_validate; return 1 ; }
+  [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
+  unset -v _vd_dir_to_validate
+  return $vd_ret
 }
 # @usage validate_dir <path>
 # @args $1 (string) path to the directory to validate or create
