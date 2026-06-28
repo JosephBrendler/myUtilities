@@ -642,3 +642,133 @@ bs()                   # recursive binary search for $1 target(s) from $2 start(
   let "depth-=1";  return 0
 }
 
+## archiving some temporary redo of stuff in POSIX header for array command_sequence...
+# to_do: migrate this to script_header_joetoo_extended (and change _get_entry() instead)
+_pc_array_action_resume() {
+    par_ret=0; _par_val="${_par_val:-}"
+    if [ -f "$status_file" ]; then
+        j_msg -${info} "${BYon}reading status file: [ ${BWon}${status_file}${BYon}  ]${Boff}";
+        read _par_val < "$status_file";
+        if ! isint "$_par_val" || [ "$_par_val" -lt 1 ] || [ "$_par_val" -ge "$num_cmds" ]; then
+            j_msg "-${warn}" -p "${BYon}(warning)${Boff} status_file contained invalid starting_step [$_par_val]; resetting to 0"
+            _par_val=0;  # default to zero index
+        fi;
+    else
+        die "_pc_action_resume finds no status file exists";
+    fi;
+    export RESUME=$TRUE;
+    export starting_step="$_par_val";
+#   # convert posix _pc_action_resume to bash
+#    _par_desc=$(_get_entry "$starting_step" 1);
+    _par_desc="${msg1_sequence[$_par_val]}"
+    _par_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]";
+    _par_msg="${_par_msg} ( ${BGon}${_par_desc}${BYon} )${Boff}";
+    j_msg -${info} "${_par_msg}";
+    unset -v _par_msg _par_desc _par_val;
+    return $par_ret
+}
+# to_do: migrate this to script_header_joetoo_extended
+_pc_array_action_number() {
+    pan_ret=0 _pan_arg="$1";
+    j_msg -${debug} "pc_an with $1";
+    if isint "$_pan_arg" && [ "$_pan_arg" -ge 1 ] && [ "$_pan_arg" -le "$num_cmds" ]; then
+        export RESUME=$TRUE;
+        export starting_step="$_pan_arg";
+    else
+        j_msg -${err} "invalid starting_step [${starting_step}]";
+        usage;
+    fi;
+#   # convert posix _pc_action_resume to bash
+#    _par_desc=$(_get_entry "$starting_step" 1);
+    _par_desc="${msg1_sequence[$_par_val]}"
+    _pan_msg="${BYon}Resuming at step [ ${Mon}$starting_step${BYon} ]";
+    _pan_msg="${_pan_msg} ( ${BGon}${_pan_desc}${BYon} )${Boff}";
+    j_msg -${info} "${_pan_msg}";
+    unset -v _pan_desc _pan_msg _pan_arg;
+    return $pan_ret
+}
+
+old_get-max-profile-number() {
+#    validate_target ${cb_BOARD} # set cb_CTARGET, cb_TARGET_ARCH just in case not already set
+## for joetoo-system-install, set these static at the top
+    cmd="ARCH=${cb_TARGET_ARCH}"
+    cmd+=" PORTAGE_CONFIGROOT=${newroot_mountpoint%/}//"
+    cmd+=" eselect profile list |"
+    cmd+=" grep '\[[0-9]\+\]' |"
+    cmd+=" awk '{print \$1}' |"
+    cmd+=" sed 's/\[//' |"
+    cmd+=" sed 's/\]//' |"
+    cmd+=" sort -n |"
+    cmd+=" tail -n 1"
+    result=$(eval ${cmd})
+    echo $result
+    return $result
+}
+
+get-max-profile-number() {
+    # Extract the highest profile number directly using environment variables and a single awk command
+    local result
+    # use awk to read the result of eselect profile list and store the highest profile number
+    #   /\[[0-9]+\]/: Filters lines to only look for the profile brackets
+    #   gsub(/[\[\]]/, "", $1): Strips both [ and ] chars from the first column
+    #   add 0 to force numeric evaluation, then keep the bigger number
+    result=$(
+        ARCH="${cb_TARGET_ARCH}"
+        PORTAGE_CONFIGROOT="${newroot_mountpoint%/}//"
+        eselect profile list | \
+            awk '
+                /\[[0-9]+\]/ {
+                    gsub(/[\[\]]/, "", $1);
+                    val = $1 + 0; # Force numeric evaluation
+                    if (val > max) max = val
+                }
+                END {print max}
+            '
+    )
+    echo "$result"
+    return "$result"
+}
+
+profile_number_prompt()  {
+    # leave one blank line after previous output and save left margin cursor position
+    ps="$1"; echo; echo; CUU; SCP;
+#    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
+    get-max-profile-number "${cb_BOARD}" >/dev/null ; max_num=$?
+    j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+    isnumber "$profile_number" ; result=$?
+    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt ${max_num} ] ; do
+        RCP; EL;  # restore cursor position and erase the line
+        # (re)print the prompt and allowed profile number range
+        j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+        isnumber "$profile_number" ; result=$?
+    done
+}
+
+eselect-profile() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    j_msg "-${notice}" -p "setting default profile ..."
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${cb_default_profile}"
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
+    j_msg "-${notice}" -p "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+    if [[ $INTERACTIVE ]] ; then
+        j_msg "-${notice}" -p "${BMon}Carefully examine selected profile ${BYon}(e.g. merged|split-usr|hardened|desktop)${Boff}"
+        msg="${BYon}Would you like to select a different profile?\n"
+        msg+="${BWon}( y: yes select new | s: no; continue with default | n: no; exit )${Boff}"
+        response="" ; yns_prompt "${msg}"
+    else
+        response="s"  # keep default profile and continue
+    fi
+    case ${response:0:1} in
+        [yY] )
+            j_msg "-${notice}" -p "${BMon}Available profiles --${Boff}"
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
+            profile_number_prompt "${BYon}Select profile: ${Boff}"
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
+            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
+            ;;
+        [nN] ) j_msg "-${err}" "exiting as instructed"; return 0;;
+        [sS] ) j_msg "-${err}" "skipping; profile remains ${profile_number}" ;;
+        * ) j_msg "-${err}" "invalid response [ ${response} ]"; exit 1 ;;
+    esac
+    return 0
+}
