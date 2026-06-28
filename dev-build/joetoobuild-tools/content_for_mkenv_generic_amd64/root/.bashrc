@@ -52,9 +52,6 @@ export PS1="(chroot) ${PS1}"
 export GPG_TTY=$(tty)
 
 #-----[ neofetch ]----------------------------------------------------------------------
-echo
-neofetch
-echo
-# output info on GPG and XDG environment variables
-env | grep -E 'GPG|XDG'
-
+command -v neofetch &>/dev/null && { echo ; neofetch ; echo ; }
+# output info on GPG, XDG, cb_ environment variables
+env | grep -E 'GPG|XDG|cb_'

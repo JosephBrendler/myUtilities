@@ -67,27 +67,37 @@ timezone=America/New_York
 emerge_features=""           # initialize below
 emerge_opts=""
 emerge_trail_opts=""
+EDITOR="nano"
 
 ## set these static here for $PN; they would be set by validate_target() in crossbuild-tools
-export BOARD=generic_amd64
-export TARGET=x86_64-pc-linux-gnu
-#export TARGET_ARCH=amd64
-export QEMU_ARCH=x86_64
-#STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop >
-#default_profile="default/linux/amd64/23.0"
-export LLVM_TARGET="X86-64"
-export target_url=""
-export stage3_tarball=""
+## (this info will be saved in /root/.cb-config on the new system)
+export cb_BOARD=generic_amd64
+export cb_CTARGET=x86_64-pc-linux-gnu
+export cb_TARGET_ARCH=amd64
+export cb_QEMU_ARCH=x86_64
+#export cb_STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop in joetoo profile
+#export cb_default_profile="default/linux/amd64/23.0"
+export cb_LLVM_TARGET="X86-64"
+target_url=""
+stage3_tarball=""
+# amd64 hardened openrc link looks like this
+# https://...amd64/autobuilds/current-stage3-amd64-hardened-openrc/
+#export cb_STAGE3_SELECTOR=stage3-amd64-openrc-[0-9]
+export cb_STAGE3_SELECTOR='stage3-amd64-hardened-openrc-[0-9]'
+#profile_number=48
+#profile_number=21     # hardened ## /// no - they change the numbers
+export cb_default_profile="default/linux/amd64/23.0/hardened"
 
-varlist="PN BPN BUILD BOARD TARGET"
+varlist="PN BPN BUILD cb_BOARD cb_CTARGET"
 varlist+=" starting_step stopping_step num_cmds status_file"
 varlist+=" bool.RESUME bool.INTERACTIVE"
 varlist+=" bool.COMPLETE bool.FLAGGED"
 varlist+=" verbosity timezone"
-varlist+=" lv.chroot_emerge emerge_features emerge_opts emerge_trail_opts"
+varlist+=" lv.chroot_emerge emerge_features emerge_opts emerge_trail_opts EDITOR"
 
 command_sequence=(
 'validate-prerequisites'
+'set-date-time'
 'run-locale-gen'
 'check-reload-config'
 'set-password root'
@@ -97,12 +107,21 @@ command_sequence=(
 'prep-eix-db-dir'
 'sync-repo gentoo'
 'sync-repo joetoo'
+'eselect news list'
+'eselect news read new'
+'eselect-profile'
 'add-user'
 'fix-inittab'
 'write-fstab'
 'make-mountpoints'
+'setup-binpkg-sign-verify'
 'edit-91joetoo_platform'
 'emerge-platform-meta'
+'configure-make-conf-for-chroot'
+'edit-make-conf'
+'edit-package-use-platform'
+'edit-package-use-common'
+'edit-package-accept-keywords'
 'run-dispatch-conf'
 'emerge-common-meta'
 'run-dispatch-conf'
@@ -117,6 +136,7 @@ command_sequence=(
 
 msg1_sequence=(
 'validate prerequisites'
+'set date and time'
 'run locale-gen'
 'check and reload config'
 'set root password'
@@ -126,12 +146,21 @@ msg1_sequence=(
 'prepare eix database directory'
 'sync repo gentoo'
 'sync repo joetoo'
+'list news articles'
+'read new news articles'
+'eselect profile'
 'add user'
 'fix inittab'
 'write fstab'
 'make mountpoints'
+'setup-binpkg-sign-verify'
 'edit package.use/91joetoo_platform'
 'emerge platform-meta'
+'configure make.conf for chroot'
+'edit make.conf'
+'edit package.use (platform)'
+'edit package.use (common)'
+'edit package.accept_keywords'
 'run dispatch-conf'
 'emerge common-meta'
 'run dispatch-conf'
@@ -146,6 +175,55 @@ msg1_sequence=(
 )
 
 #-----[ functions ]---------------------------------------------------------------------
+
+# to_do: migrate this to script_header_joetoo_extended
+# (it should enable bash array/run_array scripts to continue using the POSIX process_cmdline functions
+#  because it should override the definition of this function in script_header_joetoo by being loaded AFTER)
+usage() # (BASH) explain default usage; redo for command_sequence array use (NOT extensible with local usage module)
+{
+  local N="${num_cmds}"
+  local _u_step=0 _u_entry="" _u_desc=""
+
+  separator "${PN}-${BUILD}" "(usage)"
+  j_msg -${err} "${BRon}Usage: ${BGon}${PN} [-[options]] ${Boff}"
+  j_msg -${notice} -m "${BYon}valid commandline options --${Boff}"
+  j_msg -${notice} -m "${BMon}  -h | --help${Boff}${Con} ...............:${Boff} print this usage message"
+  j_msg -${notice} -m "${BMon}  -I | --interactive${Boff}${Con} ........:${Boff} run supervised; confirm execution of each step"
+  j_msg -${notice} -m "${BMon}  -N | --noninteractive${Boff}${Con} .....:${Boff} run un-supervised; automatically do each step"
+  j_msg -${notice} -m "${BMon}  -s | --status${Boff}${Con} .............:${Boff} return status (next step, step_number)"
+  j_msg -${notice} -m "${BMon}  -r | --resume${Boff}${Con} .............:${Boff} resume at next step in status_file"
+  j_msg -${notice} -m "${BMon}  -l | --logging${Boff}${Con} ............:${Boff} turn on logging to logFile"
+  j_msg -${notice} -m "${BMon}  -v | --verbose${Boff}${Con} ............:${Boff} increase verbosity"
+  j_msg -${notice} -m "${BMon}  -q | --quiet${Boff}${Con} ..............:${Boff} decrease verbosity"
+  j_msg -${notice} -m "${BMon}  -V | --VERBOSE | --DEBUG${Boff}${Con} ..:${Boff} force DEBUG output, ignoring verbosity, unless silenced"
+  j_msg -${notice} -m "${BMon}  -Q | --QUIET | --SILENCE${Boff}${Con} ..:${Boff} set QUIET (silent) output, ignoring verbosity and DEBUG"
+  j_msg -${notice} -m "${BMon}  -[1-${N}]${Boff}${Con}..................:${Boff} save N to status file and resume at step N"
+  j_msg -${notice} -m "  ${BYon}*${Boff} Single-character options may be combined."
+  j_msg -${notice} -m "    e.g. ${BGon}${PN} --verbose -nqr8${Boff} would resume non-interactively"
+  j_msg -${notice} -m "    (automatic, unsupervised) at step 8 with normal verbosity"
+  j_msg -${notice} -m "${BYon}Caveat:${Boff}"
+  j_msg -${notice} -m "${BMon}   -I${Boff}${Con}. (interactive/supervised) is on by default${Boff}"
+  j_msg -${notice} -m "${BMon}   -r${Boff}${Con}. (resume) sets starting_step to # in [ $status_file ]${Boff}"
+  j_msg -${notice} -m "${BMon}   -[1-${N}]${Boff}${Con}. sets starting_step (default 1 otherwise)${Boff}"
+  # source user-script specific usage-module which should be built in the same format
+  j_msg -${notice} -m "${BMon}additional ${app_customization_root} - commandline options:${Boff}"
+
+  if [ ${#command_sequence[@]} -gt 0 ] ; then
+    j_msg -${notice} -M $idx_hammer_and_wrench "${BYon}${PN} workflow sequence (steps):${Boff}"
+    for ((_u_step=0; _u_step<${#command_sequence[@]}; _u_step++ )); do
+      _u_entry="${command_sequence[${_u_step}]}"   # extract the specific line corresponding to the current step counter
+      _u_desc="${msg1_sequence[${_u_step}]}"       # human readable description
+      j_msg -${notice} -M $idx_wrench  "${BBon}[${Boff}${Yon}${_u_step}${BBon}]${Boff} ${Con}${_u_desc}${Boff}"
+    done
+  fi
+  leave "normal exit from usage"
+}
+# @usage usage
+# @vars PN, BUILD, num_cmds, status_file, app_customization_root, cmd_seq_file, US
+# @deps separator, j_msg -${err}, j_msg -${notice}, die, sed, seq, printf
+# @rule displays standard options, sources local.usage if present, and prints workflow
+# @ret calls die, resulting in exit 1 (non-zero) from script
+# @note uses _u_ prefix for internal loop variables; unsets before termination
 
 # to_do: migrate this to script_header_joetoo_extended
 # (it should enable bash array/run_array scripts to continue using the POSIX process_cmdline functions
@@ -229,8 +307,11 @@ initialize_variables() {
 
     j_msg "-${info}" -p -n "setting emerge_trail_opts"
     emerge_trail_opts="--keep-going --verbose-conflicts --with-bdeps=y"
-    return 0
     handle_result $? "$emerge_opts" "" "$info" || FLAGGED=$TRUE
+
+    j_msg "-${info}" -p -n "setting EDITOR"
+    EDITOR="nano"
+    handle_result $? "$EDITOR" "" "$info" || FLAGGED=$TRUE
 
     if [[ $FLAGGED ]] ; then
         j_msg "-${err}" "failed clean exit; note red flags above"
@@ -243,7 +324,7 @@ initialize_variables() {
 
 get-target() {
     # determine what qemu-chroot environment (target) I'm running inisde of (flag, fatal if failure)
-    j_msg "-${notice}" -p -n "determining TARGET ..."
+    j_msg "-${notice}" -p -n "determining cb_CTARGET ..."
     apparent_TARGET=$(portageq envvar CHOST)
     right_status $? "$notice" || die "failed to assign apparent_TARGET"
     j_msg "-${notice}" -p "apparent_TARGET: $apparent_TARGET"
@@ -251,30 +332,32 @@ get-target() {
 }
 
 get-check-config() {
-    # source /root/.cb-config and validate TARGET (fatal if failure)
-    # also assign BOARD, etc. I am ... (non-fatal if failure)
+    # source /root/.cb-config and validate cb_CTARGET (fatal if failure)
+    # also assign cb_BOARD, etc. I am ... (non-fatal if failure)
     # validation moved to validate_CHOST(); consider these tentative assignments
     j_msg "-${notice}" -p -n "sourcing /root/.cb-config"
     if [ -e /root/.cb-config ] ; then
         source /root/.cb-config || die "failed to source /root/.cb-config"
-        echo -e -n " (${BGon}ok${Boff})"
+        j_msg "-${notice}" -mp -n " (${BGon}ok${Boff})"
         right_status 0 "${notice}"
     else
-        echo -e -n " (${BRon}not found${Boff})"
+        j_msg "-${notice}" -mp -n " (${BRon}not found${Boff})"
         right_status 1 "${notice}"
         j_msg "-${err}" "/root/.cb-config not found"
         return 1
     fi
 
+# no more indirect variables - now just source the refactored variable names
     # use indirect variable assignment to load data from name-spaced
     # variables with values stored in /root/.cb-config
     # (e.g. cb_BOARD has val for BOARD)
     # necessary because cb-config is sourced by /root/.bashrc to enable
-    # chroot-update automation AND (e.g.) the TARGET_ARCH variable name used here
+    # chroot-update automation AND (e.g.) the cb_TARGET_ARCH variable name used here
     # is also used for implicit functionality by MANY ebuilds.
-    # (run grep -iR target_arch /var/db/repos/gentoo/ to see this)
-    configvarlist="BOARD TARGET TARGET_ARCH QEMU_ARCH"
-    configvarlist+=" STAGE3_SELECTOR default_profile LLVM_TARGET"
+    # (run grep -iR cb_TARGET_ARCH /var/db/repos/gentoo/ to see this)
+    configvarlist="cb_BOARD cb_CTARGET cb_QEMU_ARCH cb_LLVM_TARGET"
+    configvarlist+="cb_TARGET_ARCH"
+    configvarlist+=" cb_STAGE3_SELECTOR cb_default_profile"
 #    for x in ${configvarlist}; do varname="cb_${x}" ; eval $x=${!varname}; done
 # replace unsafe eval method
 #    j_msg "-${notice}" -p -n "performing indirect variable assigments"
@@ -285,16 +368,20 @@ get-check-config() {
 #        printf -v "$x" "%s" "${!varname}" || die "failed indirect variable assignment for $x"
 #        j_msg "-${notice}" -mp -n " ."
 #    done
-    right_status 0 "${notice}"
+#    right_status 0 "${notice}"
+
+    # determine CHOST
+    cb_CHOST="$(portageq envvar CHOST)"
 
     j_msg "-${notice}" -p "${BYon}tentatively assigned these globals${Boff} --"
-    j_msg "-${notice}" -p "  ${BCon}BOARD ............: ${Mon}${BOARD}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}TARGET ...........: ${Mon}${TARGET}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}TARGET_ARCH ......: ${Mon}${TARGET_ARCH}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}QEMU_ARCH ........: ${Mon}${QEMU_ARCH}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}STAGE3_SELECTOR ..: ${Mon}${STAGE3_SELECTOR}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}default_profile ..: ${Mon}${default_profile}${Boff}"
-    j_msg "-${notice}" -p "  ${BCon}LLVM_TARGET ......: ${Mon}${LLVM_TARGET}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_BOARD ............: ${Mon}${cb_BOARD}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_CTARGET ..........: ${Mon}${cb_CTARGET}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_CHOST ............: ${Mon}${cb_CHOST}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_TARGET_ARCH ......: ${Mon}${cb_TARGET_ARCH}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_QEMU_ARCH ........: ${Mon}${cb_QEMU_ARCH}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_STAGE3_SELECTOR ..: ${Mon}${cb_STAGE3_SELECTOR}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_default_profile ..: ${Mon}${cb_default_profile}${Boff}"
+    j_msg "-${notice}" -p "  ${BCon}cb_LLVM_TARGET ......: ${Mon}${cb_LLVM_TARGET}${Boff}"
     j_msg "-${notice}" -mp ""
     j_msg "-${notice}" -p "  ${BYon}To Do ............: ${BRon}Refactor this stuff!${Boff}"
 
@@ -329,7 +416,7 @@ emerge-me() {
 emerge-git-eselect-repo() {
     local result=0
     # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "dev-vcs/git eselect-repositor" "-1"; result=$?
+    emerge-me "dev-vcs/git ifcoeselect-repository" "-1"; result=$?
 #    # use an array to construct the emerge command
 #    local -a emerge_command=( "${chroot_emerge}" -av1 )
 #    # before sync-repo joetoo, we need git (and eselect-repo for form)
@@ -349,7 +436,7 @@ get-git-and-eselect-repository() {
     local real_features="$emerge_features"  #save global features
     emerge_features="-buildpkg -getbinpkg"  # set temp_features
     # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "dev-vcs/git eselect-repositor" "-1"; result=$?
+    emerge-me "dev-vcs/git eselect-repository" "-1"; result=$?
     emerge_features="$real_features"        # restore global features
 #    j_msg "-${notice}" -p "Running emerge git eselect-repository ..."
 #    FEATURES="-buildpkg -getbinpkg" emerge -uav1 dev-vcs/git app-eselect/eselect-repository
@@ -376,6 +463,64 @@ validate-prerequisites() {
     validate_make_conf || die "failed to validate_make_conf"
     right_status 0 "$notice"
     return 0
+}
+
+check-date-time() {
+    # if no input was provided, show and check the current time
+    if [ -z "$1" ]; then
+        j_msg "-${notice}" -p "${BWon}Check current UTC system date/time shown below${Boff}"
+        j_msg "-${notice}" -mp -n "${BCon}"; date -u | sed 's|^|    |' ; j_msg "-${notice}" -mp "${Boff}"
+    else
+        j_msg "-${notice}" -p "${BWon}Check proposed UTC system date/time shown below${Boff}"
+        j_msg "-${notice}" -mp -n "${BCon}"; date -u -d "$1" | sed 's|^|    |' ; j_msg "-${notice}" -mp "${Boff}"
+    fi
+    j_msg "-${notice}" -p "${BWon}(${BMon}Hint:${Boff} verify with ${BGon}date -u${BWon})${Boff} on another system"
+    answer="" # global
+    yn_prompt "${BWon}Is this correct? ${Boff}"
+    case "$answer" in
+        y) return 0 ;;
+        n) return 1 ;;
+    esac
+}
+
+set-date-time() {
+    local input="" msg="" placeholder=""
+    local APPROVED=$FALSE
+    # first ask user if the *current time is already valid
+    if check-date-time; then APPROVED=$TRUE; fi
+    while [ ! $APPROVED ]; do
+        msg="    ${BWon}Enter a valid date/time; (format: '${BCon}YYYY-MM-DD HH:MM:SS [AM|PM] [TZ]${BWon}'):${Boff} "
+        j_msg -u -mp -n "$msg"
+        # generate a valid placeholder based on the current machine's current time
+        placeholder="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+        # -e enables arrow keys, -i pre-fills the line with editable placeholder
+        read -e -i "$placeholder" -r input
+
+        # quick guard against malformed input
+        if [ ${#input} -lt 8 ]; then
+            j_msg "-${err}" -m "${BRon}Error${Boff}Input [$input] is too short (malformed)${Boff}"
+            continue  # skip validation and loop to get new input
+        fi
+        # more thorough input validation
+        if ! date -d "$input" +"%Y-%m-%d %H:%M:%S" &>/dev/null; then
+            j_msg "-${err}" -m "${BRon}Error${Boff}Improperly formatted input [$input]${Boff}"
+            continue  # skip validation and loop to get new input
+        fi
+        # force the input to start with exactly 4 digits followed by a dash (e.g., 2026-)
+        # yes, I know it is a Y3K bug... sorry; given 974 years to fix it, I prefer it to ^[0-9]{4}
+        if [[ ! "$input" =~ ^2[0-9]{3}- ]]; then
+            j_msg "-${err}" -m "${BRon}Error${Boff} Year must be exactly 4 digits (e.g., YYYY-MM-DD)${Boff}"
+            continue
+        fi
+        if check-date-time "$input"; then APPROVED=$TRUE; fi
+    done
+    # if there is input; then having passed validation and user-acceptance, set the time; else accept current time
+    if [ -n "$input" ]; then
+        j_msg "-${notice}" -p -n "Setting datetime ..."
+        date -s "$input" &>/dev/null
+        handle_result $? "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" '' "$notice" || die "failed to set date"
+    fi
 }
 
 validate_make_conf() {
@@ -563,6 +708,78 @@ add-user() {
     return $au_result
 }
 
+get-max-profile-number() {
+    # Extract the highest profile number directly using environment variables and a single awk command
+    local result
+    # use awk to read the result of eselect profile list and store the highest profile number
+    #   /\[[0-9]+\]/: Filters lines to only look for the profile brackets
+    #   gsub(/[\[\]]/, "", $1): substitutes null to strip both [ and ] chars from the first column
+    #   add 0 to force numeric evaluation, then keep the bigger number
+    result=$(
+        ARCH="${cb_TARGET_ARCH}"
+#        PORTAGE_CONFIGROOT="${newroot_mountpoint%/}//"  # no - in chroot this is /
+        PORTAGE_CONFIGROOT="/"
+        eselect profile list | \
+            awk '
+                /\[[0-9]+\]/ {
+                    gsub(/[\[\]]/, "", $1);
+                    val = $1 + 0; # Force numeric evaluation
+                    if (val > max) max = val
+                }
+                END {print max}
+            '
+    )
+    echo "$result"
+    return "$result"
+}
+
+profile_number_prompt()  {
+    # leave one blank line after previous output and save left margin cursor position
+    ps="$1"; echo; echo; CUU; SCP;
+#    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
+    get-max-profile-number "${cb_BOARD}" >/dev/null ; max_num=$?
+    j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+    isnumber "$profile_number" ; result=$?
+    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt ${max_num} ] ; do
+        RCP; EL;  # restore cursor position and erase the line
+        # (re)print the prompt and allowed profile number range
+        j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+        isnumber "$profile_number" ; result=$?
+    done
+}
+
+eselect-profile() {
+    separator "${PN}" "(${FUNCNAME[0]})"
+    j_msg "-${notice}" -p "setting default profile ..."
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${cb_default_profile}"
+    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
+    j_msg "-${notice}" -p "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+    if [[ $INTERACTIVE ]] ; then
+        j_msg "-${notice}" -p "${BMon}Carefully examine selected profile ${BYon}(e.g. merged|split-usr|hardened|desktop)${Boff}"
+        msg="${BYon}Would you like to select a different profile?\n"
+        msg+="${BWon}( y: yes select new | s: no; continue with default | n: no; exit )${Boff}"
+        response="" ; yns_prompt "${msg}"
+    else
+        response="s"  # keep default profile and continue
+    fi
+    case ${response:0:1} in
+        [yY] )
+            j_msg "-${notice}" -p "${BMon}Available profiles --${Boff}"
+#            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
+            PORTAGE_CONFIGROOT="/" eselect profile list
+            profile_number_prompt "${BYon}Select profile: ${Boff}"
+#            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${profile_number}"
+#            PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list
+            PORTAGE_CONFIGROOT="/" eselect profile set "${profile_number}"
+            PORTAGE_CONFIGROOT="/" eselect profile list
+            ;;
+        [nN] ) j_msg "-${err}" "exiting as instructed"; return 0;;
+        [sS] ) j_msg "-${err}" "skipping; profile remains ${profile_number}" ;;
+        * ) j_msg "-${err}" "invalid response [ ${response} ]"; exit 1 ;;
+    esac
+    return 0
+}
+
 fix-inittab() {
     local result=0 fi_result=0
     j_msg "-${notice}" -p -n "fixing /etc/inittab s0..."
@@ -681,6 +898,96 @@ make-mountpoints() {
     done
 }
 
+setup-binpkg-sign-verify() {
+## OR FROM the other side... ON e.g. coraldev6401...
+#sudo -u joe scp gmki91:/home/joe/joetoo_root* /home/joe/
+#cd; mv /home/joe/joetoo_root_binpkg_signing_keys.tbz2 ./
+    j_msg "-${notice}" -p -n "Checking for joetoo_root_binpkg_signing_keys.tbz2 ..."
+    [[ -f "/root/joetoo_root_binpkg_signing_keys.tbz2" ]]
+    handle_result $? "found" "not found" "$notice" || \
+        { j_msg "-${err}" "hint: scp from build host to root@<ipaddr>:/mnt/gentoo/${PN}"; exit 1 }
+
+    local old_dir=$(pwd)
+    j_msg "-${notice}" -p -n "Moving to /root/"
+    cd /root 2>/dev/null
+    handle_result $? "" "" "$notice" || die "failed to move to /root"
+    # un-tar the ** private key ** and README for /root/
+    j_msg "-${notice}" -p "Extracting binpkg signing keys"
+    tar -xvjpf joetoo_root_binpkg_signing_keys.tbz2
+    j_msg "-${notice}" -p -n "Done extracting binpkg signing keys; result:"
+    handle_result $? "" "" "$notice" || die "failed to extract binpkg signing keys"
+
+    # import private and public keys for package creation signing
+    j_msg "-${notice}" -p "Importing keys to binpkg signing keyring"
+    gpg --homedir /root/.gnupg --import /root/README_gnupg_joetoo_binpkg_signing/joetoo-binpkg-sign-private.asc && \
+    gpg --homedir /root/.gnupg --import /root/README_gnupg_joetoo_binpkg_signing/joetoo-binpkg-sign-public.asc
+    j_msg "-${notice}" -p "Done importing keys; result:"
+    handle_result $? "" "" "$notice" || die "failed to import binpkg signing keys"
+
+    # reset binpkg verification keyring
+    j_msg "-${notice}" -p "Setting up binpkg verification with getuto"
+    rm -rf /etc/portage/gnupg && getuto
+    j_msg "-${notice}" -p "Done setting up binpkg verification; result:"
+    handle_result $? "" "" "$notice" || die "failed to set up binpkg verification with getuto"
+
+    # import public key for binpkg verification
+    j_msg "-${notice}" -p "Importing joetoo binpkg public key for verification"
+    gpg --homedir /etc/portage/gnupg --import /root/README_gnupg_joetoo_binpkg_signing/joetoo-binpkg-sign-public.asc
+    j_msg "-${notice}" -p "Done importing joetoo binpkg public key; result:"
+    handle_result $? "" "" "$notice" || die "failed to import joetoo binpkg public key for verification"
+
+    # assign ultimate trust non-interactively to bypass prompts
+    j_msg "-${notice}" -p "Assigning verification trust for joetoo binpkg public key"
+    printf "trust\n5\ny\n" | gpg --homedir /etc/portage/gnupg --command-fd 0 --edit-key 292986C3A20A8EF6
+    j_msg "-${notice}" -p "Done assigning trust; result:"
+    handle_result $? "" "" "$notice" || die "failed to import joetoo binpkg public key for verification"
+## or manually edit, type trust, 5 (ultimate), y (yes, really), quit
+#gpg --homedir /etc/portage/gnupg --edit-key 292986C3A20A8EF6
+## now verify - list keys and look for "ultimate"
+
+    j_msg "-${notice}" -p "Review trust level in last key below to confirm"
+    gpg --homedir /etc/portage/gnupg --list-keys
+
+    # set up passphrase caching with long duration timeout (for long emerge jobs)
+    j_msg "-${notice}" -p -n "Setting up passphrase caching"
+    echo "allow-preset-passphrase" >> /root/.gnupg/gpg-agent.conf && \
+    echo "default-cache-ttl 604800" >> /root/.gnupg/gpg-agent.conf && \
+    echo "max-cache-ttl 604800" >> /root/.gnupg/gpg-agent.conf
+    handle_result $? "" "" "$notice" || die "failed to set up passphrase caching"
+    # Note: gentoo's recommended 34560000 is 400 days, but 7 days is probably way more than adequate: 604800
+
+    # Note: counting on joetoo-platform-meta to have delivered make.conf with required settings:
+    #FEATURES="${FEATURES} binpkg-signing"         # sign binpkgs
+    #BINPKG_GPG_SIGNING_GPG_HOME="/root/.gnupg"    # root signing keyring
+    #BINPKG_GPG_SIGNING_KEY="0x292986C3A20A8EF6"   # root signing keyid
+    ## allow sandboxed portage to communicate with GnuPG daemons and sockets
+    ## (explicitly listing root's possible XDG_RUNTIME_DIR paths [now configured
+    ##  in ~/.bash_profile], to avoid empty variable)
+    #SANDBOX_WRITE="/root/.gnupg:/run/user/0:/dev/shm/user/0-runtime"
+
+    # then do this before running signing operation
+    gpg-connect-agent reloadagent /bye
+    # use signing key to activate pinentry prompt to cache the passphrase
+    echo "dummy" | gpg --homedir=/root/.gnupg --clearsign > /dev/null#
+
+    ### If absolutely stuck - may need to remove passphrase to allow portage to sign the new binpkg while inside sandbox!!
+    #gpg --edit-key 0x292986C3A20A8EF6
+    ## enter passphrase to unlock
+    #passwd
+    #       ### tab to leave passphrase boxes empty and select OK
+    #       ### then say yes to warning and choose "security is not needed"
+    #save
+
+    j_msg "-${notice}" -mp ""
+    j_msg "-${notice}" -p "${BYon}binpkg signing tools (available in dev-util/joetoolkit) and tips --${Boff}"
+    j_msg "-${notice}" -m "${Con}use ${BGon}remove_mislabeled_xpak_binpkgs${Boff}"
+    j_msg "-${notice}" -m "${Con}use ${BGon}clear_gnupg_locks.sh${Boff}"
+    j_msg "-${notice}" -m "${Con}run unlock script steps manually if /root/.gnupg/public-keys.d/ lock files persist${Boff}"
+    j_msg "-${notice}" -m "${Con}binpkg creation may be unstable with sys-apps/portage prior to ver 3.0.79-r1${Boff}"
+    j_msg "-${notice}" -m "${Con}if binpkg creation fails repeatedly even with locks cleared; reboot and retry${Boff}"
+
+}
+
 edit-91joetoo_platform() {
     nano /etc/portage/package.use/91joetoo_amd64
     return $?
@@ -786,12 +1093,24 @@ setup-clock() {
                     j_msg "-${notice}" -p -n "adding new boot runlevel clock service [${otherclock}] ..."
                     ln -s "/etc/init.d/${otherclock}" "/etc/runlevels/boot/${otherclock}"
                     right_status $? "$notice" || FLAGGED=$TRUE
+                    currentclock="${otherclock}"
                     ;;
                 [nNsS] ) ;;
                 * ) j_msg "-${err}" "invalid response" ; return 1 ;;
             esac
             ;;
         * ) j_msg "-${err}" "invalid clock for boot runlevel: [{currentclock}]" ; return 1 ;;
+    esac
+    case "${currentclock:0:1}" in
+        # write the temporary system clock time directly down into the hardware CMOS
+        h) hwclock --systohc || {
+           j_msg "-${err}" -m "failed to set rtc with hwclock --systohc"; FLAGGED=$TRUE;
+           } ;;
+        # ensure the shutdowntime file exists for use by swclock
+        s) mkdir -p /var/lib/misc && touch /var/lib/misc/openrc-shutdowntime || {
+           j_msg "-${err}" -m "failed to create /var/lib/misc/openrc-shutdowntime or its directory";
+           FLAGGED=$TRUE;
+           } ;;
     esac
     # shellcheck disable=SC2086
     [ $FLAGGED ] && return 1
@@ -800,12 +1119,61 @@ setup-clock() {
 
 install-grub() {
     local result=0
-    # this should have been installed in /usr/sbin/ (in PATH) by joetoolkit
-    # ( maybe add step to edit make.conf and remind user to look at this)
-    j_msg "-${notice}" -p "Installing grub ..."
-    grub_install_both_ways; result=$?
-    j_msg "-${notice}" -p "Done installing grub; result:"
-    handle_result $result "" "" || FLAGGED=$TRUE
+    local efi_part="" boot_part="" efi_dir="" boot_disk=""
+    local -a esp
+    local esp_guid_part_type_str="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+    local GRUB_EFI=$FALSE GRUB_BIOS=$FALSE
+    local ig_arch="$cb_QEMU_ARCH"  # probably x86_64 for finalize-chroot-sys
+    # first determine if there is one efi system partition mounted, to install to
+    readarray -t esp < <(findmnt -rn -t vfat -o SOURCE,TARGET  | grep efi | awk '{print $1}')
+    [ ${#esp[@]} -gt 1 ] && die "multiple efi partitions; pick, install grub manually, and resume at next step"
+    # possible to-do: offer selection let user pick instead
+    [ ${#esp[@]} -eq 1 ] && efi_part="${esp[0]}"
+    # verify or branch to possible bios boot
+    if [ -n "$efi_part" ] ; then
+        # likely efi - verify
+        if [[ "$(lsblk -no PARTTYPE "$efi_part")" == "$esp_guid_part_type_str" ]] ; then
+            efi_dir=$(findmnt -rn -t vfat -o TARGET,SOURCE  | grep efi | awk '{print $1}')
+            if [ -d "$efi_dir" ] ; then
+                GRUB_EFI=$TRUE
+            else
+                die "failed to identify efi directory for grub-install"
+            fi
+        else
+            die "failed to identify efi partition for grub-install"
+        fi
+    else
+        # NOT efi - verify for legacy bios boot
+        boot_part=$(findmnt -rn -o SOURCE /boot)
+        if [ -n "$boot_part" ] ; then
+            boot_disk=/dev/$(lsblk -no PKNAME "$boot_part")
+            if [ -b "$boot_disk" ]. then
+                GRUB_BIOS=$TRUE
+            else
+                die "failed to identify boot disk for grub-install"
+            fi
+        else
+            die "failed to identify boot partition for grub-install"
+        fi
+    fi
+    # now install grub accordingly (above should make GRUB_EFI and GRUB_BIOS orthogonal
+    if [ $GRUB_EFI ] ; then
+        # (copied from joetoolkit's grub_install_both_ways)
+        # insall iaw news grub2 article - recommends install both with and w/o --removable
+        # syntax here taken from https://wiki.gentoo.org/wiki/Handbook:AMD64/Installation/Bootloader
+        j_msg "-${notice}" -p "Installing grub for efi system ..."
+        grub-install --efi-directory="${efi_dir}" --target="${ig_arch}-efi" && \
+        grub-install --efi-directory="${efi_dir}" --target="${ig_arch}-efi" --removable
+        result=$?
+        j_msg "-${notice}" -p "Done installing grub; result:"
+        handle_result $result "" "" "$notice" || die "failed to install grub for efi system"
+    elif [ $GRUB_BIOS ] ; then
+        j_msg "-${notice}" -p "Installing grub for bios boot ..."
+        grub-install "$boot_disk"; result=$?
+        j_msg "-${notice}" -p "Done installing grub for bios boot; result:"
+        handle_result $result "" "" "$notice" || die "failed to install grub for bios boot"
+    fi
+
     j_msg "-${notice}" -p "Setting permissions on grub files ..."
     chmod +x /etc/grub.d/10_linux && \
     chmod +x /etc/grub.d/20_linux_xen; result=$?
@@ -822,9 +1190,136 @@ install-grub() {
 
 
 display-next-steps() {
-    # source the list of things yet-to-do
-    # re-read at any time by issuing the same command manually
-    source /etc/joetoobuild-tools/README_next_steps
+    local next_step_file="/etc/joetoobuild-tools/README_next_steps"
+    mkdir -p "${next_step_file%/*}"   # dirname
+    touch "${next_step_file}"
+    local -a next_steps=()
+    next_steps=(
+        'mkdir -p /etc/portage/savedconfig/sys-kernel'
+        'ebuild /var/db/repos/gentoo/sys-kernel/gentoo-kernel/gentoo-kernel-<version>.ebuild configure'
+        'cd /var/tmp/portage/sys-kernel/gentoo-kernel-<version>/work/modprep'
+        'mv .config .config.gentoo; cp <good-config> .config'
+        'make menuconfig'
+        '${BMon}cp .config /etc/portage/savedconfig/sys-kernel/gentoo-kernel-<version> ${off}'
+        'emerge -av gentoo-kernel'
+        'verify gentoo-kernel was built with the right config'
+        'cd /usr/src/mkinitramfs'
+        'nano /etc/mkinitramfs/init.conf'
+        'nano /etc/mkinitramfs/mkinitramfs.conf'
+        './mkinitramfs'
+        'verify /boot/ has both kernel and initramfs'
+        'grub-mkconfig -o /boot/grub/grub.cfg'
+        'reboot'
+    )
+    # tee the list of things yet-to-do to a file so it can be
+    # re-read at any time
+    {
+        j_msg "-${notice}" -p "${BYon}Next Steps should probably include --${Boff}"
+        j_msg "-${notice}" -m "${BYon}Next Steps should probably include --${Boff}"
+
+    } tee "${next_step_file}"
+
+}
+
+#-----[ to do: move these to updated jb/cb-common-functions ]-------------------------------------------------------------------
+remove-default-draft-make-conf() {
+    # remove draft (chroot version of) make.conf so we can use the crossbuild version
+#    local target_dir="/usr/armv7a-unknown-linux-gnueabihf/etc/portage/"
+    local target_dir="/etc/portage/"
+    local pattern='._cfg*make.conf'
+
+    j_msg "-${notice}" -p -n "maybe removing draft ${pattern}"
+    if [ ! -z "$(find "${target_dir}" -type f -name "${pattern}" 2>/dev/null)" ] ; then
+        j_msg "-${notice}" -mp -n " (${BRon}found${Boff})"
+        find "${target_dir}" -type f -name "${pattern}" -delete || \
+            die "failed to delete ${pattern}"
+        j_msg "-${notice}" -mp -n " (${BGon}removed${Boff})"
+    else
+        j_msg "-${notice}" -mp -n " (${BGon}not found${Boff})"
+    fi
+    right_status $TRUE
+    return 0
+}
+
+configure-make-conf-for-chroot() {
+    # remove any pending version of make.conf and accept delivery of chroot and crossbuild versions
+    remove-default-draft-make-conf
+    # change to the chroot version of make.conf installed by joetoo-platform-meta
+#    newfile="/usr/${TARGET}/etc/portage/make.conf.chroot"
+#    oldfile="/usr/${TARGET}/etc/portage/make.conf"
+    newfile="/etc/portage/make.conf.chroot"
+    oldfile="/etc/portage/make.conf"
+    message_n "configuring make.conf for chroot ..."
+    cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
+    right_status $TRUE
+    # call validate-llvm-targets() to check the new make.conf
+#    message "calling validate-llvm-targets"
+#    local sbc_native_llvm_targets="${LLVM_TARGET} BFP WebAssembly SPIRV"
+#    validate-llvm-targets "/usr/${TARGET}/etc/portage/make.conf" "${sbc_native_llvm_targets}" || \
+#        die "failed to validate-llvm-targets in TARGET make.conf"
+    return 0
+}
+
+run-dispatch-conf() {
+    # run dispatch-conf to activate newly installed configs
+    ROOT="/usr/${TARGET}/" dispatch-conf
+    return $?
+}
+
+edit-make-conf() {
+    # use system editor to edit config file
+#    ${EDITOR} /usr/${TARGET}/etc/portage/make.conf
+    local configfile="/etc/portage/make.conf"
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+edit-package-use-platform() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+#    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_${BOARD}")
+    local configfile="$(find /etc/portage/package.use/ -iname "*joetoo_${BOARD}")"
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+edit-package-use-common() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+#    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_common")
+    local configfile="$(find /etc/portage/package.use/ -iname "*joetoo_common")"
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+edit-package-accept-keywords() {
+    # use system editor to edit config file (it's numbered, so use find to id it)
+#    local configfile=$(find /usr/${TARGET}/etc/portage/package.accept_keywords/ -iname "*joetoo")
+    local configfile="$(find /etc/portage/package.accept_keywords/ -iname "*joetoo")"
+    ${EDITOR} ${configfile}
+    return $?
+}
+
+validate-resolv-conf() {
+    local result=0
+    # to-do make this a choice - static or dynamic; for now set up for dynamic
+    j_msg "-${notice}" -p -n "maybe creating /run/resolvconf ..."
+    mkdir -p "/run/resolvconf"
+    handle_result $? '' '' "$notice" || return 1
+    j_msg "-${notice}" -p -n "maybe copying content to /run/resolvconf/resolv.conf ..."
+    [ -f "/run/resolvconf/resolv.conf" ]
+    handle_result $? "exists" "creating" "$notice"
+    if [ ! $? -eq 0 ]; then
+        cat << 'EOF' > /run/resolvconf/resolv.conf
+# Generated by joetoobuild-tools based on what resolvconf would do
+search brendler
+domain brendler
+nameserver 192.168.62.17
+nameserver fd62:6262:6262::17
+EOF
+        result=$?
+        j_msg "-${notice}" -p -n "done copying content; result:"
+        handle_result $result "" "" "$notice" || result=1
+    fi
+    return $result
 }
 
 #-----[ main script ]-------------------------------------------------------------------
@@ -846,6 +1341,9 @@ validate_root_file "${status_file}"
 # chroots own repo to be syncd first, and that needs chroot_emerge variable defined
 build-chroot_emerge-command || die "failed to build-chroot_emerge-command"
 
+# validate resolv.conf
+validate-resolv-conf || die "failed to validate-resolv-conf"
+
 # get dev-vcs/git and eselect-repository so sync-type = git will work for next step
 get-git-and-eselect-repository || die "failed to get-git-and-eselect-repository"
 
@@ -854,7 +1352,7 @@ sync-repo gentoo || die "failed to sync-repo gentoo"
 # check CTARGET - CBUILD - CHOST configuration
 get-target || die "failed to get-target"
 
-# reload /root/.cb-config to check BOARD against CTARGET
+# reload /root/.cb-config to check cb_BOARD against CTARGET
 get-check-config || die "failed to get-check-config"
 
 show_config || die "failed to show_config"
