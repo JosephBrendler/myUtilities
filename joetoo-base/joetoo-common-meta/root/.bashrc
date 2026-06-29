@@ -59,40 +59,29 @@ export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 #-----[ crossbuild chroot section ]----------------------------------------------------
 [ -f ~/.cb-config  ] && source ~/.cb-config   # assigns cb_BOARD, cb_TARGET, cb_TARGET_ARCH, cb_QEMU_ARCH, etc.
 #-----[ v-- edit/comment-out BELOW after system deployment --v ]-----------------------
-#install_my_local_ca_certificates
+#/usr/sbin/install_my_local_ca_certificates
 #source /etc/bash/bashrc.d/emerge-chroot
 #rerunmsg="first-run chroot configuration not requested by presense of marker"
-#if [ -e /root/firstenvlogin ] ; then
-#    /usr/sbin/finalize-chroot
-#else
-#    echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"
-#fi
-#if [ -e /root/firstimglogin ] ; then
-#    /usr/sbin/finalize-chroot-for-image
-#else
-#    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
-#fi
-#if [ -e /root/firstupdatelogin ] ; then
-#    /usr/sbin/finalize-chroot-for-update
-#else
-#    echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"
-#fi
-#echo
-#E_message "edit /root/.bashrc after first boot of real image, to modify prompt, etc."
-#echo
+#if cat /root/firstlogin 2>/dev/null ; then /usr/sbin/finalize-chroot-sys; else j_msg -5 "$rerunmsg"; fi
+#rerunmsg="first-run chroot configuration not requested by presense of marker"
+#if [ -e /root/firstenvlogin ] ; then /usr/sbin/finalize-chroot;
+#else echo -e "${rerunmsg} /root/firstenvlogin;\nre-run if needed with /usr/sbin/finalize-chroot"; fi
+#if [ -e /root/firstimglogin ] ; then /usr/sbin/finalize-chroot-for-image
+#else echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"; fi
+#if [ -e /root/firstupdatelogin ] ; then /usr/sbin/finalize-chroot-for-update
+#else echo -e "${rerunmsg} /root/firstimglogin;\nre-run if needed with /usr/sbin/finalize-chroot-for-image"; fi
+#echo; j_msg "-${warn}" -p "edit /root/.bashrc after first boot of real image, to modify prompt, etc."; echo
 #export PS1="(${cb_QEMU_ARCH} chroot) ${PS1}"
 #-----[ ^-- edit/comment-out ABOVE after system deployment --^ ]-----------------------
 
-#-----[ XDG_RUNTIME_DIR ]--------------------------------------------------------------
-# moved to .bash_profile
+# XDG_RUNTIME_DIR moved to .bash_profile
 
 #-----[ GPG_TTY ]-----------------------------------------------------------------------
 # export GPG_TTY so gpg-agent will work (to sign commits)
 export GPG_TTY=$(tty)
 
 #-----[ neofetch ]----------------------------------------------------------------------
-echo
-neofetch
-echo
-# output info on GPG and XDG environment variables
-env | grep -E 'GPG|XDG'
+command -v neofetch &>/dev/null && { echo ; neofetch ; echo ; }
+
+# output info on GPG, XDG, cb_ environment variables
+env | grep -E 'GPG|XDG|cb_' | sort

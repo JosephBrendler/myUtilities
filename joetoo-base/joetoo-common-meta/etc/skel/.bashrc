@@ -84,6 +84,4 @@ export GPG_TTY=$(tty)
 command -v neofetch &>/dev/null && { echo ; neofetch ; echo ; }
 
 # output info on GPG, XDG, cb_ environment variables
-env | grep -E 'GPG|XDG|cb_'
-
-
+env | grep -E 'GPG|XDG|cb_' | sort

@@ -214,6 +214,7 @@ command_sequence=(
 'copy_tools_to_newroot'
 'copy-resolve-conf'
 'make-repo-dirs'
+'maybe-activate-swap'
 'populate_repo gentoo'
 'populate_repo joetoo'
 'save_config'
@@ -234,6 +235,7 @@ msg1_sequence=(
 'copy tools to newroot'
 'copy resolve.conf'
 'make repo directories'
+'maybe activate swap device or file'
 'populate local copy of gentoo repository'
 'populate local copy of joetoo repository'
 'save config to .cb-conifg'
@@ -399,6 +401,76 @@ save_config() {
     return 0
 }
 
+maybe-activate-swap() {
+    local result=0 newroot_lv="" swap_lv="" swap_lv_type="" swap_dev_or_file=""
+    local -a newroot_lvs=()
+    # if the system does not have it, then set up swap - again most important for resource constrained systems
+    # check if /proc/swaps has more than 1 line (the header row)
+    d_do 'echo "running swapon --show"; swapon --show' "$debug"
+    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+        j_msg "-${notice}" -p "System already has swap set up; continuing"
+    else
+        # if the build target has swap set up - use it now
+        j_msg "-${notice}" -p "identifying possible swap LV"
+#        newroot_lv=$(findmnt -lno SOURCE "$newroot_mountpoint"); result=$?
+        readarray -t newroot_lvs < <(findmnt -n -o SOURCE -T "$newroot_mountpoint")
+        # guard against the possibility of corrupted mount tree (root lv multi-mounted)
+        j_msg "-${debug}" -p "\${#newroot_lvs[@]}: ${#newroot_lvs[@]}"
+        d_do 'printf "%s\n" "${newroot_lvs[@]}"' "$debug"
+        (( ${#newroot_lvs[@]} == 1 )) || {
+            findmnt -rn -T "$newroot_mountpoint"
+            die "ambiguous mount state for [$newroot_mountpoint]"
+        }
+        newroot_lv="${newroot_lvs[0]}"
+        # trim the -root from the suffix and append -swap
+        if [ $result -eq 0 ] && [ -n "$newroot_lv" ] ; then
+            swap_lv="${newroot_lv%-root}-swap"; result=$?
+            handle_result $result "$swap_lv" "not found" "$notice"
+        fi
+        if [ $result -eq 0 ]; then
+            # verify that $swap_lv is a block device and mkswap formatted before turning swap on
+            [ -b "$swap_lv" ] && swap_lv_type="$(blkid -o value --match-tag TYPE "$swap_lv")"
+            if [[ "$swap_lv_type" == "swap" ]] ; then
+                swap_dev_or_file="$swap_lv"
+            else
+                j_msg "-${warn}" -p "swap LV [$swap_lv] is not formatted as swap"
+            fi
+        fi
+        # check if block above did not pick a device to activate
+        if [ -z "$swap_dev_or_file" ]; then
+            # create swap directory
+            local newswap_dir="${newroot_mountpoint%/}/var/cache/swap"
+            mkdir -p "${newswap_dir}"
+            # create swap file
+            local newswapfile="${newswap_dir%/}/swap1"
+            j_msg "-${notice}" -p "creating swap file"
+            dd if=/dev/zero of="${newswapfile}" bs=4M count=1024 status=progress
+            swapsize=$(stat -c '%s' "${newswapfile}")
+            [[ "$swapsize" -ge $((4 * 1024 * 1024 * 1024 )) ]] ; result=$?
+            j_msg "-${notice}" -p "done creating swap file; result:"
+            handle_result $result "${newswapfile##*/} $swapsize" "" "$notice" || \
+                j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to create swap file"
+            if [ $result -eq 0 ] ; then
+                j_msg "-${notice}" -p "formatting swap file"
+                chmod 600 "${newswapfile}" && mkswap "${newswapfile}" ; result=$?
+                handle_result $result "" "" "$notice" || \
+                    j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to format swap file"
+            fi
+            [ $result -eq 0 ] && swap_dev_or_file="$newswapfile"
+        fi
+        # now activate the swap device or file if there is one
+        if [ -n "$swap_dev_or_file" ]; then
+            j_msg "-${notice}" -p -n "activating swap device or file"
+            swapon "$swap_dev_or_file"
+            handle_result $? "activated swap on [$swap_dev_or_file]" "" "$notice" || \
+                j_msg "-${warn}" -p "failed to activate swap on [$swap_dev_or_file]"
+        else
+            j_msg "-${warn}" -p "no usable swap device or swap file available"
+        fi
+    fi   # swap on yet?
+
+}
+
 # removed sync-repo in this non-crossbuilding scenario.  Run it in chroot
 populate_repo() {
     local result=0
@@ -407,7 +479,7 @@ populate_repo() {
     local REPO="$1"
     local git_target="${newroot_mountpoint%/}/var/db/repos/${REPO}"
     local -a git_cmd=( git  clone )
-    local newroot_lv="" swap_lv=""
+    local sync_uri=""
 
     j_msg "-${debug}" -p "REPO: [$REPO]"
     j_msg "-${notice}" -p -n "checking for pre-existing repo"
@@ -440,50 +512,6 @@ populate_repo() {
 
     # complete the command; use --progress to force progress output (goes to stderr). redirect on actual cmdline, to stdout
     git_cmd+=( --progress "${sync_uri}" "${git_target}" )
-
-    # if the system does not have it, then set up swap - again most important for resource constrained systems
-    # check if /proc/swaps has more than 1 line (the header row)
-    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
-        j_msg "-${notice}" -p "System already has swap set up; continuing"
-    else
-        # if the build target has swap set up - use it now
-        j_msg "-${notice}" -p -n "identifying possible swap LV"
-        newroot_lv=$(findmnt -lno SOURCE "$newroot_mountpoint"); result=$?
-        # trim the -root from the suffix and append -swap
-        if [ $result -eq 0 ] && [ -n "$newroot_lv" ] ; then
-            swap_lv="${newroot_lv%-root}-swap"; result=$?
-            handle_result $result "$swap_lv" "not found" "$notice"
-        fi
-        if [ $result -eq 0 ]; then
-            j_msg "-${notice}" -p -n "activating swap LV"
-            swapon "$swap_lv"
-            handle_result $? "" "" "$notice"
-        else
-            # create swap directory
-            local newswap_dir="${newroot_mountpoint%/}/var/cache/swap"
-            mkdir -p "${newswap_dir}"
-            # create swap file
-            local newswapfile="${newswap_dir%/}/swap1"
-            j_msg "-${notice}" -p -n "creating swap file"
-            dd if=/dev/zero of="${newswapfile}" bs=4M count=1024 status=progress 2>/dev/null
-            swapsize=$(stat -c '%s' "${newswapfile}")
-            [[ "$swapsize" -ge $((4 * 1024 * 1024 * 1024 )) ]] ; result=$?
-            j_msg "-${notice}" -p "done creating swap file; result:"
-            handle_result $result "${newswapfile##*/} $swapsize" "" "$notice" || \
-                j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to create swap file"
-            if [ $result -eq 0 ] ; then
-                j_msg "-${notice}" -p "formatting swap file"
-                chmod 600 "${newswapfile}" && mkswap "${newswapfile}" ; result=$?
-                handle_result $result "" "" "$notice" || \
-                    j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to format swap file"
-            fi
-            if [ $result -eq 0 ] ; then
-                j_msg "-${notice}" -p -n "activating swap file"
-                swapon "$${newswapfile}"
-                handle_result $? "" "" "$notice"
-            fi
-        fi
-    fi   # swap on yet?
 
     # execute command to clone repository
     j_msg "-${notice}" -p "cloning repository [$REPO]"
