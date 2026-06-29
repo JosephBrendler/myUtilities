@@ -78,8 +78,8 @@ export cb_QEMU_ARCH=x86_64
 #export cb_STAGE3_SELECTOR="stage3-amd64-openrc-[0-9]"   # go with hardened below and change to hardened desktop in joetoo profile
 #export cb_default_profile="default/linux/amd64/23.0"
 export cb_LLVM_TARGET="X86-64"
-target_url=""
-stage3_tarball=""
+#target_url=""
+#stage3_tarball=""
 # amd64 hardened openrc link looks like this
 # https://...amd64/autobuilds/current-stage3-amd64-hardened-openrc/
 #export cb_STAGE3_SELECTOR=stage3-amd64-openrc-[0-9]
@@ -117,6 +117,7 @@ command_sequence=(
 'setup-binpkg-sign-verify'
 'edit-91joetoo_platform'
 'emerge-platform-meta'
+'run-dispatch-conf'
 'configure-make-conf-for-chroot'
 'edit-make-conf'
 'edit-package-use-platform'
@@ -156,6 +157,7 @@ msg1_sequence=(
 'setup-binpkg-sign-verify'
 'edit package.use/91joetoo_platform'
 'emerge platform-meta'
+'run dispatch-conf'
 'configure make.conf for chroot'
 'edit make.conf'
 'edit package.use (platform)'
@@ -209,11 +211,11 @@ usage() # (BASH) explain default usage; redo for command_sequence array use (NOT
   j_msg -${notice} -m "${BMon}additional ${app_customization_root} - commandline options:${Boff}"
 
   if [ ${#command_sequence[@]} -gt 0 ] ; then
-    j_msg -${notice} -M $idx_hammer_and_wrench "${BYon}${PN} workflow sequence (steps):${Boff}"
+    j_msg -${notice} -M "$idx_hammer_and_wrench" "${BYon}${PN} workflow sequence (steps):${Boff}"
     for ((_u_step=0; _u_step<${#command_sequence[@]}; _u_step++ )); do
       _u_entry="${command_sequence[${_u_step}]}"   # extract the specific line corresponding to the current step counter
       _u_desc="${msg1_sequence[${_u_step}]}"       # human readable description
-      j_msg -${notice} -M $idx_wrench  "${BBon}[${Boff}${Yon}${_u_step}${BBon}]${Boff} ${Con}${_u_desc}${Boff}"
+      j_msg -${notice} -M "$idx_wrench"  "${BBon}[${Boff}${Yon}${_u_step}${BBon}]${Boff} ${Con}${_u_desc}${Boff}"
     done
   fi
   leave "normal exit from usage"
@@ -337,6 +339,7 @@ get-check-config() {
     # validation moved to validate_CHOST(); consider these tentative assignments
     j_msg "-${notice}" -p -n "sourcing /root/.cb-config"
     if [ -e /root/.cb-config ] ; then
+        # shellcheck source=/dev/null
         source /root/.cb-config || die "failed to source /root/.cb-config"
         j_msg "-${notice}" -mp -n " (${BGon}ok${Boff})"
         right_status 0 "${notice}"
@@ -402,10 +405,9 @@ emerge-me() {
     local payload="$1"          # quote here to assemble, but not below, to split into args
     local extra_opts="${2:-}"   # default null
     # use an array to construct the emerge command - dont quote cmd, payload, opts - need to split
-    local -a emerge_command=(
-        ${chroot_emerge} ${emerge_opts} ${extra_opts} ${payload} ${emerge_trail_opts}
-    )
-    j_msg "-${notice}" -p "emerging payload with command [${emerge_command[@]}] ..."
+    # shellcheck disable=SC2206
+    local -a emerge_command=( ${chroot_emerge} ${emerge_opts} ${extra_opts} ${payload} ${emerge_trail_opts} )
+    j_msg "-${notice}" -p "emerging payload with command [${emerge_command[*]}] ..."
     FEATURES="${emerge_features}" "${emerge_command[@]}" ; result=$?
     j_msg "-${notice}" -p -n "Done emerging $payload; result:"
     handle_result $? "" "" "$notice" || return 1
@@ -718,8 +720,7 @@ get-max-profile-number() {
     result=$(
         ARCH="${cb_TARGET_ARCH}"
 #        PORTAGE_CONFIGROOT="${newroot_mountpoint%/}//"  # no - in chroot this is /
-        PORTAGE_CONFIGROOT="/"
-        eselect profile list | \
+        PORTAGE_CONFIGROOT="/" eselect profile list | \
             awk '
                 /\[[0-9]+\]/ {
                     gsub(/[\[\]]/, "", $1);
@@ -738,12 +739,12 @@ profile_number_prompt()  {
     ps="$1"; echo; echo; CUU; SCP;
 #    get-max-profile-number bcm2709-rpi-2-b >/dev/null ; max_num=$?
     get-max-profile-number "${cb_BOARD}" >/dev/null ; max_num=$?
-    j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+    j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read -r profile_number;
     isnumber "$profile_number" ; result=$?
-    while [ $result -ne 0 ] || [ $profile_number -lt 0 ] || [ $profile_number -gt ${max_num} ] ; do
+    while [ $result -ne 0 ] || [ "$profile_number" -lt 0 ] || [ "$profile_number" -gt "${max_num}" ] ; do
         RCP; EL;  # restore cursor position and erase the line
         # (re)print the prompt and allowed profile number range
-        j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read profile_number;
+        j_msg "-${notice}" -p -n "$ps [0-${max_num}]: " && read -r profile_number;
         isnumber "$profile_number" ; result=$?
     done
 }
@@ -751,9 +752,11 @@ profile_number_prompt()  {
 eselect-profile() {
     separator "${PN}" "(${FUNCNAME[0]})"
     j_msg "-${notice}" -p "setting default profile ..."
-    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${cb_default_profile}"
-    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
-    j_msg "-${notice}" -p "INTERACTIVE: $(status_color $INTERACTIVE)$(TrueFalse $INTERACTIVE)${Boff}"
+#    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile set "${cb_default_profile}"
+    PORTAGE_CONFIGROOT="/" eselect profile set "${cb_default_profile}"
+#    PORTAGE_CONFIGROOT="${newroot_mountpoint}" eselect profile list | grep '\*'
+    PORTAGE_CONFIGROOT="/" eselect profile list | grep '\*'
+    j_msg "-${notice}" -p "INTERACTIVE: $(status_color "$INTERACTIVE")$(TrueFalse "$INTERACTIVE")${Boff}"
     if [[ $INTERACTIVE ]] ; then
         j_msg "-${notice}" -p "${BMon}Carefully examine selected profile ${BYon}(e.g. merged|split-usr|hardened|desktop)${Boff}"
         msg="${BYon}Would you like to select a different profile?\n"
@@ -899,16 +902,18 @@ make-mountpoints() {
 }
 
 setup-binpkg-sign-verify() {
+    local result=0 old_dir=""
 ## OR FROM the other side... ON e.g. coraldev6401...
 #sudo -u joe scp gmki91:/home/joe/joetoo_root* /home/joe/
 #cd; mv /home/joe/joetoo_root_binpkg_signing_keys.tbz2 ./
     j_msg "-${notice}" -p -n "Checking for joetoo_root_binpkg_signing_keys.tbz2 ..."
     [[ -f "/root/joetoo_root_binpkg_signing_keys.tbz2" ]]
     handle_result $? "found" "not found" "$notice" || \
-        { j_msg "-${err}" "hint: scp from build host to root@<ipaddr>:/mnt/gentoo/${PN}"; exit 1 }
+        { j_msg "-${err}" "hint: scp from build host to root@<ipaddr>:/mnt/gentoo/${PN}"; exit 1 ; }
 
-    local old_dir=$(pwd)
+    old_dir="$(pwd)"
     j_msg "-${notice}" -p -n "Moving to /root/"
+    # shellcheck disable=SC2164
     cd /root 2>/dev/null
     handle_result $? "" "" "$notice" || die "failed to move to /root"
     # un-tar the ** private key ** and README for /root/
@@ -953,6 +958,7 @@ setup-binpkg-sign-verify() {
     echo "allow-preset-passphrase" >> /root/.gnupg/gpg-agent.conf && \
     echo "default-cache-ttl 604800" >> /root/.gnupg/gpg-agent.conf && \
     echo "max-cache-ttl 604800" >> /root/.gnupg/gpg-agent.conf
+    # shellcheck disable=SC2320
     handle_result $? "" "" "$notice" || die "failed to set up passphrase caching"
     # Note: gentoo's recommended 34560000 is 400 days, but 7 days is probably way more than adequate: 604800
 
@@ -978,6 +984,11 @@ setup-binpkg-sign-verify() {
     #       ### then say yes to warning and choose "security is not needed"
     #save
 
+    j_msg "-${notice}" -p -n "moving back to $old_dir"
+    # shellcheck disable=SC2164
+    cd "$old_dir"
+    handle_result $? "" "" "$notice" || die "failed to cd to old_dir [$old_dir]"
+
     j_msg "-${notice}" -mp ""
     j_msg "-${notice}" -p "${BYon}binpkg signing tools (available in dev-util/joetoolkit) and tips --${Boff}"
     j_msg "-${notice}" -m "${Con}use ${BGon}remove_mislabeled_xpak_binpkgs${Boff}"
@@ -996,15 +1007,15 @@ edit-91joetoo_platform() {
 emerge-platform-meta() {
     local result=0
     # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "joetoo-platform-meta" ""; result=$?
-    return $result
+    emerge-me "joetoo-platform-meta" ""
+    return $?
 }
 
 emerge-common-meta() {
     local result=0
     # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "joetoo-common-meta" ""; result=$?
-    return $result
+    emerge-me "joetoo-common-meta" ""
+    return $?
 }
 
 edit-80joetoo_common() {
@@ -1015,19 +1026,16 @@ edit-80joetoo_common() {
 emerge-world() {
     local result=0
     # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "@world" ""; result=$?
-    return $result
+    emerge-me "@world" ""
+    return $?
 }
 
+# shellcheck disable=SC2329
 run-dispatch-conf() {
     j_msg "-${notice}" -p "about to run dispatch-conf"
-    ROOT=/ dispatch-conf ; result=$?
-    if [ $result -eq 0 ] ; then
-        j_msg "-${notice}" -p "run-dispatch-conf ${BGon}succeeded${Boff}"
-    else
-        j_msg "-${err}" "run-dispatch-conf ${BRon}failed${Boff}"
-    fi
-    return $result
+    ROOT=/ dispatch-conf
+    handle_result $? "" "" "$notice"
+    return $?
 }
 
 add-default-runlevel-services() {
@@ -1103,14 +1111,15 @@ setup-clock() {
     esac
     case "${currentclock:0:1}" in
         # write the temporary system clock time directly down into the hardware CMOS
-        h) hwclock --systohc || {
-           j_msg "-${err}" -m "failed to set rtc with hwclock --systohc"; FLAGGED=$TRUE;
-           } ;;
+        h) if ! hwclock --systohc ; then
+               j_msg "-${err}" -m "failed to set rtc with hwclock --systohc";
+               FLAGGED=$TRUE;
+           fi ;;
         # ensure the shutdowntime file exists for use by swclock
-        s) mkdir -p /var/lib/misc && touch /var/lib/misc/openrc-shutdowntime || {
-           j_msg "-${err}" -m "failed to create /var/lib/misc/openrc-shutdowntime or its directory";
-           FLAGGED=$TRUE;
-           } ;;
+        s) if ! mkdir -p /var/lib/misc && touch /var/lib/misc/openrc-shutdowntime ; then
+               j_msg "-${err}" -m "failed to create /var/lib/misc/openrc-shutdowntime or its directory";
+               FLAGGED=$TRUE;
+           fi ;;
     esac
     # shellcheck disable=SC2086
     [ $FLAGGED ] && return 1
@@ -1200,7 +1209,7 @@ display-next-steps() {
         'cd /var/tmp/portage/sys-kernel/gentoo-kernel-<version>/work/modprep'
         'mv .config .config.gentoo; cp <good-config> .config'
         'make menuconfig'
-        '${BMon}cp .config /etc/portage/savedconfig/sys-kernel/gentoo-kernel-<version> ${off}'
+        "${BMon}cp .config /etc/portage/savedconfig/sys-kernel/gentoo-kernel-<version> ${Boff}"
         'emerge -av gentoo-kernel'
         'verify gentoo-kernel was built with the right config'
         'cd /usr/src/mkinitramfs'
@@ -1215,9 +1224,10 @@ display-next-steps() {
     # re-read at any time
     {
         j_msg "-${notice}" -p "${BYon}Next Steps should probably include --${Boff}"
-        j_msg "-${notice}" -m "${BYon}Next Steps should probably include --${Boff}"
-
-    } tee "${next_step_file}"
+        for ((i=0; i<${#next_steps[@]}; i++)); do
+            j_msg "-${notice}" -mp "    ${BBon}(${BMon}${i}${BBon})${Boff} ${Gon}${next_steps[$i]}${Boff}"
+        done
+    } | tee "${next_step_file}"
 
 }
 
@@ -1267,34 +1277,38 @@ run-dispatch-conf() {
 }
 
 edit-make-conf() {
+    local configfile
     # use system editor to edit config file
 #    ${EDITOR} /usr/${TARGET}/etc/portage/make.conf
-    local configfile="/etc/portage/make.conf"
-    ${EDITOR} ${configfile}
+    configfile="/etc/portage/make.conf"
+    "${EDITOR}" "${configfile}"
     return $?
 }
 
 edit-package-use-platform() {
+    local configfile
     # use system editor to edit config file (it's numbered, so use find to id it)
 #    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_${BOARD}")
-    local configfile="$(find /etc/portage/package.use/ -iname "*joetoo_${BOARD}")"
-    ${EDITOR} ${configfile}
+    configfile="$(find /etc/portage/package.use/ -iname "*joetoo_${BOARD}")"
+    "${EDITOR}" "${configfile}"
     return $?
 }
 
 edit-package-use-common() {
+    local configfile
     # use system editor to edit config file (it's numbered, so use find to id it)
 #    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_common")
-    local configfile="$(find /etc/portage/package.use/ -iname "*joetoo_common")"
-    ${EDITOR} ${configfile}
+    configfile="$(find /etc/portage/package.use/ -iname "*joetoo_common")"
+    "${EDITOR}" "${configfile}"
     return $?
 }
 
 edit-package-accept-keywords() {
+    local configfile
     # use system editor to edit config file (it's numbered, so use find to id it)
 #    local configfile=$(find /usr/${TARGET}/etc/portage/package.accept_keywords/ -iname "*joetoo")
-    local configfile="$(find /etc/portage/package.accept_keywords/ -iname "*joetoo")"
-    ${EDITOR} ${configfile}
+    configfile="$(find /etc/portage/package.accept_keywords/ -iname "*joetoo")"
+    "${EDITOR}" "${configfile}"
     return $?
 }
 
@@ -1305,9 +1319,10 @@ validate-resolv-conf() {
     mkdir -p "/run/resolvconf"
     handle_result $? '' '' "$notice" || return 1
     j_msg "-${notice}" -p -n "maybe copying content to /run/resolvconf/resolv.conf ..."
-    [ -f "/run/resolvconf/resolv.conf" ]
-    handle_result $? "exists" "creating" "$notice"
-    if [ ! $? -eq 0 ]; then
+    if [ -f "/run/resolvconf/resolv.conf" ]; then
+        handle_result 0 "exists" "" "$notice"
+    else
+        handle_result 1 "" "creating" "$notice"
         cat << 'EOF' > /run/resolvconf/resolv.conf
 # Generated by joetoobuild-tools based on what resolvconf would do
 search brendler
