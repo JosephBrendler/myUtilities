@@ -6233,6 +6233,7 @@ safe_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R, rm -
   _sfo_op="$1"   # rm, chown, etc
   _sfo_flags="$2"
   _sfo_target="$3"
+  _sfo_msg=""
   # path existence guard
   [ -z "${_sfo_target}" ] && die "Operation [${_sfo_op}] aborted: Dangerous target [${_sfo_target}]"
   [ ! -d "${_sfo_target}" ] && die "Operation [${_sfo_op}] aborted: Dangerous target [${_sfo_target}]"
@@ -6245,6 +6246,10 @@ safe_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R, rm -
     /|/.|/bin*|/sbin*|/etc*|/var*|/usr*|/boot*)    # critical system path guardrail
       die "Operation [${_sfo_op}] aborted: Protected system path [${_sfo_target}]" ;;
   esac
+  _sfo_msg="${BYon}(Warning)${Boff} you are about to run"
+  _sfo_msg="${_sfo_msg} ${BRon}${_sfo_op} ${_sfo_flags} '${_sfo_target}' >/dev/null 2>&1${Boff}"
+  j_msg "-${warn}" -p "$_sfo_msg"
+  confirm_continue_or_exit
   # execution
   ${_sfo_op} ${_sfo_flags} "${_sfo_target}"; sfo_ret=$?
   unset -v _sfo_op _sfo_flags _sfo_target
@@ -6256,6 +6261,7 @@ safe_sudo_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R,
   _ssf_op="$1"   # rm, chown, etc
   _ssf_flags="$2"
   _ssf_target="$3"
+  _ssf_msg=""
   # path existence guard
   [ -z "${_ssf_target}" ] && die "Operation [${_ssf_op}] aborted: Dangerous target [${_ssf_target}]"
   [ ! -d "${_ssf_target}" ] && die "Operation [${_ssf_op}] aborted: Dangerous target [${_ssf_target}]"
@@ -6268,9 +6274,13 @@ safe_sudo_fs_op() # (POSIX) guardrailes for dangerous file system ops (chown -R,
     /|/.|/bin*|/sbin*|/etc*|/var*|/usr*|/boot*)    # critical system path guardrail
       die "Operation [${_ssf_op}] aborted: Protected system path [${_ssf_target}]" ;;
   esac
+  _ssf_msg="${BYon}(Warning)${Boff} you are about to run"
+  _ssf_msg="${_ssf_msg} ${BRon}${_ssf_op} ${_ssf_flags} '${_ssf_target}' >/dev/null 2>&1${Boff}"
+  j_msg "-${warn}" -p "$_ssf_msg"
+  confirm_continue_or_exit
   # execution
   sudo sh -c "${_ssf_op} ${_ssf_flags} '${_ssf_target}' >/dev/null 2>&1 "; ssf_ret=$?
-  unset -v _ssf_op _ssf_flags _ssf_target
+  unset -v _ssf_op _ssf_flags _ssf_target _ssf_msg
   return $ssf_ret
 }
 
@@ -6288,15 +6298,24 @@ validate_dir()  # validate or create a directory $1
     handle_result $? "created" "failed to create $_vd_dir_to_validate" "$info" || \
       { unset -v _vd_dir_to_validate; return 1 ; }
   fi
-  # set ownership either way, using sudo in case current user is not root
-  # (note: chown -R to give all contents to user)
-  j_msg -${info} -n -m "running chown -R ${user}:${user} ${_vd_dir_to_validate}"
-  # *** CAUTION: chown -R is dangerous! sudo sh -c "chown -R ..." makes it worse ***
-  safe_sudo_fs_op chown "-R '${user}:${user}'" "${_vd_dir_to_validate}"
-#  sudo sh -c " chown -R '${user}:${user}' '${_vd_dir_to_validate}' >/dev/null 2>&1 "
-  handle_result $? "ownership set" "failed to set ownership" "$info" || \
-    { unset -v _vd_dir_to_validate; return 1 ; }
-  [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
+  # set ownership and permissions appropriately (replaces legacy code that die chown -R for non-root user...)
+  j_msg -${info} -m -n "setting ownership and permissions for dir [${_vd_dir_to_validate}]"
+  case "${_vd_dir_to_validate}" in
+    /etc/*|/var/log/*|/usr/*|/boot/*)
+      # Protected system path - root must own it; use a simple sudo chown/chmod to ensure it's secure
+      sudo sh -c "chown root:root '${_vd_dir_to_validate}' && chmod 755 '${_vd_dir_to_validate}'"
+      handle_result $? "stat: $(stat -c '%a %U:%G)" "failed to set ownership" "$info" || \
+        { unset -v _vd_dir_to_validate; return 1 ; }
+      [ -r "${_vd_dir_to_validate}" ] && [ -x "${_vd_dir_to_validate}" ] ; vd_ret=$?  # final validation
+      ;;
+    *)
+      # standard path - user owns it
+      safe_sudo_fs_op chown "-R '${user}:${user}'" "${_vd_dir_to_validate}"
+      handle_result $? "stat: $(stat -c '%a %U:%G)" "failed to set ownership" "$info" || \
+        { unset -v _vd_dir_to_validate; return 1 ; }
+      [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
+      ;;
+  esac
   unset -v _vd_dir_to_validate
   return $vd_ret
 }
@@ -6615,7 +6634,7 @@ fix_logfile() #(POSIX) minimalist validation of logfile
 # @note safe alternative to using validate_file which calls validate_dir
 # @append wherein validate_dir wants to chown the entire dir to user
 
-validate_file()  # validate or create command sequence status file $1
+validate_file()  # validate or create status file $1 - writable/owned by user
 { vf_ret=0
   [ $# -ne 1 ] && { j_msg -${err} "Error: must specify file_to_validate" ; return 1 ; }
   _vf_file_to_validate=$1
@@ -6623,12 +6642,12 @@ validate_file()  # validate or create command sequence status file $1
   # just in case the file is in the current directory (name passed w/o path)
   [ "$_vf_dir_to_validate" = "$_vf_file_to_validate" ] && _vf_dir_to_validate="."
   validate_dir "$_vf_dir_to_validate"
-  j_msg -${info} -n -m "validating file $_vf_file_to_validate"
+  j_msg -${info} -m -n "validating file $_vf_file_to_validate"
   if [ -w "${_vf_file_to_validate}" ] ; then
-    d_do 'printf "%b%s%b" "${BGon}" " (valid)" "${Boff}"; right_status $TRUE' "$info"
+    handle_result $TRUE "valid" "" "$info"
   else
     # use sudo in case current user is not root
-    j_msg -${info} -nmp "${BYon} creating/fixing${Boff}"
+    j_msg -${info} -mp -n "${BYon} creating/fixing${Boff}"
     sudo sh -c "
       touch '${_vf_file_to_validate}' && chown '${user}:${user}' '${_vf_file_to_validate}'
     " >/dev/null 2>&1
@@ -6636,7 +6655,7 @@ validate_file()  # validate or create command sequence status file $1
       { unset -v _vf_file_to_validate _vf_dir_to_validate; return 1 ; }
   fi
   # final validation
-  [ -f "${_vf_file_to_validate}" ] ; vf_ret=$?
+  [ -w "${_vf_file_to_validate}" ] ; vf_ret=$?
   unset -v _vf_file_to_validate _vf_dir_to_validate
   return $vf_ret
 }
