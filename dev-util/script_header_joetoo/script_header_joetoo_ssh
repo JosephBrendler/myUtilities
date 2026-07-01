@@ -8,7 +8,7 @@ toc() # POSIX functions providing ssh key management
 { summarize_header; printf "\n";
   j_msg -${notice} "That's all I have to say about that" ; }
 # @usage . /usr/sbin/script_header_joetoo_ssh
-# @vars user SSH_KEY (username and associated ssh key id)
+# @vars ssh_user SSH_KEY (username and associated ssh key id)
 # @req script_header_joetoo must be sourced first
 # @note provides ssh-agent lifecycle management for joetoo scripts
 # @note functions are POSIX‑portable for use in both bash and busybox ash
@@ -76,17 +76,17 @@ start_ssh_agent() # (POSIX) clean up and start ssh agent
     # run cleanup first to ensure a clean slate
     _cleanup_stale_ssh_environment
 
-    j_msg -${notice} -p "Starting ssh-agent as user [$user] ..."
+    j_msg -${notice} -p "Starting ssh-agent as ssh_user [$ssh_user] ..."
 
-    # Start the agent as the unprivileged user and capture the environment.
+    # Start the agent as the unprivileged ssh_user and capture the environment.
     # POSIX sh: eval is used the same way
     j_msg -${info} -m -n "loading AGENT_ENV ..."
-    AGENT_ENV=$(sudo -u "$user" ssh-agent -s) || die "failed loading AGENT_ENV" 1
+    AGENT_ENV=$(sudo -u "$ssh_user" ssh-agent -s) || die "failed loading AGENT_ENV" 1
     eval "$AGENT_ENV" || die "failed running eval AGENT_ENV" 2
     right_status 0 ${info}
 
     if [ -z "$SSH_AUTH_SOCK" ] ; then
-        j_msg -${err} "ERROR: Failed to start ssh-agent as user %s\n" "$user"
+        j_msg -${err} "ERROR: Failed to start ssh-agent as ssh_user %s\n" "$ssh_user"
         return 1
     fi
 #    printf "SSH_AUTH_SOCK set to: %s\n" "$SSH_AUTH_SOCK"
@@ -100,14 +100,14 @@ start_ssh_agent() # (POSIX) clean up and start ssh agent
     return 0
 }
 # @usage start_ssh_agent
-# @vars user AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @vars ssh_user AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
 # @ret 0 on success; nonzero on failure; die() on fatal error
 # @deps _cleanup_stale_ssh_environment j_msg right_status sudo ssh-agent eval printf
-# @req caller must define $user as the unprivileged account owning the key
-# @req ssh-agent must be available in PATH for the target user
+# @req caller must define $ssh_user as the unprivileged account owning the key
+# @req ssh-agent must be available in PATH for the target ssh_user
 # @rule must be called before load_key; does not load the key itself
 # @rule writes SSH_AUTH_SOCK and SSH_AGENT_PID to AGENT_ENV_FILE for later sourcing
-# @note agent is started with user privileges; environment is persisted for reuse
+# @note agent is started with ssh_user privileges; environment is persisted for reuse
 # @warn failure to start agent leaves no partial environment; cleanup is automatic
 # @ex start_ssh_agent
 
@@ -127,24 +127,24 @@ load_key() # (POSIX) load ssh key for duration of requiring command
         right_status 0 ${info}
     fi
 
-    j_msg -${notice} -p "Loading user's ssh key [$SSH_KEY]... (Passphrase required)"
+    j_msg -${notice} -p "Loading ssh_user's ssh key [$SSH_KEY]... (Passphrase required)"
 
-    # add the key as the unprivileged user (passphrase prompt occurs here)
+    # add the key as the unprivileged ssh_user (passphrase prompt occurs here)
     # the -E flag is passed through sudo, and is POSIX compliant here
-    sudo -E -u "$user" ssh-add "$SSH_KEY" || return 2
+    sudo -E -u "$ssh_user" ssh-add "$SSH_KEY" || return 2
 
     j_msg -${notice} -p "Key loaded. Socket permissions are temporarily 606 for transfer"
     return 0
 }
 # @usage load_key
-# @vars user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @vars ssh_user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
 # @ret 0 on success; 2 if ssh-add fails; die() on fatal error
 # @deps j_msg right_status sudo ssh-add chmod . (POSIX dot operator)
-# @req SSH_KEY must reference a readable private key for $user
+# @req SSH_KEY must reference a readable private key for $ssh_user
 # @req AGENT_ENV_FILE must contain valid agent environment or agent must be running
 # @rule temporarily sets SSH_AUTH_SOCK permissions to 606 for key transfer
 # @rule must be followed by unload_key to restore secure permissions
-# @note passphrase prompt occurs under sudo -E -u "$user"
+# @note passphrase prompt occurs under sudo -E -u "$ssh_user"
 # @warn leaving socket at 606 is a security risk; unload_key must run promptly
 # @ex load_key
 
@@ -158,8 +158,8 @@ unload_key() # (POSIX) unload ssh key
 
     # 1. Remove the key from the agent's memory
     j_msg -${info} -m -n "Removing key from agent memory..."
-    sudo -E -u "$user" ssh-add -d "$SSH_KEY" >/dev/null 2>&1 || \
-        die "failed running sudo -E -u \$user ssh-add -d \$SSH_KEY" 2
+    sudo -E -u "$ssh_user" ssh-add -d "$SSH_KEY" >/dev/null 2>&1 || \
+        die "failed running sudo -E -u \$ssh_user ssh-add -d \$SSH_KEY" 2
     right_status 0 ${info}
 
     # 2. CRITICAL: Re-secure the socket file immediately
@@ -174,14 +174,14 @@ unload_key() # (POSIX) unload ssh key
     return 0
 }
 # @usage unload_key
-# @vars user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
+# @vars ssh_user SSH_KEY AGENT_ENV_FILE SSH_AUTH_SOCK SSH_AGENT_PID
 # @ret 0 on success; die() on fatal error
 # @deps j_msg right_status sudo ssh-add chmod . (POSIX dot operator)
 # @req AGENT_ENV_FILE must contain valid agent environment or agent must be running
 # @rule removes key from agent memory and restores SSH_AUTH_SOCK to mode 600
 # @rule must be called after load_key to close the 606 permission window
 # @note safe to call even if key is not loaded; ssh-add -d will silently ignore
-# @warn failure to restore 600 permissions leaves socket exposed to local users
+# @warn failure to restore 600 permissions leaves socket exposed to local ssh_users
 # @ex unload_key
 
 stop_ssh_agent() # (POSIX) stop ssh agent and remove persistence info
