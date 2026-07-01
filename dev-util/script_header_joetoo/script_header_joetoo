@@ -6298,22 +6298,27 @@ validate_dir()  # validate or create a directory $1
     handle_result $? "created" "failed to create $_vd_dir_to_validate" "$info" || \
       { unset -v _vd_dir_to_validate; return 1 ; }
   fi
-  # set ownership and permissions appropriately (replaces legacy code that die chown -R for non-root user...)
-  j_msg -${info} -m -n "setting ownership and permissions for dir [${_vd_dir_to_validate}]"
+  # set ownership and permissions appropriately
+  # (replaces legacy code that die chown -R for non-root user...)
+  # (chenged to whitelist)
+  j_msg -${info} -m -n "setting owner, perms for dir [${_vd_dir_to_validate}]"
   case "${_vd_dir_to_validate}" in
-    /etc/*|/var/log/*|/usr/*|/boot/*)
-      # Protected system path - root must own it; use a simple sudo chown/chmod to ensure it's secure
-      sudo sh -c "chown root:root '${_vd_dir_to_validate}' && chmod 755 '${_vd_dir_to_validate}'"
-      handle_result $? "stat: $(stat -c '%a %U:%G)" "failed to set ownership" "$info" || \
-        { unset -v _vd_dir_to_validate; return 1 ; }
-      [ -r "${_vd_dir_to_validate}" ] && [ -x "${_vd_dir_to_validate}" ] ; vd_ret=$?  # final validation
-      ;;
-    *)
-      # standard path - user owns it
-      safe_sudo_fs_op chown "-R '${user}:${user}'" "${_vd_dir_to_validate}"
-      handle_result $? "stat: $(stat -c '%a %U:%G)" "failed to set ownership" "$info" || \
+    # whitelist - only these are safe to hand over to the user
+    "/home/${user}"*|"/tmp/"*|"/var/tmp/"*)
+      # standard path - user owns the dir (do not recurse. let validate_file deal with contents)
+#      safe_sudo_fs_op chown "-R '${user}:${user}'" "${_vd_dir_to_validate}"
+      sudo sh -c "chown '${user}:${user}' '${_vd_dir_to_validate}' && chmod 755 '${_vd_dir_to_validate}'"
+      handle_result $? "stat: $(stat -c '%a %U:%G' "${_vd_dir_to_validate}")" "failed to set ownership" "$info" || \
         { unset -v _vd_dir_to_validate; return 1 ; }
       [ -w "${_vd_dir_to_validate}" ] ; vd_ret=$?     # final validation (writable by user)
+      ;;
+#    /etc/*|/var/log/*|/usr/*|/boot/*)  # deny by default (add to whitelist if discovering other allowable cases)
+    *)
+      # protected system paths - root must own it; use a simple sudo chown/chmod to ensure it's secure
+      sudo sh -c "chown root:root '${_vd_dir_to_validate}' && chmod 755 '${_vd_dir_to_validate}'"
+      handle_result $? "stat: $(stat -c '%a %U:%G' "${_vd_dir_to_validate}")" "failed to set ownership" "$info" || \
+        { unset -v _vd_dir_to_validate; return 1 ; }
+      [ -r "${_vd_dir_to_validate}" ] && [ -x "${_vd_dir_to_validate}" ] ; vd_ret=$?  # final validation
       ;;
   esac
   unset -v _vd_dir_to_validate
