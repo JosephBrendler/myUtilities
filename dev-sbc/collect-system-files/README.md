@@ -31,3 +31,8 @@ collect-system-files_basic.conf
 Use case (3): Elrond configuration as router is unique among joetoo variants,
 so a unique collect-system-files_ElrondRouterShorewallDnsVpnNtpEtc.conf
 archives this config's components to multiple remote machines
+
+		20260629 - updated to document and configure separate sync_root_src and
+    sync_root_dest, to be configured in
+    /etc/collect-system-files/collect-system-files.conf -->
+				/etc/collect-system-files/configs/collect-system-file_<hostname>.conf

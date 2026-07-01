@@ -1,9 +1,9 @@
 #!/bin/bash
 # collect-system-files_new (c) Joe Brendler 2026-7789
 #
-script_header_installed_dir="/usr/sbin"
-#script_header_installed_dir=/home/joe/myUtilities/dev-util/script_header_joetoo
-header="${script_header_installed_dir%/}/script_header_joetoo"
+JOETOO_HEADER_DIR="/usr/sbin"
+#JOETOO_HEADER_DIR=/home/joe/myUtilities/dev-util/script_header_joetoo
+header="${JOETOO_HEADER_DIR%/}/script_header_joetoo"
 echo "header: $header"
 
 # source script_header
@@ -67,7 +67,7 @@ fi
 # variable names to varlist in the .conf file, which app_configure() loads AFTER it calls
 # initialize_vars, but be sure to also assign them, b/c they will not be initialized otherwise
 LOCALIZED=$FALSE; INITIALIZED_ME="no"
-varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME"
+varlist="${varlist} BREAK bool.LOCALIZED yn.INITIALIZED_ME sync_root_src sync_root_dest SSH_KEY local_user remote_user"
 
 #-----[ functions ]----------------------------------------------------
 
@@ -97,15 +97,15 @@ while IFS= read -r _ics_entry; do
       printf '%s\n' "$_ics_entry" >> "$cmd_seq_file"
       num_cmds=$(( num_cmds + 1 ))
 done <<EOF
-start_ssh_agent $SSH_KEY${US}start ssh agent
+start_ssh_agent  ${local_user} $SSH_KEY${US}start ssh agent
 maybe_create_collection_directory${US}maybe create collection_directory
 copy_dirs${US}copy directories
 copy_files${US}copy files
 show_tree${US}report results as filesystem tree
-load_key${US}load ssh key
+load_key ${local_user}${US}load ssh key
 transfer_results${US}transfer results
-unload_key${US}unload ssh key
-stop_ssh_agent${US}stop ssh agent
+unload_key  ${local_user}${US}unload ssh key
+stop_ssh_agent  ${local_user}${US}stop ssh agent
 EOF
   handle_result $? "num_cmds: $num_cmds" '' || _ics_FLAGGED=$TRUE
 
@@ -141,7 +141,7 @@ EOF
 maybe_mkdir() {
   # don't flag; die over error
   _mm_dir="$1"
-  _mm_path="/home/${user}/${collection_directory%/}/${_mm_dir}"
+  _mm_path="${sync_root_src%/}/${collection_directory%/}/${_mm_dir}"
   j_msg -${notice} -M $idx_seedling -p -n "maybe making directory [${_mm_dir}]"
   if [ ! -d "${_mm_path}" ] ; then
     mkdir -p "${_mm_path}" &>/dev/null ; _mm_result=$?
@@ -159,7 +159,7 @@ copy_dirs() {
   for ((i=0; i<${#source_dirs[@]}; i++)); do
     _src="${source_dirs[$i]}"
     _z="$(printf '%s' "$_src" | sed 's|^/||')"
-    _dst="/home/${user}/${collection_directory%/}/${_z%/}"
+    _dst="${sync_root_src%/}/${collection_directory%/}/${_z%/}"
 
     maybe_mkdir "${_z}"
 
@@ -194,7 +194,7 @@ copy_files() {
   for source_file in ${source_files[@]}; do
     # use -- (end of opts) to ensure any - in filename isnt interpreted as an option
     _z=$(dirname -- "${source_file}" | sed 's|^/||')
-    _dst="/home/${user}/${collection_directory%/}/${_z%/}"
+    _dst="${sync_root_src%/}/${collection_directory%/}/${_z%/}"
     maybe_mkdir "${_z}"
     j_msg -${notice} -M $idx_fluttering_leaf -p -n \
       "copying ${BCon}file${Boff} [${source_file}]"
@@ -217,7 +217,7 @@ maybe_create_collection_directory() {
   # don't flag; die over error
   j_msg -${notice} -M $idx_shovel -p "maybe creating collection directory"
   j_msg -${notice} -M $idx_hammer -p -n "  collection directory: [${collection_directory}]"
-  _mc_cd="/home/${user}/${collection_directory}"
+  _mc_cd="${sync_root_src%/}/${collection_directory}"
   if [ ! -d "${_mc_cd}" ] ; then
     # -- (end of opts) protects against dirnames beginning w -
     mkdir -- "${_mc_cd}" && _mc_result=$?
@@ -233,7 +233,7 @@ maybe_create_collection_directory() {
 
 show_tree() {
   st_ret=0
-  _st_cd="/home/${user}/${collection_directory}"
+  _st_cd="${sync_root_src%/}/${collection_directory}"
   j_msg -${notice} -M $idx_tree_deciduous -p "please inspect results in [${_st_cd}] ..."
   # -- (end of opts) protects against dirnames beginning w -
   tree -a -- "$_st_cd"; st_ret=$?
@@ -244,9 +244,12 @@ show_tree() {
 
 transfer_results() {
   tr_ret=0
+  local -a rsync_cmd=()
+  local -a rsync_opts=()
+  local ssh_opts=""
   # don't flag - die or return status immediately on error
   # sudo -E rsync to access files as root and pass the environment containing SSH_AUTH_SOCK, etc
-  # since rsync destination is ${user}@${remotehost}:... it runs as user (who can authenticate)
+  # since rsync destination is ${remote_user}@${remotehost}:... it runs as remote_user (who can authenticate)
   local _tr_msg=""
 #  local AGENT_ENV_FILE="/root/.ssh_agent_env"  ## shouldnt need to assign - it is in script_header_joetoo_ssh
 
@@ -282,11 +285,48 @@ transfer_results() {
           # execute rsync as ROOT (to read root-owned 0600 files)
           # script runs as root, so sudo -E is not needed
           # --rsync-path="sudo rsync" ensures the remote side runs rsync as root
-          # Destination "${user}@${remotehost}..." guarantees SSH environment for authentication as ${user}
-          # user, remotehosts, sync_root, and collection_directory are assigned in .conf
-          rsync -avzhe ssh --rsync-path="sudo rsync" \
-            "${sync_root%/}/${collection_directory%/}" "${user}@${remotehost}:${sync_root%/}/"
-            _tr_result=$?
+          # Destination "${remote_user}@${remotehost}..." guarantees SSH environment for authentication as ${remote_user}
+          # remote_user, remotehosts, sync_root_src, sync_root_dest, and collection_directory are assigned in .conf
+
+          # begin constructing rsync command in an array
+          rsync_cmd=( rsync )
+          # add option flags and metadata
+          rsync_opts=( -a )   # archive mode: preserves times, permissions, and directory structure
+          if [ $DEBUG ] || [ "$verbosity" -ge "$info" ] ; then
+              local v_count=$(( verbosity - notice ))   # notice=5 and max, debug=7 so v_count always <= 2
+              [ "$v_count" -lt 0 ] && v_count=0
+              while [ $v_count -gt 0 ]; do
+                  rsync_opts+=( -v )  # increase verbosity
+                  v_count=$(( vcount - 1 ))
+              done
+          else
+              rsync_opts+=( -q )  # suppress non-error output
+          fi
+          rsync_opts+=( -z )  # compress file data during the transfer
+          rsync_opts+=( -h )  # output numbers in a human-readable format
+          rsync_opts+=( -H )  # hard-links: preserves system hard links to prevent data duplication
+          rsync_opts+=( -A )  # ACLs: preserves Access Control Lists
+          rsync_opts+=( -X )  # extended attributes: preserves system capabilities (e.g., ping)
+          rsync_opts+=( -K )  # keep-dirlinks: protects target merged-usr symlinks (/bin, /lib64)
+          rsync_opts+=(
+            --numeric-ids )  # Numeric IDs: copies raw UIDs/GIDs (0 stays 0) instead of matching text names
+          # append options to command
+          rsync_cmd+=( "${rsync_opts[@]}" )
+          # configure SSH transport options as a string, so the ssh command can be a single parameter to rsync
+          ssh_opts='-q'                                # quiet (no banner)
+          #ssh_opts=' -o StrictHostKeyChecking=no'       # automatically accept the new host key without prompting
+          #ssh_opts+=' -o UserKnownHostsFile=/dev/null'  # throw away chroot's accepted key instead of saving it to disk
+          ssh_opts+=' -o LogLevel=ERROR'                # suppress the "Permanently added" warning message
+          # use rsync option -e to specify the remote shell (ssh)
+          # (pass all of "cmd name and its options" as one array element, so it will be one positional parameter)
+          rsync_cmd+=( -e "ssh ${ssh_opts}" )
+          rsync_cmd+=( '--rsync-path=sudo rsync' )
+          # append source and destinaton info
+          rsync_cmd+=( "${sync_root_src%/}/${collection_directory%/}" )
+          rsync_cmd+=( "${remote_user}@${remotehost}:${sync_root_dest%/}/" )
+          # execute
+          j_msg -${notice} -p "${BWon}(Notice)${Boff}Transferring results with command [${Gon}${rsync_cmd[@]}${Boff}]"
+          "${rsync_cmd[@]}" ; _tr_result=$?
           j_msg -${notice} -p -n "rsync command complete; result:"
           handle_result $_tr_result "${bin_face_beam} success" "${bin_explosion} failed" ${notice} || \
             die "rsync transfer over ssh failed with status [$_tr_result]" 4
