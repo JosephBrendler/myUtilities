@@ -1,0 +1,48 @@
+#!/bin/bash
+payload="${1:-"content_for_mkenv_generic_amd64"}"
+#destination="${2:-192.168.62.164}"
+destination="${2:-192.168.62.181}"
+user="root"
+sync_root_src="./"
+sync_root_dest="/mnt/gentoo/joetoobuild-tools/"
+
+source /usr/sbin/script_header_joetoo
+checkroot
+
+PN=${0##*/}
+separator "$(hostname)" "$PN"
+
+answer=""
+yn_prompt "${BYon}About to rsync via ssh payload [$payload] to destination [$destination] ${Boff}"
+[[ "${answer:0:1}" != [yY] ]] && die "aborted by user"
+pw=$(ask_pass "    Enter chroot system passwd: ")
+
+j_msg "-${notice}" -m " rsync/ssh copying payload [$payload] to dir [${x:0:8}...]"
+#sshpass -p "$pw" scp "${payload}" "root@${destination}":"/mnt/gentoo/${x#/}" 2>/dev/null
+
+# define the rsync command and arguments as a Bash array
+rsync_cmd=( sshpass -p "$pw" rsync )
+
+# configure SSH transport options as a string, so the ssh command can be a single parameter to rsync
+ssh_opts=' -o StrictHostKeyChecking=no'       # automatically accept the new host key without prompting
+ssh_opts+=' -o UserKnownHostsFile=/dev/null'  # throw away chroot's accepted key instead of saving it to disk
+ssh_opts+=' -o LogLevel=ERROR'                # suppress the "Permanently added" warning message
+rsync_cmd+=( -e "ssh ${ssh_opts}" )
+
+# add flags and metadata
+rsync_cmd+=( -a )  # archive mode: preserves times, permissions, and directory structure
+rsync_cmd+=( -H )  # hard-links: preserves system hard links to prevent data duplication
+rsync_cmd+=( -A )  # ACLs: preserves Access Control Lists
+rsync_cmd+=( -X )  # extended attributes: preserves system capabilities (e.g., ping)
+rsync_cmd+=( -K )  # keep-dirlinks: protects target merged-usr symlinks (/bin, /lib64)
+rsync_cmd+=(
+  --numeric-ids )  # Numeric IDs: copies raw UIDs/GIDs (0 stays 0) instead of matching text names
+
+# Add source and destination paths
+rsync_cmd+=( "${sync_root_src%/}/${payload}" )     # Source payload path
+rsync_cmd+=( "${user}@${destination}:${sync_root_dest%/}/" ) # Remote target destination
+
+# Execute the array cleanly
+"${rsync_cmd[@]}" ; result=$?
+j_msg "-${notice}" -m -n " done rsync/ssh copying payload; result:"
+handle_result $result '' '' "$notice"

@@ -1,0 +1,57 @@
+#!/bin/bash
+# reformat_joetoo_LVs
+#
+[ $# -eq 0 ] && { echo "please provide a quoted list of LVs to reformat or one of --all, --all-but-root"; exit 1 ; }
+
+
+newroot_mountpoint="/mnt/gentoo"
+JOETOO_HEADER_DIR="${newroot_mountpoint%/}/joetoobuild-tools"
+
+source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
+command -v toc &>/dev/null || { echo "failed to source ${JOETOO_HEADER_DIR%/}/script_header_joetoo"; exit 1 ; }
+
+root_vg=vg_iota01
+extra_vg=vg_nvme_iota01
+
+# remove whitespace below with sed "s|^${W1}||" , using script_header_joetoo's W0="[[:space:]]*"; W1="[[:space:]]${W0}"
+separator "$(hostname)" "$PN"
+
+# load lv list: cut swap (and maybe root) ; trim leading/trailing whitespace
+case "$1" in
+    --all          )
+          readarray -t lv_list < <(
+              lvs --noheadings | grep -E "${root_vg}|${extra_vg}" | grep -v 'swap' | \
+                  sed "s|^${W1}||" | sed "s|${W1}$||"
+          ) ;;
+    --all-but-root )
+          readarray -t lv_list < <(
+              lvs --noheadings | grep -E "${root_vg}|${extra_vg}" | grep -v 'root\|swap' | \
+                  sed "s|^${W1}||" | sed "s|${W1}$||"
+          ) ;;
+    *              ) lv_list=($1) ;; # unquoted to word-split into array
+esac
+echo "root_vg: [$root_vg]"
+echo "extra_vg: [$extra_vg]"
+echo "lv count: [${#lv_list[@]}]"
+echo "lv_list:"
+printf '[%s]\n' "${lv_list[@]}"
+confirm_continue_or_exit
+
+# interate through lv_list and reformat each
+for x in "${lv_list[@]}"; do
+    read -r lv vg _ <<< "$x"
+    block_dev="/dev/mapper/${vg}-${lv}"
+    # guard - check if block_dev is still mounted
+    if findmnt -S "${block_dev}" &>/dev/null; then
+        j_msg "-${err}" "block device [${block_dev}] is still mounted"
+        j_msg "-${notice}" -p "maybe run something like one of these --"
+        j_msg "-${notice}" -p "${Gon}cd; umount -R /mnt/gentoo${Boff} -- un-mount everything"
+        j_msg "-${notice}" -p "${Gon}cd /mnt/gentoo; umount -R /mnt/gentoo/* 2>/dev/null${Boff} -- un-mount everything but root"
+    fi
+    # verify there is such a block device
+    [ -b "${block_dev}" ] || { j_msg "-${err}" "block device [${block_dev}] not found"; exit 1; }
+    fs="${lv}_fs"
+    j_msg "-${notice}" -p "${BYon}Formatting${Boff} ${Con}${block_dev} for ${BCon}${fs}${Boff}"
+#    yes | mkfs.ext4 -L "$fs" "${block_dev}"
+done
+debug_marker

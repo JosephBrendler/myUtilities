@@ -402,40 +402,36 @@ save_config() {
 }
 
 maybe-activate-swap() {
-    local result=0 newroot_lv="" swap_lv="" swap_lv_type="" swap_dev_or_file=""
-    local -a newroot_lvs=()
+    local result=0 msg="" swap_dev_or_file=""
+    local -a swap_devices=()
     # if the system does not have it, then set up swap - again most important for resource constrained systems
     # check if /proc/swaps has more than 1 line (the header row)
     d_do 'echo "running swapon --show"; swapon --show' "$debug"
-    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+#    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+    if swapon --noheadings --show | read ; then
         j_msg "-${notice}" -p "System already has swap set up; continuing"
     else
         # if the build target has swap set up - use it now
-        j_msg "-${notice}" -p "identifying possible swap LV"
-#        newroot_lv=$(findmnt -lno SOURCE "$newroot_mountpoint"); result=$?
-        readarray -t newroot_lvs < <(findmnt -n -o SOURCE -T "$newroot_mountpoint")
-        # guard against the possibility of corrupted mount tree (root lv multi-mounted)
-        j_msg "-${debug}" -p "\${#newroot_lvs[@]}: ${#newroot_lvs[@]}"
-        d_do 'printf "%s\n" "${newroot_lvs[@]}"' "$debug"
-        (( ${#newroot_lvs[@]} == 1 )) || {
-            findmnt -rn -T "$newroot_mountpoint"
-            die "ambiguous mount state for [$newroot_mountpoint]"
-        }
-        newroot_lv="${newroot_lvs[0]}"
-        # trim the -root from the suffix and append -swap
-        if [ $result -eq 0 ] && [ -n "$newroot_lv" ] ; then
-            swap_lv="${newroot_lv%-root}-swap"; result=$?
-            handle_result $result "$swap_lv" "not found" "$notice"
-        fi
-        if [ $result -eq 0 ]; then
-            # verify that $swap_lv is a block device and mkswap formatted before turning swap on
-            [ -b "$swap_lv" ] && swap_lv_type="$(blkid -o value --match-tag TYPE "$swap_lv")"
-            if [[ "$swap_lv_type" == "swap" ]] ; then
-                swap_dev_or_file="$swap_lv"
-            else
-                j_msg "-${warn}" -p "swap LV [$swap_lv] is not formatted as swap"
-            fi
-        fi
+        j_msg "-${notice}" -p "Discovering swap device ..."
+        # read id of all swap block devs from blkid
+        readarray -t swap_devices < <(blkid -t TYPE=swap -o device)
+        # guard against activating the wrong one if multiple
+        j_msg "-${debug}" -p "\${#swap_devices[@]}: ${#swap_devices[@]}"
+        d_do 'printf "%s\n" "${swap_devices[@]}"' "$debug"
+        case "${#swap_devices[@]}" in
+            0 ) j_msg "-${info}" -p "no swap lv found" ;; # ok - make swapfile
+            1 ) swap_dev_or_file="${swap_devices[0]}"
+                j_msg "-${info}" -p "assigned swap device: [$swap_dev_or_file]" ;;
+            * ) j_msg "-${err}" -p "ambiguous swap state"
+                blkid -t TYPE=swap -o export | sed 's|^|    |'
+                j_msg "-${warn}" -p "${BYon}Note: ${Boff}you will need to choose a device and manually run ${BGon}swapon ${BMon}<device>${Boff}."
+                msg="${BGon}lsblk -f${Boff} or ${BGon}lsblk ${BMon}-p --inverse ${BCon}<device>${Boff} may be helpful."
+                j_msg "-${warn}" -p "$msg"
+                msg="Then resume ${BGon}${PN}${Boff} wtth the ${BMon}-r${Boff} flag (choose skip this step),"
+                msg+=" or use the ${BMon}-<stepnumber>${Boff} flag, to continue"
+                j_msg "-${warn}" -p -n "$msg"; j_msg "-${warn}" -mp ""
+                die "could not determine swap device to activate" ;;
+        esac
         # check if block above did not pick a device to activate
         if [ -z "$swap_dev_or_file" ]; then
             # create swap directory
@@ -468,7 +464,6 @@ maybe-activate-swap() {
             j_msg "-${warn}" -p "no usable swap device or swap file available"
         fi
     fi   # swap on yet?
-
 }
 
 # removed sync-repo in this non-crossbuilding scenario.  Run it in chroot
