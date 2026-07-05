@@ -4794,8 +4794,7 @@ yn_prompt() # (POSIX) set external variable $answer based on reponse to prompt $
 { yn_ret=0; _yn_ps="$*"; answer=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${answer:- }" : '[yYnN]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; j_msg -${notice} -n -p "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
-#RCP; printf " ${BGon}*${Boff} %s" "$_yn_ps [Y/n]: " && read -r answer < /dev/tty; done; yn_ret=$?
+RCP; j_msg -${notice} -p -n "$_yn_ps ${BWon}[Y/n]:${Boff} " && read -r answer < /dev/tty; done; yn_ret=$?
 unset -v _yn_ps ; return $yn_ret ; }
 # @usage yn_prompt "question text"
 # @args $1 string: the question to ask the user
@@ -4811,8 +4810,7 @@ yns_prompt() # (POSIX) set external variable $answer based on reponse to prompt 
 { yns_ret=0 ; _yns_ps="$*"; response=""; printf '%b' "\n\n"; CUU; SCP;
 while ! expr "${response:- }" : '[yYnNsS]' >/dev/null; do
 RCP; repeat ' ' $(termwidth);  ## blank the line
-RCP; j_msg -${notice} -n -p "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
-#RCP; printf " ${BGon}*${Boff} %s" "$_yns_ps [Yes/no/skip|Yns]: " && read -r response < /dev/tty; done; yns_ret=$?
+RCP; j_msg -${notice} -p -n "$_yns_ps ${BWon}[Yes/no/skip|Yns]:${Boff} " && read -r response < /dev/tty; done; yns_ret=$?
 unset -v _yns_ps ; return $yns_ret ; }
 # @usage yns_prompt "question text"
 # @args $1 string: the question to ask the user
@@ -4824,9 +4822,9 @@ unset -v _yns_ps ; return $yns_ret ; }
 # @note use '%b' (expand backslash) to interpret e.g. \n (like echo -e)
 
 confirm_continue_or_exit() # prompt() for confirm to continue (answer must be set globally)
-{ answer="" ; _cce_msg="${BYon}Do you want to continue?" ; yn_prompt "${_cce_msg}"
+{ answer="" ; _cce_msg="${BYon}Do you want to continue?${Boff}" ; yn_prompt "${_cce_msg}"
     case ${answer} in
-        [yY]* ) j_msg -${notice} "Affirmative response from user; continuing" ;;
+        [yY]* ) j_msg -${notice} -p "Affirmative response from user; continuing" ;;
         [nN]* ) j_msg -${err} "Negative response from user; quitting";
                 # safeguard: only exit if running as a script, otherwise return 1
                 case "$-" in
@@ -6369,148 +6367,66 @@ rotate_logfile()
 # @append use can work, incl. here
 
 validate_root_file()  # (POSIX) validate existence and readability of a root-owned file
-{ [ $# -ne 1 ] && { j_msg -${err} "validate_root_file_readonly: must specify file"; return 1; }
+{ vr_ret=0
   _vr_rootFile="$1"
-  _vr_msg=""
+  _vr_dir="${_vr_rootFile%/*}"
+  _vr_DIR_EXISTS=$FALSE
+  _vr_FILE_ESISTS=$FALSE
 
-  # check existence
-  j_msg -${info} -m -n "checking existence of _vr_rootFile [$_vr_rootFile]"
-  if [ ! -f "$_vr_rootFile" ]; then
-    if [ -z "${_vr_rootFile##*/}" ]; then
-      j_msg -${err} "_vr_rootFile [$_vr_rootFile] has a trailing /"
-      if [ -f "${_vr_rootFile%/}" ]; then
-        yn_prompt "${_vr_rootFile%/} is a file; did you mean that ?"
-        case "$answer" in
-          [yY]*) _vr_rootFile=${_vr_rootFile%/} ;;
-          *) return 1 ;;
-        esac
-      else
-        # trailing slash removed, it is still not a file, so reject it
-        [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
-        [ ! -e  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] does not exist; specify a file"; return 1; }
-        j_msg -${err} "[$_vr_rootFile] is some other kind of bogus; specify a file"; return 1
-      fi  # try w/o trailing /
-    else
-      # not a file and does not have a trailing / - reject if dir; assume missing file otherwise (offer to fix below)
-      [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
-    fi  # has trailing /
-    handle_result 1 "" "not found" "$info"
-    j_msg -${err} -p "${BRon}File missing:${Boff} $_vr_rootFile"
-    j_msg -${err} -m "Please verify the path; common mistakes include typos such as:"
-    j_msg -${err} -mp "  /etc/distcc/hostess"
-    j_msg -${err} -mp "  /etc/distcc/hosts.conf"
-    j_msg -${err} -mp "  /etc/distcc/hosts.bak"
+  # handle edge case where file is in the current directory
+  [ "$_vr_dir" = "$_vr_rootFile" ] && _vr_dir="."
 
-    yn_prompt "${BYon}(sudo) Create this file now as root:root (644) ?${Boff}"
-    case "$answer" in
-      [yY]*) fix_root_file "$_vr_rootFile"; _vr_result=$?
-          j_msg -${notice} "fix_root_file result:"
-          handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
-         ;;
-      *) return 2 ;;
-    esac
-  else
-    # -f tests true, but what about -L?
-    if [ -L "$_vr_rootFile" ]; then
-      j_msg -${err} "_vr_rootFile is a symlink; refusing for safety"
-      return 3
-    fi
-    handle_result 0 "found" "" "$info"
-  fi
-  # check readability
-  j_msg -${notice} -m -n "checking readability"
-  if [ ! -r "$_vr_rootFile" ]; then
-    handle_result 1 "" "not readable" "$notice"
-    j_msg -${err} "_vr_rootFile [$_vr_rootFile] is not readable by user [$user]"
-    yn_prompt "${BYon}(sudo) Fix permissions now (chmod a+r) ?${Boff}"
-    case "$answer" in
-      [yY]*) sudo chmod a+r "$_vr_rootFile"; _vr_result=$?
-        j_msg -${notice} "sudo chmod result:"
-        handle_result $_vr_result "" "failed to sudo chmod" ${notice} || return $?
-        ;;
-      *) return 4 ;;
-    esac
-  else
-    handle_result 0 "ok" "" "$notice"
-  fi
-  # check root writability
-  j_msg -${notice} -m -n "(sudo) checking root writability"
-  # new system early chroot wont have sudo but user is likely root - try first
-  WRITABLE=$FALSE
+  # perform elevated tests to bypass unprivileged stat failures
   if isroot; then
-    test -w "$_vr_rootFile" && WRITABLE=$TRUE
+    [ -d "$_vr_dir" ] && _vr_DIR_EXISTS=$TRUE
+    [ -f "$_vr_rootFile" ] && _vr_FILE_ESISTS=$TRUE
   else
-    sudo test -w "$_vr_rootFile" && WRITABLE=$TRUE
-  fi
-  if [ ! $WRITABLE ] ; then
-    handle_result 1 "" "no" "$notice"
-    j_msg -${err} "_vr_rootFile is not writable by root"
-    j_msg -${err} "the file could be immutable, on a ro filesystem, ACL/Security restricted, etc."
-    yn_prompt "${BYon}(sudo) Try ownership/permissions fix now?${Boff}"
-    case "$answer" in
-      [yY]*) fix_root_file "$_vr_rootFile"; _vr_result=$?
-        j_msg -${notice} "fix_root_file result:"
-        handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
-        ;;
-      *) return 5 ;;
-    esac
-  else
-    handle_result 0 "yes" "" "$notice"
+    sudo test -d "$_vr_dir" && _vr_DIR_EXISTS=$TRUE
+    sudo test -f "$_vr_rootFile" && _vr_FILE_ESISTS=$TRUE
   fi
 
-  unset -v _vr_msg _vr_result
-  return 0
-}
-# @usage validate_root_file
-# @args $1 (string) path to root-owned file to validate
-# @ret 0: exists and owned by $user; 1: missing or 2: bad ownership
-# @deps j_msg right_status
-# @note no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
-# @note in ash, the =+ operator works for arithmetic but not text concatenation
-# @rule validate_root_file performs checks only; fixes occur only after explicit user consent
-# @note validate_root_file never silently modifies root-owned files
-# @rule identifies owner/group UIDs via ls and awk for POSIX compatibility
-# @rule emits colored "corrective" instructions to stderr on failure
+  j_msg "-${notice}" -p "validating [$_vr_rootFile] for user [$(id -un)]"
+  if ! isroot; then confirm_continue_or_exit; fi
 
-fix_root_file() # (POSIX) create or repair a root-owned file
-{ fr_ret=0
-[ $# -ne 1 ] && { j_msg -${err} "fix_root_file: must specify file"; return 1; }
-  rootFile="$1"
-  # create file if missing
-  if [ ! -f "$rootFile" ]; then
-    _fr_fix_cmd="touch '$rootFile' && chown 'root:root' '$rootFile'"
-    _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
-    # new system early chroot wont have sudo but user is likely root - try first
-    if isroot; then
-        "$_fr_fix_cmd"
+  # if directory does not exist, create it
+  j_msg "-${notice}" -p -n "checking parent directory"
+  if [ ! $_vr_DIR_EXISTS ]; then
+    if ! isroot; then
+      sudo mkdir -p "$_vr_dir"
+      handle_result $? "created for nonroot user" "failed nonroot" "$notice" || vr_ret=1
     else
-        sudo sh -c "$_fr_fix_cmd"
+      mkdir -p "$_vr_dir"
+      handle_result $? "created for root" "failed as root" "$notice" || vr_ret=1
     fi
-    [ $? -ne 0 ] && fr_ret=1
+  else
+    handle_result 0 "exists" "" "$notice"
   fi
-  # fix ownership and permission if needed
-  if [ ! -w "$rootFile" ]; then
-    _fr_fix_cmd="chattr -i '$rootFile' 2>/dev/null && chown 'root:root' '$rootFile'"
-    _fr_fix_cmd="${_fr_fix_cmd} && chmod 644 '$rootFile'"
-    # new system early chroot wont have sudo but user is likely root - try first
-    if isroot; then
-        "$_fr_fix_cmd"
+
+  # if the file doesn't exist yet, create it; otherwise just verify permissions for non-root user
+  j_msg "-${notice}" -p -n "checking rootFile [$_vr_rootFile]"
+  if [ ! $_vr_FILE_ESISTS ]; then
+    if ! isroot; then
+      sudo touch "$_vr_rootFile" && \
+      sudo chown "$user" "$_vr_rootFile"
+      handle_result $? "created for nonroot user" "failed nonroot" "$notice" || vr_ret=$(( vr_ret | 2 ))
     else
-        sudo sh -c "$_fr_fix_cmd"
+      touch "$_vr_rootFile"
+      handle_result $? "created for root" "failed as root" "$notice" || vr_ret=$(( vr_ret | 2 ))
     fi
-    [ $? -ne 0 ] && fr_ret=$(( fr_ret | 2 ))
+  elif ! isroot && [ ! -w "$_vr_rootFile" ]; then
+    sudo chown "$user" "$_vr_rootFile" && \
+    sudo chmod u+w "$_vr_rootFile"
+    handle_result $? "set perms" "failed to set perms" "$notice" || vr_ret=$(( vr_ret | 4 ))
   fi
-  unset -v _fr_fix_cmd
-  return $fr_ret
+
+  unset _vr_rootFile _vr_dir
+  return $vr_ret
 }
-# @usage fix_rootfile
-# @rule only used when the user explicitly asks for repair.
-# @append Not automatically called by validators.
-# @cont purpose: Create file if missing, set root:root ownership,
-# @append  set safe permissions, remove immutability if needed
-# @cont only run under explicit user consent
-# @note safe alternative to using validate_file which calls validate_dir
-# @append wherein validate_dir wants to chown the entire dir to user
+# @usage validate_root_file <file>
+# @args $1 _vr_rootFile: path to the target file
+# @vars _vr_rootFile _vr_dir: local processing variables
+# @ret vr_ret: 0 if valid and writable, 1 if creation or permission fix fails
+# @deps isroot
 
 validate_logfile()  # validate existence and ownership of logFile
 { _logFile_owner_uid=""; _logFile_group_gid=""
