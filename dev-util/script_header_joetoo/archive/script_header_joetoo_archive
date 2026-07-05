@@ -4485,3 +4485,191 @@ pre_cambrian__is_utf8_terminal()  # (POSIX) returnn 0 if terminal can print utf-
   _u=$(printf '\342\234\223')
   [ "$_u" = "$(printf '\342\234\223')" ]
 }
+
+
+old_validate_root_file()  # (POSIX) validate existence and readability of a root-owned file
+{ [ $# -ne 1 ] && { j_msg -${err} "validate_root_file: must specify file"; return 1; }
+  _vr_rootFile="$1"
+  _vr_msg=""
+  FILE_EXISTS=$FALSE
+  DIR_EXISTS=$FALSE
+
+  # check existence ( need to be root to do so )
+  j_msg -${info} -m -n "checking existence of _vr_rootFile [$_vr_rootFile] (may need sudo)"
+  if isroot; then
+    [ -f "$_vr_rootFile" ] && FILE_EXISTS=$TRUE
+  else
+    sudo [ -f "$_vr_rootFile" ] && FILE_EXISTS=$TRUE
+  fi
+  if [ ! $FILE_EXISTS ]; then
+    if [ -z "${_vr_rootFile##*/}" ]; then
+      j_msg -${err} "_vr_rootFile [$_vr_rootFile] has a trailing /"
+      if [ -f "${_vr_rootFile%/}" ]; then
+        yn_prompt "${_vr_rootFile%/} is a file; did you mean that ?"
+        case "$answer" in
+          [yY]*) _vr_rootFile=${_vr_rootFile%/} ;;
+          *) return 1 ;;
+        esac
+      else
+        # trailing slash removed, it is still not a file, so reject it
+        if isroot; then
+          [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+        else
+          sudo [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+        fi
+        [ ! -e  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] does not exist; specify a file"; return 1; }
+        j_msg -${err} "[$_vr_rootFile] is some other kind of bogus; specify a file"; return 1
+      fi  # try w/o trailing /
+    else
+      # not a file and does not have a trailing / - reject if dir; assume missing file otherwise (offer to fix below)
+      if isroot; then
+        [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+      else
+        sudo [ -d  "${_vr_rootFile%/}" ] && { j_msg -${err} "[$_vr_rootFile] is a directory; specify a file"; return 1; }
+      fi
+    fi  # has trailing /
+    handle_result 1 "" "not found" "$info"
+    j_msg -${err} -p "${BRon}File missing:${Boff} $_vr_rootFile"
+    j_msg -${warn} -p "${BYon}Please verify the path${Boff}"
+
+    yn_prompt "${BYon}(sudo) Create this file now as root:root (644) ?${Boff}"
+    case "$answer" in
+      [yY]*) fix_root_file "$_vr_rootFile"; _vr_result=$?
+          j_msg -${notice} "fix_root_file result:"
+          handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
+         ;;
+      *) return 2 ;;
+    esac
+  else
+    # -f tests true, but what about -L?
+    if [ -L "$_vr_rootFile" ]; then
+      j_msg -${err} "_vr_rootFile is a symlink; refusing for safety"
+      return 3
+    fi
+    handle_result 0 "found" "" "$info"
+  fi
+  # check readability
+  j_msg -${notice} -m -n "checking readability"
+  if [ ! -r "$_vr_rootFile" ]; then
+    handle_result 1 "" "not readable" "$notice"
+    j_msg -${err} "_vr_rootFile [$_vr_rootFile] is not readable by user [$user]"
+    yn_prompt "${BYon}(sudo) Fix permissions now (chmod a+r) ?${Boff}"
+    case "$answer" in
+      [yY]*) sudo chmod a+r "$_vr_rootFile"; _vr_result=$?
+        j_msg -${notice} "sudo chmod result:"
+        handle_result $_vr_result "" "failed to sudo chmod" ${notice} || return $?
+        ;;
+      *) return 4 ;;
+    esac
+  else
+    handle_result 0 "ok" "" "$notice"
+  fi
+  # check root writability
+  j_msg -${notice} -m -n "(sudo) checking root writability"
+  # new system early chroot wont have sudo but user is likely root - try first
+  WRITABLE=$FALSE
+  if isroot; then
+    test -w "$_vr_rootFile" && WRITABLE=$TRUE
+  else
+    sudo test -w "$_vr_rootFile" && WRITABLE=$TRUE
+  fi
+  if [ ! $WRITABLE ] ; then
+    handle_result 1 "" "no" "$notice"
+    j_msg -${err} "_vr_rootFile is not writable by root"
+    j_msg -${err} "the file could be immutable, on a ro filesystem, ACL/Security restricted, etc."
+    yn_prompt "${BYon}(sudo) Try ownership/permissions fix now?${Boff}"
+    case "$answer" in
+      [yY]*)
+        fix_root_file "$_vr_rootFile"; _vr_result=$?
+        j_msg -${notice} "fix_root_file result:"
+        handle_result $_vr_result "" "failed to fix_root_file" ${notice} || return $?
+        ;;
+      *) return 5 ;;
+    esac
+  else
+    handle_result 0 "yes" "" "$notice"
+  fi
+
+  unset -v _vr_msg _vr_result
+  return 0
+}
+# @usage validate_root_file
+# @args $1 (string) path to root-owned file to validate
+# @ret 0: exists and owned by $user; 1: missing or 2: bad ownership
+# @deps j_msg right_status
+# @note no arrays in ash/busybox, so don't use ${FUNCNAME[0]}
+# @note in ash, the =+ operator works for arithmetic but not text concatenation
+# @rule validate_root_file performs checks only; fixes occur only after explicit user consent
+# @note validate_root_file never silently modifies root-owned files
+# @rule identifies owner/group UIDs via ls and awk for POSIX compatibility
+# @rule emits colored "corrective" instructions to stderr on failure
+
+fix_root_file() # (POSIX) create or repair a root-owned file
+{ fr_ret=0
+  [ $# -ne 1 ] && { j_msg -${err} "fix_root_file: must specify file"; return 1; }
+  rootFile="$1"
+  # foundational validation
+  case "$rootFile" in
+    /*/*) ;;   # looks like an absolute pathname with at least one parent dir
+    *)
+      j_msg "-${err}" "fix_root_file: expected absolute pathname, got [$rootFile]"
+      return 1
+        ;;
+  esac
+  # ensure parent directory exists
+  _fr_dn="${rootFile%/*}"
+  if [ ! -d  "$_fr_dn" ] ; then
+    j_msg "-${err}" -p "parent directory [$_fr_dn] does not exist."
+    answer=""
+    yn_prompt "Would you like me to create it?"
+    case "$answer" in
+      [yY]*)
+        if isroot; then
+          mkdir -p "$_fr_dn" && chown root:root "$_fr_dn" && chmod 755 "$_fr_dn"
+        else
+          sudo sh -c "
+            mkdir -p '$_fr_dn' && chown root:root '$_fr_dn' && chmod 755 '$_fr_dn'
+            "
+        fi
+        handle_result $? "" "" "$notice" || fr_ret=1 ;;
+      *) die "aborting as instructed" ;;
+    esac
+  fi
+  # create file if missing
+  if [ ! -f "$rootFile" ]; then
+    j_msg "-${notice}" -p -n "creating rootFile [$rootFile]"
+    # new system early chroot wont have sudo but user is likely root - try first
+    if isroot; then
+      touch "$rootFile" && chown root:root "$rootFile" && chmod 644 "$rootFile"
+    else
+      sudo sh -c "
+        touch '$rootFile' && chown root:root '$rootFile' && chmod 644 '$rootFile'
+      "
+    fi
+    handle_result $? "" "" || fr_ret=$(( fr_ret | 2 ))
+  fi
+  # fix ownership and permission if needed
+  if [ ! -w "$rootFile" ]; then
+    j_msg "-${notice}" -p -n "trying to make unwritable rootFile writable"
+    # new system early chroot wont have sudo but user is likely root - try first
+    if isroot; then
+      chattr -i "$rootFile" 2>/dev/null && \
+      chown root:root "$rootFile" && chmod 644 "$rootFile"
+    else
+      sudo sh -c "
+        chattr -i '$rootFile' 2>/dev/null && \
+        chown root:root '$rootFile' && chmod 644 '$rootFile'
+      "
+    fi
+    handle_result $? "" "" || fr_ret=$(( fr_ret | 4 ))
+  fi
+  unset -v  _fr_dn
+  return $fr_ret
+}
+# @usage fix_root_file
+# @rule only used when the user explicitly asks for repair.
+# @append Not automatically called by validators.
+# @cont purpose: Create file if missing, set root:root ownership,
+# @append create parent dir if asked; set safe permissions, remove immutability if needed
+# @note safe alternative to using validate_file which calls validate_dir
+# @append wherein validate_dir wants to chown the entire dir to user
