@@ -34,6 +34,7 @@ export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 #-----[ chroot section ]----------------------------------------------------
 [ -f ~/.cb-config  ] && source ~/.cb-config   # assigns cb_BOARD, cb_TARGET, cb_TARGET_ARCH, cb_QEMU_ARCH, etc.
 #-----[ v-- edit/comment-out BELOW after system deployment --v ]-----------------------
+export PS1="(chroot) ${PS1}"
 /usr/sbin/install_my_local_ca_certificates
 rerunmsg="first-run chroot configuration not requested by presense of marker"
 if cat /root/firstlogin 2>/dev/null ; then /usr/sbin/finalize-chroot-sys; else j_msg -5 "$rerunmsg"; fi
@@ -41,7 +42,6 @@ if cat /root/firstlogin 2>/dev/null ; then /usr/sbin/finalize-chroot-sys; else j
 echo
 j_msg "-${warn}" -p "edit /root/.bashrc after first boot of new system, to modify prompt, etc."
 echo
-export PS1="(chroot) ${PS1}"
 #-----[ ^-- edit/comment-out ABOVE after system deployment --^ ]-----------------------
 
 #-----[ XDG_RUNTIME_DIR ]--------------------------------------------------------------

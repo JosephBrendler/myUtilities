@@ -107,8 +107,8 @@ command_sequence=(
 'prep-eix-db-dir'
 'sync-repo gentoo'
 'sync-repo joetoo'
-'eselect news list'
-'eselect news read new'
+'eselect-news list'
+'eselect-news read new'
 'eselect-profile'
 'add-user'
 'fix-inittab'
@@ -123,7 +123,6 @@ command_sequence=(
 'edit-package-use-platform'
 'edit-package-use-common'
 'edit-package-accept-keywords'
-'run-dispatch-conf'
 'emerge-common-meta'
 'run-dispatch-conf'
 'edit-80joetoo_common'
@@ -163,7 +162,6 @@ msg1_sequence=(
 'edit package.use (platform)'
 'edit package.use (common)'
 'edit package.accept_keywords'
-'run dispatch-conf'
 'emerge common-meta'
 'run dispatch-conf'
 'edit 80joetoo_common'
@@ -386,7 +384,6 @@ get-check-config() {
     j_msg "-${notice}" -p "  ${BCon}cb_default_profile ..: ${Mon}${cb_default_profile}${Boff}"
     j_msg "-${notice}" -p "  ${BCon}cb_LLVM_TARGET ......: ${Mon}${cb_LLVM_TARGET}${Boff}"
     j_msg "-${notice}" -mp ""
-    j_msg "-${notice}" -p "  ${BYon}To Do ............: ${BRon}Refactor this stuff!${Boff}"
 
     return 0
 }
@@ -414,21 +411,6 @@ emerge-me() {
     return 0
 
 }
-# legacy commnad that what part of the command sequence - obsolete now that it is a pre-requisite
-emerge-git-eselect-repo() {
-    local result=0
-    # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "dev-vcs/git ifcoeselect-repository" "-1"; result=$?
-#    # use an array to construct the emerge command
-#    local -a emerge_command=( "${chroot_emerge}" -av1 )
-#    # before sync-repo joetoo, we need git (and eselect-repo for form)
-#    j_msg "-${notice}" -p "emerging dev-vcs/git and eselect-repository"
-#    emerge_command+=( dev-vcs/git eselect-repository )
-#    "${emerge_command[@]}" ; result=$?
-#    j_msg "-${notice}" -p -n "Done emerging git and eselect-repository; result:"
-#    handle_result $result '' '' "$notice"
-    return $result
-}
 
 get-git-and-eselect-repository() {
     # emerge dev-vcs/git and eselect-repository so sync-type = git will work for sync-repo
@@ -436,7 +418,22 @@ get-git-and-eselect-repository() {
     # is set up yet
     local result=0
     local real_features="$emerge_features"  #save global features
-    emerge_features="-buildpkg -getbinpkg"  # set temp_features
+    emerge_features="-buildpkg -getbinpkg"  # set temp_features in global variable
+
+    # if they are not already installed, emerge git and eselect-repoasitory
+    local my_payload=""
+    if ! command -v git &>/dev/null; then
+        my_payload="dev-vcs/git"
+    fi
+    if ! eselect repository list &>/dev/null; then
+        # add space only if there is already some payload value
+        my_payload+="${my_payload:+ }app-eselect/eselect-repository"
+    fi
+    # format: emerge-me "quoted payload" "quoted extra args"
+    if [ ! -z "$my_payload" ]; then
+        emerge-me "$my_payload" "-1"; result=$?
+    fi
+
     # format: emerge-me "quoted payload" "quoted extra args"
     emerge-me "dev-vcs/git eselect-repository" "-1"; result=$?
     emerge_features="$real_features"        # restore global features
@@ -461,9 +458,11 @@ validate-prerequisites() {
     right_status 0 "$notice"
 
     ### make.conf should be built for chroot/liveOS rather than crossbuilding
-    j_msg "-${notice}" -p -n "Verifying make.conf is built for chroot/liveOS ..."
-    validate_make_conf || die "failed to validate_make_conf"
-    right_status 0 "$notice"
+    # but for initial steps, stock stage3 make.conf is ok - fix up after emerging
+    # joetoo-platform-meta
+#    j_msg "-${notice}" -p -n "Verifying make.conf is built for chroot/liveOS ..."
+#    validate_make_conf || die "failed to validate_make_conf"
+#    right_status 0 "$notice"
     return 0
 }
 
@@ -540,7 +539,13 @@ run-locale-gen() {
     local result=0
     # /etc/locale.gen and /etc/env.d/02locale were updated by populate-target script
     j_msg "-${notice}" -p "running locale-gen ..."
-    locale-gen; result=$?
+    if [ "$verbosity" -gt 5 ] ; then
+        # be more informative
+        locale-gen; result=$?
+    else
+        # be quieter
+        locale-gen 2>/dev/null; result=$?
+    fi
     right_status $result "$notice" || COMPLETE=$FALSE
     return $result
 }
@@ -674,6 +679,42 @@ sync-repo() {
     handle_result $result "" "failed: exit status [$result]" || return 1
     return 0
 }
+
+eselect-news() {
+    local arg1="${1:-}"
+    local arg2="{2:-}"
+    local -a command=( eselect news )
+    local result=0 en_ret=0
+
+    # guard and select case
+    case "$arg1" in
+        "list")
+            command+=( list );
+            "${command[@]}"; result=$?
+            case "$result" in
+                0) return 0 ;;
+                1) j_msg "-${info}" -m "messages await reading";
+                   return 0 ;;
+                *) j_msg "-${warn}" "unknown return code in eselect news list";
+                   return $result ;;
+            esac
+            ;;
+        "read")
+            command+=( read new );
+            "${command[@]}"; result=$?
+            case "$result" in
+                0) return 0 ;;
+                1) j_msg "-${info}" -m "more messages await reading";
+                   return 0 ;;
+                *) j_msg "-${warn}" "unknown return code in eselect news read new";
+                   return $result ;;
+            esac
+            ;;
+        *)
+            die "invalid case in $(FUNCNAME[0])" ;;
+    esac
+}
+
 
 add-user() {
     local result=0 au_result=0
@@ -876,7 +917,7 @@ write-fstab() {
         fi
         j_msg "-${notice}" -p -n "writing (appending) fstab line for / ..."
         printf '%s\t%s\t\t%s\t\t%s\t\t%s' "${temp_str}" "${root_mountpoint}" "${root_fstype}" "${root_opts}" "${root_dp}" >> /etc/fstab
-        handle_rtemp_stresult $? "" "" "$notice" || { FLAGGED=$TRUE ; j_msg "-${err}" "failed to write root line of fstab" ; }
+        handle_result $? "" "" "$notice" || { FLAGGED=$TRUE ; j_msg "-${err}" "failed to write root line of fstab" ; }
     fi
 
     # write (append) a placeholder fstab line for swap
@@ -909,7 +950,7 @@ setup-binpkg-sign-verify() {
     j_msg "-${notice}" -p -n "Checking for joetoo_root_binpkg_signing_keys.tbz2 ..."
     [[ -f "/root/joetoo_root_binpkg_signing_keys.tbz2" ]]
     handle_result $? "found" "not found" "$notice" || \
-        { j_msg "-${err}" "hint: scp from build host to root@<ipaddr>:/mnt/gentoo/${PN}"; exit 1 ; }
+        { j_msg "-${err}" "hint: scp from build host to root@<ipaddr>:/mnt/gentoo/root/"; exit 1 ; }
 
     old_dir="$(pwd)"
     j_msg "-${notice}" -p -n "Moving to /root/"
@@ -1000,7 +1041,14 @@ setup-binpkg-sign-verify() {
 }
 
 edit-91joetoo_platform() {
-    nano /etc/portage/package.use/91joetoo_amd64
+    local configfile="/etc/portage/package.use/91joetoo_amd64"
+    if [ -f "${configfile}" ]; then
+        nano "${configfile}"
+    else
+        j_msg "-${err}" "required configfile [${configfile}] not found"
+        j_msg "-${notice}" -p "${BYon}Hint:${Boff} scp from build host to root@<ipaddr>:/mnt/gentoo/etc/portage/package.use/"
+        return 1
+    fi
     return $?
 }
 
@@ -1289,7 +1337,7 @@ edit-package-use-platform() {
     local configfile
     # use system editor to edit config file (it's numbered, so use find to id it)
 #    configfile=$(find /usr/${TARGET}/etc/portage/package.use/ -iname "*joetoo_${BOARD}")
-    configfile="$(find /etc/portage/package.use/ -iname "*joetoo_${BOARD}")"
+    configfile="$(find /etc/portage/package.use/ -iname "*joetoo_amd64")"
     "${EDITOR}" "${configfile}"
     return $?
 }

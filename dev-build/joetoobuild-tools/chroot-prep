@@ -1,15 +1,38 @@
 #!/bin/sh
 mountpoint="/mnt/gentoo"
-# mount proc
-[ ! -d "${mountpoint%/}/proc" ] && mkdir "${mountpoint%/}/proc"
-mount --types proc proc "${mountpoint%/}/proc"
+
+# include in lieu of full script_header
+die() {
+    printf '%s\n' "ERROR: $1" >&2
+    exit 1
+}
+
+# mount proc if not already mounted
+if ! findmnt -M "${mountpoint%/}/proc" >/dev/null; then
+    [ ! -d "${mountpoint%/}/proc" ] && mkdir "${mountpoint%/}/proc"
+    mount --types proc proc "${mountpoint%/}/proc"
+else
+    die "proc already mounted at ${mountpoint%/}/proc - nested mount prevented"
+fi
+
 # bind-mount sys, dev, and run
 for x in sys dev run; do
-    [ ! -d "${mountpoint%/}/${x}" ] && mkdir "${mountpoint%/}/${x}"
-    mount --rbind "/${x}" "${mountpoint%/}/${x}"
-    mount --make-rslave "${mountpoint%/}/${x}"
+    target="${mountpoint%/}/${x}"
+    if ! findmnt -M "$target" >/dev/null; then
+        [ ! -d "${target}" ] && mkdir -p "${target}"
+        mount --rbind "/${x}" "${target}"
+        mount --make-rslave "${target}"
+    else
+        die "$x already mounted at $target - nested mount prevented"
+    fi
 done
-# maybe mkdir /dev/shm
-test -L /dev/shm && rm -f /dev/shm && mkdir /dev/shm
-mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm
-chmod 1777 /dev/shm
+
+# maybe mkdir and mount /dev/shm
+if ! findmnt -M /dev/shm >/dev/null; then
+    test -L /dev/shm && rm -f /dev/shm && mkdir /dev/shm
+    mount --types tmpfs --options nosuid,nodev,noexec shm /dev/shm
+    chmod 1777 /dev/shm
+else
+    # Check if we should die or just skip
+    echo "Notice: /dev/shm already mounted, skipping."
+fi
