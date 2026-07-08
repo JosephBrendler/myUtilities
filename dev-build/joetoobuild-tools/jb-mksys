@@ -24,6 +24,8 @@ JOETOO_HEADER_DIR="${newroot_mountpoint%/}/joetoobuild-tools"
 # IMPORTANT: also copy script_header_joetoo_extended to /usr/sbin to enable its run_array() functionality
 # to /usr/sbin (where the script expects the header, and where the header expects its helpers to be)
 
+# maybe-activate-swap() - moved to jb-common-functions
+
 #-----[ pre-requisite function ]------------------------------------------------------------------------------------
 
 install_script_headers() {
@@ -79,12 +81,10 @@ install_script_headers() {
         echo -n "validating shell syntax in $dest"
         if [[ "$header" == "script_header_joetoo" ]] ; then
             # check script_header_joetoo for POSIX syntax compliance
-            sh -n "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 3; fi
+            if sh -n "$dest"; then echo " (ok)"; else echo " (fail)"; return 3; fi
         else
             # check script_header_joetoo for Bash syntax compliance
-            bash -n "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 3; fi
+            if bash -n "$dest"; then echo " (ok)"; else echo " (fail)"; return 3; fi
         fi
         # ensure proper permissions are set (644 is good for sourced files; dont need x)
         echo -n "checking permissions on $dest"
@@ -93,8 +93,7 @@ install_script_headers() {
             echo " (ok: $perms)"
         else
             echo -n "(wrong: $perms; resetting)"
-            chmod 644 "$dest"
-            if [ $? -eq 0 ]; then echo " (ok)"; else echo " (fail)"; return 4; fi
+            if chmod 644 "$dest"; then echo " (ok)"; else echo " (fail)"; return 4; fi
         fi
         done
 }
@@ -110,7 +109,7 @@ report_script_header_install_results() {
         *) echo "install_script_headers failed for unknown reason [$result]" ;;
     esac
     # propagate the script header function exit status
-    return $result
+    return "$result"
 }
 
 # Note: legacy version wrote to /usr/sbin and stuggled with overlayfs issues
@@ -118,10 +117,9 @@ report_script_header_install_results() {
 install_script_headers "${JOETOO_HEADER_DIR}"; result=$?
 report_script_header_install_results $result || { echo "install_script_headers failure"; exit 1 ; }
 echo -n "updating PATH"
-export PATH="${PATH}:${JOETOO_HEADER_DIR}"
-if [ $? -eq 0 ] ; then
+if export PATH="${PATH}:${JOETOO_HEADER_DIR}"; then
     echo " (ok)"
-    printf '%s\n' $(echo $PATH | tr ':' ' ') | sed 's|^|   |'
+    printf '%s\n' "$(echo "$PATH" | tr ':' ' ')" | sed 's|^|   |'
 else
     echo " (fail)"
 fi
@@ -144,6 +142,8 @@ fi
 #    echo " (fail)"
 #    echo "Warning: sourcing script_header_joetoo will throw error nonfatal)"
 #fi
+echo -n "sourcing ${JOETOO_HEADER_DIR%/}/script_header_joetoo "
+# shellcheck source=/usr/sbin/script_header_joetoo
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo"
 if command -v j_msg &>/dev/null; then
     handle_result 0 '' '' "${notice}"
@@ -151,8 +151,19 @@ else
     echo "error: failed to source script_header_joetoo; cannot continue"
     exit 1
 fi
+echo -n "sourcing ${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended "
+# shellcheck source=/usr/sbin/script_header_joetoo_extended
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
-if command -v j_msg &>/dev/null; then
+if command -v run_array &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo "error: failed to source script_header_joetoo_extended; cannot continue"
+    exit 1
+fi
+echo -n "sourcing ${JOETOO_HEADER_DIR%/}/jb-common-functions "
+# shellcheck source=/usr/sbin/jb-common-functions
+source "${JOETOO_HEADER_DIR%/}/jb-common-functions"
+if command -v maybe-activate-swap &>/dev/null; then
     handle_result 0 '' '' "${notice}"
 else
     echo "error: failed to source script_header_joetoo_extended; cannot continue"
@@ -162,6 +173,7 @@ fi
 #-----[ variables ]------------------------------------------------------------------------------------
 INTERACTIVE=$TRUE  # force this true
 [ -z "$verbosity" ] && verbosity=5
+# shellcheck disable=SC2034
 verbosity_str=$(get_severity "$verbosity")
 
 mkenv_files="${JOETOO_HEADER_DIR%/}/content_for_mkenv_generic_amd64"
@@ -318,6 +330,7 @@ print_next_steps() {
 prepare-to-finalize-chroot() {
     separator "${PN}" "(${FUNCNAME[0]})"
     local finalize_chroot_joetoo_file="${JOETOO_HEADER_DIR%/}/finalize-chroot-sys"
+    local finalize_chroot_joetoo_common-functions_file="${JOETOO_HEADER_DIR%/}/jb-common-functions"
     local finalize_chroot_joetoo_destination="${newroot_mountpoint%/}/usr/sbin/"
     # install /usr/sbin/finalize-chroot (should have been installed install_files (mkenv) above
     j_msg "-${notice}" -p "validating availability of /usr/sbin/finalize-chroot-sys ..."
@@ -337,6 +350,25 @@ prepare-to-finalize-chroot() {
         j_msg "-${notice}" -p "${BGon}Confirmed${Boff}"
     fi
     d_do 'ls -al "${finalize_chroot_joetoo_destination%/}/${finalize_chroot_joetoo_file##*/}"' "$info"
+
+    # install /usr/sbin/jb-common-functions (should have been installed install_files (mkenv) above
+    j_msg "-${notice}" -p "validating availability of /usr/sbin/jb-common-functions ..."
+    if [[ ! -f "${newroot_mountpoint%/}/usr/sbin/jb-common-functions" ]] ; then
+        j_msg "-${err}" "library ${newroot_mountpoint%/}/usr/sbin/jb-common-functions not found - copying"
+        j_msg "-${notice}" -p -n "looking for \$finalize_chroot_joetoo_common-functions_file [$finalize_chroot_joetoo_common-functions_file]"
+        [[ -f "$finalize_chroot_joetoo_common-functions_file" ]]
+        handle_result $? "found it" "not found" "$notice" || return 1
+        j_msg "-${notice}" -p -n "copying \$finalize_chroot_joetoo_common-functions_file to destination [$finalize_chroot_joetoo_destination]"
+        cp -a "$finalize_chroot_joetoo_common-functions_file" "${finalize_chroot_joetoo_destination %/}/"
+        handle_result $? "" "" "$notice" || return 1
+        j_msg "-${notice}" -p -n "setting permissions"
+        # set permissions by appending basenamed sourcefile to dest dir/
+        chmod +x "${finalize_chroot_joetoo_destination%/}/${finalize_chroot_joetoo_common-functions_file##*/}"
+        handle_result $? "" "" "$notice" || return 1
+    else
+        j_msg "-${notice}" -p "${BGon}Confirmed${Boff}"
+    fi
+    d_do 'ls -al "${finalize_chroot_joetoo_destination%/}/${finalize_chroot_joetoo_common-functions_file##*/}"' "$info"
 
     # mod /root/.bashrc (likely installed already by content_for_mkenv_generic_amd64)
     #  to run /usr/sbin/finalize-chroot if /root/firstlogin exists
@@ -399,71 +431,6 @@ save_config() {
 
     [ $FLAGGED ] && return 1
     return 0
-}
-
-maybe-activate-swap() {
-    local result=0 msg="" swap_dev_or_file=""
-    local -a swap_devices=()
-    # if the system does not have it, then set up swap - again most important for resource constrained systems
-    # check if /proc/swaps has more than 1 line (the header row)
-    d_do 'echo "running swapon --show"; swapon --show' "$debug"
-#    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
-    if swapon --noheadings --show | read ; then
-        j_msg "-${notice}" -p "System already has swap set up; continuing"
-    else
-        # if the build target has swap set up - use it now
-        j_msg "-${notice}" -p "Discovering swap device ..."
-        # read id of all swap block devs from blkid
-        readarray -t swap_devices < <(blkid -t TYPE=swap -o device)
-        # guard against activating the wrong one if multiple
-        j_msg "-${debug}" -p "\${#swap_devices[@]}: ${#swap_devices[@]}"
-        d_do 'printf "%s\n" "${swap_devices[@]}"' "$debug"
-        case "${#swap_devices[@]}" in
-            0 ) j_msg "-${info}" -p "no swap lv found" ;; # ok - make swapfile
-            1 ) swap_dev_or_file="${swap_devices[0]}"
-                j_msg "-${info}" -p "assigned swap device: [$swap_dev_or_file]" ;;
-            * ) j_msg "-${err}" -p "ambiguous swap state"
-                blkid -t TYPE=swap -o export | sed 's|^|    |'
-                j_msg "-${warn}" -p "${BYon}Note: ${Boff}you will need to choose a device and manually run ${BGon}swapon ${BMon}<device>${Boff}."
-                msg="${BGon}lsblk -f${Boff} or ${BGon}lsblk ${BMon}-p --inverse ${BCon}<device>${Boff} may be helpful."
-                j_msg "-${warn}" -p "$msg"
-                msg="Then resume ${BGon}${PN}${Boff} wtth the ${BMon}-r${Boff} flag (choose skip this step),"
-                msg+=" or use the ${BMon}-<stepnumber>${Boff} flag, to continue"
-                j_msg "-${warn}" -p -n "$msg"; j_msg "-${warn}" -mp ""
-                die "could not determine swap device to activate" ;;
-        esac
-        # check if block above did not pick a device to activate
-        if [ -z "$swap_dev_or_file" ]; then
-            # create swap directory
-            local newswap_dir="${newroot_mountpoint%/}/var/cache/swap"
-            mkdir -p "${newswap_dir}"
-            # create swap file
-            local newswapfile="${newswap_dir%/}/swap1"
-            j_msg "-${notice}" -p "creating swap file"
-            dd if=/dev/zero of="${newswapfile}" bs=4M count=1024 status=progress
-            swapsize=$(stat -c '%s' "${newswapfile}")
-            [[ "$swapsize" -ge $((4 * 1024 * 1024 * 1024 )) ]] ; result=$?
-            j_msg "-${notice}" -p "done creating swap file; result:"
-            handle_result $result "${newswapfile##*/} $swapsize" "" "$notice" || \
-                j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to create swap file"
-            if [ $result -eq 0 ] ; then
-                j_msg "-${notice}" -p "formatting swap file"
-                chmod 600 "${newswapfile}" && mkswap "${newswapfile}" ; result=$?
-                handle_result $result "" "" "$notice" || \
-                    j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to format swap file"
-            fi
-            [ $result -eq 0 ] && swap_dev_or_file="$newswapfile"
-        fi
-        # now activate the swap device or file if there is one
-        if [ -n "$swap_dev_or_file" ]; then
-            j_msg "-${notice}" -p -n "activating swap device or file"
-            swapon "$swap_dev_or_file"
-            handle_result $? "activated swap on [$swap_dev_or_file]" "" "$notice" || \
-                j_msg "-${warn}" -p "failed to activate swap on [$swap_dev_or_file]"
-        else
-            j_msg "-${warn}" -p "no usable swap device or swap file available"
-        fi
-    fi   # swap on yet?
 }
 
 # removed sync-repo in this non-crossbuilding scenario.  Run it in chroot
@@ -712,7 +679,7 @@ verify_stage3_signature() {
     # capture the result codes from the pipeline
     results=("${PIPESTATUS[@]}")
     j_msg "-${debug}" -p "gpg output: [$gpg_out]"
-    j_msg "-${debug}" -p "pipline results[@]: [${results[@]}]"
+    j_msg "-${debug}" -p "pipline results[@]: [${results[*]}]"
 
     j_msg "-${notice}" -m -n "wget status:"
     handle_result ${results[0]} "" "wget failed" "$notice" || return 1

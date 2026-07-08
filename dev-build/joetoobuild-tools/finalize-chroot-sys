@@ -49,10 +49,20 @@ right_status $TRUE "$info"  || die "failed to assign INTERACTIVE"
 echo -n "Sourcing script_header_joetoo_extended"
 # shellcheck source=/usr/sbin/script_header_joetoo_extended
 source "${JOETOO_HEADER_DIR%/}/script_header_joetoo_extended"
-if command -v j_msg &>/dev/null; then
+if command -v run_array &>/dev/null; then
     handle_result 0 '' '' "${notice}"
 else
     echo "error: failed to source script_header_joetoo_extended; cannot continue"
+    exit 1
+fi
+
+echo -n "Sourcing jb-common-functions"
+# shellcheck source=/dev/null
+source "${JOETOO_HEADER_DIR%/}/jb-common-functions"
+if command -v maybe-activate-swap &>/dev/null; then
+    handle_result 0 '' '' "${notice}"
+else
+    echo "error: failed to source jb-common-functions; cannot continue"
     exit 1
 fi
 
@@ -118,7 +128,7 @@ command_sequence=(
 'edit-91joetoo_platform'
 'emerge-platform-meta'
 'run-dispatch-conf'
-'configure-make-conf-for-chroot'
+'get-run-resolve-march-native-and-cpuid2cpuflags'
 'edit-make-conf'
 'edit-package-use-platform'
 'edit-package-use-common'
@@ -157,7 +167,7 @@ msg1_sequence=(
 'edit package.use/91joetoo_platform'
 'emerge platform-meta'
 'run dispatch-conf'
-'configure make.conf for chroot'
+'get and run resolve-march-native and cpuid2cpuflags'
 'edit make.conf'
 'edit package.use (platform)'
 'edit package.use (common)'
@@ -423,25 +433,23 @@ get-git-and-eselect-repository() {
     # if they are not already installed, emerge git and eselect-repoasitory
     local my_payload=""
     if ! command -v git &>/dev/null; then
+        j_msg "-${notice}" -p "dev-vcs/git is not installed; adding to payload"
         my_payload="dev-vcs/git"
     fi
     if ! eselect repository list &>/dev/null; then
+        j_msg "-${notice}" -p "app-eselect/eselect-repository is not installed; adding to payload"
         # add space only if there is already some payload value
         my_payload+="${my_payload:+ }app-eselect/eselect-repository"
     fi
     # format: emerge-me "quoted payload" "quoted extra args"
     if [ ! -z "$my_payload" ]; then
+        j_msg "-${notice}" -p "emerging [$my_payload] as a pre-requisite"
         emerge-me "$my_payload" "-1"; result=$?
     fi
 
-    # format: emerge-me "quoted payload" "quoted extra args"
-    emerge-me "dev-vcs/git eselect-repository" "-1"; result=$?
-    emerge_features="$real_features"        # restore global features
-#    j_msg "-${notice}" -p "Running emerge git eselect-repository ..."
-#    FEATURES="-buildpkg -getbinpkg" emerge -uav1 dev-vcs/git app-eselect/eselect-repository
-#    result=$?
-#    j_msg "-${notice}" -p "Done running emerge; result:"
-#    handle_result $result '' '' "$notice" || return 1
+    # restore global features
+    emerge_features="$real_features"
+
     return 0
 }
 
@@ -1299,22 +1307,103 @@ remove-default-draft-make-conf() {
     return 0
 }
 
-configure-make-conf-for-chroot() {
-    # remove any pending version of make.conf and accept delivery of chroot and crossbuild versions
-    remove-default-draft-make-conf
-    # change to the chroot version of make.conf installed by joetoo-platform-meta
-#    newfile="/usr/${TARGET}/etc/portage/make.conf.chroot"
-#    oldfile="/usr/${TARGET}/etc/portage/make.conf"
-    newfile="/etc/portage/make.conf.chroot"
-    oldfile="/etc/portage/make.conf"
-    message_n "configuring make.conf for chroot ..."
-    cp "${newfile}" "${oldfile}" || die "failed to cp ${newfile} ${oldfile}"
-    right_status $TRUE
-    # call validate-llvm-targets() to check the new make.conf
-#    message "calling validate-llvm-targets"
-#    local sbc_native_llvm_targets="${LLVM_TARGET} BFP WebAssembly SPIRV"
-#    validate-llvm-targets "/usr/${TARGET}/etc/portage/make.conf" "${sbc_native_llvm_targets}" || \
-#        die "failed to validate-llvm-targets in TARGET make.conf"
+get-run-resolve-march-native-and-cpuid2cpuflags() {
+    # emerge resolve-march-native and cpuid2cpuflags if not installed
+    local result=0
+    local my_payload=""
+    local INSTALLED=$TRUE # assuming they may already be installed
+    local output=""
+    local _temp_file="" _target_file=""
+    if ! command -v resolve-march-native &>/dev/null; then
+        j_msg "-${notice}" -p "resolve-march-native is not installed; adding to payload"
+        my_payload="app-misc/resolve-march-native"
+    fi
+    if ! command -v cpuid2cpuflags &>/dev/null; then
+        j_msg "-${notice}" -p "cpuid2cpuflags is not installed; adding to payload"
+        # add space only if there is already some payload value
+        my_payload+="${my_payload:+ }app-portage/cpuid2cpuflags"
+    fi
+    # format: emerge-me "quoted payload" "quoted extra args"
+    if [ ! -z "$my_payload" ]; then
+        j_msg "-${notice}" -p "emerging [$my_payload] as non-world-selected"
+        emerge-me "$my_payload" "-1" ; result=$?
+        j_msg "-${notice}" -p -n "Done emerging [$my_payload]; result:"
+        handle_result $result "" "" || INSTALLED=$FALSE
+    fi
+    # if these commands are installed, then offer to use them
+    if [ $INSTALLED ] ; then
+        # compute resolve-march-native output and offer to prepend
+        if command -v resolve-march-native &>/dev/null; then
+            output=$(resolve-march-native)
+        else
+            die "resolve-march-native requested, but it is not installed"
+        fi
+        j_msg "-${notice}" -p "resolve-march-native returned --"
+        j_msg "-${notice}" -m "[$output]"
+        response=""
+        yns_prompt "${BYon}Prepend to make.conf? ${BWon}(y:yes; s:skip this step; n:abort and exit) "
+        case "${response:0:1}" in
+            [sS]) : ;;  # do nothing; just skip
+            [nN]) die "Aborting as instructed" ;;
+            [yY])
+                _target_file="/etc/portage/make.conf"
+                mkdir -p "${_target_file%/*}"             # make sure the directory exists
+                # build prepend content in tempfile (remove with atomic write)
+                _temp_file=$(mktemp /etc/portage/make.conf.XXXXXX)
+                # assemble content with command grouping and then replace target file with atomic write
+                {
+                    printf '##COMMON_FLAGS staged by joetoo using resolve-march-native\n'
+                    printf 'COMMON_FLAGS="%s"\n\n' "-O2 -pipe ${output}"
+                    # preserve existing content; do not strip active COMMON_FLAGS, offer new one
+                    # (use || true to prevent set -e failure if cat cannot find $_target_file)
+                    cat "$_target_file" 2>/dev/null || true
+                } > "$_temp_file"
+                # set permissions and do atomic write to target file
+                chmod 0644 "$_temp_file" && mv "$_temp_file" "$_target_file"; result=$?
+                j_msg "Done; result:"
+                handle_result $result '' '' "$notice" || die "failed to chmod or mv [$_target_file]"
+                ;;
+            *   ) die "Invalid prepend make.conf case in ${FUNCNAME[0]}" ;;
+        esac
+
+        # compute cpuid2cpuflags output and offer to append
+        if command -v cpuid2cpuflags &>/dev/null; then
+            output=$(cpuid2cpuflags)
+        else
+            die "cpuid2cpuflags requested, but it is not installed"
+        fi
+        j_msg "-${notice}" -p "cpuid2cpuflags returned --"
+        j_msg "-${notice}" -m "[$output]"
+        response=""
+        yns_prompt "${BYon}Append to package.use/00cpu-flags? ${BWon}(y:yes; s:skip this step; n:abort and exit) "
+        case "${response:0:1}" in
+            [sS]) : ;;  # do nothing; just skip
+            [nN]) die "Aborting as instructed" ;;
+            [yY])
+                _target_file="/etc/portage/package.use/00cpu-flags"
+                mkdir -p "${_target_file%/*}"             # make sure the directory exists
+                # build append content in tempfile (remove with atomic write)
+                _temp_file=$(mktemp /etc/portage/package.use/00cpu-flags.XXXXXX)
+                # assemble content with command grouping and then replace target file with atomic write
+                {
+                    # preserve existing content but strip old/active CPU_FLAGS entries
+                    # (use || true to prevent set -e failure if grep matches nothing, which is ok)
+                    grep -v "^${W0}\*/\* CPU_FLAGS_X86=" "$_target_file" 2>/dev/null || true
+                    # append a comment and the new line if there is one
+                    printf '##cpu-flags staged by joetoo using cpuid2cpuflags\n'
+                    [ -n "$output" ] && printf '*/* %s\n' "$output"
+                } > "$_temp_file"
+                # set permissions and do atomic write to target file
+                chmod 0644 "$_temp_file" && mv "$_temp_file" "$_target_file"; result=$?
+                j_msg "Done; result:"
+                handle_result $result '' '' "$notice" || die "failed to chmod or mv [$_target_file]"
+                ;;
+            *   ) die "Invalid prepend make.conf case in ${FUNCNAME[0]}" ;;
+        esac
+    else
+        j_msg "failed to emerge and use resolve-march-native and/or cpuid2cpuflags"
+        return 1
+    fi
     return 0
 }
 
@@ -1390,6 +1479,12 @@ checkroot
 separator "$(hostname)" "${PN}-${BUILD} (starting)"
 
 initialize_variables     # set defaults
+
+# maybe activate swap
+j_msg "-${notice}" -p "running maybe-activate-swap ..."
+maybe-activate-swap; result=$?
+j_msg "-${notice}" -p -n "Done running maybe-activate-swap; result:"
+handle_result $result '' '' "$notice" || die "failed to maybe-activate-swap"
 
 j_msg "-${debug}" -p "cmdline: $*"
 j_msg "-${debug}" -p "processing cmdline args: $*"

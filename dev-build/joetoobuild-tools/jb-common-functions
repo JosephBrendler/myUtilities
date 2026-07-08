@@ -1,0 +1,79 @@
+#!/bin/bash
+# jb-common-functions    (c) joe.brendler  2026-2078
+#
+# to be sourced in programs that employ these functions
+# /usr/sbin/scritp_header_joetoo must be sourced first
+# shellcheck source-path=/usr/sbin/scritp_header_joetoo
+# /usr/sbin/scritp_header_joetoo_extended must be sourced for cli processing
+# shellcheck source-path=/usr/sbin/scritp_header_joetoo_extended
+#
+# ToDo - rationalize jb- and cb- suites; possibly merge as custombuild-tools
+#
+maybe-activate-swap() {
+    local result=0 msg="" swap_dev_or_file=""
+    local -a swap_devices=()
+    # if the system does not have it, then set up swap - again most important for resource constrained systems
+    # check if /proc/swaps has more than 1 line (the header row)
+    d_do 'echo "running swapon --show"; swapon --show' "$debug"
+#    if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+    if swapon --noheadings --show | read ; then
+        j_msg "-${notice}" -p "System already has swap set up; continuing"
+    else
+        # if the build target has swap set up - use it now
+        j_msg "-${notice}" -p "Discovering swap device ..."
+        # read id of all swap block devs from blkid
+        readarray -t swap_devices < <(blkid -t TYPE=swap -o device)
+        # guard against activating the wrong one if multiple
+        j_msg "-${debug}" -p "\${#swap_devices[@]}: ${#swap_devices[@]}"
+        d_do 'printf "%s\n" "${swap_devices[@]}"' "$debug"
+        case "${#swap_devices[@]}" in
+            0 ) j_msg "-${info}" -p "no swap lv found" ;; # ok - make swapfile
+            1 ) swap_dev_or_file="${swap_devices[0]}"
+                j_msg "-${info}" -p "assigned swap device: [$swap_dev_or_file]" ;;
+            * )
+                j_msg "-${err}" -p "ambiguous swap state"
+                blkid -t TYPE=swap -o export | sed 's|^|    |'
+                j_msg "-${warn}" -p "${BYon}Note: ${Boff}you will need to choose a device and manually run ${BGon}swapon ${BMon}<dev>${Boff}"
+                msg="${BGon}lsblk -f${Boff} or ${BGon}lsblk ${BMon}-p --inverse ${BCon}<device>${Boff} may be helpful."
+                j_msg "-${warn}" -p "$msg"
+                msg="Then resume ${BGon}${PN}${Boff} with the ${BMon}-r${Boff} flag (choose skip this step),"
+                msg+=" or use the ${BMon}-<stepnumber>${Boff} flag, to continue"
+                j_msg "-${warn}" -p -n "$msg";
+                j_msg "-${warn}" -mp ""
+                die "could not determine swap device to activate"
+                ;;
+        esac
+        # check if block above did not pick a device to activate
+        if [ -z "$swap_dev_or_file" ]; then
+            # create swap directory
+            local newswap_dir="${newroot_mountpoint%/}/var/cache/swap"
+            mkdir -p "${newswap_dir}"
+            # create swap file
+            local newswapfile="${newswap_dir%/}/swap1"
+            j_msg "-${notice}" -p "creating swap file"
+            dd if=/dev/zero of="${newswapfile}" bs=4M count=1024 status=progress
+            swapsize=$(stat -c '%s' "${newswapfile}")
+            [[ "$swapsize" -ge $((4 * 1024 * 1024 * 1024 )) ]] ; result=$?
+            j_msg "-${notice}" -p "done creating swap file; result:"
+            handle_result $result "${newswapfile##*/} $swapsize" "" "$notice" || \
+                j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to create swap file"
+            if [ $result -eq 0 ] ; then
+                j_msg "-${notice}" -p "formatting swap file"
+                chmod 600 "${newswapfile}" && mkswap "${newswapfile}" ; result=$?
+                handle_result $result "" "" "$notice" || \
+                    j_msg "-${warn}" -p "${BYon}warning:${Boff} failed to format swap file"
+            fi
+            [ $result -eq 0 ] && swap_dev_or_file="$newswapfile"
+        fi
+        # now activate the swap device or file if there is one
+        if [ -n "$swap_dev_or_file" ]; then
+            j_msg "-${notice}" -p -n "activating swap device or file"
+            swapon "$swap_dev_or_file"
+            handle_result $? "activated swap on [$swap_dev_or_file]" "" "$notice" || \
+                j_msg "-${warn}" -p "failed to activate swap on [$swap_dev_or_file]"
+        else
+            j_msg "-${warn}" -p "no usable swap device or swap file available"
+        fi
+    fi   # swap on yet?
+}
+
