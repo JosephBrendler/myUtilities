@@ -6,6 +6,9 @@
 # Joe Brendler - 3 Feb 2014
 #   rev 4 Feb 2014 - generalized for any log file name with "distcc" in the name
 #   rev 5 Oct 2023 - incorporated count_distcc_jobs into a continuous watch
+
+set -o pipefail
+
 source /usr/sbin/script_header_joetoo
 
 # if BUILD file exists, source it
@@ -15,60 +18,104 @@ if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0
 #tempfile="/home/joe/tempfileforcountdistccjobs"
 tempfile="/var/tmp/tempfileforcountdistccjobs"
 
-# TODO - load array to accomodate more than one log file
-distcc_log=$(find /var/log/distcc/ -maxdepth 1 -mindepth 1 -type f -iname '*distcc*')
+wait_time=2   # seconds
+
+distcc_log=""
 
 # ---[ function blocks ]------------------------------------------
 
 filter_log()
 {
-grep 'COMPILE_OK' ${distcc_log} | cut -d')' -f2 | cut -d':' -f2 | sort -h \
-                  | uniq -c | sed 's/^\ *//g' > ${tempfile}
+    # parse distcc log file with form:
+    #distccd[2389647] (dcc_job_summary) client: fd62:6262:6262:0:92f7:3017:f474:162a:37290 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5803ms x86_64-pc-linux-gnu-g++ /tmp/portage/media-libs/libva-intel-media-driver-26.1.6/work/media-driver-intel-media-26.1.6/media_softlet/agnostic/common/vp/hal/features/vp_dn_filter.cpp
+    local -a command=( grep 'COMPILE_OK' "${distcc_log}" )
+    local -a pipe1=( awk -F 'client: ' '{print $2}' )   # use awk to strip all left of "client:"
+    local -a pipe2=( cut -d' ' -f1 )    # use cut to strip all right of first space " " (isolate ip)
+    # run the filter pipline
+    "${command[@]}" | "${pipe1[@]}" | "${pipe2[@]}" > "$tempfile"  || return 1
+    return 0
 }
 
 ip_lookup()
 {
-HCU
-while read line
-do
-    var=$( nslookup $( echo $line | cut -d' ' -f2 ) | grep name | cut -d"=" -f2 | cut -d" " -f2 )
-    j_msg -${notice} -p -n "$( echo -e $line | cut -d' ' -f1)\t $( echo -e $line | cut -d' ' -f2)\t$(echo ${var%.})"
-    echo
-done < "${tempfile}"
-SCU
+    local ip_address="" host_name="" line="" host_name_address="" msg=""
+    local FLAGGED=$FALSE
+    local -a lines=() # indexed array of tempfile lines, probably containing ip_addresses
+    local -A host_names=()   # associative array of hostnames keyed on ip_address
+    local -A distcc_counts=() # associative array of hit count keyed on hostname-ip_address string
+    local count
+    # hide cursor to prevent flicker
+    HCU
+    # read ip_addresses from tempfile
+    readarray -t lines < "$tempfile"
+    for ip_address in "${lines[@]}"
+    do
+        # validate the address before looking it up
+        if isipv4 "$ip_address" || isipv6 "$ip_address"; then
+            # use getent for reverse lookup (ip to name)
+            host_name=$(getent hosts "$ip_address" | awk '{print $2}')
+            host_names[$ip_address]="$host_name"
+            host_name_address="${host_name} ${ip_address}"
+            count="${distcc_counts[$host_name_address]}"
+            distcc_counts[$host_name_address]=$(( count + 1 ))
+       else
+            # strip what might be a trailing port number and try again
+            ip_address="${ip_address%:*}"
+            if isipv4 "$ip_address" || isipv6 "$ip_address" ; then
+                # use getent for reverse lookup (ip to name)
+                host_name=$(getent hosts "$ip_address" | awk '{print $2}')
+                host_names[$ip_address]="$host_name"
+                host_name_address="${host_name} ${ip_address}"
+                count="${distcc_counts[$host_name_address]}"
+                distcc_counts[$host_name_address]=$(( count + 1 ))
+            else
+                # not a valid address - flag and skip
+                host_name="bogus"
+                host_names[$ip_address]="$host_name"
+                host_name_address="${host_name} ${ip_address}"
+                count="${distcc_counts[$host_name_address]}"
+                distcc_counts[$host_name_address]=$(( count + 1 ))
+                FLAGGED=$TRUE
+                continue
+            fi
+        fi
+    done
+    # loop through associative array by keys (host_names)
+    for host_name_address in "${!distcc_counts[@]}"; do
+        # output hostname (ip address) count
+        msg="${Con}${host_name_address%\ *}}${Boff} (${BMon}${host_name_address#*\ }}${Boff}) ${distcc_counts[$host_name_address]}"
+        j_msg "-${notice}" -m "$msg"
+    done | sort -k1
+    # unhide the cursor
+    SCU
+    [ $FLAGGED ] && return 1
+    return 0
 }
 
 
 get_log_file()
 {
+    # TODO - load array to accomodate more than one log file
+    distcc_log=$(find /var/log/distcc/ -maxdepth 1 -mindepth 1 -type f -iname '*distcc*')
     # if logging to file, expects the log file to be in /var/log/distcc/
     # if there is no such file, assume logging to syslog (messages)
-    [ -z "${distcc_log}" ] && distcc_log="/var/log/messages" \
-        || distcc_log="/var/log/distcc/"${distcc_log}
-    j_msg -${notice} -p "${LBon}Analyzing log file [${BWon}${distcc_log}${LBon}]${Boff}"
-
-#    echo -en "\n"$BGon"* "$BBon"Enter distcc log filename ("$distcc_log") : "$Boff
-#    read reply
-#    [ ! -z "${reply}" ] && distcc_log="$reply"
-#    if [ -e $distcc_log ]
-#    then
-#        message "counting distcc jobs in ${distcc_log} ..."
-#    else
-#        E_message "Error: log file ${distcc_log} does not exist."
-#        echo && exit 1
-#    fi
-
+    [ -z "${distcc_log}" ] && distcc_log="/var/log/syslog"
+    [ -z "${distcc_log}" ] && distcc_log="/var/log/messages"
 }
 
-count_my_distcc_jobs() {
-get_log_file
-filter_log
+count_my_distcc_jobs()
+{
+    get_log_file
+    j_msg "-${notice}" -p "${BCon}Analyzing log file [${BWon}${distcc_log}${LBon}]${Boff}"
 
-message "Looking up hostnames for ip addresses found. Please wait..."
-message "(This may take a few minutes to time out if the hosts are not on line)"
-ip_lookup
+    j_msg "-${notice}" -p -n "Filtering client ip addresses from log file to temp file"
+    filter_log
+    right_status $?
 
-rm ${tempfile}
+    message "Looking up hostnames and counting hits for ip addresses found. Please wait..."
+    ip_lookup || j_msg "-${warn}" -p "ip_lookup returned error exit status [$?]"
+
+    rm -f "${tempfile}"
 }
 
 
@@ -78,8 +125,9 @@ watch_my_distcc ()
     while [ 1 ]; do
         CUP 1 1;
         separator "watchdistcc-${BUILD}"
-        echo | count_my_distcc_jobs 2> /dev/null;
-        sleep 2;
+#        echo | count_my_distcc_jobs 2> /dev/null;
+        count_my_distcc_jobs 2>/dev/null;
+        sleep "${wait_time}";
     done
 }
 
