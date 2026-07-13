@@ -10,6 +10,7 @@
 set -o pipefail
 
 source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_ssh
 
 # if BUILD file exists, source it
 if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0"; fi
@@ -18,9 +19,16 @@ if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0
 #tempfile="/home/joe/tempfileforcountdistccjobs"
 tempfile="/var/tmp/tempfileforcountdistccjobs"
 
-wait_time=2   # seconds
+local_user=joe
+SSH_KEY="/home/${local_user}/.ssh/id_rsa"
+
+wait_time=1   # seconds
 
 distcc_log=""
+
+# ensure not to leave cursor hidden or ssh keys loaded
+cleanup() { echo "running trap"; unload_key "$local_user"; stop_ssh_agent "$local_user"; SCU; exit 0 ; }
+trap cleanup INT TERM EXIT
 
 # ---[ function blocks ]------------------------------------------
 
@@ -38,56 +46,142 @@ filter_log()
 
 ip_lookup()
 {
-    local ip_address="" host_name="" line="" host_name_address="" msg=""
+    local ip_address="" host_name="" line="" host_name_address="" msg="" result=0
     local FLAGGED=$FALSE
     local -a lines=() # indexed array of tempfile lines, probably containing ip_addresses
     local -A host_names=()   # associative array of hostnames keyed on ip_address
     local -A distcc_counts=() # associative array of hit count keyed on hostname-ip_address string
-    local count
-    # hide cursor to prevent flicker
-    HCU
+    local count=0 iface="" ssh_command=""
+
     # read ip_addresses from tempfile
     readarray -t lines < "$tempfile"
+    j_msg -$debug -p "[${#lines[@]}] lines read from tempfile"
     for ip_address in "${lines[@]}"
     do
+        host_name=""   # (re)initialize
+        iface=""       # (re)initialize
         # validate the address before looking it up
         if isipv4 "$ip_address" || isipv6 "$ip_address"; then
-            # use getent for reverse lookup (ip to name)
-            host_name=$(getent hosts "$ip_address" | awk '{print $2}')
-            host_names[$ip_address]="$host_name"
-            host_name_address="${host_name} ${ip_address}"
-            count="${distcc_counts[$host_name_address]}"
-            distcc_counts[$host_name_address]=$(( count + 1 ))
+            # if hosthame is already known, then just increment its cound and continue to next line
+            if [ -n "${host_names[$ip_address]}" ]; then
+                host_name="${host_names[$ip_address]}"
+                host_name_address="${host_name} ${ip_address}"
+                count="${distcc_counts[$host_name_address]}"
+                distcc_counts[$host_name_address]=$(( count + 1 ))
+                continue
+            else
+                # use getent for reverse lookup (ip to name)
+                host_name=$(getent hosts "$ip_address" | awk '{print $2}')
+            fi
        else
             # strip what might be a trailing port number and try again
             ip_address="${ip_address%:*}"
             if isipv4 "$ip_address" || isipv6 "$ip_address" ; then
-                # use getent for reverse lookup (ip to name)
-                host_name=$(getent hosts "$ip_address" | awk '{print $2}')
-                host_names[$ip_address]="$host_name"
-                host_name_address="${host_name} ${ip_address}"
-                count="${distcc_counts[$host_name_address]}"
-                distcc_counts[$host_name_address]=$(( count + 1 ))
+                # if hosthame is already known, then just increment its cound and continue to next line
+                if [ -n "${host_names[$ip_address]}" ]; then
+                    host_name="${host_names[$ip_address]}"
+                    host_name_address="${host_name} ${ip_address}"
+                    count="${distcc_counts[$host_name_address]}"
+                    distcc_counts[$host_name_address]=$(( count + 1 ))
+                    continue
+                else
+                    # use getent for reverse lookup (ip to name)
+                    host_name=$(getent hosts "$ip_address" | awk '{print $2}')
+                fi
             else
                 # not a valid address - flag and skip
                 host_name="bogus"
-                host_names[$ip_address]="$host_name"
-                host_name_address="${host_name} ${ip_address}"
-                count="${distcc_counts[$host_name_address]}"
-                distcc_counts[$host_name_address]=$(( count + 1 ))
                 FLAGGED=$TRUE
                 continue
             fi
         fi
+        # if valid-form ip address returned no hostname with getent, try directly with ssh
+        if [ -z "$host_name" ] ; then
+            CLR; CUP 1 1
+            j_msg -$notice -p "getent failed looking up ip_address [$ip_address], trying ssh"
+            # if ssh_agent isnt started start it and load keys (should only need to happen once)
+            if [ -z "$AGENT_ENV" ] ; then
+                j_msg -$notice -p "AGENT_ENV not set up; doing so now"
+                j_msg -$notice -p -n "starting ssh agent ..."
+                start_ssh_agent "$local_user" "$SSH_KEY"
+                handle_result $? '' 'failed to start_ssh_agent' $notice || exit 1
+                j_msg -$notice -p -n "loading local user ssh key"
+                load_key "$local_user"
+                handle_result $? '' 'failed to load_key' $notice || exit 1
+                sleep 3
+                CLR; CUP 1 1
+            fi
+#            d_do 'echo "AGENT_ENV_FILE:"; cat $AGENT_ENV_FILE; echo "==========================="' $debug
+            j_msg -$notice -p -n "sourcing AGENT_ENV_FILE [$AGENT_ENV_FILE]"
+            source $AGENT_ENV_FILE  # source ssh_agent stuff incl auth sock
+            handle_result $? '' 'failed to source AGENT_ENV_FILE' $notice || echo "maybe exit here"
+            j_msg -$notice -p -n "looking up hostname"
+            host_name=$(sudo -E -u "${local_user}" ssh -q -i "$SSH_KEY" "$ip_address" hostname)
+            handle_result $? "$host_name" 'failed to look up host_name' $notice
+            # if that did not work, then mark it unknown
+            if [ -z "$host_name" ] ; then
+                host_name="unknown"
+            else
+                # ask remote machine to submit unregistered hostname to dns
+                # Note: using -- /usr/sbin/ddns-update "$EVENT" "$ADDR" "$INTERFACE" "$SOURCE"
+                j_msg -$notice -p -n "looking up interface"
+                iface=$(sudo -E -u "$local_user" ssh -q "$ip_address" "ip -o addr show | grep '$ip_address'" | awk '{print $2}')
+                result=$?
+                handle_result $result "$iface" '' $notice
+                if [ -z "$iface" ] ; then
+                    j_msg -$err -p "Note: host [$host_name] ip address [$ip_address] [unknown interface] is not registered with dns"
+                    sleep 3
+                    return 1
+                else
+#echo "in NOT -z (i.e. else) branch of if -z iface block"
+#echo "verbosity: $verbosity"
+#echo "err: $err"
+#echo "DEBUG: $(TrueFalse $DEBUG)"
+#echo "QUIET: $(TrueFalse $QUIET)"
+                    j_msg "-${notice}" -p "Note: host [$host_name] ip address [$ip_address] is not registered with dns"
+                    j_msg -$notice -p -n "Asking host [$host_name] via ssh to do that now"
+                    # now via ssh have the remote machine submit the update
+                    ssh_command="rm -f /run/ddns-daemon.cache.*"
+#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
+                    sudo -E -u "$local_user" ssh -q -i "$SSH_KEY" "$ip_address" "$ssh_command"
+                    result=$?
+#echo "just ran sudo ... ssh ... status: [$result]"
+                    ssh_command="/usr/sbin/ddns-update 'add' '$ip_address' '$iface' '${PN}-${BUILD}'"
+#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
+                    sudo -E -u "$local_user" ssh -q -i "$SSH_KEY" "$ip_address" "$ssh_command"
+                    result=$?
+#echo "just ran sudo ... ssh ... status: [$result]"
+                    handle_result $result '' "Host [$host_name] failed to reginster [$ip_address], [$iface] with dn" $notice
+                    sleep 3
+                fi
+#echo "now completely past if -z iface block"
+
+            fi
+        fi
+        # record hostname and update hit count
+        host_names[$ip_address]="$host_name"
+        host_name_address="${host_name} ${ip_address}"
+        count="${distcc_counts[$host_name_address]}"
+        distcc_counts[$host_name_address]=$(( count + 1 ))
     done
+    # now unload keys and secure the ssh agent
+    if [ ! -z "$AGENT_ENV" ] ; then
+        j_msg -$debug -p "AGENT_ENV: $AGENT_ENV"
+        j_msg -$notice -p "unloading key and stopping ssh agent"
+        unload_key "$local_user"
+        stop_ssh_agent "$local_user"
+        unset AGENT_ENV   # clear the flag that tells us whether the environment is set up
+    fi
     # loop through associative array by keys (host_names)
+    # hide cursor to prevent flicker
     for host_name_address in "${!distcc_counts[@]}"; do
+        EL   # erase line
         # output hostname (ip address) count
-        msg="${Con}${host_name_address%\ *}${Boff} (${BMon}${host_name_address#*\ }${Boff}) ${distcc_counts[$host_name_address]}"
+        msg="${BCon}${distcc_counts[$host_name_address]}${Boff}\t${Con}${host_name_address%\ *}${Boff}"
+        msg+=" (${BMon}${host_name_address#*\ }${Boff})"
         j_msg "-${notice}" -m "$msg"
     done | sort -k1
     # unhide the cursor
-    SCU
     [ $FLAGGED ] && return 1
     return 0
 }
@@ -112,21 +206,45 @@ count_my_distcc_jobs()
     filter_log
     right_status $?
 
-    message "Looking up hostnames and counting hits for ip addresses found. Please wait..."
+    j_msg "-${notice}" -p "Looking up hostnames and counting hits for ip addresses found. Please wait..."
     ip_lookup || j_msg "-${warn}" -p "ip_lookup returned error exit status [$?]"
 
     rm -f "${tempfile}"
 }
 
+show_meter() {
+    local input=$1
+    local step=$(( input % 10 ))
+    local c1="$BOon" c2="$BBon"
+    case "$step" in
+        0) echo -e -n "${c1}. . . . .${Boff}\r" ;;
+        1) echo -e -n "${c2}. ${c1}. . . .${Boff}\r" ;;
+        2) echo -e -n "${c2}. . ${c1}. . .${Boff}\r" ;;
+        3) echo -e -n "${c2}. . . ${c1}. .${Boff}\r" ;;
+        4) echo -e -n "${c2}. . . . ${c1}.${Boff}\r" ;;
+        5) echo -e -n "${c2}. . . . .${Boff}\r" ;;
+        6) echo -e -n "${c1}. ${c2}. . . .${Boff}\r" ;;
+        7) echo -e -n "${c1}. . ${c2}. . .${Boff}\r" ;;
+        8) echo -e -n "${c1}. . . ${c2}. .${Boff}\r" ;;
+        9) echo -e -n "${c1}. . . . ${c2}.${Boff}\r" ;;
+    esac
+}
+
+erase_rest_of_screen() {
+    SCP; for x in $(seq $(QCR) $(termheight)); do CUP $x 1; EL; done; RCP
+}
 
 watch_my_distcc ()
 {
-    CLR;
-    while [ 1 ]; do
-        CUP 1 1;
+    local count=0
+    CUP 1 1; CLR; HCU  # start upper left; clear the screen and hide the cursor to prevent flicker
+    while true ; do
+        CUP 1 1
         separator "$(hostname)" "watchdistcc-${BUILD}"
 #        echo | count_my_distcc_jobs 2> /dev/null;
         count_my_distcc_jobs 2>/dev/null;
+        erase_rest_of_screen
+        show_meter "$(( count++ ))"; echo
         sleep "${wait_time}";
     done
 }
