@@ -27,7 +27,63 @@ wait_time=1   # seconds
 distcc_log=""
 
 # ensure not to leave cursor hidden or ssh keys loaded
-cleanup() { echo "running trap"; unload_key "$local_user"; stop_ssh_agent "$local_user"; SCU; exit 0 ; }
+cleanup() {
+    CLR; CUP 1 1
+    j_msg -$notice -p "Running trap-triggered cleanup as requested ..."
+    # Disable trap to prevent recursive loops
+    j_msg -$notice -p -n "Clearing pre-set trap"
+    trap - INT TERM EXIT
+    handle_result $? '' '' $notice
+
+    # use $$ to identify the process group (PGID) but use -P to kill only its children
+    # (so this cleanuip can finish) -KILL to not bother with politeness of -TERM
+    # Note: TERM: 15; INT: 2; KILL: 9 -- numeric constant values of SIG___ that kill or pkill can send
+    j_msg -$notice -p -n "Killing process group"
+    pkill -KILL  -P $$ 2>/dev/null
+    result=$?
+    handle_result $result '' "exit status [$result]" $notice
+    [ $result -eq 1 ] && j_msg -$notice -m "(${BGon}no child processes to kill - ok${Boff})"
+    # restore terminal sanity
+    j_msg -$notice -p -n "Restoring terminal sanity"
+    stty echo icrnl 2>/dev/null
+    SCU
+    handle_result $? '' '' $notice
+
+    # set up ssh_cmd in a local array so we dont have to do it all twice
+    local ssh_cmd=( sudo -u "$local_user" env SSH_AUTH_SOCK="$SSH_AUTH_SOCK" ssh-add -l )
+    # if ssh environment is set and an ssh key is loaded, unload it
+    if [ -n "$SSH_KEY" ] && [ -n "$SSH_AUTH_SOCK" ]; then
+        if "${ssh_cmd[@]}" 2>/dev/null | grep -q "$SSH_KEY"; then
+            j_msg -$notice -p -n "Unloading ssh key"
+            unload_key "$local_user"
+            handle_result $? '' '' $notice
+        else
+            j_msg -$notice -p "ssh key not loaded - skipping unload action"
+        fi
+    else
+        # don't source $AGENT_ENV_FILE and unload the key if it isnt already sourced
+        # (key could be loaded by some other process)
+        j_msg -$notice -p "ssh environment not set up - skipping key unload action"
+    fi
+    # if ssh environment is set and ssh_agent is running with no keys, stop it
+    if [ -n "$SSH_AGENT_PID" ] && [ -n "$SSH_AUTH_SOCK" ]; then
+        if "${ssh_cmd[@]}" 2>/dev/null | grep -q "The agent has no identities." ; then
+            j_msg -$notice -p -n "Stopping ssh_agent"
+            stop_ssh_agent "$local_user"
+            handle_result $? '' '' $notice
+        else
+            j_msg -$notice -p "ssh agent either nor running or in use with other keys - skipping unload action"
+        fi
+    else
+        # don't source $AGENT_ENV_FILE and stop the agent if it isnt already sourced
+        # (agent could be in use by some other process)
+        j_msg -$notice -p "ssh_agent not running - skipping stop action"
+    fi
+
+    SCU
+    exit 0
+}
+
 trap cleanup INT TERM EXIT
 
 # ---[ function blocks ]------------------------------------------
@@ -41,6 +97,89 @@ filter_log()
     local -a pipe2=( cut -d' ' -f1 )    # use cut to strip all right of first space " " (isolate ip)
     # run the filter pipline
     "${command[@]}" | "${pipe1[@]}" | "${pipe2[@]}" > "$tempfile"  || return 1
+    return 0
+}
+
+good_connectivity() {
+    local ip_addr="$1"
+    # first check connectivity, and then if possible use ssh to get hostname from server and tell it to register with dns
+    # -c count; -W wait; -n nodns; note gnu timeout assurance
+#    if timeout 1.5 ping -c 1 -W 1.5 -n "$ip_addr" &>/dev/null ; then
+    # switch to devtcp to use port 22
+    if timeout 1.5 bash -c "</dev/tcp/${ip_address}/22" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+    # if successful; tell caller so it can update the hostname record for this ip address, else mark it unknown
+
+maybe_get_and_register_hostname() {
+    CLR; CUP 1 1
+    j_msg -$notice -p "getent failed looking up ip_address [$ip_address], but it pings; trying ssh"
+    # if ssh_agent isnt started start it and load keys (should only need to happen once)
+    if [ -z "$AGENT_ENV" ] ; then
+        j_msg -$notice -p "AGENT_ENV not set up; doing so now"
+        j_msg -$notice -p -n "starting ssh agent ..."
+        start_ssh_agent "$local_user" "$SSH_KEY"
+        handle_result $? '' 'failed to start_ssh_agent' $notice || exit 1
+        j_msg -$notice -p -n "loading local user ssh key"
+        load_key "$local_user"
+        handle_result $? '' 'failed to load_key' $notice || exit 1
+        sleep 3
+        CLR; CUP 1 1
+    fi
+#    d_do 'echo "AGENT_ENV_FILE:"; cat $AGENT_ENV_FILE; echo "==========================="' $debug
+    j_msg -$notice -p -n "sourcing AGENT_ENV_FILE [$AGENT_ENV_FILE]"
+    source $AGENT_ENV_FILE  # source ssh_agent stuff incl auth sock
+    handle_result $? '' 'failed to source AGENT_ENV_FILE' $notice || echo "maybe exit here"
+    # set up a specific-identity, batchmode, timeout-sensitive ssh command to use in all four cases
+    local -a ssh_cmd=( ssh -q -o ConnectTimeout=2 -o BatchMode=yes -i "$SSH_KEY" "$ip_address" )
+    # use ssh to ask the remote ip_address to tell its hostname
+    j_msg -$notice -p -n "looking up hostname"
+    host_name=$(sudo -E -u "${local_user}" "${ssh_cmd[@]}" hostname)
+    handle_result $? "$host_name" 'failed to look up host_name' $notice
+    # if that did not work, then mark it unknown
+    if [ -z "$host_name" ] ; then
+        j_msg -$debug -p "failed to get hostname from ip_address, despite good ping"
+        return 1
+    else
+        # get interface and ask remote machine to submit unregistered hostname to dns
+        # Note: using -- /usr/sbin/ddns-update "$EVENT" "$ADDR" "$INTERFACE" "$SOURCE"
+        j_msg -$notice -p -n "looking up interface"
+        ssh_payload_command="ip -o addr show | grep '$ip_address'"
+        iface=$(sudo -E -u "$local_user" "${ssh_cmd[@]}" "$ssh_payload_command" | awk '{print $2}')
+        result=$?
+        handle_result $result "$iface" '' $notice || return 1
+        if [ -z "$iface" ] ; then
+            j_msg -$debug -p "Note: host [$host_name] ip address [$ip_address] [unknown interface] is not registered with dns"
+            sleep 3
+            return 1
+        else
+#echo "in NOT -z (i.e. else) branch of if -z iface block"
+#echo "verbosity: $verbosity"
+#echo "err: $err"
+#echo "DEBUG: $(TrueFalse $DEBUG)"
+#echo "QUIET: $(TrueFalse $QUIET)"
+            j_msg "-${notice}" -p "Note: host [$host_name] ip address [$ip_address] is not registered with dns"
+            j_msg -$notice -p -n "Asking host [$host_name] via ssh to do that now"
+            # now via ssh have the remote machine submit the update
+            ssh_payload_command="rm -f /run/ddns-daemon.cache.*"
+#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
+            sudo -E -u "$local_user" "${ssh_cmd[@]}" "$ssh_payload_command"
+            result=$?
+#echo "just ran sudo ... ssh ... status: [$result]"
+            ssh_payload_command="/usr/sbin/ddns-update 'add' '$ip_address' '$iface' '${PN}-${BUILD}'"
+#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
+            sudo -E -u "$local_user" "${ssh_cmd[@]}" "$ssh_payload_command"
+            result=$?
+#echo "just ran sudo ... ssh ... status: [$result]"
+            handle_result $result '' "Host [$host_name] failed to reginster [$ip_address], [$iface] with dn" $notice || return 1
+            sleep 3
+        fi
+#echo "now completely past if -z iface block"
+    fi
     return 0
 }
 
@@ -97,81 +236,27 @@ ip_lookup()
         fi
         # if valid-form ip address returned no hostname with getent, try directly with ssh
         if [ -z "$host_name" ] ; then
-            CLR; CUP 1 1
-            j_msg -$notice -p "getent failed looking up ip_address [$ip_address], trying ssh"
-            # if ssh_agent isnt started start it and load keys (should only need to happen once)
-            if [ -z "$AGENT_ENV" ] ; then
-                j_msg -$notice -p "AGENT_ENV not set up; doing so now"
-                j_msg -$notice -p -n "starting ssh agent ..."
-                start_ssh_agent "$local_user" "$SSH_KEY"
-                handle_result $? '' 'failed to start_ssh_agent' $notice || exit 1
-                j_msg -$notice -p -n "loading local user ssh key"
-                load_key "$local_user"
-                handle_result $? '' 'failed to load_key' $notice || exit 1
-                sleep 3
-                CLR; CUP 1 1
-            fi
-#            d_do 'echo "AGENT_ENV_FILE:"; cat $AGENT_ENV_FILE; echo "==========================="' $debug
-            j_msg -$notice -p -n "sourcing AGENT_ENV_FILE [$AGENT_ENV_FILE]"
-            source $AGENT_ENV_FILE  # source ssh_agent stuff incl auth sock
-            handle_result $? '' 'failed to source AGENT_ENV_FILE' $notice || echo "maybe exit here"
-            j_msg -$notice -p -n "looking up hostname"
-            host_name=$(sudo -E -u "${local_user}" ssh -q -i "$SSH_KEY" "$ip_address" hostname)
-            handle_result $? "$host_name" 'failed to look up host_name' $notice
-            # if that did not work, then mark it unknown
-            if [ -z "$host_name" ] ; then
-                host_name="unknown"
+            if ! good_connectivity; then
+                host_names[$ip_address]="unknown/forgotten"
+            elif maybe_get_and_register_hostname "$ip_address" ; then
+                host_names[$ip_address]="$host_name"
             else
-                # ask remote machine to submit unregistered hostname to dns
-                # Note: using -- /usr/sbin/ddns-update "$EVENT" "$ADDR" "$INTERFACE" "$SOURCE"
-                j_msg -$notice -p -n "looking up interface"
-                iface=$(sudo -E -u "$local_user" ssh -q "$ip_address" "ip -o addr show | grep '$ip_address'" | awk '{print $2}')
-                result=$?
-                handle_result $result "$iface" '' $notice
-                if [ -z "$iface" ] ; then
-                    j_msg -$err -p "Note: host [$host_name] ip address [$ip_address] [unknown interface] is not registered with dns"
-                    sleep 3
-                    return 1
-                else
-#echo "in NOT -z (i.e. else) branch of if -z iface block"
-#echo "verbosity: $verbosity"
-#echo "err: $err"
-#echo "DEBUG: $(TrueFalse $DEBUG)"
-#echo "QUIET: $(TrueFalse $QUIET)"
-                    j_msg "-${notice}" -p "Note: host [$host_name] ip address [$ip_address] is not registered with dns"
-                    j_msg -$notice -p -n "Asking host [$host_name] via ssh to do that now"
-                    # now via ssh have the remote machine submit the update
-                    ssh_command="rm -f /run/ddns-daemon.cache.*"
-#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
-                    sudo -E -u "$local_user" ssh -q -i "$SSH_KEY" "$ip_address" "$ssh_command"
-                    result=$?
-#echo "just ran sudo ... ssh ... status: [$result]"
-                    ssh_command="/usr/sbin/ddns-update 'add' '$ip_address' '$iface' '${PN}-${BUILD}'"
-#echo "about to run sudo -E -u $local_user ssh -q -i $SSH_KEY $ip_address $ssh_command"
-                    sudo -E -u "$local_user" ssh -q -i "$SSH_KEY" "$ip_address" "$ssh_command"
-                    result=$?
-#echo "just ran sudo ... ssh ... status: [$result]"
-                    handle_result $result '' "Host [$host_name] failed to reginster [$ip_address], [$iface] with dn" $notice
-                    sleep 3
-                fi
-#echo "now completely past if -z iface block"
-
+                host_names[$ip_address]="unknown/forgotten"
             fi
         fi
+        # now if ssh was used, unload keys and secure the ssh agent
+        if [ ! -z "$AGENT_ENV" ] ; then
+            j_msg -$debug -p "AGENT_ENV: $AGENT_ENV"
+            j_msg -$notice -p "unloading key and stopping ssh agent"
+            unload_key "$local_user"
+            stop_ssh_agent "$local_user"
+            unset AGENT_ENV   # clear the flag that tells us whether the environment is set up
+        fi
         # record hostname and update hit count
-        host_names[$ip_address]="$host_name"
         host_name_address="${host_name} ${ip_address}"
         count="${distcc_counts[$host_name_address]}"
         distcc_counts[$host_name_address]=$(( count + 1 ))
     done
-    # now unload keys and secure the ssh agent
-    if [ ! -z "$AGENT_ENV" ] ; then
-        j_msg -$debug -p "AGENT_ENV: $AGENT_ENV"
-        j_msg -$notice -p "unloading key and stopping ssh agent"
-        unload_key "$local_user"
-        stop_ssh_agent "$local_user"
-        unset AGENT_ENV   # clear the flag that tells us whether the environment is set up
-    fi
     # loop through associative array by keys (host_names)
     # hide cursor to prevent flicker
     for host_name_address in "${!distcc_counts[@]}"; do
