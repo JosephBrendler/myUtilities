@@ -1,0 +1,244 @@
+#!/bin/bash
+
+# distcc Event Lifecycle
+# For a single job, distcc writes a sequence of status changes to the log file
+# It includes these and more events ...
+#   distcc[646584] (dcc_scan_args) found object/output file "src/accounts-daemon.p/extensions.c.o"
+#   distcc[646584] (dcc_scan_args) found input file "../accountsservice-23.13.9/src/extensions.c"
+#   distcc[646584] compile from extensions.c to extensions.c.o
+#   distcc[646584] (dcc_lock_host) got cpu lock on gmki92,lzo/4 slot 0 as fd3
+#   distcc[646584] exec on gmki92,lzo/4: x86_64-pc-linux-gnu-gcc -fdiagnostics-color=always -Wall -Winvalid-pch -O2 -pipe -march=k8-sse3 -mtune=k8 -msahf -pthread -o src/accounts-daemon.p/extensions.c.o -c ../accountsservice-23.13.9/src/extensions.c
+#   distcc[646584] (dcc_note_state) note state 2, file "extensions.c", host "gmki92"
+#   distcc[646584] cpp ../accountsservice-23.13.9/src/extensions.c on localhost completed ok
+#   distcc[646584] (dcc_compile_remote) client finished sending request to server
+#   distcc[646584] 1489729 bytes from ../accountsservice-23.13.9/src/extensions.c compiled on gmki92 in 3.1308s, rate 465kB/s
+#   distcc[646584] compile ../accountsservice-23.13.9/src/extensions.c on gmki92,lzo/4 completed ok
+#   distcc[646584] elapsed compilation time 3.136191s
+#   distcc[646584] (dcc_exit) exit: code 0; self: 0.008061 user 0.016122 sys; children: 0.270012 user 0.214661 sys
+
+#-----[ functions ]--------------------------------------------------------------------------
+# source script_header_joetoo to get CLR, CUP, termidth, repeat functions as well as others they
+# depend on like isint, and to set up for later color/unicode beautification
+source /usr/sbin/script_header_joetoo
+
+#-----[ variables ]--------------------------------------------------------------------------
+
+# externally control this with DISTCC_VERBOSE=1 and DISTCC_LOG= either on the emerge command line or in make.conf
+tui_DISTCC_LOG="/var/log/distcc/distcc-client.log"
+
+timewait=1
+tw=$(termwidth)
+log=$(basename "$tui_DISTCC_LOG")
+
+declare -A active_hosts           # list of distcc remote workers keyed on pid of jobs they are working
+declare -A active_starts          # recorded start-time when this keyed pid was first observed (job start)
+declare -A active_input_files     # list of files processed in this keyed pid job
+declare -A active_output_files    # list of files processed in this keyed pid job
+declare -A active_outcomes        # result of remote compile job ( success / failure )
+declare -A active_duration         # list of elapsed compile time keyed on pid
+
+# identify selector string patterns to capture important lifecycle events as shown above
+outfile_selector="found object/output file"  # output_file = $NF
+infile_selector="found input file"  #........# input_file = $NF
+host_selector="] exec on"  #.................#  --> host_name = $4
+success_selector="completed ok"  #...........# && / compile / not / cpp /  -->  host_name = $5; outcome = success
+failure_selector="failed"  #.................# outcome = failure /// but pid may continue
+elapsed_selector="elapsed compilation time"  # elapsed = $5
+exit_selector="(dcc_exit)"  #................# record to history and delete from active records
+
+# set up a grep filter string with selectors to capture important lifecycle events as shown above
+grep_filter='HEARTBEAT'  #..................# ignore heartbeat - just update clock
+grep_filter+="|${outfile_selector}"
+grep_filter+="|${infile_selector}"
+grep_filter+="|${host_selector}"
+grep_filter+="|${success_selector}"
+grep_filter+="|${failure_selector}"
+grep_filter+="|${elapsed_selector}"
+grep_filter+="|${exit_selector}"
+
+# set up a readable array of variables to pass into the awk script
+awk_vars=(
+    -v logfile="$log"
+    -v width="$tw"
+    -v clr="$(CLR)"
+    -v cup="$(CUP)"
+    -v dashline="${BBon}$(repeat '-' $tw)${Boff}"
+    -v dubdashline="${BBon}$(repeat '=' $tw)${Boff}"
+    -v outfile_sel="$outfile_selector"
+    -v infile_sel="$infile_selector"
+    -v host_sel="$host_selector"
+    -v success_sel="$success_selector"
+    -v failure_sel="$failure_selector"
+    -v elapsed_sel="$elapsed_selector"
+    -v exit_sel="$exit_selector"
+    -v pid_clr="${BMon}"
+    -v ts_clr="${BCon}"
+    -v file_clr="${Con}"
+    -v host_clr="${Gon}"
+    -v success_clr="${BGon}"
+    -v failure_clr="${BRon}"
+    -v title_clr="${BWon}"
+    -v clr_off="${Boff}"
+    -v placeholder_clr="${BOon}"
+)
+
+#-----[ main script ]--------------------------------------------------------------------------
+# create a background loop, grouped with tail using ( ... & ... ) and pipe this through
+# grep_filter to select relevant lines with --line-buffered immediately rendering then to output,
+# which is then piped to awk script to handle with associative arrays all keyed on pid
+# (HA! - but note that parallelism farms out preprocessing and compile with different pids,
+#  so the pid that competes the job may not be the one that "started" it)
+
+(tail -f "$tui_DISTCC_LOG" & while true; do echo "HEARTBEAT of $log"; sleep $timewait; done) | \
+    grep --line-buffered -E "$grep_filter"  | \
+    awk "${awk_vars[@]}" '
+    #-----[ functions for awk script ]---------------------------------------------------------------
+    # use this function to shift historical items down and append anew entry
+    function rotate_history(new_record) {
+        history_5 = history_4
+        history_4 = history_3
+        history_3 = history_2
+        history_2 = history_1
+        history_1 = new_record
+    }
+    # use this function to clean up record of pid when it is done
+    function delete_active_records(dead_pid) {
+        delete active_hosts[dead_pid]
+        delete active_starts[dead_pid]
+        delete active_input_files[dead_pid]
+        delete active_output_files[dead_pid]
+        delete active_outcomes[dead_pid]
+        delete active_duration[dead_pid]
+    }
+    #-----[ main awk script ]-------------------------------------------------------------------------
+    {
+        printf "%s%s", clr, cup ;
+        printf "%s\n", dubdashline ;
+        printf "  %stui_DISTCC_LOG%s = %s%s%s      (%sCurrent Time:%s %s%s%s)\n",
+            title_clr, clr_off,
+            file_clr, logfile, clr_off,
+            title_clr, clr_off, ts_clr, strftime("%H:%M:%S"), clr_off ;
+        printf "  %sDISTCC Client - Active Worker Threads %s\n", title_clr, clr_off ;
+        printf "%s\n", dubdashline ;
+        # drop output file; add precision
+        printf "%s%-10.10s | %-30.30s | %-24.24s | %-8.8s | %-10.10s%s\n",
+           title_clr,
+            "PID",
+            "SOURCE FILE",
+            "HOST",
+            "ELAPSED",
+            "OUTCOME",
+            clr_off
+        printf "%s\n", dashline ;
+
+        # if it is a real log line, parse the data
+        if ($0 !~ /^HEARTBEAT/) {
+            # extract pid (numeric part of first field; format: "distcc[1234567]"
+            match($1, /[0-9]+/)
+            pid = substr($1, RSTART, RLENGTH)   # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+            # if line matches selector, save output file name for this pid
+            if ($0 ~ outfile_sel) {
+                filename = $NF
+                gsub(/"/, "", filename)             # strip leading/trailing quotes
+                n = split(filename, path, "/")      # create an array of the path parts split by / chars
+                active_output_files[pid] = path[n]  # like basename split
+            }
+            # if line matches selector, save input file name for this pid
+            if ($0 ~ infile_sel) {
+                filename = $NF
+                gsub(/"/, "", filename)             # strip leading/trailing quotes
+                n = split(filename, path, "/")      # create an array of the path parts split by / chars
+                active_input_files[pid] = path[n]   # like basename split
+                active_starts[pid] = systime()      # start time for elapsed calculation
+            }
+            # if line matches selector, save distcc server host_name for this pid
+            if ($0 ~ host_sel) {
+                active_hosts[pid] = $4              # like basename split
+                active_outcomes[pid] = sprintf("%spending...%s", placeholder_clr, clr_off)
+            }
+            # if line matches selector, overwrite host and save outcome for this pid
+            if (($0 ~ success_sel) && ($0 ~ / compile /) && ($0 !~ / cpp /)) {
+                active_hosts[pid] = $5              # like basename split
+                active_outcomes[pid] = sprintf("%ssuccess%s", success_clr, clr_off)
+            }
+            # if line matches selector, save outcome for this pid
+            if (($0 ~ failure_sel) && ($0 ~ / ERROR: /) && ($0 !~ / cpp /)) {
+                active_outcomes[pid] = sprintf("%sfailure%s", failure_clr, clr_off)
+                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+                                  pid_clr, pid, clr_off,
+                                  ts_clr, strftime("%H:%M:%S"), clr_off,
+                                  file_clr, active_input_files[pid], clr_off,
+                                  host_clr, active_hosts[pid], clr_off,
+                                  ts_clr, final_time, clr_off,
+                                  active_outcomes[pid])
+                # update history with record of failure, but don't delete active records as pid will continue on new remote host
+                rotate_history(log_str)
+            }
+            # if line matches selector, record the elapsed time for this pid
+            if ($0 ~ elapsed_sel) {
+                # extract the raw decimal number (e.g., 9.485264s -> 9)
+                match($0, /[0-9]+\.[0-9]+/)
+                active_duration[pid] = int(substr($0, RSTART, RLENGTH))
+            }
+            # if line matches selector, rotate history and delete active records for this pid
+            if ($0 ~ exit_sel) {
+                # record elapsed time
+                final_time = (active_duration[pid] != "" ? active_duration[pid] : 0)
+                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+                                  pid_clr, pid, clr_off,
+                                  ts_clr, strftime("%H:%M:%S"), clr_off,
+                                  file_clr, active_input_files[pid], clr_off,
+                                  host_clr, active_hosts[pid], clr_off,
+                                  ts_clr, final_time, clr_off,
+                                  active_outcomes[pid])
+                rotate_history(log_str)
+                delete_active_records(pid)
+            }
+        }
+        # reset timer, count, elapsed
+        now = systime()
+        count = 0
+        # awk loop syntax assigns key to loop variable (so p is pid here)
+        for (p in active_hosts) {
+            elapsed = now - active_starts[p]
+            # update the active records
+           #printf "%-10.10s | %-30.30s | %-24.24s | %-8.8s | %-10.10s\n", "PID", "SOURCE FILE", "HOST", "ELAPSED", "OUTCOME"
+            # drop output file; add precision
+            printf "%s%-10.10s%s | %s%-30.30s%s | %s%-24.24s%s | %s%-8.8s%s | %-10.10s\n",
+                pid_clr, p, clr_off,
+                file_clr, active_input_files[p], clr_off,
+                host_clr, active_hosts[p], clr_off,
+                ts_clr, elapsed, clr_off,
+                active_outcomes[p]
+            count++
+        }
+        # if there are currently no active jobs, say so
+        if (count == 0) {
+            printf "  %s[ . . . Idle - Waiting for jobs from Portage . . . ]%s\n", placeholder_clr, clr_off
+        }
+        # draw a heading for recent history section
+        printf "%s\n", dubdashline ;
+        printf "  %sRecently completed%s\n", title_clr, clr_off
+        printf "%s\n", dubdashline ;
+        print (history_1 != "" ? history_1 : "  ...")
+        print (history_2 != "" ? history_2 : "  ...")
+        print (history_3 != "" ? history_3 : "  ...")
+        print (history_4 != "" ? history_4 : "  ...")
+        print (history_5 != "" ? history_5 : "  ...")
+        printf "%s\n", dubdashline
+#        # --- DIAGNOSTIC PANEL FRAME ---
+#        printf "%s\n", dubdashline
+#        printf "  [ DIAGNOSTICS ] Active Array Record Counts:\n"
+#        # Safely loop through and count active tracking keys
+#        hosts_cnt = 0;   for (k in active_hosts) hosts_cnt++
+#        starts_cnt = 0;  for (k in active_starts) starts_cnt++
+#        inputs_cnt = 0;  for (k in active_input_files) inputs_cnt++
+#        outputs_cnt = 0; for (k in active_output_files) outputs_cnt++
+#        outcomes_cnt = 0; for (k in active_outcomes) outcomes_cnt++
+#        dur_cnt = 0;     for (k in active_duration) dur_cnt++
+#        printf "  Hosts: %d | Starts: %d | Input Files: %d | Output Files: %d | Outcomes: %d | Durations: %d\n", \
+#            hosts_cnt, starts_cnt, inputs_cnt, outputs_cnt, outcomes_cnt, dur_cnt
+#        printf "%s\n", dubdashline
+
+        fflush()
+    }'

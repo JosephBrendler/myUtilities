@@ -14,7 +14,11 @@ source /usr/sbin/script_header_joetoo_ssh
 
 # if BUILD file exists, source it
 if [ -f /etc/joetoolkit/BUILD ]; then . /etc/joetoolkit/BUILD; else BUILD="0.0.0"; fi
-# ---[ Define local variables ]-----------------------------------
+# ---[ variables ]---------------------------------------------------------------------------
+declare -a lines=() # indexed array of tempfile lines, probably containing ip_addresses
+declare -A host_names=()   # associative array of hostnames keyed on ip_address
+declare -A distcc_counts=() # associative array of hit count keyed on hostname-ip_address string
+
 
 #tempfile="/home/joe/tempfileforcountdistccjobs"
 tempfile="/var/tmp/tempfileforcountdistccjobs"
@@ -88,18 +92,6 @@ trap cleanup INT TERM EXIT
 
 # ---[ function blocks ]------------------------------------------
 
-filter_log()
-{
-    # parse distcc log file with form:
-    #distccd[2389647] (dcc_job_summary) client: fd62:6262:6262:0:92f7:3017:f474:162a:37290 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5803ms x86_64-pc-linux-gnu-g++ /tmp/portage/media-libs/libva-intel-media-driver-26.1.6/work/media-driver-intel-media-26.1.6/media_softlet/agnostic/common/vp/hal/features/vp_dn_filter.cpp
-    local -a command=( grep 'COMPILE_OK' "${distcc_log}" )
-    local -a pipe1=( awk -F 'client: ' '{print $2}' )   # use awk to strip all left of "client:"
-    local -a pipe2=( cut -d' ' -f1 )    # use cut to strip all right of first space " " (isolate ip)
-    # run the filter pipline
-    "${command[@]}" | "${pipe1[@]}" | "${pipe2[@]}" > "$tempfile"  || return 1
-    return 0
-}
-
 good_connectivity() {
     local ip_addr="$1"
     # first check connectivity, and then if possible use ssh to get hostname from server and tell it to register with dns
@@ -140,6 +132,8 @@ maybe_get_and_register_hostname() {
     j_msg -$notice -p -n "looking up hostname"
     host_name=$(sudo -E -u "${local_user}" "${ssh_cmd[@]}" hostname)
     handle_result $? "$host_name" 'failed to look up host_name' $notice
+    # also put it in the array
+    host_names[$ip_address]="$hostname"
     # if that did not work, then mark it unknown
     if [ -z "$host_name" ] ; then
         j_msg -$debug -p "failed to get hostname from ip_address, despite good ping"
@@ -187,9 +181,6 @@ ip_lookup()
 {
     local ip_address="" host_name="" line="" host_name_address="" msg="" result=0
     local FLAGGED=$FALSE
-    local -a lines=() # indexed array of tempfile lines, probably containing ip_addresses
-    local -A host_names=()   # associative array of hostnames keyed on ip_address
-    local -A distcc_counts=() # associative array of hit count keyed on hostname-ip_address string
     local count=0 iface="" ssh_command=""
 
     # read ip_addresses from tempfile
@@ -237,11 +228,14 @@ ip_lookup()
         # if valid-form ip address returned no hostname with getent, try directly with ssh
         if [ -z "$host_name" ] ; then
             if ! good_connectivity; then
-                host_names[$ip_address]="unknown/forgotten"
+                host_name="unknown_or_forgotten"
+                host_names[$ip_address]="$host_name"
             elif maybe_get_and_register_hostname "$ip_address" ; then
+                # the elif will have asigned hostname and registered with dns if exit status 0
                 host_names[$ip_address]="$host_name"
             else
-                host_names[$ip_address]="unknown/forgotten"
+                host_name="unregistered_despite_connectivity"
+                host_names[$ip_address]="$host_name"
             fi
         fi
         # now if ssh was used, unload keys and secure the ssh agent
@@ -271,12 +265,23 @@ ip_lookup()
     return 0
 }
 
+filter_log()
+{
+    # parse distcc log file with form:
+    #distccd[2389647] (dcc_job_summary) client: fd62:6262:6262:0:92f7:3017:f474:162a:37290 COMPILE_OK exit:0 sig:0 core:0 ret:0 time:5803ms x86_64-pc-linux-gnu-g++ /tmp/portage/media-libs/libva-intel-media-driver-26.1.6/work/media-driver-intel-media-26.1.6/media_softlet/agnostic/common/vp/hal/features/vp_dn_filter.cpp
+    local -a command=( grep 'COMPILE_OK' "${distcc_log}" )
+    local -a pipe1=( awk -F 'client: ' '{print $2}' )   # use awk to strip all left of and including "client: " (incl trailing space)
+    local -a pipe2=( cut -d' ' -f1 )    # use cut to strip all right of first space " " (isolate ip)
+    # run the filter pipline
+    "${command[@]}" | "${pipe1[@]}" | "${pipe2[@]}" > "$tempfile"  || return 1
+    return 0
+}
 
 get_log_file()
 {
     # TODO - load array to accomodate more than one log file
-    distcc_log=$(find /var/log/distcc/ -maxdepth 1 -mindepth 1 -type f -iname '*distcc*')
-    # if logging to file, expects the log file to be in /var/log/distcc/
+    distcc_log=$(find /var/log/distcc/ -maxdepth 1 -mindepth 1 -type f -iname '*distccd*.log')
+    # if logging to file, expects the log file to be in /var/log/distcc/ and named for the daemon distccd
     # if there is no such file, assume logging to syslog (messages)
     [ -z "${distcc_log}" ] && distcc_log="/var/log/syslog"
     [ -z "${distcc_log}" ] && distcc_log="/var/log/messages"
@@ -324,6 +329,12 @@ watch_my_distcc ()
     local count=0
     CUP 1 1; CLR; HCU  # start upper left; clear the screen and hide the cursor to prevent flicker
     while true ; do
+        # untill I start following the logfile with tail -f, we read the entire thing each loop
+        # and need to reset arrays, counters, etc.  These are declared above
+        lines=() #........# indexed array of tempfile lines, probably containing ip_addresses
+        host_names=() #...# associative array of hostnames keyed on ip_address
+        distcc_counts=()  # associative array of hit count keyed on hostname-ip_address string
+
         CUP 1 1
         separator "$(hostname)" "watchdistcc-${BUILD}"
 #        echo | count_my_distcc_jobs 2> /dev/null;
