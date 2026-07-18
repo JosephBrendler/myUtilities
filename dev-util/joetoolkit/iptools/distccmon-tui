@@ -22,6 +22,8 @@
 #   distcc[646584] compile ../accountsservice-23.13.9/src/extensions.c on gmki92,lzo/4 completed ok
 #   distcc[646584] elapsed compilation time 3.136191s
 #   distcc[646584] (dcc_exit) exit: code 0; self: 0.008061 user 0.016122 sys; children: 0.270012 user 0.214661 sys
+#   distccd[1460350] (dcc_readx) ERROR: unexpected eof on fd5
+#   distccd[1460350] (dcc_r_token_int) ERROR: read failed while waiting for token "DOTI"
 # Note: client pid is terminated with (dcc_exit) - duration = one compile job done by remote server
 #-----[ distcc server event lifecycle ]------------------------------------------------------------------------------------
 #   distccd[96193] (dcc_check_client) connection from fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662
@@ -34,6 +36,8 @@
 #   distccd[96193] (dcc_job_summary) client: fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662 COMPILE_OK exit:0 \
 #                ... sig:0 core:0 ret:0 time:21251ms x86_64-pc-linux-gnu-g++  \
 #                ... /var/tmp/portage/kde-plasma/plasma-workspace-6.6.5-r1/work/plasma-workspace-6.6.5_build/gmenu-dbusmenu-proxy/gtkactions_interface.cpp
+#   distcc[2463201] ERROR: compile (null) on localhost failed
+#   distcc[2463400] ERROR: compile /var/tmp/portage/dev-db/mysql...SymbolExists.c on nuthuvia,lzo/7 failed
 # Mote: server pid persists as long as the server keeps this slot available (seemingly for one remote client) - multiple files compile locally for remote client
 
 #-----[ headers ]----------------------------------------------------------------------------
@@ -100,7 +104,7 @@ declare -A bash_reg_locks  # tbd if needed (anti-avalanche guard -  dont spawn r
 c_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
 c_host_selector="\] exec on"  #.................#  --> host_name = $4
 c_success_selector="completed ok"  #...........# && / compile / not / cpp /  -->  host_name = $5; outcome = success
-c_failure_selector="failed"  #.................# outcome = failure /// but pid may continue
+c_failure_selector="ERROR:"  #.................# && /compile/ && /failed/ --> outcome = failure /// but pid may continue
 c_elapsed_selector="elapsed compilation time"  # elapsed = $5
 c_exit_selector="(dcc_exit)"  #................# record to history and delete from active records
 # todo: identify package selector
@@ -109,6 +113,7 @@ c_exit_selector="(dcc_exit)"  #................# record to history and delete fr
 s_ip_selector="(dcc_check_client)"  #.....#  --> host_ip_address = $NF /// incl port#
 s_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
 s_success_selector="completed ok"  #...........# package = $3 (extractable);  outcome = success
+s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
 s_summary_selector="(dcc_job_summary)"  #......# elapsed = $10; exit_code = $6 (set outcome)
 #                                       #......# package = $12 (extract); infile = $12 (basename)
 #                                       #......# also record to history and delete from active records
@@ -125,12 +130,14 @@ awk_vars=(
     -v cup="$(CUP)"
     -v line_clr="${line_color}"
     -v pid_clr="${BMon}"
-    -v ts_clr="${BCon}"
-    -v file_clr="${Con}"
+    -v ts_clr="${BAon}"
+    -v file_clr="${Gon}"
+    -v mode_clr="${BYon}"
     -v host_clr="${Gon}"
     -v success_clr="${BGon}"
     -v failure_clr="${BRon}"
     -v title_clr="${BWon}"
+    -v heading_clr="${BCon}"
     -v clr_off="${Boff}"
     -v placeholder_clr="${BOon}"
 )
@@ -394,6 +401,8 @@ run_tui_engine() {
         delete active_output_files[dead_pid]
         delete active_outcomes[dead_pid]
         delete active_duration[dead_pid]
+        delete active_ip_addrs[dead_pid]
+        delete active_packages[dead_pid]
     }
     # use this function to generate ui assets needed by the script
     function repeat(marker, reps,    i, out_str) {
@@ -408,20 +417,24 @@ run_tui_engine() {
         # clear screen and print heading for client mode
         printf "%s%s", clr, cup ;
         printf "%s\n", dubdashline ;
-        printf "  %sDISTCC_LOG%s = %s%s%s      (%sCurrent Time:%s %s%s%s)\n",
-            title_clr, clr_off,
+        printf "  %sDISTCC_LOG%s = %s%-35.35s%s %sCurrent Time:%s %s%s%s\n",
+            heading_clr, clr_off,
             file_clr, logfile, clr_off,
-            title_clr, clr_off, ts_clr, strftime("%H:%M:%S"), clr_off ;
+            heading_clr, clr_off, ts_clr, strftime("%H:%M:%S"), clr_off ;
         if (mode == "client") {
-            printf "  %sDISTCC Client - Current Package: %S%s%s\n", title_clr, file_clr, active_packages[pid], clr_off ;
-            printf "  %sACTIVE REMOTE SERVER THREADS%s\n", title_clr, clr_off ;
+            printf "  %sDISTCC Mode: %sClient%s%  Current Package: %s%s%s\n",
+                heading_clr, mode_clr, heading_clr, repeat(" ", 29), file_clr, active_packages[pid], clr_off ;
+            printf "%s\n", dubdashline ;
+            printf "  %sACTIVE REMOTE %sSERVER%s THREADS%s\n", title_clr, mode_clr, title_clr, clr_off ;
             COL3_TITLE = "SERVER"
         } else {
-            printf "  %sDISTCC Server - Current Package: %S%s%s\n", title_clr, file_clr, active_packages[pid], clr_off ;
-            printf "  %sACTIVE REMOTE CLIENT THREADS%s\n", title_clr, clr_off ;
+            printf "  %sDISTCC Mode: %sServer%s%s Current Package: %s%s%s\n",
+                heading_clr, mode_clr, heading_clr, repeat(" ", 29), file_clr, active_packages[pid], clr_off ;
+            printf "%s\n", dubdashline ;
+            printf "  %sACTIVE REMOTE %sCLIENT%s THREADS%s\n", title_clr, mode_clr, title_clr, clr_off ;
             COL3_TITLE = "CLIENT"
         }
-        printf "%s\n", dubdashline ;
+        printf "%s\n", dashline ;
         # drop output file; add precision
         printf "%s%-10.10s%s %s %s%-30.30s%s %s %s%-24.24s%s %s %s%-8.8s%s %s %s%-10.10s%s\n",
            title_clr, "PID", clr_off, separator,
@@ -483,8 +496,10 @@ run_tui_engine() {
         #outputs_cnt = 0; for (k in active_output_files) outputs_cnt++
         #outcomes_cnt = 0; for (k in active_outcomes) outcomes_cnt++
         #dur_cnt = 0;     for (k in active_duration) dur_cnt++
-        #printf "  Hosts: %d | Starts: %d | Input Files: %d | Output Files: %d | Outcomes: %d | Durations: %d\n", \
-        #    hosts_cnt, starts_cnt, inputs_cnt, outputs_cnt, outcomes_cnt, dur_cnt
+        #ip_cnt = 0;     for (k in active_ip_addrs) ip_cnt++
+        #pkg_cnt = 0;     for (k in active_packages) pkg_cnt++
+        #printf "  Hosts: %d | Starts: %d | Input Files: %d | Output Files: %d | Outcomes: %d | Durations: %d |IPs: %d | Pkgs: %d\n", \
+        #    hosts_cnt, starts_cnt, inputs_cnt, outputs_cnt, outcomes_cnt, dur_cnt, ip_cnt, pkg_cnt
         #printf "%s\n", dubdashline
         #-----[ show dns_caceh record count ]--------------------------------------------
         #cache_cnt = 0; for (k in dns_cache) cache_cnt++
@@ -565,7 +580,9 @@ run_tui_engine() {
                 active_outcomes[pid] = sprintf("%ssuccess%s", success_clr, clr_off)
             }
             # if line matches selector, save outcome for this pid
-            if (($0 ~ failure_sel) && ($0 ~ / ERROR: /) && ($0 !~ / cpp /)) {
+            #   distcc[2463400] ERROR: compile /var/tmp/portage/dev-db/mysql...SymbolExists.c on nuthuvia,lzo/7 failed
+            #   c_failure_selector="ERROR:"  #.................# && /compile/ && /failed/ --> outcome = failure /// but pid may continue
+            if (($0 ~ failure_sel) && ($0 ~ / failed /) && ($0 !~ / cpp /)) {
                 active_outcomes[pid] = sprintf("%sfailure%s", failure_clr, clr_off)
                 log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
                                   pid_clr, pid, clr_off,
@@ -646,6 +663,22 @@ run_tui_engine() {
                 split(pkg, path, "/")
                 active_packages[pid] = path[1] "/" path[2]
             }
+            # if line matches selector, record the outcome for this pid
+            #   distccd[1460350] (dcc_readx) ERROR: unexpected eof on fd5
+            #   s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
+            if (($0 ~ failure_sel) && ($0 ~ /dcc_r/)) {
+                split($0, parts, "ERROR: ")
+                active_outcomes[pid] = sprintf("%s%s%s", failure_clr, parts[2], clr_off)
+                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+                                  pid_clr, pid, clr_off,
+                                  ts_clr, strftime("%H:%M:%S"), clr_off,
+                                  file_clr, active_input_files[pid], clr_off,
+                                  host_clr, active_peers[pid], clr_off,
+                                  ts_clr, final_time, clr_off,
+                                  active_outcomes[pid])
+                # update history with record of failure, but dont delete active records as pid will continue on new remote host
+                rotate_history(log_str)
+            }
             # if line matches selector, record the elapsed time for this pid
             #   distccd[96193] (dcc_job_summary) client: fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662 COMPILE_OK exit:0 \
             #                ... sig:0 core:0 ret:0 time:21251ms x86_64-pc-linux-gnu-g++  \
@@ -654,8 +687,8 @@ run_tui_engine() {
                 match($10, /[0-9]+/)
                 milliseconds = int(substr($10, RSTART, RLENGTH))
                 active_duration[pid] = int(milliseconds / 1000)
-                sub(/exit:/, "", exit_status)
-                if (exit_status == 0) {
+                # assess success/falure - note both get exit: 0 status, so use COMPILE_OK vs OTHER in $5
+                if ($5 == "COMPILE_OK") {
                     active_outcomes[pid] = sprintf("%ssuccess%s", success_clr, clr_off)
                 } else {
                     active_outcomes[pid] = sprintf("%sfailure%s", failure_clr, clr_off)
