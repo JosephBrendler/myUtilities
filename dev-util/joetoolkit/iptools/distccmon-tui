@@ -49,6 +49,30 @@
 source /usr/sbin/script_header_joetoo
 source /usr/sbin/script_header_joetoo_ssh
 
+#-----[ traps ]------------------------------------------------------------------------------
+# trap and ignore these signals
+#   SIGTTOU - kernel sends this when a background process (or one whose terminal lost focus/suspended) - it suspends the process
+#   SIGTTIN - kernel sends this when a background/detached process attempts to read from the controlling terminal
+#   SIGPIPE - kernel sends this when a grep input or awk consumer pipeline exits prematurely
+# (Do not trap SIGINT or SIGTERM here, - WANT clrl-c to be able to terminate the process so trap with cleanup
+trap '' SIGTTOU SIGTTIN SIGPIPE
+
+_cleanup_tui() {
+    # if the controller is still running, kill it cleanly
+    if [ -n "$tui_controller_pid" ]; then
+        kill "$tui_controller_pid" 2>/dev/null
+        wait "$tui_controller_pid" 2>/dev/null
+    fi
+    # ensure terminal settings are fully restored
+    stty sane < /dev/tty 2>/dev/null
+    rm -f "/tmp/distcc_tui_control_$$"
+}
+trap _cleanup_tui EXIT INT TERM
+# when 'q' is pressed, the controller sends USR1
+# this traps that signal and triggers a graceful exit 0
+# (which then automatically triggers the EXIT trap above)
+trap 'exit 0' USR1
+
 #-----[ variables ]--------------------------------------------------------------------------
 
 PN=${0##*/}     # basename
@@ -158,6 +182,8 @@ diag_msg_type_order=(
     "unexpected_data"
     "expired_job_pruned"
     "dead_pid_pruned"
+    "bad_control"
+    "control_line"
 )
 
 # set up a readable array of variables to pass into the awk script
@@ -367,6 +393,7 @@ configure_mode() {
             tui_log_basename="distcc-client.log"
             # set up a client grep_filter string with selectors to capture important lifecycle events as shown above
             grep_filter='__HEARTBEAT__'  #..................# ignore heartbeat - just update clock
+            grep_filter+="|__CONTROL__"
             grep_filter+="|${c_file_selector}"
             grep_filter+="|${c_pkg_selector}"
             grep_filter+="|${c_host_selector}"
@@ -395,6 +422,7 @@ configure_mode() {
             tui_log_basename="distccd.log"
             # set up a server grep_filter string with selectors to capture important lifecycle events as shown above
             grep_filter='__HEARTBEAT__'  #..................# update dynamic data like termwidth, and refresh screen to see clock tick
+            grep_filter+="|__CONTROL__"
             grep_filter+="|__DNS_UPDATE__"  #...........# enable pre-load dns_cache stream and later updates
             grep_filter+="|${s_ip_selector}"
             grep_filter+="|${s_file_selector}"
@@ -432,7 +460,22 @@ configure_mode() {
 #                -v failure_sel="$c_failure_selector"
 
 run_tui_engine() {
-    # create a background loop, grouped with tail using ( ... & ... ) and pipe this through
+    # first call stream_dns_hostfiles (once) if in server mode
+    #    (not applicable to client mode because client knows it is "localhost" and
+    #     tui already knows who is in /etc/distcc/hosts, but server gets requests
+    #      from ip addresses and tui has to look them up to be useful)
+    # and tell it to send output to a temp file that stream_log_data can
+    # inject into pipeline after the launch_tui_controller is launched
+    local _initial_dns_file="/tmp/distcc_initial_dns_$$"
+    # 20260724 - removed mode = server conditionality so user can switch modes and still have dns data
+#    [[ "$mode" == "server" ]] && stream_dns_hostfiles "$_initial_dns_file"
+    stream_dns_hostfiles "$_initial_dns_file"
+
+    # 20260724 - make this interactive by calling this function
+    #   to background a process to read keystrokes and prepare controls
+    launch_tui_controller
+
+    # main engine: create a background loop, grouped with tail using ( ... & ... ) and pipe this through
     # grep_filter to select relevant lines with --line-buffered immediately rendering then to output,
     # which is then piped to awk script to handle with associative arrays all keyed on pid
     # (HA! - but note that parallelism farms out preprocessing and compile with different pids,
@@ -450,7 +493,10 @@ run_tui_engine() {
     #  process substitution and the NR == NFR { ... } action block inside awk designed to consume
     #  dns updates, in favor of a single dns_cachu update block that can be called before and after
     #  the infinte hearbeat loop starts
-    ( stream_log_data ) | awk "${awk_vars[@]}" '
+    # 20260724 - pre-read dns data to a tempfile above
+    #  and then tell stream_log_data to inject the same file here, thus separating
+    #  network task requiring ssh keys and passphrase from the pipeline entirely
+    ( stream_log_data  "$_initial_dns_file") | awk "${awk_vars[@]}" '
     #-----[ awk functions ]---------------------------------------------------------------
     # Debug: dump every incoming line to stderr to verify the pipe is alive
 #    { print "DEBUG [awk input]: " $0 > "/dev/stderr"; fflush("/dev/stderr") }
@@ -655,7 +701,7 @@ run_tui_engine() {
         printf "  %sActive remote %s%s%s threads%s\n", title_clr, mode_clr, mode, title_clr, clr_off ;
         printf "%s\n", dashline ;
         # drop output file; add precision
-        printf "%s%-7.7s%s %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-8.8s%s\n",
+        printf "[%s%-7.7s%s] %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-8.8s%s\n",
            title_clr, "  PID", clr_off, separator,
            title_clr, "SOURCE FILE", clr_off, separator,
            title_clr, COL3_TITLE, clr_off, separator,
@@ -674,7 +720,7 @@ run_tui_engine() {
             }
             elapsed = now - active_starts[p]
             # update the active records (dont .10 precision last field (outcome) or it truncated/break its clr_off
-            printf "%s%-7.7s%s %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
+            printf "[%s%-7.7s%s] %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
                 data_clr, p, clr_off, separator,
                 file_clr, active_input_files[p], clr_off, separator,
                 host_clr, active_peers[p], clr_off, separator,
@@ -836,6 +882,8 @@ run_tui_engine() {
             printf "  %s[ Diagnostic Alert Messages ]%s\n", title_clr, clr_off
 
             # process types in specified variable order
+            # note: diag_msg_type_order is defined by array at top of bash script
+            #   and is converted to space delimited string for awk with -v
             n_types = split(diag_msg_type_order, ordered_types)
             for (i = 1; i <= n_types; i++) {
                 type = ordered_types[i]
@@ -851,17 +899,6 @@ run_tui_engine() {
                 }
             }
         }
-#            for (type in diagnostic_messages) {
-#                for (ts in diagnostic_messages[type]) {
-#                    # calculate and display the seconds until expiration of this diagnostic message
-#                    diag_time_left = diagnostic_timeout - (systime() - ts)
-#                    printf "  [%s%s%s] %s (%s%s%s)\n",
-#                        failure_clr, strftime("%H:%M:%S", parts[2]), clr_off,
-#                        diagnostic_messages[type][ts],
-#                        ts_clr, diag_time_left, clr_off
-#                }
-#            }
-#        }
     }
     ### awk function for CLIENT mode ###-------------------------------------------------------------------------------------
     function parse_client_line(    pid, child_pid, client_id, parts, path, n, path_parts, final_time, log_str, clean_peer) {
@@ -886,7 +923,7 @@ run_tui_engine() {
                 active_starts[pid]       = systime()
 
                 # DIAGNOSTIC: Log the PID right before deletion to a temp file
-                print systime() " PRE-PROCESS: First observance of PID " pid >> "/tmp/distcc_awk_debug.log"
+#                print systime() " PRE-PROCESS: First observance of PID " pid >> "/tmp/distcc_awk_debug.log"
             }
             # set start placeholder outcome only on the very first encounter (if empty)
             if (!(pid in active_outcomes)) {
@@ -976,7 +1013,7 @@ run_tui_engine() {
                     active_outcomes[pid] = sprintf("%s%-8.8s%s", failure_clr, "failure", clr_off)
                 }
                 final_time = (active_duration[pid] != "" ? active_duration[pid] : 0)
-                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+                log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
                                   data_clr, pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, active_input_files[pid], clr_off,
@@ -1084,7 +1121,8 @@ run_tui_engine() {
             if (($0 ~ failure_sel) && ($0 ~ /dcc_r/)) {
                 split($0, parts, "ERROR: ")
                 active_outcomes[pid] = sprintf("%s%-8.8s%s", failure_clr, parts[2], clr_off)
-                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+#                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s on %s%s%s (%s%ds%s) [%s]",
+                log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
                                   data_clr, pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, active_input_files[pid], clr_off,
@@ -1151,7 +1189,8 @@ run_tui_engine() {
                 split(parts[2], time_str, " ")   # cut from remaining line using " " as delimiter
                 active_duration[pid] = time_str[1]
                 final_time = (active_duration[pid] != "" ? active_duration[pid] : "0ms")
-                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s for %s%s%s (%s%s%s) [%s]",
+#                log_str = sprintf("[%s%s%s] [%s%s%s] %s%s%s for %s%s%s (%s%s%s) [%s]",
+                log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
                                   data_clr, pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, active_input_files[pid], clr_off,
@@ -1208,6 +1247,39 @@ run_tui_engine() {
                 diagnostic_messages["dns_cache_diagnostic"][systime()] = sprintf( \
                     "Failed to ingest dns_cache[%s] content from line [%s]", ip, $0 )
             }
+        } else if ($0 ~ /^__CONTROL__/) {
+            # debug - uncomment to dump all control lines
+            diagnostic_messages["control_line"][systime()] = "(debug) control line [" $0 "]"
+            # launch_tui_controller listens for these keys and writes them > "$_ctrl_file"
+            #     '+' - "VERBOSITY_UP\n"
+            #     '-' - "VERBOSITY_DOWN\n"
+            # 'D'|'V' - "TOGGLE_DEBUG\n"
+            #     'c' - "CLIENT_MODE\n"
+            #     's' - "SERVER_MODE\n"
+            #     'b' - "BOTH_MODE\n"
+            #     'q' - "QUIT\n" > "$_ctrl_file"
+            # control/heartbeat loop of stream_log_data does this:
+            #     _cmd="$(cat "$_ctrl_file")"
+            #     printf "__CONTROL__ %s\n" "$_cmd"
+            cmd = $2
+            if (cmd == "VERBOSITY_UP") {
+                if (verbosity < 7) verbosity++  # clamp to 7 = debug
+            } else if (cmd == "VERBOSITY_DOWN") {
+                if (verbosity >0) verbosity--   # clamp to 0 = emerg
+            } else if (cmd == "TOGGLE_DEBUG") {
+                if (DEBUG == "True") { DEBUG = "False" } else { DEBUG = "True" }
+            } else if (cmd == "CLIENT_MODE") {
+                mode = "client"
+            } else if (cmd == "SERVER_MODE") {
+                mode = "server"
+            } else if (cmd == "BOTH_MODE") {
+                mode = "both"
+            } else if (cmd == "QUIT") {
+                # this is really just a visual placeholder, the backgrounded launch_tui_controller kills $$ directly
+                printf "__KILL_ME__\n"
+            } else {
+                diagnostic_messages["bad_control"][systime()] = "unexpected or malformatted control line [" $0 "]"
+            }
         } else if ($0 ~ /^__HEARTBEAT__/) {
             # heartbeat carries field(s) that enable dynamic interaction with awk
             # e.g. update terminal width dynamically
@@ -1239,14 +1311,14 @@ run_tui_engine() {
             if (mode == "server") {
                 diagnostic_messages["mode_mismatch"][systime()] = "Ingested client data while in server mode"
             }
-            parse_client_line()
+            if (mode == "client" || mode == "both") { parse_client_line() }
         } else if ($0 ~ /^distccd\[/) {
             # this is server-mode log data coming from tail -F of distccd.log
             # let the parsing function extract pid locally rathern than make it global
             if (mode == "client") {
                 diagnostic_messages["mode_mismatch"][systime()] = "Ingested server data while in client mode"
             }
-            parse_server_line()
+            if (mode == "server" || mode == "both") { parse_server_line() }
         } else {
                 diagnostic_messages["unexpected_data"][systime()] = sprintf("Ingested unexpected or malformed data [%s]", $0)
         }
@@ -1312,6 +1384,8 @@ broken_consume_tui_output_stuff_parkinglot() {
 }
 
 stream_log_data() {
+    # accept _initial_dns_file as $1 so as to be able to inject it with cat below
+    local _initial_dns_file="$1"
     # setup and messaging block goes to stderr so awk ignores it
     {
         j_msg -$notice -p "Starting log stream for: [$tui_DISTCC_LOG]"
@@ -1322,10 +1396,12 @@ stream_log_data() {
     } >&2
     # data generation block must go to stdout so awk receives it
     {
-        # first call stream_dns_hostfiles (once) if in server mode (not applicable to client mode
-        # because client knows it is "localhost" and tui already knows who is in /etc/distcc/hosts
-        # but server gets requests from ip addresses and tui has to look them up to be useful)
-        [[ "$mode" == "server" ]] && stream_dns_hostfiles
+        # inject pre-fetched dns data into awk stream and clean up temp file
+        # 20260724 - removed mode = server conditionality so use can switch modes and still have dns data
+        if [ -f "$_initial_dns_file" ]; then
+            cat "$_initial_dns_file"
+            rm -f "$_initial_dns_file"
+        fi
 
         j_msg -$notice -p "First ingesting all of recorded history, please wait a few seconds ..." >&2
         # first dump and roll up all of recorded history - do not background this
@@ -1340,7 +1416,15 @@ stream_log_data() {
         # infinite loop, injecting hearbeat with dynamic formatting data (width)
         # (optionally also include "spoofed" log data to test error handling)
         while [ $TRUE ]; do
-            printf "__HEARTBEAT__ %d\n" "$(tput cols)"
+            _ctrl_file="/tmp/distcc_tui_control_$$"
+            if [ -f "$_ctrl_file" ]; then
+                _cmd="$(cat "$_ctrl_file")"
+                rm -f "$_ctrl_file"
+                printf "__CONTROL__ %s\n" "$_cmd"
+            fi
+#            printf "__HEARTBEAT__ %d\n" "$(tput cols)"
+            # swithched from $(tput cols) to $(termwidth) to protect while running in detached/suspended terminal
+            printf "__HEARTBEAT__ %d\n" "$(termwidth)"
             # for testing diagnostic logic only (match both "distcc[" AND "compile from"
 #            printf "distcc[000000] compile from spoofed client record for testing \n"
             # for testing diagnostic logic only (match both "distcc[" AND "compile from"
@@ -1354,6 +1438,7 @@ stream_log_data() {
 
 stream_dns_hostfiles() {
     local result=0 ssh_cmd=""
+    local _dns_outfile="$1"
 
     # define a sed filter to transform raw lines of dns /etc/hosts.d/* files
     #   into the update input format expected by the awk's __DNS_UPDATE__ action block
@@ -1385,7 +1470,12 @@ stream_dns_hostfiles() {
     ssh_cmd=( ssh -n -q -i "$SSH_KEY" -o ConnectTimeout=2 -o BatchMode=yes "${remote_user}@${dns}" )
     payload_cmd=( cat '/etc/hosts.d/*' )
     sort_cmd=( sort -k2 )
-    "${sudo_cmd[@]}" "${ssh_cmd[@]}" "${payload_cmd[@]}" | sed "$SED_DNS_FILTER" | "${sort_cmd[@]}"
+    # now run the command, sending output to file or stdout as appropriate
+    if [ -n "$_dns_outfile" ]; then
+        "${sudo_cmd[@]}" "${ssh_cmd[@]}" "${payload_cmd[@]}" | sed "$SED_DNS_FILTER" | "${sort_cmd[@]}" > "$_dns_outfile"
+    else
+        "${sudo_cmd[@]}" "${ssh_cmd[@]}" "${payload_cmd[@]}" | sed "$SED_DNS_FILTER" | "${sort_cmd[@]}"
+    fi
     result=$?
     # group teardown commands and redirect stdout to stderr
     {
@@ -1395,6 +1485,40 @@ stream_dns_hostfiles() {
         result=$?
         j_msg -$notice -p "Done streaming dns host files; exiting with status code [$result]"
     } >&2
+}
+
+launch_tui_controller() {
+    # initialize namespaced local variables
+    local _ctrl_key=""
+    local _ctrl_file="/tmp/distcc_tui_control_$$"
+
+    # background a subshell to read raw keystrokes without blocking the tui
+    (
+        # ensure stty is set to raw mode so single characters are caught instantly without pressing Enter
+        # Note: redirection to ensure read and stty read the actual tty device
+        stty -icanon -echo < /dev/tty
+        while [ $TRUE ]; do
+            IFS= read -r -n 1 _ctrl_key < /dev/tty
+            case "$_ctrl_key" in
+                '+') printf "VERBOSITY_UP\n" > "$_ctrl_file" ;;
+                '-') printf "VERBOSITY_DOWN\n" > "$_ctrl_file" ;;
+            'D'|'V') printf "TOGGLE_DEBUG\n" > "$_ctrl_file" ;;
+                'c') printf "CLIENT_MODE\n" > "$_ctrl_file" ;;
+                's') printf "SERVER_MODE\n" > "$_ctrl_file" ;;
+                'b') printf "BOTH_MODE\n" > "$_ctrl_file" ;;
+                'q') 
+                    printf "QUIT\n" > "$_ctrl_file"
+                    # kill the parent script cleanly
+#                    kill -INT $$ # changed to SIGUSR1 so trap can handle it properly
+                    kill -USR1 $$
+                    break
+                    ;;
+            esac
+        done
+        stty sane < /dev/tty
+    ) &
+    # Store the controller PID if needed for cleanup traps later
+    tui_controller_pid=$!
 }
 
 validate_tui_iput_logfile() {
