@@ -83,7 +83,8 @@ trap '_cleanup_tui; stty "$OLD_STTY" 2>/dev/null' EXIT INT TERM
 # when 'q' is pressed, the controller sends USR1
 # this traps that signal and triggers a graceful exit 0
 # (which then automatically triggers the EXIT trap above)
-trap 'exit 0' USR1
+#trap 'exit 0' USR1
+# not needed since stream_log_data kills tails; run_tu_engine exit will still trap EXIT and run _cleanup_tui
 
 #-----[ variables ]--------------------------------------------------------------------------
 
@@ -104,9 +105,9 @@ portage_tmpdir=$(portageq envvar PORTAGE_TMPDIR)
 portage_prefix="${portage_tmpdir%/}/portage"   # use to extract package name from in/out filename
 
 # to-do: make these config-file sourcable and/or command_line configurable
-history_depth=6  #........# how many records to show in the recent history section
+history_depth=4  #........# how many records to show in the recent history section
 max_package_lines=4  #....# maximum number of lines to allow in the active packaages section
-max_active_lines=9  #.....# maximum number of lines to allow in the active records section
+max_active_lines=8  #.....# maximum number of lines to allow in the active records section
 ssh_timeout=2  #..........# how many seconds to wait for ssh connection for dns update
 tui_refresh_period=0.1  #.# tui screen refresh period
 package_timeout=180  #....# how many seconds before expired package is "aged out"
@@ -166,7 +167,7 @@ varlist+=" rlv.grep_filter rlv.CTRL_FIFO DISTCC_TUI_MAIN_PID"
 # c_/s_active_input_files     # list of files processed in this keyed pid job
 # c_/s_active_output_files    # list of files processed in this keyed pid job
 # c_/s_active_outcomes        # result of remote compile job ( success / failure )
-# c_/s_active_duration        # list of elapsed compile time keyed on pid
+# c_/s_active_durations        # list of elapsed compile time keyed on pid
 # c_/s_active_ip_addrs        # list of ip addresses for server mode keyed on pid
 # c_/s_active_packages        # list of packages keyed on pid
 # c_/s_last_contact           # systime stored for key (pid) every time pid is observed
@@ -221,6 +222,7 @@ grep_filter+="|${s_summary_selector}"  #..# indicates job is done
 
 # set up diagnostic message type order to control order of display
 diag_msg_type_order=(
+    "invalid_line"
     "dns_ip_diagnostic"
     "dns_host_diagnostic"
     "dns_cache_diagnostic"
@@ -275,6 +277,10 @@ assign_awk_vars() {
         -v failure_clr="${BRon}"
         -v title_clr="${BWon}"
         -v heading_clr="${BCon}"
+        -v true_clr="${BGon}"
+        -v false_clr="${BRon}"
+        -v unset_clr="${Boff}"
+        -v unk_clr="${BYon}"
         -v clr_off="${Boff}"
         -v placeholder_clr="${BOon}"
         -v c_file_sel="$c_file_selector"  #.......# selector strings used in grep_filter and awk action block if (...) gates
@@ -510,12 +516,26 @@ run_tui_engine() {
     #  and then tell stream_log_data to inject the same file here, thus separating
     #  network task requiring ssh keys and passphrase from the pipeline entirely
     (
-        stream_log_data  "$_initial_dns_file" ;
-         echo "$(timestamp) (DEBUG) stream_log_data has exited" >>/tmp/tui_stream_exit_$$
+        stream_log_data  "$_initial_dns_file"
+        j_msg -$debug -p "$(timestamp) (DEBUG) stream_log_data has exited" >&2
     ) | awk "${awk_vars[@]}" '
     #-----[ awk functions ]---------------------------------------------------------------
     # Debug: dump every incoming line to stderr to verify the pipe is alive
 #    { print "DEBUG [awk input]: " $0 > "/dev/stderr"; fflush("/dev/stderr") }
+    # use this function to set the color according to logic state of input
+    function print_status(input) {
+        if (input == "True" || input == "1" || input == "yes") {
+            # return the colorizing escape sequence and printing text as a string
+            # using implicit concatenation of these values
+            return true_clr input clr_off
+        } else if (input == "False" || input == "0" || input == "no") {
+            return false_clr input clr_off
+        } else if (input == "") {
+            return unset_clr "unset" clr_off
+        } else {
+            return unk_clr input clr_off
+        }
+    }
     # use this function to shift historical items down and append anew entry
     function rotate_history(drawmode, new_record) {
         # shift existing records down by one index, and
@@ -540,17 +560,22 @@ run_tui_engine() {
             delete c_active_input_files[p]
             delete c_active_output_files[p]
             delete c_active_outcomes[p]
-            delete c_active_duration[p]
+            delete c_active_durations[p]
             delete c_last_contact[p]
         } else if (drawmode == "server") {
-#            delete s_active_peers[p]      # (NO) pid persists with more jobs for this peer
+            ### pid persists in server mode means it is inactive in the microsecond between jobs
+            ###   its dynamic data (what job is being done) must be deleted at job completion,
+            ###   so the pid can be "reactivated" immediately with a new job in the same "compiler slot",
+            ###   but static data (who does the slot belong to - peer, ip addr) CANNOT be retained either
+            ###   to avoid the inefficiency of looking them up again, because the slot CAN go to a new client
             delete s_active_starts[p]
             delete s_active_input_files[p]
             delete s_active_output_files[p]
             delete s_active_outcomes[p]
-            delete s_active_duration[p]
-#            delete s_active_ip_addrs[p]   # (NO) pid persists with more jobs for this ip
+            delete s_active_durations[p]
             delete s_last_contact[p]
+            delete s_active_peers[p]
+            delete s_active_ip_addrs[p]
         } else {
             # invalid mode - just generate diagnostic
             diagnostic_messages["invalid_mode"][systime()] = "Invalid mode case in delete_active_records"
@@ -674,14 +699,14 @@ run_tui_engine() {
     function draw_tui_top_line() {
         # clear screen and print heading for client mode
         printf "%s%s", clr, cup ;
-        printf "%s\n", topline ;
+        printf "%s\n", highlightline ;
         # first line - hostname and Current Time
-        printf "  %sHostname:%s %s%-35.35s%s %sCurrent Time:%s %s%s%s\n",
+        printf "  %sHostname:%s %s%-20.20s%s %sCurrent Time:%s %s%s%s\n",
             heading_clr, clr_off,
             mode_clr, hostname, clr_off,
             heading_clr, clr_off,
             ts_clr, strftime("%H:%M:%S"), clr_off
-        printf "%s\n", dashline ;
+        printf "%s\n", modeline ;
     }
     # use this function to draw the heading panel
     function draw_heading(drawmode,    logfile) {
@@ -693,7 +718,7 @@ run_tui_engine() {
             diagnostic_messages["invalid_mode"][systime()] = "Invalid drawmode [" drawmode "] in draw_heading"
         }
         # second line - DISTCC mode and logfile name
-        printf "  %sDISTCC Mode:%s %s%-35.35s%s %sDISTCC_LOG:%s %s%s%s\n",
+        printf "  %sDISTCC Mode:%s %s%-17.17s%s %sDISTCC_LOG:%s %s%s%s\n",
             heading_clr, clr_off,
             mode_clr, drawmode, clr_off,
             heading_clr, clr_off,
@@ -743,7 +768,7 @@ run_tui_engine() {
                 if (n > 1) {
                     ip_suffix = ip_arr[n]
                 } else {
-                    split(ip, ip_arr, ".")
+                    split(client_id, ip_arr, ".")
                     ip_suffix = ip_arr[4]
                 }
                 host_str = host_clr host clr_off ":" ip_clr ip_suffix clr_off
@@ -781,10 +806,12 @@ run_tui_engine() {
         printf "%s\n", dubdashline ;
     }   # end draw_packages
     # use this function to render the active panel within the frame
-    function draw_active(drawmode,    now, COL3_TITLE, p, count, max_lines) {
+    function draw_active(drawmode,    now, COL3_TITLE, da_pid, count, max_lines) {
         # call this function with only one drawmode or the other (client/server)
         # for "both" call it twice - once for each
         now = systime()
+        # cap this section at max_active_lines lines max (adjust for global mode if need room for both)
+        max_lines = (mode == "both") ? int(max_active_lines / 2) : max_active_lines
         printf "  %sActive remote%s %s%s%s %sthreads%s\n",
             title_clr, clr_off,
             mode_clr, drawmode, clr_off,
@@ -799,7 +826,7 @@ run_tui_engine() {
             return 1
         }
         # draw title line with separators
-        printf "[%s%-7.7s%s] %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-8.8s%s\n",
+        printf "[%s%-7.7s%s] %s %s%-33.33s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-8.8s%s\n",
            title_clr, "  PID", clr_off, separator,
            title_clr, "SOURCE FILE", clr_off, separator,
            title_clr, COL3_TITLE, clr_off, separator,
@@ -808,49 +835,53 @@ run_tui_engine() {
         printf "%s\n", dashline ;
         # draw the active records for this section, if they fit
         if (drawmode == "client") {
-            # awk loop syntax assigns key to loop variable (so p is pid here)
+            # awk loop syntax assigns key to loop variable (so da_pid is pid here)
             count = 0
             # iterate over the pids in the array chosen by drawmode above
-            for (p in c_active_starts) {
-                # cap this section at max_active_lines lines max (adjust for global mode if need room for both)
-                max_lines = (mode == "both") ? int(max_active_lines / 2) : max_active_lines
-                if (count >= max_active_lines - 1) {
+            for (da_pid in c_active_starts) {
+                if (count >= max_lines - 1) {
                     printf "  %s[... output capped at %d lines; more jobs hidden ...]%s\n",
                         placeholder_clr, max_lines, clr_off
                     count++
                     break
                 }
-                elapsed = now - c_active_starts[p]
+                elapsed = now - c_active_starts[da_pid]
                 # update the active records (dont .10 precision last field (outcome) or it truncated/break its clr_off
-                printf "[%s%-7.7s%s] %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
-                    data_clr, p, clr_off, separator,
-                    file_clr, c_active_input_files[p], clr_off, separator,
-                    host_clr, c_active_peers[p], clr_off, separator,
+                printf "[%s%-7.7s%s] %s %s%-33.33s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
+                    data_clr, da_pid, clr_off, separator,
+                    file_clr, c_active_input_files[da_pid], clr_off, separator,
+                    host_clr, c_active_peers[da_pid], clr_off, separator,
                     ts_clr, elapsed, clr_off, separator,
-                    c_active_outcomes[p]
+                    c_active_outcomes[da_pid]
                 count++
             }
         } else if (drawmode == "server") {
-            # awk loop syntax assigns key to loop variable (so p is pid here)
+            ### pid persists in server mode means it is inactive in the microsecond between jobs
+            ###   its dynamic data (what job is being done) must be deleted at job completion,
+            ###   so the pid can be "reactivated" immediately with a new job in the same "compiler slot",
+            ###   and the static data (who does the slot belong to - peer, ip addr) can be retained
+            ###   to avoid the inefficiency of looking them up again
+            #do not delete s_active_peers[p]
+            #do not delete s_active_ip_addrs[p]
+            # Caution - do NOT use either of these to determine if a job is active, only if the slot is owned
             count = 0
+            # awk loop syntax assigns key to loop variable (so da_pid is pid here)
             # iterate over the pids in the array chosen by drawmode above
-            for (p in s_active_starts) {
-                # cap this section at max_active_lines lines max (adjust for global mode if need room for both)
-                max_lines = (mode == "both") ? int(max_active_lines / 2) : max_active_lines
-                if (count >= max_active_lines - 1) {
+            for (da_pid in s_active_starts) {
+                if (count >= max_lines - 1) {
                     printf "  %s[... output capped at %d lines; more jobs hidden ...]%s\n",
                         placeholder_clr, max_lines, clr_off
                     count++
                     break
                 }
-                elapsed = now - s_active_starts[p]
+                elapsed = now - s_active_starts[da_pid]
                 # update the active records (dont .10 precision last field (outcome) or it truncated/break its clr_off
-                printf "[%s%-7.7s%s] %s %s%-35.35s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
-                    data_clr, p, clr_off, separator,
-                    file_clr, s_active_input_files[p], clr_off, separator,
-                    host_clr, s_active_peers[p], clr_off, separator,
+                printf "[%s%-7.7s%s] %s %s%-33.33s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s\n",
+                    data_clr, da_pid, clr_off, separator,
+                    file_clr, s_active_input_files[da_pid], clr_off, separator,
+                    host_clr, s_active_peers[da_pid], clr_off, separator,
                     ts_clr, elapsed, clr_off, separator,
-                    s_active_outcomes[p]
+                    s_active_outcomes[da_pid]
                 count++
             }
         } else {
@@ -863,7 +894,7 @@ run_tui_engine() {
             printf "  %s[ . . . Idle - Waiting for jobs from Portage . . . ]%s\n", placeholder_clr, clr_off
             count++
         }
-        while (count < max_active_lines) {
+        while (count < max_lines) {
             printf "  ...\n"
             count++
         }
@@ -872,13 +903,13 @@ run_tui_engine() {
     # use this function to render the recent history panel within the frame
     function draw_recent_history(drawmode,    count, i, max_lines) {
         # update recently completed jobs
+        max_lines = (mode == "both") ? int(history_depth / 2) : history_depth
         # draw a heading for recent history section
         printf "  %sRecently completed%s %s%s%s %sjobs%s\n",
             title_clr, clr_off,
             mode_clr, drawmode, clr_off,
             title_clr, clr_off
         printf "%s\n", dashline ;
-        max_lines = (mode == "both") ? int(history_depth / 2) : history_depth
         for (i = 1; i <= max_lines; i++) {
             if (drawmode == "client") {
                 print (c_history[i] != "" ? c_history[i] : "  ...")
@@ -886,11 +917,13 @@ run_tui_engine() {
                 print (s_history[i] != "" ? s_history[i] : "  ...")
             }
         }
-        printf "%s\n", dubdashline
+        printf "%s\n", modeline
     }
     # use this function to render rollup data
-    function draw_rollup(drawmode,    peer, ip, count, has_data, host_str, n, ip_arr, ip_suffix) {
+    function draw_rollup(drawmode,    i, offset, col_width, peer, ip, count, has_data, host_str, n, ip_arr, ip_suffix) {
         has_data = 0
+        offset = 2
+        col_width = 30
         if (drawmode == "client") {
             # only draw if we actually have data
             for (peer in clientmode_servers_rollup) { has_data = 1; break }
@@ -898,11 +931,27 @@ run_tui_engine() {
             printf "  %sClient%s %smode - Total Jobs Completed per Remote Server%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", dashline
             # iterate through servers in array
+            i = 0
             for (peer in clientmode_servers_rollup) {
                 count = clientmode_servers_rollup[peer]
-                # print the formatted row (room for space then 1000000 then hostname)
-                printf "%s%8d%s %s%s%s\n",
-                    data_clr, count, clr_off, host_clr, peer, clr_off
+                # print the formatted row (room for space then 1000000 then hostname), in two columns
+                if ( i % 2 == 0) {
+                    # offset informs the 1st *, "" its s
+                    # colwidth informs the -* left-justifying peer and right-padding it (omit \n for col 0)
+                    printf "%*s%s%8d%s %s%-*s%s",
+                        offset, "",
+                        data_clr, count, clr_off,
+                        host_clr, col_width, peer, clr_off
+                } else {
+                    # col 1 starts where col 0 padding left off w/o \n
+                    # offset informs the 1st *, "" its s
+                    # colwidth informs the -* left-justifying peer and right-padding it (use \n for col 1)
+                    printf "%*s%s%8d%s %s%s%s\n",
+                        offset, "",
+                        data_clr, count, clr_off,
+                        host_clr, peer, clr_off
+                }
+                i++
             }
         } else if (drawmode == "server") {
             # only draw if we actually have data
@@ -911,6 +960,7 @@ run_tui_engine() {
             printf "  %sServer%s %smode - Total Jobs Completed per Remote Client%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", dashline
             # iterate through server ips in array
+            i = 0
             for (ip in servermode_clients_rollup) {
                 count = servermode_clients_rollup[ip]
                 # resolve hostname with ip suffix differentiation
@@ -928,11 +978,28 @@ run_tui_engine() {
                 } else {
                     host_str = "UNKNOWN_" ip
                 }
-                # print the formatted row (room for space then 1000000 then hostname)
-                printf "%s%8d%s %s\n", data_clr, count, clr_off, host_str
+                if ( i % 2 == 0) {
+                    # offset informs the 1st *, "" its s
+                    # colwidth informs the -* left-justifying host_strr and right-padding it (omit \n for col 0)
+                    printf "%*s%s%8d%s %s%-*s%s",
+                        offset, "",
+                        data_clr, count, clr_off,
+                        host_clr, col_width, host_str, clr_off
+               } else {
+                    # col 1 starts where col 0 padding left off w/o \n
+                    # offset informs the 1st *, "" its s
+                    # colwidth informs the -* left-justifying peer and right-padding it (use \n for col 1)
+                    printf "%*s%s%8d%s %s%s%s\n",
+                        offset, "",
+                        data_clr, count, clr_off,
+                        host_clr, host_str, clr_off
+                }
+                i++
             }
         }
-        printf "%s\n", dubdashline
+        # in either mode, if the total number of items printed was odd, print a newline b/c above did not
+        if ( i % 2 != 0 ) { printf "\n" }
+        printf "%s\n", highlightline
     }
     # use this function to render diagnostic information below other frames (uncomment to enable)
     function draw_tui_diagnostics(    i, k, diag_title, ip_cnt, cache_cnt, local_now,
@@ -953,7 +1020,7 @@ run_tui_engine() {
         c_inputs_cnt = 0;   for (k in c_active_input_files) c_inputs_cnt++
         c_outputs_cnt = 0;  for (k in c_active_output_files) c_outputs_cnt++
         c_outcomes_cnt = 0; for (k in c_active_outcomes) c_outcomes_cnt++
-        c_dur_cnt = 0;      for (k in c_active_duration) c_dur_cnt++
+        c_dur_cnt = 0;      for (k in c_active_durations) c_dur_cnt++
         c_pkg_cnt = 0;      for (k in c_active_packages) c_pkg_cnt++
         c_last_cnt = 0;     for (k in c_last_contact) c_last_cnt++
         c_dead_cnt = 0;     for (k in c_dead_pids) c_dead_cnt++
@@ -963,7 +1030,7 @@ run_tui_engine() {
         s_inputs_cnt = 0;   for (k in s_active_input_files) s_inputs_cnt++
         s_outputs_cnt = 0;  for (k in s_active_output_files) s_outputs_cnt++
         s_outcomes_cnt = 0; for (k in s_active_outcomes) s_outcomes_cnt++
-        s_dur_cnt = 0;      for (k in s_active_duration) s_dur_cnt++
+        s_dur_cnt = 0;      for (k in s_active_durations) s_dur_cnt++
         s_pkg_cnt = 0;      for (k in s_active_packages) s_pkg_cnt++
         s_last_cnt = 0;     for (k in s_last_contact) s_last_cnt++
         s_dead_cnt = 0;     for (k in s_dead_pids) s_dead_cnt++
@@ -1002,8 +1069,7 @@ run_tui_engine() {
         printf " | dead_pid_timeout: %d\n", dead_pid_timeout
         printf "    ssh_timeout: %d", ssh_timeout
         printf " | tui_refresh_period: %s", tui_refresh_period
-        printf " | DISTCC_TUI_MAIN_PID: %s", DISTCC_TUI_MAIN_PID
-        printf " | tui_controller_pid: %s\n", tui_controller_pid
+        printf " | DISTCC_TUI_MAIN_PID: %s\n", DISTCC_TUI_MAIN_PID
 
         #-----[ verify dynamic shell data (width) ingested  ]-----------------------------
         printf "   Width: [%s] (drag frame to change)\n", width
@@ -1073,16 +1139,25 @@ run_tui_engine() {
         printf "%s\n", dubdashline
     }   # end draw_tui_diagnostics
     function draw_tui_cmd_panel() {
-        printf "  %s(+/-)%s %sSet verbosity:%s [%s]", title_clr, clr_off, heading_clr, clr_off, verbosity
-        printf " %s(D)%s %sToggle DEBUG:%s [%s]", title_clr, clr_off, heading_clr, clr_off, DEBUG
-        printf " %s(c/s)%s %sSet mode:%s [%s]\n", title_clr, clr_off, heading_clr, clr_off, mode
+        printf "  %s(+/-)%s %sSet verbosity:%s [%s%s%s]",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            data_clr, verbosity, clr_off
+        printf " %s(D)%s %sToggle DEBUG:%s [%s]",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            print_status(DEBUG)
+        printf " %s(c/s)%s %sSet mode:%s [%s%s%s]\n",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            mode_clr, mode, clr_off
 }
     function draw_tui_body(drawmode) {
         draw_heading(drawmode)
         draw_packages(drawmode)
         # reset timer, count, elapsed; render active jobs
-        now = systime()
-        count = 0
+#        now = systime()
+#        count = 0
         draw_active(drawmode)
         draw_recent_history(drawmode)
         draw_rollup(drawmode)
@@ -1106,7 +1181,7 @@ run_tui_engine() {
             if (!(pc_pid in c_active_starts)) {
                 c_active_input_files[pc_pid]  = "(null)"
                 c_active_peers[pc_pid]        = "localhost"
-                c_active_duration[pc_pid]     = "0s"
+                c_active_durations[pc_pid]     = "0s"
                 c_active_starts[pc_pid]       = systime()
 
                 # DIAGNOSTIC: Log the PID right before deletion to a temp file
@@ -1179,7 +1254,7 @@ run_tui_engine() {
             #   distcc[646584] elapsed compilation time 3.136191s
             #   c_elapsed_selector="elapsed compilation time"  # elapsed = $5 ($NF)
             if ($0 ~ c_elapsed_sel) {
-                c_active_duration[pc_pid] = $NF
+                c_active_durations[pc_pid] = $NF
             }
             # if line matches selector, rotate history and delete active records for this pc_pid
             #   distcc[646584] "(dcc_exit)" exit: code 0; self: 0.008061 user 0.016122 sys; children: 0.270012 user 0.214661 sys
@@ -1201,8 +1276,8 @@ run_tui_engine() {
                     }                } else {
                     c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", failure_clr, "failure", clr_off)
                 }
-                pc_final_time = (c_active_duration[pc_pid] != "" ? c_active_duration[pc_pid] : 0)
-                pc_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
+                pc_final_time = (c_active_durations[pc_pid] != "" ? c_active_durations[pc_pid] : 0)
+                pc_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
                                   data_clr, pc_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, c_active_input_files[pc_pid], clr_off,
@@ -1231,57 +1306,76 @@ run_tui_engine() {
 #     { print "DEBUG [awk server mode input]: " $0 > "/dev/stderr"; fflush("/dev/stderr") }
 
         # if it is a real log line, parse the data
-        # and ignore (dcc_increment_safeguard) lines that are sqawned child processes that generate only one line
+        # strategy is different for server mode; this pid is re-used for multiple jobs per client and for multiple clients
+        # so this mode must be more rigorously state-aware - cannot just extract pid and assign active job as in clien mode
         if ($0 !~ /__HEARTBEAT__/ && $0 !~ /dcc_increment_safeguard/) {
-            # extract pid (numeric part of first field; format: "distcc[1234567]"
-            match($1, /[0-9]+/)
-            ps_pid = substr($1, RSTART, RLENGTH)   # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
-            # guard against a pid declared dead having a follow-on line revive it
-#            if (ps_pid in s_dead_pids) { return 0 } <-- (NO) server mode: pid persists over several jobs
-            # update last contact for every line received (enable prune if job dies with no exit_sel)
-            s_last_contact[ps_pid] = systime()
-            # safe default initialization for fields required by piping and logging (do only on first observation of pid)
-            if (!(ps_pid in s_active_starts)) {
-                s_active_input_files[ps_pid]  = "(null)"
-                if (!(ps_pid in s_active_peers)) s_active_peers[ps_pid]        = "UNKNOWN_0.0.0.0"  # dont overwrite if done by earlier job in persistent server pid
-                if (!(ps_pid in s_active_ip_addrs)) s_active_ip_addrs[ps_pid]     = "0.0.0.0"       # dont overwrite if done by earlier job in persistent server pid
-                s_active_duration[ps_pid]     = "0ms"       # "0ms" matching distccd (server) native time unit output format
-                s_active_starts[ps_pid]       = systime()
-            }
-            # set start placeholder outcome only on the very first encounter (if empty)
-            if (!(ps_pid in s_active_outcomes)) {
-                s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off) }
-            # if line matches selector, save input ip address for this pid (assumes it always has a port number to strip
-            #   distccd[96193] "(dcc_check_client)" connection from fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662
-            #   s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF /// incl port#
-            if ($0 ~ s_ip_sel) {
+            if ($0 ~ /dcc_increment_safeguard/ || $0 ~ /dcc_preforked_child/ || $0 ~ /dcc_log_child_exited/ || $0 ~ /dcc_collect_child/) {
+                # ignore these parent-pid coded records related to child processes /// next to drop the line immediatly and move on
+                next
+           } else if ($0 ~ s_ip_sel) {
+                #   distccd[96193] "(dcc_check_client)" connection from fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662
+                #   s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF /// incl port#
+                # the compiler slot has been assigned to work in support of the client whose ip address is supplied
+                # this DOES signal a new job - extract pid to track it (numeric part of first field; format: "distccd[1234567]"
+                match($1, /[0-9]+/)
+                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                # extract ip address as client_id
                 ps_ip = $NF
-                gsub(/:[0-9]+$/, "", ps_ip)             # strip trailing colon and digits (port number)
-                s_active_ip_addrs[ps_pid] = ps_ip           # assign to array
+                gsub(/:[0-9]+$/, "", ps_ip)               # strip trailing colon and digits (port number)
+                s_active_ip_addrs[ps_pid]        = ps_ip  # assign to array
                 # guard - check if the ip exists in pre-loaded list
                 if (ps_ip in dns_cache) {
-                    s_active_peers[ps_pid] = dns_cache[ps_ip]
-# uncomment to debug
-#                    diagnostic_messages["ip_is_in_cache"][systime()] = sprintf("ip address [%s] is in cache with host [%s]", ps_ip, dns_cache[ps_ip])
+                    s_active_peers[ps_pid]       = dns_cache[ps_ip]
+                    diagnostic_messages["ip_is_in_cache"][systime()] = sprintf("ip address [%s] is in cache with host [%s]", ps_ip, dns_cache[ps_ip])
                 } else {
-                    # emit signal to shell to trigger call to maybe_get_and_register_hostname
+                    # to-do: emit signal to shell to trigger call to maybe_get_and_register_hostname
 #                    printf "__REGISTER_ME__ %s %s\n", ps_pid, ps_ip
-                    s_active_peers[ps_pid] = "UNKNOWN_" ps_ip  # fallback
+                    s_active_peers[ps_pid]       = "UNKNOWN_" ps_ip  # fallback
                     diagnostic_messages["ip_is_in_not_cache"][systime()] = sprintf("(ps_ip) ip address [%s] is NOT in cache", ps_ip)
                 }
-            }
-            # if line matches selector, save input and output file names for this pid (already short form in log)
-            #   distccd[96193] "compile from" gtkactions_interface.cpp to gtkactions_interface.cpp.o
-            #   s_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
-            if ($0 ~ s_file_sel) {
-                s_active_input_files[ps_pid] = $4
-                s_active_output_files[ps_pid] = $6
-            }
-            # if line matches selector, save distcc server host_name for this pid
-            #   1              2                       3                                     4  5         6
-            #   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/.../work  on localhost "completed ok" --> outcome=$NF
-            #   s_success_selector="completed ok"  #...........# package = $3 (extractable);  outcome = success
-            if ($0 ~ s_success_sel) {
+                # record this first contact as most recent, for now
+                s_last_contact[ps_pid] = systime()
+                # set safe defaults for fields required by piping and logging (do only on first observation of new job)
+                if (!(ps_pid in s_active_starts)) {
+                    # start the clock on this job
+                    s_active_starts[ps_pid]      = systime()
+                    s_active_input_files[ps_pid] = "(TBD)"
+                    s_active_durations[ps_pid]   = "0ms"
+                    s_active_outcomes[ps_pid]    = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off)
+                }
+            } else if ($0 ~ s_file_sel) {
+                #   distccd[96193] "compile from" gtkactions_interface.cpp to gtkactions_interface.cpp.o
+                #   s_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
+                # changed from $4, $6 to more explicit extraction
+                # this line can also indicate a new job and allow watching it while active but wont have client id if there was no s_ip_sel
+                match($1, /[0-9]+/)
+                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                # start the job click if it hasnt been started
+                if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
+                # record now as last contact
+                s_last_contact[ps_pid] = systime()
+                # set input and output file names
+                split($0, ps_line_parts, "compile from ")
+                split(ps_line_parts[2], ps_remainder_parts, " to ")
+                s_active_input_files[ps_pid] = ps_remainder_parts[1]
+                s_active_output_files[ps_pid] = ps_remainder_parts[2]
+                # set safe defaults for fields required by piping and logging (do only on first observation of new job)
+                if (!(ps_pid in s_active_starts)) {
+                    # start the clock on this job
+                    s_active_starts[ps_pid]      = systime()
+                    s_active_durations[ps_pid]   = "0ms"
+                    s_active_outcomes[ps_pid]    = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off)
+                }
+            } else if ($0 ~ s_success_sel) {
+                #   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/.../work  on localhost "completed ok" --> outcome=$NF
+                #   s_success_selector="completed ok"  #...........# package = $3 (extractable);  outcome = success
+                # this is a "near end of lifecycle" event offering package name and compile outcome
+                match($1, /[0-9]+/)
+                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                # start the job click if it hasnt been started
+                if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
+                # record now as last contact
+                s_last_contact[ps_pid] = systime()
                 # for server mode, the list of packages for multiple ip addresses of clients (should be one per)
                 # use array of arrays [client_id][pkg] rather than 2-d array (indexing is independent)
                 # store systime to know the age of this package record
@@ -1307,16 +1401,21 @@ run_tui_engine() {
                 }
                 # dont need to annotate history section for success until summary is processed, but do annotate outcome in active section for a blink
                 s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", success_clr, $NF, clr_off)
-            }
-            # if line matches selector, record the outcome for this pid
-            #   distccd[1460350] (dcc_readx) ERROR: unexpected eof on fd5
-            #   s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
-            if (($0 ~ s_failure_sel) && ($0 ~ /dcc_r/)) {
+            } else if ($0 ~ s_failure_sel && $0 ~ /dcc_r/) {
+                #   distccd[1460350] (dcc_readx) ERROR: unexpected eof on fd5
+                #   s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
+                # this is a "near end of lifecycle" event offering package compile outcome and terminating job lifecycle
+                match($1, /[0-9]+/)
+                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                # start the job click if it hasnt been started
+                if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
+                # record now as last contact
+                s_last_contact[ps_pid] = systime()
                 split($0, ps_parts, "ERROR: ")
                 s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", failure_clr, ps_parts[2], clr_off)
-                if (!(ps_pid in s_active_duration)) { s_active_duration[ps_pid] = systime() - s_active_starts[ps_pid] }
-                ps_final_time = (s_active_duration[ps_pid] != "" ? s_active_duration[ps_pid] : "0ms")
-                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
+                if (!(ps_pid in s_active_durations)) { s_active_durations[ps_pid] = systime() - s_active_starts[ps_pid] }
+                ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
+                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, s_active_input_files[ps_pid], clr_off,
@@ -1327,16 +1426,21 @@ run_tui_engine() {
                 # (which still protects ip and hostname but cleans out filenames, etc)
                 rotate_history("server", ps_log_str)
                 delete_active_records("server", ps_pid)
-            }
-            # if line matches selector, record the elapsed time for this pid
-            #   distccd[96193] (dcc_job_summary) client: fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662 COMPILE_OK exit:0 \
-            #                ... sig:0 core:0 ret:0 time:21251ms x86_64-pc-linux-gnu-g++  \
-            #                ... /var/tmp/portage/kde-plasma/plasma-workspace-6.6.5-r1/work/plasma-workspace-6.6.5_build/gmenu-dbusmenu-proxy/gtkactions_interface.cpp
-            #   s_summary_selector="(dcc_job_summary)"  #......# elapsed = $10; exit_code = $6 (set outcome)
-            #                                           #......# package = $12 (extract); infile = $12 (basename)
-            #                                           #......# also record to history and delete from active records
-            if ($0 ~ s_summary_sel) {
+            } else if ($0 ~ s_summary_sel) {
+                #   distccd[96193] (dcc_job_summary) client: fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662 COMPILE_OK exit:0 \
+                #                ... sig:0 core:0 ret:0 time:21251ms x86_64-pc-linux-gnu-g++  \
+                #                ... /var/tmp/portage/kde-plasma/plasma-workspace-6.6.5-r1/work/plasma-workspace-6.6.5_build/gmenu-dbusmenu-proxy/gtkactions_interface.cpp
+                #   s_summary_selector="(dcc_job_summary)"  #......# elapsed = $10; exit_code = $6 (set outcome)
+                #                                           #......# package = $12 (extract); infile = $12 (basename)
+                #                                           #......# also record to history and delete from active records
                 # assess success/falure - note both get exit: 0 status, so use COMPILE_OK vs OTHER in $5
+                # this is a "near end of lifecycle" event offering much data terminating job lifecycle
+                match($1, /[0-9]+/)
+                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                # start the job click if it hasnt been started
+                if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
+                # record now as last contact
+                s_last_contact[ps_pid] = systime()
                 if ($5 == "COMPILE_OK") {
                     s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", success_clr, "success", clr_off)
                 } else {
@@ -1382,13 +1486,14 @@ run_tui_engine() {
 #                        "(summary block) array index missing or default - client_id: [%s], pkg: [%s]", ps_client_id, ps_pkg)
                 }
                 # if infile is still empty, but pkg is assigned, fill infile with last element of path
-                if (!(ps_pid in s_active_input_files)) {s_active_input_files[ps_pid] = ps_path[ps_n] }
+                if (!(ps_pid in s_active_input_files) || s_active_input_files[ps_pid] == "(TBD)") {
+                    s_active_input_files[ps_pid] = ps_path[ps_n] }
                 # record elapsed time
                 split($0, ps_parts, "time:")    #...# format: " ... time:21576ms ..." cut from line using "time:" as delimiter
                 split(ps_parts[2], ps_time_str, " ")   # cut from remaining line using " " as delimiter
-                s_active_duration[ps_pid] = ps_time_str[1]
-                ps_final_time = (s_active_duration[ps_pid] != "" ? s_active_duration[ps_pid] : "0ms")
-                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.25s%s on %s%-.25s%s (%s%ds%s) [%s]",
+                s_active_durations[ps_pid] = ps_time_str[1]
+                ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
+                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, s_active_input_files[ps_pid], clr_off,
@@ -1400,6 +1505,14 @@ run_tui_engine() {
                 # do NOT declare this pid dead now - pid persists in server mode as long as the compiler slot stays open
                 # likely for the duration of the package.  We actually NEED trailing lines (for new jobs under this pid)
                 # to re-initialize the active records associated with pid and get new filename, etc.
+            } else if ($0 ~ /dcc_exit/ || $0 ~ /job complete/ || $0 ~ /dcc_r_file_timed/) {
+                # ignore these cases for now, and consider this -
+                # job complete is redundant - could be used to ensure job closure
+                # dcc_r_file_times - has performance data that could enhance dash board, maybe
+                next  # - for now just drop the line and move on
+            } else {
+                diagnostic_messages["invalid_line"][systime()] = \
+                    "unexpected or invalid line format in parse_server_line [" $0 "]"
             }
         }
     }   # end parse_server_line
@@ -1473,8 +1586,7 @@ run_tui_engine() {
             } else if (cmd == "BOTH_MODE") {
                 mode = "both"
             } else if (cmd == "QUIT") {
-                # this is really just a visual placeholder, the backgrounded launch_tui_controller kills $$ directly
-                printf "__KILL_ME__\n"
+#                printf "__AWK_EXITING__\n"
                 exit 0
             } else {
                 diagnostic_messages["bad_control"][systime()] = "unexpected or malformatted control line [" $0 "]"
@@ -1486,7 +1598,8 @@ run_tui_engine() {
             # update ui assets using dynamic width
             dashline = sprintf("%s%s%s", line_clr, repeat("-", width), clr_off)
             dubdashline = sprintf("%s%s%s", line_clr, repeat("=", width), clr_off)
-            topline = sprintf("%s%s%s", mode_clr, repeat("_", width), clr_off)
+            highlightline = sprintf("%s%s%s", mode_clr, repeat("=", width), clr_off)
+            modeline = sprintf("%s%s%s", mode_clr, repeat("-", width), clr_off)
             separator = sprintf("%s%s%s", line_clr, "|", clr_off)
             # prune expired data
             prune_expired_packages("client")
@@ -1524,7 +1637,8 @@ run_tui_engine() {
     }   # main block
         # the output of awk text processing is piped into a signal handler in real time
     ' | consume_tui_output          # this \' char is the end of awk itself
-echo "$(timestamp) (DEBUG) consume_tui_output has exited, and run_tui_engine is about to" >>/tmp/tui_stream_exit_$$
+    j_msg -$debug -p "$(timestamp) (DEBUG) consume_tui_output has exited, and run_tui_engine is about to" >&2
+
 }   # end run_tui_engine bash function
 
 consume_tui_output() {
@@ -1638,7 +1752,8 @@ stream_log_data() {
             fi
             # redirect stderr and break on error to catch quit/exit from awk without a stream of "broken pipe" messages
             # and ensure a deterministic way to exit the controller loop when the tty is no longer readable
-            printf "__HEARTBEAT__ %d\n" "$(termwidth)" 2>/dev/null || break
+#            printf "__HEARTBEAT__ %d\n" "$(termwidth)" 2>/dev/null || break
+            printf "__HEARTBEAT__ %d\n" "$(tput cols)" 2>/dev/null || break
             # for testing diagnostic logic only (match both "distcc[" AND "compile from"
 #            printf "distcc[000000] compile from spoofed client record for testing \n"
             # for testing diagnostic logic only (match both "distcc[" AND "compile from"
@@ -1739,12 +1854,14 @@ launch_tui_controller() {
                 'q')
                     printf "QUIT\n" >&4
                     # explicitly signal the main script PID
-                    if [ -n "$DISTCC_TUI_MAIN_PID" ]; then
-                      kill -USR1 "$DISTCC_TUI_MAIN_PID" 2>/dev/null || true
-                    else
-                      kill -USR1 "$MAIN_PID" 2>/dev/null || true
-                    fi
-                    return 0
+#                    if [ -n "$DISTCC_TUI_MAIN_PID" ]; then
+#                      kill -USR1 "$DISTCC_TUI_MAIN_PID" 2>/dev/null || true
+#                    else
+#                      kill -USR1 "$MAIN_PID" 2>/dev/null || true
+#                    fi
+#                    return 0
+                    # now that stream_log_data kill the tails, lets try a normal exit (no USR1 trap needed)
+                    break
                     ;;
             esac
         done
@@ -1822,6 +1939,10 @@ show_config || die "failed to show_config"
 confirm_continue_or_exit
 
 # run this "forever"
-run_tui_engine; result=$?
-j_msg "-${notice}" -p "done run_tui_engine; relult:"
-handle_result $result "" "$PN terminated with exit code [$?]" "$notice"
+# group with { ... } so it will be parsed pre-execution, preventing error from asynchronous exit
+{
+    run_tui_engine
+    result=$?
+    j_msg "-${notice}" -p -n "done run_tui_engine; result:"
+    handle_result "$result" "" "$PN terminated with exit code [$result]" "$notice"
+}
