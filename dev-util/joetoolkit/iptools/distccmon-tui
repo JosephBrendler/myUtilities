@@ -33,8 +33,9 @@
 #   distccd[96193] compile from gtkactions_interface.cpp to gtkactions_interface.cpp.o
 #   distccd[96193] (dcc_r_file_timed) 2150561 bytes received in 0.897576s, rate 2340kB/s
 #   distccd[96193] (dcc_collect_child) cc times: user 0.000000s, system 0.000000s, 0 minflt, 0 majflt
-#   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/plasma-workspace-6.6.5-r1/work/plasma-workspace-6.6.5_build/gmenu-dbusmenu-proxy/gtkactions_interface.cpp
-#                ...    on localhost completed ok
+#   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/plasma-workspace-6.6.5-r1/work/...oxy/gtkactions_interface.cpp on localhost completed ok
+#   distccd[96193] x86_64-pc-linux-gnu-gcc /var/tmp/portage/dev-db/mysql-8.0.45/work/...ch/TryCompile-Q28H4b/src.c on localhost failed
+#   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/dev-db/mysql-8.0.45/work/mysql/storage/federated/ha_federated.cc on localhost failed with exit code 107
 #   distccd[96193] job complete
 #   distccd[96193] (dcc_job_summary) client: fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662 COMPILE_OK exit:0 \
 #                ... sig:0 core:0 ret:0 time:21251ms x86_64-pc-linux-gnu-g++  \
@@ -113,11 +114,17 @@ tui_refresh_period=0.1  #.# tui screen refresh period
 package_timeout=180  #....# how many seconds before expired package is "aged out"
 job_timeout=600  #........# how many seconds before expired job (pid) is "aged out"
 dead_pid_timeout=600  #...# how many seconds before a pid already declared dead is "aged out"
+hist_pid_timeout=30  #....# how many seconds before a log-history pid "aged out" (prune after reasonable initial ingenstion period)
 diagnostic_timeout=10  #..# how many seconds before expired diagnotic message is "aged out"
 tw=$(termwidth)  #........# used only initially to set -v width for awk /// over-ridden by __HEARTBEAT__
 
 tui_reachback=5000  #.....# how far to reach back into current log for historical data if not reading all of history
 HISTORY=$FALSE  #.........# choose whether to read all historical logs (override with cmdline)
+
+PACKAGES=$TRUE #..........# whether to display the active packages section of the tui
+ACTIVE=$TRUE  #...........# whether to display the active jobs section of the tui
+LASTJOBS=$TRUE #..........# whether to display the last completed jobs section of the tui
+ROLLUP=$TRUE  #...........# whether to display the rollup section of the tui
 
 # leverage cli tools in script_header_joetoo incl process_cmdline and show_config, but not using command sequence
 # so just set some expected variables already in varlist with placeholder info
@@ -167,11 +174,12 @@ varlist+=" rlv.grep_filter rlv.CTRL_FIFO DISTCC_TUI_MAIN_PID"
 # c_/s_active_input_files     # list of files processed in this keyed pid job
 # c_/s_active_output_files    # list of files processed in this keyed pid job
 # c_/s_active_outcomes        # result of remote compile job ( success / failure )
-# c_/s_active_durations        # list of elapsed compile time keyed on pid
+# c_/s_active_durations       # list of elapsed compile time keyed on pid
 # c_/s_active_ip_addrs        # list of ip addresses for server mode keyed on pid
 # c_/s_active_packages        # list of packages keyed on pid
 # c_/s_last_contact           # systime stored for key (pid) every time pid is observed
 # c_/s_dead_pids              # list of pids declared dead after results found (prevent accidental "rejuvination"
+# c_s_history_pids            # list of pids read from log history rather than active stream
 # diagnostic_messages    # list of informative diagnostic messages to display
 
 # TBD if this will be a bash associative array for reading dns hostnames keyed to ip
@@ -180,25 +188,28 @@ declare -A bash_reg_locks  # tbd if needed (anti-avalanche guard -  dont spawn r
 
 # identify client mode selector string patterns to capture important lifecycle events as shown above
 c_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
-c_pkg_selector="found input file${P1}/work" #..# pkg is extracted from $6/$NF
+c_pkg_selector="found input file${P1}/work" #..# pkg is extracted from $6/$NF w/o __HISTORY__
 c_host_selector="\] exec on"  #................#  --> host_name = $4
-c_result_selector="compile${P1} on" #..........# host_name = $5; outcome = $NF
+c_result_selector="compile${P1} on" #..........# host_name = $5; outcome = $NF w/o __HISTORY__
 c_elapsed_selector="elapsed compilation time"  # elapsed = $5
 c_exit_selector="(dcc_exit)"  #................# record to history and delete from active records
 c_child_selector="(dcc_spawn_child)${P1}dcc_increment_safeguard"  #..# blacklist useless line to ignore child process
+c_history_selector=" __HISTORY__"  #...........# mark as read from old log data vs active stream
 
 # identify server mode selector string patterns to capture important lifecycle events as shown above
-s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF /// incl port#
+s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF w/o __HISTORY__ /// incl port#
 s_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
 s_success_selector="completed ok"  #...........# package = $3 (extractable);  outcome = success
-s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
+s_failed_selector=" on ${P1} failed${P0}$"   #.# last word(s) are failed [string] --> outcome = failure infile is in portage path
+s_error_selector="ERROR:"  #...................# && /dcc_r/ --> outcome = all after ERROR:
 s_summary_selector="(dcc_job_summary)"  #......# elapsed = $10; exit_code = $6 (set outcome)
 #                                       #......# package = $12 (extract); infile = $12 (basename)
 #                                       #......# also record to history and delete from active records
+s_history_selector=" __HISTORY__"  #...........# mark as read from old log data vs active stream
 #
 # add these to varlist for show_config
-varlist+=" c_file_selector c_pkg_selector c_host_selector c_result_selector c_elapsed_selector c_exit_selector"
-varlist+=" s_ip_selector s_file_selector s_success_selector s_failure_selector s_summary_selector"
+varlist+=" c_file_selector c_pkg_selector c_host_selector c_result_selector c_elapsed_selector c_exit_selector c_history_selector"
+varlist+=" s_ip_selector s_file_selector s_success_selector s_error_selector s_summary_selector s_history_selector "
 
 # assemble grep_filter (one filter used to pre-filter all input streams via whitelisting)
 # start with baseline whitelist
@@ -212,13 +223,16 @@ grep_filter+="|${c_host_selector}"  #.....# identifies remote server peer
 grep_filter+="|${c_result_selector}"  #...# identifies outcome and remote server peer
 grep_filter+="|${c_elapsed_selector}"  #..# identifies elapsed compile time (seconds)
 grep_filter+="|${c_exit_selector}"  #.....# indicates job is done
+grep_filter+="|${c_history_selector}"  #..# indicates record came from old log data vs active stream
 #grep_filter+="|${c_child_selector}"  #....# (omit from grep_filter to exclude) child process (one line) useless record
 # set up a server grep_filter string with selectors to capture important lifecycle events as shown above
 grep_filter+="|${s_ip_selector}"  #.......# identifies remote peer by ip address
 grep_filter+="|${s_file_selector}"  #.....# identifies input and output file names (same as c_ but keep complete list for each parser)
 grep_filter+="|${s_success_selector}"  #..# identifies outcome (success)
-grep_filter+="|${s_failure_selector}"  #..# identifies outcome (failure)
+grep_filter+="|${s_failed_selector}"  #...# identifies outcome (failure) and input file
+grep_filter+="|${s_error_selector}"  #....# identifies outcome (failure)
 grep_filter+="|${s_summary_selector}"  #..# indicates job is done
+grep_filter+="|${s_history_selector}"  #..# indicates record came from old log data vs active stream
 
 # set up diagnostic message type order to control order of display
 diag_msg_type_order=(
@@ -248,6 +262,10 @@ assign_awk_vars() {
         -v verbosity="$verbosity"  #...................# forward to awk from joetoo env
         -v DEBUG=$(TrueFalse $DEBUG)  #................# forward to awk from joetoo env
         -v HISTORY=$(TrueFalse $HISTORY)  #............# whether all of history is ingested for rollup
+        -v PACKAGES=$(TrueFalse $PACKAGES)  #..........# whether to display active packages section of tui
+        -v ACTIVE=$(TrueFalse $ACTIVE)  #..............# whether to display active jobs section of tui
+        -v LASTJOBS=$(TrueFalse $LASTJOBS)  #..........# whether to display last completed jobs section of tui
+        -v ROLLUP=$(TrueFalse $ROLLUP)  #..............# whether to display rollup section of tui
         -v client_logfile="$tui_client_DISTCC_LOG"  #..# path name of client log file to ingest
         -v server_logfile="$tui_server_DISTCC_LOG"  #..# path name of server log file to ingest
         -v history_depth="$history_depth"  #...........# tui section sizing and timeouts
@@ -281,8 +299,11 @@ assign_awk_vars() {
         -v false_clr="${BRon}"
         -v unset_clr="${Boff}"
         -v unk_clr="${BYon}"
-        -v clr_off="${Boff}"
         -v placeholder_clr="${BOon}"
+        -v clr_off="${Boff}"
+        -v bin_uH_light="$bin_uH_light"   #.......# pre-cooked unicode box drawing characters
+        -v bin_uH_heavy="$bin_uH_heavy"
+        -v bin_uH_double="$bin_uH_double"
         -v c_file_sel="$c_file_selector"  #.......# selector strings used in grep_filter and awk action block if (...) gates
         -v c_pkg_sel="$c_pkg_selector"
         -v c_host_sel="$c_host_selector"
@@ -290,11 +311,14 @@ assign_awk_vars() {
         -v c_elapsed_sel="$c_elapsed_selector"
         -v c_exit_sel="$c_exit_selector"
         -v c_child_sel="$c_child_selector"  #.....# use this selector to blacklist spawned child process with only one useless line
+        -v c_history_sel="$c_history_selector"
         -v s_ip_sel="$s_ip_selector"
         -v s_file_sel="$s_file_selector"
         -v s_success_sel="$s_success_selector"
-        -v s_failure_sel="$s_failure_selector"
+        -v s_failed_sel="$s_failed_selector"
+        -v s_error_sel="$s_error_selector"
         -v s_summary_sel="$s_summary_selector"
+        -v s_history_sel="$s_history_selector"
         -v port_prefix="$portage_prefix"  #.......# augment selectors to extract package name from portage path
         -v DISTCC_TUI_MAIN_PID="$DISTCC_TUI_MAIN_PID"
         -v tui_controller_pid="$tui_controller_pid"
@@ -518,7 +542,7 @@ run_tui_engine() {
     (
         stream_log_data  "$_initial_dns_file"
         j_msg -$debug -p "$(timestamp) (DEBUG) stream_log_data has exited" >&2
-    ) | awk "${awk_vars[@]}" '
+    ) | LC_CTYPE=en_US.UTF-8 awk "${awk_vars[@]}" '
     #-----[ awk functions ]---------------------------------------------------------------
     # Debug: dump every incoming line to stderr to verify the pipe is alive
 #    { print "DEBUG [awk input]: " $0 > "/dev/stderr"; fflush("/dev/stderr") }
@@ -562,6 +586,7 @@ run_tui_engine() {
             delete c_active_outcomes[p]
             delete c_active_durations[p]
             delete c_last_contact[p]
+            delete c_hist_pids[p]
         } else if (drawmode == "server") {
             ### pid persists in server mode means it is inactive in the microsecond between jobs
             ###   its dynamic data (what job is being done) must be deleted at job completion,
@@ -576,9 +601,28 @@ run_tui_engine() {
             delete s_last_contact[p]
             delete s_active_peers[p]
             delete s_active_ip_addrs[p]
+            delete s_hist_pids[p]
         } else {
             # invalid mode - just generate diagnostic
             diagnostic_messages["invalid_mode"][systime()] = "Invalid mode case in delete_active_records"
+        }
+    }
+    # use this function to prune stale histories (read from old log but process not properly terminated)
+    function prune_hist_pids(drawmode,    pid, parts, ts, reading_history) {
+        # if no longer reading history, then remove hist_pids from active records immedately
+        if (drawmode == "client" && $0 !~ / __HISTORY__/) {
+            for (pid in c_hist_pids) {
+                # prune the hist pid
+                delete_active_records("client", pid)
+            }
+        } else if (drawmode == "server" && $0 !~ / __HISTORY__/) {
+            for (pid in s_hist_pids) {
+                # prune the hist pid
+                delete_active_records("server", pid)
+            }
+        } else {
+            # invalid mode - just generate diagnostic
+            diagnostic_messages["invalid_mode"][systime()] = "Invalid mode [" drawmode "] in prune_hist_pids"
         }
     }
     # use this function to prune dead pids
@@ -826,7 +870,7 @@ run_tui_engine() {
             return 1
         }
         # draw title line with separators
-        printf "[%s%-7.7s%s] %s %s%-33.33s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-8.8s%s\n",
+        printf "[%s%-7.7s%s] %s %s%-33.33s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-.8s%s\n",
            title_clr, "  PID", clr_off, separator,
            title_clr, "SOURCE FILE", clr_off, separator,
            title_clr, COL3_TITLE, clr_off, separator,
@@ -902,10 +946,10 @@ run_tui_engine() {
     }   # end draw active
     # use this function to render the recent history panel within the frame
     function draw_recent_history(drawmode,    count, i, max_lines) {
-        # update recently completed jobs
+        # update Last completed jobs
         max_lines = (mode == "both") ? int(history_depth / 2) : history_depth
         # draw a heading for recent history section
-        printf "  %sRecently completed%s %s%s%s %sjobs%s\n",
+        printf "  %sLast completed%s %s%s%s %sjobs%s\n",
             title_clr, clr_off,
             mode_clr, drawmode, clr_off,
             title_clr, clr_off
@@ -920,30 +964,42 @@ run_tui_engine() {
         printf "%s\n", modeline
     }
     # use this function to render rollup data
-    function draw_rollup(drawmode,    i, offset, col_width, peer, ip, count, has_data, host_str, n, ip_arr, ip_suffix) {
+    function draw_rollup(drawmode,    i, offset, c_col_width, s_col_width, peer, ip, count, has_data, host_str, n, ip_arr, ip_suffix) {
         has_data = 0
         offset = 2
-        col_width = 30
+        # pad for ansi ? -- $ printf "%s\n" "${BMon}1000000${Boff} ${Gon}rock5bplus6401${Boff}:${BTon}d892${Boff}" | wc -c ==> 74
+#        s_col_width = 75  # host name part of col_width (leave count room for ansi colorization <-- way too spacey
+#        s_col_width = 55  # host name part of col_width (leave count room for ansi colorization) <-- small by 1 char?
+        s_col_width = 60  # host name part of col_width (leave count room for ansi colorization)
+        c_col_width = 15  # host name part of col_width
         if (drawmode == "client") {
             # only draw if we actually have data
             for (peer in clientmode_servers_rollup) { has_data = 1; break }
             if (!has_data) return
-            printf "  %sClient%s %smode - Total Jobs Completed per Remote Server%s\n", mode_clr, clr_off, title_clr, clr_off
+            printf "  %sClient%s %srollup - Total Jobs Completed per Remote Server%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", dashline
             # iterate through servers in array
             i = 0
             for (peer in clientmode_servers_rollup) {
                 count = clientmode_servers_rollup[peer]
-                # print the formatted row (room for space then 1000000 then hostname), in two columns
-                if ( i % 2 == 0) {
+                # print the formatted row (room for space then 1000000 then hostname), in 3 columns for client, 2 columns for server
+                if ( i % 3 == 0) {
                     # offset informs the 1st *, "" its s
-                    # colwidth informs the -* left-justifying peer and right-padding it (omit \n for col 0)
-                    printf "%*s%s%8d%s %s%-*s%s",
+                    # colwidth informs the -*.* left-justifying peer and right-padding it (omit \n for col 0)
+                    printf "%*s%s%8d%s %s%-*.*s%s",
                         offset, "",
                         data_clr, count, clr_off,
-                        host_clr, col_width, peer, clr_off
-                } else {
+                        host_clr, c_col_width, c_col_width, peer, clr_off
+                } else if ( i % 3 == 1) {
                     # col 1 starts where col 0 padding left off w/o \n
+                    # offset informs the 1st *, "" its s
+                    # colwidth informs the -* left-justifying peer and right-padding it (omit \n for col 0)
+                    printf "%*s%s%8d%s %s%-*.*s%s",
+                        offset, "",
+                        data_clr, count, clr_off,
+                        host_clr, c_col_width, c_col_width, peer, clr_off
+                } else if ( i % 3 == 2) {
+                    # col 2 starts where col 1 padding left off w/o \n
                     # offset informs the 1st *, "" its s
                     # colwidth informs the -* left-justifying peer and right-padding it (use \n for col 1)
                     printf "%*s%s%8d%s %s%s%s\n",
@@ -953,11 +1009,14 @@ run_tui_engine() {
                 }
                 i++
             }
+            # in client mode, if the total number of items printed was not evenly divisible by 3, print a newline b/c above did not
+            if ( i % 3 != 0 ) { printf "\n" }
+            printf "%s\n", highlightline
         } else if (drawmode == "server") {
             # only draw if we actually have data
             for (ip in servermode_clients_rollup) { has_data = 1; break }
             if (!has_data) return
-            printf "  %sServer%s %smode - Total Jobs Completed per Remote Client%s\n", mode_clr, clr_off, title_clr, clr_off
+            printf "  %sServer%s %srollup - Total Jobs Completed per Remote Client%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", dashline
             # iterate through server ips in array
             i = 0
@@ -981,11 +1040,11 @@ run_tui_engine() {
                 if ( i % 2 == 0) {
                     # offset informs the 1st *, "" its s
                     # colwidth informs the -* left-justifying host_strr and right-padding it (omit \n for col 0)
-                    printf "%*s%s%8d%s %s%-*s%s",
+                    printf "%*s%s%8d%s %s%-*.*s%s",
                         offset, "",
                         data_clr, count, clr_off,
-                        host_clr, col_width, host_str, clr_off
-               } else {
+                        host_clr, s_col_width, s_col_width, host_str, clr_off
+                } else if ( i % 2 == 1) {
                     # col 1 starts where col 0 padding left off w/o \n
                     # offset informs the 1st *, "" its s
                     # colwidth informs the -* left-justifying peer and right-padding it (use \n for col 1)
@@ -996,17 +1055,17 @@ run_tui_engine() {
                 }
                 i++
             }
+            # in server mode, if the total number of items printed was odd, print a newline b/c above did not
+            if ( i % 2 != 0 ) { printf "\n" }
+            printf "%s\n", highlightline
         }
-        # in either mode, if the total number of items printed was odd, print a newline b/c above did not
-        if ( i % 2 != 0 ) { printf "\n" }
-        printf "%s\n", highlightline
     }
     # use this function to render diagnostic information below other frames (uncomment to enable)
     function draw_tui_diagnostics(    i, k, diag_title, ip_cnt, cache_cnt, local_now,
                                   c_hosts_cnt, c_starts_cnt, c_inputs_cnt, c_outputs_cnt,
-                                  c_outcomes_cnt, c_dur_cnt, c_pkg_cnt, c_last_cnt, c_dead_cnt,
+                                  c_outcomes_cnt, c_dur_cnt, c_pkg_cnt, c_last_cnt, c_dead_cnt, c_hist_cnt,
                                   s_hosts_cnt, s_starts_cnt, s_inputs_cnt, s_outputs_cnt,
-                                  s_outcomes_cnt, s_dur_cnt, s_pkg_cnt, s_last_cnt, s_dead_cnt,
+                                  s_outcomes_cnt, s_dur_cnt, s_pkg_cnt, s_last_cnt, s_dead_cnt, s_hist_cnt,
                                   diag_time_left, has_errors, diag_err_cnt, err_key, parts, type,
                                   ts, ordered_types, n_types ) {
         #printf "%s\n", dubdashline
@@ -1024,6 +1083,7 @@ run_tui_engine() {
         c_pkg_cnt = 0;      for (k in c_active_packages) c_pkg_cnt++
         c_last_cnt = 0;     for (k in c_last_contact) c_last_cnt++
         c_dead_cnt = 0;     for (k in c_dead_pids) c_dead_cnt++
+        c_hist_cnt = 0;     for (k in c_hist_pids) c_hist_cnt++
 
         s_hosts_cnt = 0;    for (k in s_active_peers) s_hosts_cnt++
         s_starts_cnt = 0;   for (k in s_active_starts) s_starts_cnt++
@@ -1034,6 +1094,7 @@ run_tui_engine() {
         s_pkg_cnt = 0;      for (k in s_active_packages) s_pkg_cnt++
         s_last_cnt = 0;     for (k in s_last_contact) s_last_cnt++
         s_dead_cnt = 0;     for (k in s_dead_pids) s_dead_cnt++
+        s_hist_cnt = 0;     for (k in s_hist_pids) s_hist_cnt++
 
         ip_cnt = 0;         for (k in s_active_ip_addrs) ip_cnt++
         cache_cnt = 0;    for (k in dns_cache) cache_cnt++
@@ -1042,22 +1103,24 @@ run_tui_engine() {
             printf "    c_hosts: %d", c_hosts_cnt
             printf " | c_starts: %d", c_starts_cnt
             printf " | c_infiles: %d", c_inputs_cnt
-            printf " | c_outfiles: %d\n", c_outputs_cnt
-            printf "    c_outcomes: %d", c_outcomes_cnt
-            printf " | c_durs: %d", c_dur_cnt
+            printf " | c_outfiles: %d", c_outputs_cnt
+            printf " | c_outcomes: %d\n", c_outcomes_cnt
+            printf "    c_durs: %d", c_dur_cnt
             printf " | c_pkgs: %d", c_pkg_cnt
             printf " | c_contacts: %d", c_last_cnt
-            printf " | c_deads: %d\n", c_dead_cnt
+            printf " | c_deads: %d", c_dead_cnt
+            printf " | c_hists: %d\n", c_hist_cnt
         } else if (mode == "server" || mode == "both") {
             printf "    s_hosts: %d", s_hosts_cnt
             printf " | s_starts: %d", s_starts_cnt
             printf " | s_infiles: %d", s_inputs_cnt
-            printf " | s_outfiles: %d\n", s_outputs_cnt
-            printf "    s_outcomes: %d", s_outcomes_cnt
-            printf " | s_durs: %d", s_dur_cnt
+            printf " | s_outfiles: %d", s_outputs_cnt
+            printf " | s_outcomes: %d\n", s_outcomes_cnt
+            printf "    s_durs: %d", s_dur_cnt
             printf " | s_pkgs: %d", s_pkg_cnt
             printf " | s_contacts: %d", s_last_cnt
-            printf " | s_deads: %d\n", s_dead_cnt
+            printf " | s_deads: %d", s_dead_cnt
+            printf " | s_hists: %d\n", s_hist_cnt
             printf "    ips: %d", ip_cnt
             printf " | cache: %d\n", cache_cnt
         }
@@ -1139,11 +1202,11 @@ run_tui_engine() {
         printf "%s\n", dubdashline
     }   # end draw_tui_diagnostics
     function draw_tui_cmd_panel() {
-        printf "  %s(+/-)%s %sSet verbosity:%s [%s%s%s]",
+        printf " %s(+/-)%s %sSet verbosity:%s [%s%s%s]",
             title_clr, clr_off,
             heading_clr, clr_off,
             data_clr, verbosity, clr_off
-        printf " %s(D)%s %sToggle DEBUG:%s [%s]",
+        printf " %s(d)%s %sToggle DEBUG:%s [%s]",
             title_clr, clr_off,
             heading_clr, clr_off,
             print_status(DEBUG)
@@ -1151,28 +1214,114 @@ run_tui_engine() {
             title_clr, clr_off,
             heading_clr, clr_off,
             mode_clr, mode, clr_off
+        printf " %s(p)%s %sToggle packages:%s [%s]",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            print_status(PACKAGES)
+        printf " %s(a)%s %sToggle active:%s [%s]\n",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            print_status(ACTIVE)
+        printf " %s(l)%s %sToggle last jobs:%s [%s]",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            print_status(LASTJOBS)
+        printf " %s(r)%s %sToggle rollup:%s [%s]\n",
+            title_clr, clr_off,
+            heading_clr, clr_off,
+            print_status(ROLLUP)
 }
     function draw_tui_body(drawmode) {
         draw_heading(drawmode)
-        draw_packages(drawmode)
+        if (PACKAGES == "True") draw_packages(drawmode)
         # reset timer, count, elapsed; render active jobs
 #        now = systime()
 #        count = 0
-        draw_active(drawmode)
-        draw_recent_history(drawmode)
-        draw_rollup(drawmode)
+        if (ACTIVE == "True") draw_active(drawmode)
+        if (LASTJOBS == "True") draw_recent_history(drawmode)
+        if (ROLLUP == "True") draw_rollup(drawmode)
     }
     ### awk function for CLIENT mode ###-------------------------------------------------------------------------------------
     function parse_client_line(    pc_pid, pc_client_id, pc_parts, pc_path, pc_pkg, pc_n, pc_path_parts, pc_final_time, pc_log_str, pc_clean_peer) {
         # if it is a real log line, parse the data
-        # and ignore (dcc_increment_safeguard) lines that are spawned child processes that generate only one line
         if ($0 !~ /__HEARTBEAT__/ && $0 !~ c_child_sel) {
             # assign client_id so both client and server modes can use same data structure for active packages
             # (for client mode, it is trivial and by definition)
             pc_client_id = "localhost"
+            # 20260727 - convert client mode to if - else if - else if chain and acccount for all possible line types
+            #   adopt state management technique like server mode first screen blacklisted lines, then read pid
+            #   then manage other lines in the if - else if chain according to what state management action they should be allowed
+            # ignore all of these lines - do NOT collect pid for history or anything
+            # dead_pids array may thus be unneeded, but is stilll maintained
+
+            if ( $0 ~ /dcc_cleanup_tempfiles_inner/ || $0 ~ /dcc_parse_options/ || $0 ~ /dcc_parse_hosts/ || $0 ~ /dcc_get_hostlist/) {
+                # ignore these cases for now, and consider this -
+                # dcc_cleanup_tempfiles_inner - this is a routine trailing line with no useful info
+                # dcc_parse_options - identifies distcc host options like lzo
+                # dcc_parse_hosts - identifies all hosts in /etc/distcc/hosts
+                # dcc_get_hostlist - inidcates where it did NOT get hosts from
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_new_pgrp/ || $0 ~ /dcc_lock_host/ || $0 ~ /dcc_unlock/ || $0 ~ /dcc_note_state/ || $0 ~ /dcc_spawn_child/) {
+                # ignore these cases for now, and consider this -
+                # dcc_new_pgrp - identifies new process group
+                # dcc_lock_host - identifies got cpu lock (remote or local host)
+                # dcc_unlock - identifies released cpu lock
+                # dcc_note_state - tracks compile process state
+                # dcc_spawn_child - indicates parent is spawning a child process for the job
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_trace_version/ || $0 ~ /dcc_set_path/ || $0 ~ /dcc_select_for_read/ || $0 ~ /dcc_select_for_write/) {
+                # ignore these cases for now, and consider this -
+                # dcc_trace_version - identifies distcc version
+                # dcc_set_path - shows distcc setting PATH=
+                # dcc_select_for_read - just shows fd chosen for read
+                # dcc_select_for_write - just shows fd chosen for write
+                next  # - for now just drop the line and move on
+            } else if ( ($0 ~ /dcc_scan_args/ && $0 !~ /found input/ ) || $0 ~ /dcc_lock_pause/ || $0 ~ /\(dcc_r/ || $0 ~ /\(dcc_x/) {
+                # ignore these cases for now, and consider this -
+                # (dcc_scan_args) -E call - ignore scan args w/o "found input" which would id input or output file
+                # dcc_lock_pause - indicates no lock available
+                # (dcc_r_ - lines have performance data
+                # (dcc_x - lines show arguments sent to remote
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_collect_child/ || $0 ~ /dcc_recursion_safeguard/ || $0 ~ /dcc_increment_safeguard/ || $0 ~ /\(main\) compiler name/) {
+                # ignore these cases for now, and consider this -
+                # dcc_collect_child - indicates termination of chile process
+                # dcc_recursion_safeguard - notes avoidance
+                # dcc_increment_safeguard -    "    "
+                # (main) compiler name - identifies compiler program, e.g. "x86_64-pc-linux-gnu-gcc"
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_strip_local_args/ || $0 ~ /dcc_connect_by_addr/ || $0 ~ /dcc_compile_remote/ || $0 ~ /\(dcc_compress_/) {
+                # ignore these cases for now, and consider this -
+                # dcc_strip_local_args - shows result of stripping args
+                # dcc_connect_by_addr - shows unix socket
+                # dcc_compile_remote - indicates job was distributed
+                # (dcc_compress_ - shows performance of compression
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ " cpp " P1 " completed ok" || $0 ~ " cpp " P1 " failed" || $0 ~ /dcc_strip_dasho/ || $0 ~ /dcc_check_backoff/) {
+                # ignore these cases for now, and consider this -
+                # cpp - lines are about the preprocessing done locally
+                # dcc_strip_dasho - shows distcc rewritted compiler command
+                # dcc_check_backoff - shows remote hosts on hosts list that are apparently not reachable
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_mark_timefile/ || $0 ~ /dcc_connect_via_socks5/ || $0 ~ /dcc_build_somewhere/ || $0 ~ /Warning: failed to distribute/) {
+                # ignore these cases for now, and consider this -
+                # dcc_mark_timefile - shows backoff timing management
+                # dcc_connect_via_socks5 - shows proxy connection failure ERROR:
+                # dcc_build_somewhere - indicates last attempted server failed to build, trying again
+                # Warning: failed to distribute - indicates running locally instead
+                next  # - for now just drop the line and move on
+            }
+            # with blacklisted lines out of the way, state management actions are still autorized only to specific selectors,
+            # but each must know the pid so read it now
             # extract pid (numeric part of first field; format: "distcc[1234567]"
             match($1, /[0-9]+/)
-            pc_pid = substr($1, RSTART, RLENGTH)   # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+            pc_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+            # if this line had " __HISTORY__" appeded at ingestion, track it as a s_hist_pids member, so it can be pruned
+            #   at a reasonable period after ingestion if there was no follow-on termination record, then strip the marker
+            if ($0 ~ c_history_sel) {
+                if (!(pc_pid in c_hist_pids)) { c_hist_pids[pc_pid] = systime() }
+                sub(/ __HISTORY__$/, "")
+            }
             # guard against a pid declared dead having a follow-on line revive it
             if (pc_pid in c_dead_pids) { return 0 }
             # update last contact for every line received (enable prune if job dies with no exit_sel)
@@ -1189,7 +1338,7 @@ run_tui_engine() {
             }
             # set start placeholder outcome only on the very first encounter (if empty)
             if (!(pc_pid in c_active_outcomes)) {
-                c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off) }
+                c_active_outcomes[pc_pid] = sprintf("%s%-.8s%s", placeholder_clr, "pending", clr_off) }
 
             # if line matches selector, save input and output file name and start time for this pid
             #   distcc[646584] "compile from" extensions.c to extensions.c.o
@@ -1197,11 +1346,10 @@ run_tui_engine() {
             if ($0 ~ c_file_sel) {
                 c_active_input_files[pc_pid] = $4
                 c_active_output_files[pc_pid] = $6
-            }
-            # if line matches selector, save distcc server host_name for this pc_pid
-            #   distcc[666568] (dcc_scan_args) found input file "/var/tmp/portage/dev-db/mysql-8.0.45/work/mysql/client/dump/database.cc"
-            #   c_pkg_selector="found input file${P1}/work" #...# pkg is extracted from $6/$NF
-            if ($0 ~ c_pkg_sel) {
+            } else if ($0 ~ c_pkg_sel) {
+                # if line matches selector, save distcc server host_name for this pc_pid
+                #   distcc[666568] (dcc_scan_args) found input file "/var/tmp/portage/dev-db/mysql-8.0.45/work/mysql/client/dump/database.cc"
+                #   c_pkg_selector="found input file${P1}/work" #...# pkg is extracted from $6
                 # for client mode, there is there can be a number of packages - one per ongoing emerge job in different sessions
                 # to make the array self-deduplicating, key on the package name itself
                 # (should be one package per emerge/make process tho ea session can have many concurrent jobs)
@@ -1217,53 +1365,51 @@ run_tui_engine() {
                     diagnostic_messages["pkg_index_lacking"][systime()] = sprintf( \
                         "(client mode) missing index - client_id: [%s], pkg: [%s]", pc_client_id, pc_pkg)
                 }
-            }
-            # if line matches selector, save distcc server host_name for this pc_pid
-            #   distcc[646584] "exec on" gmki92,lzo/4: x86_64-pc-linux-gnu-gcc ...
-            #   distcc[646584] "(dcc_lock_host) got cpu lock on" gmki92,lzo/4 slot 0 as fd3 /// <-- alt if not localhost
-            #   c_host_selector="\] exec on"  #................#  --> host_name = $4
-            if ($0 ~ c_host_sel) {
+            } else if ($0 ~ c_host_sel) {
+                # if line matches selector, save distcc server host_name for this pc_pid
+                #   distcc[646584] "exec on" gmki92,lzo/4: x86_64-pc-linux-gnu-gcc ...
+                #   distcc[646584] "(dcc_lock_host) got cpu lock on" gmki92,lzo/4 slot 0 as fd3 /// <-- alt if not localhost
+                #   c_host_selector="\] exec on"  #................#  --> host_name = $4
                 c_active_peers[pc_pid] = $4              # like basename split
-            }
-            # if line matches selector, save outcome for this pc_pid
-            #   distcc[646584] "compile" ../accountsservice-23.13.9/src/extensions.c on gmki92,lzo/4 "completed ok"
-            #   distcc[2463400] ERROR: compile /var/tmp/portage/dev-db/mysql...SymbolExists.c on nuthuvia,lzo/7 failed
-            #   c_result_selector=" compile${P1} on" #.......# outcome = $NF; ok: infile=$3host_name=$5; failed; infile=$4/host_name=$6
-            if (($0 ~ c_result_sel) && ($0 !~ / cpp /)) {
+            } else if (($0 ~ c_result_sel) && ($0 !~ / cpp /)) {
+                # if line matches selector, save outcome for this pc_pid
+                #   distcc[646584] "compile" ../accountsservice-23.13.9/src/extensions.c on gmki92,lzo/4 "completed ok"
+                #   distcc[2463400] ERROR: compile /var/tmp/portage/dev-db/mysql...SymbolExists.c on nuthuvia,lzo/7 failed
+                #   c_result_selector=" compile${P1} on" #.......# outcome = $NF w/o __HISTORY__; ok: infile=$3host_name=$5; failed; infile=$4/host_name=$6
                 if ($0 ~ /completed ok/) {
+                    # extract infile from portage path
                     split($0, pc_parts, " compile ")
                     split(pc_parts[2], pc_path, " on ")
                     pc_n = split(pc_path[1], pc_path_parts, "/")
                     if (!(pc_pid in c_active_input_files)) { c_active_input_files[pc_pid] = pc_path_parts[pc_n] }
+                    # hostname of peer is the word preceding " completed ok"
                     split($0, pc_parts, " completed ok")
                     pc_n = split(pc_parts[1], pc_line_parts, " ")
                     if (!(pc_pid in c_active_peers)) { c_active_peers[pc_pid] = pc_line_parts[pc_n] }
-                    c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", success_clr, "success", clr_off)
+                    # this is the success branch
+                    c_active_outcomes[pc_pid] = sprintf("%s%-.8s%s", success_clr, "success", clr_off)
                 } else if ($0 ~ /failed/) {
+                    # extract infile from portage path
                     split($0, pc_parts, " compile ")
                     split(pc_parts[2], pc_path, " on ")
                     pc_n = split(pc_path[1], pc_path_parts, "/")
                     if (!(pc_pid in c_active_input_files)) { c_active_input_files[pc_pid] = pc_path_parts[pc_n] }
+                    # hostname of peer is the word preceding " failed"
                     split($0, pc_parts, " failed")
                     pc_n = split(pc_parts[1], pc_line_parts, " ")
                     if (!(pc_pid in c_active_peers)) { c_active_peers[pc_pid] = pc_line_parts[pc_n] }
-                    c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", failure_clr, "failure", clr_off)
+                    # this is the failure branch
+                    c_active_outcomes[pc_pid] = sprintf("%s%-.8s%s", failure_clr, "failure", clr_off)
                 }
-            }
-            # if line matches selector, record the elapsed time for this pc_pid
-            #   distcc[646584] elapsed compilation time 3.136191s
-            #   c_elapsed_selector="elapsed compilation time"  # elapsed = $5 ($NF)
-            if ($0 ~ c_elapsed_sel) {
+            } else if ($0 ~ c_elapsed_sel) {
+                # if line matches selector, record the elapsed time for this pc_pid
+                #   distcc[646584] elapsed compilation time 3.136191s
+                #   c_elapsed_selector="elapsed compilation time"  # elapsed = $5 ($NF w/o __HISTORY__)
                 c_active_durations[pc_pid] = $NF
-            }
-            # if line matches selector, rotate history and delete active records for this pc_pid
-            #   distcc[646584] "(dcc_exit)" exit: code 0; self: 0.008061 user 0.016122 sys; children: 0.270012 user 0.214661 sys
-            #   c_exit_selector="(dcc_exit)"  #................# record to history and delete from active records
-            if ($0 ~ c_exit_sel) {
-
-                # DIAGNOSTIC: Log the pc_pid right before deletion to a temp file
-#                print systime() " PRE-DELETE: exit_sel matched for pc_pid " pc_pid >> "/tmp/distcc_awk_debug.log"
-
+            } else if ($0 ~ c_exit_sel) {
+                # if line matches selector, rotate history and delete active records for this pc_pid
+                #   distcc[646584] "(dcc_exit)" exit: code 0; self: 0.008061 user 0.016122 sys; children: 0.270012 user 0.214661 sys
+                #   c_exit_selector="(dcc_exit)"  #................# record to history and delete from active records
                 # use exit code (awk sees "0;" as number 0 in this context) to set c_active_outcomes for this job
                 if (($5 + 0) == 0) {
                     c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", success_clr, "success", clr_off)
@@ -1274,10 +1420,10 @@ run_tui_engine() {
                         sub(/:$/, "", pc_clean_peer)     # strip trailing colon if present from "exec on" line
                         clientmode_servers_rollup[pc_clean_peer]++
                     }                } else {
-                    c_active_outcomes[pc_pid] = sprintf("%s%-8.8s%s", failure_clr, "failure", clr_off)
+                    c_active_outcomes[pc_pid] = sprintf("%s%-.8s%s", failure_clr, "failure", clr_off)
                 }
                 pc_final_time = (c_active_durations[pc_pid] != "" ? c_active_durations[pc_pid] : 0)
-                pc_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
+                pc_log_str = sprintf("[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
                                   data_clr, pc_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, c_active_input_files[pc_pid], clr_off,
@@ -1289,37 +1435,64 @@ run_tui_engine() {
                 # declare this pc_pid dead now for the routing reason "exit"
                 # to ignore any trailing lines that would otherwise re-initialize it
                 c_dead_pids[pc_pid] = systime() "|exit"
-
-                # DIAGNOSTIC: verify if the arrays actually cleared
-#                if ((!(pc_pid in c_active_starts)) && (!(pc_pid in c_last_contact)) && (!(pc_pid in c_active_peers))) {
-#                     print systime() " POST-DELETE SUCCESS: pc_pid " pc_pid " cleared." >> "/tmp/distcc_awk_debug.log"
-#                } else {
-#                     print systime() " POST-DELETE FAIL: pc_pid " pc_pid " still exists in tracking arrays!" >> "/tmp/distcc_awk_debug.log"
-#                }
+            } else {
+                diagnostic_messages["invalid_line"][systime()] = \
+                    "unexpected or invalid line format in parse_client_line [" $0 "]"
             }
         }
     }   # end parse_client_line
     ### awk function for SERVER mode ###-------------------------------------------------------------------------------------
-    function parse_server_line(    ps_pid, ps_ip, ps_parts, ps_path, ps_client_id,
+    function parse_server_line(    ps_pid, ps_ip, ps_parts, ps_path, ps_client_id, ps_outcome,
                                    ps_pkg, ps_log_str, ps_time_str, ps_n, ps_final_time) {
     # Debug: dump every incoming line to stderr to verify the pipe is alive
 #     { print "DEBUG [awk server mode input]: " $0 > "/dev/stderr"; fflush("/dev/stderr") }
 
         # if it is a real log line, parse the data
-        # strategy is different for server mode; this pid is re-used for multiple jobs per client and for multiple clients
+        # strategy for server mode; this pid is re-used for multiple jobs per client and for multiple clients
         # so this mode must be more rigorously state-aware - cannot just extract pid and assign active job as in clien mode
-        if ($0 !~ /__HEARTBEAT__/ && $0 !~ /dcc_increment_safeguard/) {
-            if ($0 ~ /dcc_increment_safeguard/ || $0 ~ /dcc_preforked_child/ || $0 ~ /dcc_log_child_exited/ || $0 ~ /dcc_collect_child/) {
+        if ($0 !~ /__HEARTBEAT__/) {
+            # ignore all of these lines - do NOT collect pid for history or anything
+            if ($0 ~ /dcc_exit/ || $0 ~ /job complete/ || $0 ~ /dcc_log_daemon_started/ || $0 ~ /dcc_daemon_terminate/) {
+                # ignore these cases for now, and consider this -
+                # job complete is redundant - could be used to ensure job closure
+                # dcc_log_daemon_started - this is routine startup info
+                # dcc_daemon_terminate - routine shutdown
+                next  # - for now just drop the line and move on
+            } else if ( $0 ~ /dcc_standalone_server/ || $0 ~ /dcc_listen_by_addr/ || $0 ~ /dcc_run_job/ || $0 ~ /dcc_setup_daemon_path/) {
+                # ignore these cases for now, and consider this -
+                # dcc_standalone_server - identifies allowed job concurrency on server
+                # dcc_listen_by_addr - identifies port server is listening on
+                # dcc_run_job - does not appear to carry useful info
+                # dcc_setup_daemon_path - identifies PATH for distcc
+                next  # - for now just drop the line and move on
+            } else if ( $0 ~ /dcc_r_file_timed/ || $0 ~ /dcc_readx/ || $0 ~ /dcc_r_token_int/) {
+                # ignore these cases for now, and consider this -
+                # dcc_r_file_times - has performance data that could enhance dash board, maybe
+                # dcc_readx - indicates unexpected eof on fd5 (failure to read from remote client)
+                # dcc_r_token_int - indicates read failed while waiting for token "DOTI" from remote client
+                next  # - for now just drop the line and move on
+            } else if ($0 ~ /dcc_increment_safeguard/ || $0 ~ /dcc_preforked_child/ || $0 ~ /dcc_log_child_exited/ || $0 ~ /dcc_collect_child/) {
                 # ignore these parent-pid coded records related to child processes /// next to drop the line immediatly and move on
                 next
-           } else if ($0 ~ s_ip_sel) {
+            }
+            # with blacklisted lines out of the way, state management actions are still autorized only to specific selectors,
+            # but each must know the pid so read it now
+            match($1, /[0-9]+/)
+            ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+            # if this line had " __HISTORY__" appeded at ingestion, track it as a s_hist_pids member, so it can be pruned
+            #   at a reasonable period after ingestion if there was no follow-on termination record, then strip the marker
+            if ($0 ~ s_history_sel) {
+                # add this pid to history tracking if it isnt already added
+                if (!(ps_pid in s_hist_pids)) { s_hist_pids[ps_pid] = systime() }
+                # now strip the history marker from the end of the line
+                sub(/ __HISTORY__$/, "")
+            }
+
+            if ($0 ~ s_ip_sel) {
                 #   distccd[96193] "(dcc_check_client)" connection from fd62:6262:6262:0:d9ac:eab7:6d40:2331:40662
-                #   s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF /// incl port#
+                #   s_ip_selector="(dcc_check_client)"  #..........#  --> host_ip_address = $NF w/o __HISTORY__/// incl port#
                 # the compiler slot has been assigned to work in support of the client whose ip address is supplied
                 # this DOES signal a new job - extract pid to track it (numeric part of first field; format: "distccd[1234567]"
-                match($1, /[0-9]+/)
-                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
-                # extract ip address as client_id
                 ps_ip = $NF
                 gsub(/:[0-9]+$/, "", ps_ip)               # strip trailing colon and digits (port number)
                 s_active_ip_addrs[ps_pid]        = ps_ip  # assign to array
@@ -1341,15 +1514,13 @@ run_tui_engine() {
                     s_active_starts[ps_pid]      = systime()
                     s_active_input_files[ps_pid] = "(TBD)"
                     s_active_durations[ps_pid]   = "0ms"
-                    s_active_outcomes[ps_pid]    = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off)
+                    s_active_outcomes[ps_pid]    = sprintf("%s%-.8s%s", placeholder_clr, "pending", clr_off)
                 }
             } else if ($0 ~ s_file_sel) {
                 #   distccd[96193] "compile from" gtkactions_interface.cpp to gtkactions_interface.cpp.o
                 #   s_file_selector="compile from"  #..............# input_file = $4 ;  output_file = $6
                 # changed from $4, $6 to more explicit extraction
                 # this line can also indicate a new job and allow watching it while active but wont have client id if there was no s_ip_sel
-                match($1, /[0-9]+/)
-                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
                 # start the job click if it hasnt been started
                 if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
                 # record now as last contact
@@ -1364,14 +1535,12 @@ run_tui_engine() {
                     # start the clock on this job
                     s_active_starts[ps_pid]      = systime()
                     s_active_durations[ps_pid]   = "0ms"
-                    s_active_outcomes[ps_pid]    = sprintf("%s%-8.8s%s", placeholder_clr, "pending", clr_off)
+                    s_active_outcomes[ps_pid]    = sprintf("%s%-.8s%s", placeholder_clr, "pending", clr_off)
                 }
             } else if ($0 ~ s_success_sel) {
-                #   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/.../work  on localhost "completed ok" --> outcome=$NF
+                #   distccd[96193] x86_64-pc-linux-gnu-g++ /var/tmp/portage/kde-plasma/.../work  on localhost "completed ok" --> outcome=$NF w/o __HISTORY__
                 #   s_success_selector="completed ok"  #...........# package = $3 (extractable);  outcome = success
                 # this is a "near end of lifecycle" event offering package name and compile outcome
-                match($1, /[0-9]+/)
-                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
                 # start the job click if it hasnt been started
                 if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
                 # record now as last contact
@@ -1400,22 +1569,45 @@ run_tui_engine() {
 #                        "(success block) array index missing or default - client_id: [%s], pkg: [%s]", client_id, pkg)
                 }
                 # dont need to annotate history section for success until summary is processed, but do annotate outcome in active section for a blink
-                s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", success_clr, $NF, clr_off)
-            } else if ($0 ~ s_failure_sel && $0 ~ /dcc_r/) {
+                ps_outcome = $NF
+                s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", success_clr, ps_outcome, clr_off)
+            } else if ($0 ~ s_failed_sel && $0 !~ s_error_sel) {
+                #   distccd[96193] x86_64-pc-linux-gnu-gcc /var/tmp/portage/dev-db/mysql-8.0.45/work/...ch/TryCompile-Q28H4b/src.c on localhost failed with exit code 107
+                #   s_failed_selector=" on ${P1} failed${}P0$"  #...............# last word is failed --> outcome = failure infile is in portage path
+                # this is a "end of lifecycle" event offering package compile outcome and terminating job lifecycle
+                # start the job click if it hasnt been started
+                if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
+                # record now as last contact
+                s_last_contact[ps_pid] = systime()
+                split($0, parts, "failed")
+                ps_outcome = "failed" parts[2]
+                s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", failure_clr, ps_outcome, clr_off)
+                if (!(ps_pid in s_active_durations)) { s_active_durations[ps_pid] = systime() - s_active_starts[ps_pid] }
+                ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
+                ps_log_str = sprintf("[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
+                                  data_clr, ps_pid, clr_off,
+                                  ts_clr, strftime("%H:%M:%S"), clr_off,
+                                  file_clr, s_active_input_files[ps_pid], clr_off,
+                                  host_clr, s_active_peers[ps_pid], clr_off,
+                                  ts_clr, ps_final_time, clr_off,
+                                  s_active_outcomes[ps_pid])
+                # update history with record of failure, but and delete active records
+                # (which still protects ip and hostname but cleans out filenames, etc)
+                rotate_history("server", ps_log_str)
+                delete_active_records("server", ps_pid)
+            } else if ($0 ~ s_error_sel && ($0 ~ /dcc_r/ || $0 ~ /dcc_w/)) {
                 #   distccd[1460350] (dcc_readx) ERROR: unexpected eof on fd5
-                #   s_failure_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
-                # this is a "near end of lifecycle" event offering package compile outcome and terminating job lifecycle
-                match($1, /[0-9]+/)
-                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
+                #   s_error_selector="ERROR:"  #.................# && /dcc_r/ --> outcome = all after ERROR:
+                # this is a "end of lifecycle" event offering package compile outcome and terminating job lifecycle
                 # start the job click if it hasnt been started
                 if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
                 # record now as last contact
                 s_last_contact[ps_pid] = systime()
                 split($0, ps_parts, "ERROR: ")
-                s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", failure_clr, ps_parts[2], clr_off)
+                s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", failure_clr, ps_parts[2], clr_off)
                 if (!(ps_pid in s_active_durations)) { s_active_durations[ps_pid] = systime() - s_active_starts[ps_pid] }
                 ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
-                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
+                ps_log_str = sprintf("[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, s_active_input_files[ps_pid], clr_off,
@@ -1435,16 +1627,14 @@ run_tui_engine() {
                 #                                           #......# also record to history and delete from active records
                 # assess success/falure - note both get exit: 0 status, so use COMPILE_OK vs OTHER in $5
                 # this is a "near end of lifecycle" event offering much data terminating job lifecycle
-                match($1, /[0-9]+/)
-                ps_pid = substr($1, RSTART, RLENGTH)      # RSTART, RLENGTH are awk built-in tracking regex matched pattern relative to full string
                 # start the job click if it hasnt been started
                 if (!(ps_pid in s_active_starts)) { s_active_starts[ps_pid] = systime() }
                 # record now as last contact
                 s_last_contact[ps_pid] = systime()
                 if ($5 == "COMPILE_OK") {
-                    s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", success_clr, "success", clr_off)
+                    s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", success_clr, "success", clr_off)
                 } else {
-                    s_active_outcomes[ps_pid] = sprintf("%s%-8.8s%s", failure_clr, "failure", clr_off)
+                    s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", failure_clr, "failure", clr_off)
                 }
                 # if ip or host_name is empty, try to fill it
                 if (s_active_ip_addrs[ps_pid] =="" || s_active_ip_addrs[ps_pid] == "0.0.0.0") {
@@ -1493,7 +1683,7 @@ run_tui_engine() {
                 split(ps_parts[2], ps_time_str, " ")   # cut from remaining line using " " as delimiter
                 s_active_durations[ps_pid] = ps_time_str[1]
                 ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
-                ps_log_str = sprintf("[%s%-7.7s%s] [%s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s) [%s]",
+                ps_log_str = sprintf("[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
                                   file_clr, s_active_input_files[ps_pid], clr_off,
@@ -1505,11 +1695,6 @@ run_tui_engine() {
                 # do NOT declare this pid dead now - pid persists in server mode as long as the compiler slot stays open
                 # likely for the duration of the package.  We actually NEED trailing lines (for new jobs under this pid)
                 # to re-initialize the active records associated with pid and get new filename, etc.
-            } else if ($0 ~ /dcc_exit/ || $0 ~ /job complete/ || $0 ~ /dcc_r_file_timed/) {
-                # ignore these cases for now, and consider this -
-                # job complete is redundant - could be used to ensure job closure
-                # dcc_r_file_times - has performance data that could enhance dash board, maybe
-                next  # - for now just drop the line and move on
             } else {
                 diagnostic_messages["invalid_line"][systime()] = \
                     "unexpected or invalid line format in parse_server_line [" $0 "]"
@@ -1560,15 +1745,19 @@ run_tui_engine() {
             }
         } else if ($0 ~ /^__CONTROL__/) {
             # debug - uncomment to dump all control lines
-            diagnostic_messages["control_line"][systime()] = "(debug) control line [" $0 "]"
+            diagnostic_messages["control_line"][systime()] = "control line [" $0 "]"
             # backgrounded tui_controller listens for these keys and writes cmd >&4
-            #     '+' - "VERBOSITY_UP\n"
-            #     '-' - "VERBOSITY_DOWN\n"
-            # 'D'|'V' - "TOGGLE_DEBUG\n"
-            #     'c' - "CLIENT_MODE\n"
-            #     's' - "SERVER_MODE\n"
-            #     'b' - "BOTH_MODE\n"
-            #     'q' - "QUIT\n" >&4
+            #     "+" - "VERBOSITY_UP\n"
+            #     "-" - "VERBOSITY_DOWN\n"
+            #     "c" - "CLIENT_MODE\n"
+            #     "s" - "SERVER_MODE\n"
+            #     "b" - "BOTH_MODE\n"
+            #     "q" - "QUIT\n" >&4
+            # "P"|"p" - "TOGGLE_PACKAGES\n" >&4 ;;
+            # "a"|"A" - "TOGGLE_ACTIVE\n" >&4 ;;
+            # "l"|"L" - "TOGGLE_LASTJOBS\n" >&4 ;;
+            # "r"|"R" - "TOGGLE_ROLLUP\n" >&4 ;;
+            # "d"|"D"|"v"|"V" - "TOGGLE_DEBUG\n" >&4 ;;
             # control/heartbeat loop of stream_log_data does this:
             #     _cmd="$(cat "$_ctrl_file")"
             #     printf "__CONTROL__ %s\n" "$_cmd"
@@ -1577,14 +1766,22 @@ run_tui_engine() {
                 if (verbosity < 7) verbosity++  # clamp to 7 = debug
             } else if (cmd == "VERBOSITY_DOWN") {
                 if (verbosity >0) verbosity--   # clamp to 0 = emerg
-            } else if (cmd == "TOGGLE_DEBUG") {
-                if (DEBUG == "True") { DEBUG = "False" } else { DEBUG = "True" }
             } else if (cmd == "CLIENT_MODE") {
                 mode = "client"
             } else if (cmd == "SERVER_MODE") {
                 mode = "server"
             } else if (cmd == "BOTH_MODE") {
                 mode = "both"
+            } else if (cmd == "TOGGLE_PACKAGES") {
+                if (PACKAGES == "True") { PACKAGES = "False" } else { PACKAGES = "True" }
+            } else if (cmd == "TOGGLE_ACTIVE") {
+                if (ACTIVE == "True") { ACTIVE = "False" } else { ACTIVE = "True" }
+            } else if (cmd == "TOGGLE_LASTJOBS") {
+                if (LASTJOBS == "True") { LASTJOBS = "False" } else { LASTJOBS = "True" }
+            } else if (cmd == "TOGGLE_ROLLUP") {
+                if (ROLLUP == "True") { ROLLUP = "False" } else { ROLLUP = "True" }
+            } else if (cmd == "TOGGLE_DEBUG") {
+                if (DEBUG == "True") { DEBUG = "False" } else { DEBUG = "True" }
             } else if (cmd == "QUIT") {
 #                printf "__AWK_EXITING__\n"
                 exit 0
@@ -1596,10 +1793,13 @@ run_tui_engine() {
             # e.g. update terminal width dynamically
             width = $2
             # update ui assets using dynamic width
-            dashline = sprintf("%s%s%s", line_clr, repeat("-", width), clr_off)
-            dubdashline = sprintf("%s%s%s", line_clr, repeat("=", width), clr_off)
-            highlightline = sprintf("%s%s%s", mode_clr, repeat("=", width), clr_off)
-            modeline = sprintf("%s%s%s", mode_clr, repeat("-", width), clr_off)
+#            dashline = sprintf("%s%s%s", line_clr, repeat("-", width), clr_off)
+            dashline = sprintf("%s%s%s", line_clr, repeat(bin_uH_light, width), clr_off)
+#            dubdashline = sprintf("%s%s%s", line_clr, repeat("=", width), clr_off)
+            dubdashline = sprintf("%s%s%s", line_clr, repeat(bin_uH_heavy, width), clr_off)
+            highlightline = sprintf("%s%s%s", mode_clr, repeat(bin_uH_double, width), clr_off)
+#            modeline = sprintf("%s%s%s", mode_clr, repeat("-", width), clr_off)
+            modeline = sprintf("%s%s%s", mode_clr, repeat(bin_uH_light, width), clr_off)
             separator = sprintf("%s%s%s", line_clr, "|", clr_off)
             # prune expired data
             prune_expired_packages("client")
@@ -1608,6 +1808,8 @@ run_tui_engine() {
             prune_expired_jobs("server")
             prune_dead_pids("client")
             prune_dead_pids("server")
+            prune_hist_pids("client")
+            prune_hist_pids("server")
             # redraw the frame with dynamic width every cycle
             draw_tui_top_line()
             if (mode == "client") {
@@ -1720,16 +1922,23 @@ stream_log_data() {
             j_msg -$notice -p "First ingesting all of recorded history, please wait a few seconds ..." >&2
             # first dump and roll up all of recorded history for both client and server logs - do not background this
             # ensure this massive dump is complete BEFORE backgrounding tail -F and interleaving the hearbeat
-            for old_log in ${tui_client_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log"; done
-            for old_log in ${tui_server_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log"; done
+            # append "__HISTORY__" so parser can recognize and prune after rollup
+            for old_log in ${tui_client_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log" | sed 's|$| __HISTORY__|'; done
+            for old_log in ${tui_server_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log" | sed 's|$| __HISTORY__|'; done
+#            for old_log in ${tui_client_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log" ; done
+#            for old_log in ${tui_server_DISTCC_OLDLOG_GLOB}; do [[ -f "$old_log" ]] && zcat "$old_log" ; done
         fi
         # if option -H|--history was set ($HISTORY) then read all of the current log files, else the configured reachback
         if [ $HISTORY ]; then
-            cat "$tui_client_DISTCC_LOG"
-            cat "$tui_server_DISTCC_LOG"
+            cat "$tui_client_DISTCC_LOG" | sed 's|$| __HISTORY__|'
+            cat "$tui_server_DISTCC_LOG" | sed 's|$| __HISTORY__|'
+#            cat "$tui_client_DISTCC_LOG"
+#            cat "$tui_server_DISTCC_LOG"
         else
-            tail -n $tui_reachback "$tui_client_DISTCC_LOG"
-            tail -n $tui_reachback "$tui_server_DISTCC_LOG"
+            tail -n $tui_reachback "$tui_client_DISTCC_LOG" | sed 's|$| __HISTORY__|'
+            tail -n $tui_reachback "$tui_server_DISTCC_LOG" | sed 's|$| __HISTORY__|'
+#            tail -n $tui_reachback "$tui_client_DISTCC_LOG"
+#            tail -n $tui_reachback "$tui_server_DISTCC_LOG"
         fi
         # now background the continued steaming of any future lines in both log files (save pids to kill on quit)
         j_msg -$notice -p "Now backgrounding tail -F to stream all future client log lines" >&2
@@ -1847,10 +2056,14 @@ launch_tui_controller() {
             case "$_ctrl_key" in
                 '+') printf "VERBOSITY_UP\n" >&4 ;;
                 '-') printf "VERBOSITY_DOWN\n" >&4 ;;
-            'D'|'V') printf "TOGGLE_DEBUG\n" >&4 ;;
-                'c') printf "CLIENT_MODE\n" >&4 ;;
-                's') printf "SERVER_MODE\n" >&4 ;;
-                'b') printf "BOTH_MODE\n" >&4 ;;
+            'c'|'C') printf "CLIENT_MODE\n" >&4 ;;
+            's'|'S') printf "SERVER_MODE\n" >&4 ;;
+            'b'|'B') printf "BOTH_MODE\n" >&4 ;;
+            'P'|'p') printf "TOGGLE_PACKAGES\n" >&4 ;;
+            'a'|'A') printf "TOGGLE_ACTIVE\n" >&4 ;;
+            'l'|'L') printf "TOGGLE_LASTJOBS\n" >&4 ;;
+            'r'|'R') printf "TOGGLE_ROLLUP\n" >&4 ;;
+    'd'|'D'|'v'|'V') printf "TOGGLE_DEBUG\n" >&4 ;;
                 'q')
                     printf "QUIT\n" >&4
                     # explicitly signal the main script PID
