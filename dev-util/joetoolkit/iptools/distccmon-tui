@@ -874,35 +874,37 @@ run_tui_engine() {
         printf "%s\n", heavy_line ;
     }   # end draw_packages
     # use this function to render the active panel within the frame
-    function draw_active(drawmode,    offset, now, COL3_TITLE, da_pid, count, max_lines) {
+    function draw_active(drawmode,    offset, now, COL3_TITLE, remote_mode, da_pid, count, max_lines) {
         # call this function with only one drawmode or the other (client/server)
         # for "both" call it twice - once for each
         offset = 1   # horizontal indent for the section
         now = systime()
         # cap this section at max_active_lines lines max (adjust for global mode if need room for both)
         max_lines = (mode == "both") ? int(max_active_lines / 2) : max_active_lines
-        printf "%*s %sActive remote%s %s%s%s %sthreads%s\n",
-            offset, "",
-            title_clr, clr_off,
-            mode_clr, drawmode, clr_off,
-            title_clr, clr_off
-        printf "%s\n", light_line ;
         if (drawmode == "client") {
-            COL3_TITLE = "SERVER"
+            COL3_TITLE = "Server"
+            remote_mode = "server"
         } else if (drawmode == "server") {
-            COL3_TITLE = "CLIENT"
+            COL3_TITLE = "Client"
+            remote_mode = "client"
         } else {
             diagnostic_messages["invalid_mode"][systime()] = "(1) Invalid drawmode in draw_active"
             return 1
         }
+        printf "%*s %s%s%s %sthreads for active remote%s %s%ss%s\n",
+            offset, "",
+            mode_clr, drawmode, clr_off,
+            title_clr, clr_off,
+            mode_clr, remote_mode, clr_off
+        printf "%s\n", light_line ;
         # draw title line with separators
         printf "%*s[%s%-7.7s%s] %s %s%-32.32s%s %s %s%-14.14s%s %s %s%-4.4s%s %s %s%-.8s%s\n",
             offset, "",
-            title_clr, "  PID", clr_off, separator,
-            title_clr, "SOURCE FILE", clr_off, separator,
-            title_clr, COL3_TITLE, clr_off, separator,
-            title_clr, "SEC", clr_off, separator,
-            title_clr, "STATUS", clr_off
+            data_clr, "  pid", clr_off, separator,
+            file_clr, "Source File", clr_off, separator,
+            mode_clr, COL3_TITLE, clr_off, separator,
+            ts_clr, "sec", clr_off, separator,
+            title_clr, "Status", clr_off
         printf "%s\n", light_line ;
         # draw the active records for this section, if they fit
         if (drawmode == "client") {
@@ -978,14 +980,27 @@ run_tui_engine() {
         printf "%s\n", heavy_line ;
     }   # end draw active
     # use this function to render the recent history panel within the frame
-    function draw_recent_history(drawmode,    count, i, max_lines) {
+    function draw_recent_history(drawmode,    remote_mode, preposition,
+                                              remote_preposition, count, i, max_lines) {
         # update Last completed jobs
         max_lines = (mode == "both") ? int(history_depth / 2) : history_depth
+        if (drawmode == "client") {
+            preposition = "for"
+            remote_preposition = "by"
+            remote_mode = "server"
+        } else if (drawmode == "server") {
+            preposition = "by"
+            remote_preposition = "for"
+            remote_mode = "client"
+        } else {
+            diagnostic_messages["invalid_mode"][systime()] = "Invalid drawmode in draw_recent_history"
+        }
         # draw a heading for recent history section
-        printf "  %sLast completed%s %s%s%s %sjobs%s\n",
-            title_clr, clr_off,
+        printf "  %sJobs last completed %s%s %s%s%s %s%s remote%s %s%ss%s\n",
+            title_clr, preposition, clr_off,
             mode_clr, drawmode, clr_off,
-            title_clr, clr_off
+            title_clr, remote_preposition, clr_off,
+            mode_clr, remote_mode, clr_off
         printf "%s\n", light_line ;
         for (i = 1; i <= max_lines; i++) {
             if (drawmode == "client") {
@@ -1011,7 +1026,7 @@ run_tui_engine() {
             # only draw if we actually have data
             for (peer in clientmode_servers_rollup) { has_data = 1; break }
             if (!has_data) return
-            printf "  %sClient%s %srollup - Total Jobs Completed per Remote Server%s\n", mode_clr, clr_off, title_clr, clr_off
+            printf "  %sClient%s %srollup - Total Jobs Completed by Remote Servers%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", light_line
             # iterate through servers in array
             i = 0
@@ -1051,7 +1066,7 @@ run_tui_engine() {
             # only draw if we actually have data
             for (ip in servermode_clients_rollup) { has_data = 1; break }
             if (!has_data) return
-            printf "  %sServer%s %srollup - Total Jobs Completed per Remote Client%s\n", mode_clr, clr_off, title_clr, clr_off
+            printf "  %sServer%s %srollup - Total Jobs Completed for Remote Clients%s\n", mode_clr, clr_off, title_clr, clr_off
             printf "%s\n", light_line
             # iterate through server ips in array
             i = 0
@@ -1475,7 +1490,7 @@ run_tui_engine() {
                     c_active_outcomes[pc_pid] = sprintf("%s%-.8s%s", failure_clr, "failure", clr_off)
                 }
                 pc_final_time = (c_active_durations[pc_pid] != "" ? c_active_durations[pc_pid] : 0)
-                pc_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
+                pc_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s by %s%-.22s%s (%s%ds%s %s)",
                                   pc_offset, "",
                                   data_clr, pc_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
@@ -1636,7 +1651,7 @@ run_tui_engine() {
                 s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", failure_clr, ps_outcome, clr_off)
                 if (!(ps_pid in s_active_durations)) { s_active_durations[ps_pid] = systime() - s_active_starts[ps_pid] }
                 ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
-                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
+                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s for %s%-.22s%s (%s%ds%s %s)",
                                   ps_offset, "",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
@@ -1660,7 +1675,7 @@ run_tui_engine() {
                 s_active_outcomes[ps_pid] = sprintf("%s%-.8s%s", failure_clr, ps_parts[2], clr_off)
                 if (!(ps_pid in s_active_durations)) { s_active_durations[ps_pid] = systime() - s_active_starts[ps_pid] }
                 ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
-                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
+                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s for %s%-.22s%s (%s%ds%s %s)",
                                   ps_offset, "",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
@@ -1737,7 +1752,7 @@ run_tui_engine() {
                 split(ps_parts[2], ps_time_str, " ")   # cut from remaining line using " " as delimiter
                 s_active_durations[ps_pid] = ps_time_str[1]
                 ps_final_time = (s_active_durations[ps_pid] != "" ? s_active_durations[ps_pid] : "0ms")
-                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s on %s%-.22s%s (%s%ds%s %s)",
+                ps_log_str = sprintf("%*s[%s%-7.7s%s %s%-8.8s%s] %s%-.22s%s for %s%-.22s%s (%s%ds%s %s)",
                                   ps_offset, "",
                                   data_clr, ps_pid, clr_off,
                                   ts_clr, strftime("%H:%M:%S"), clr_off,
