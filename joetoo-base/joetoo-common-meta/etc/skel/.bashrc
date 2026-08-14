@@ -80,8 +80,8 @@ export PROMPT_COMMAND="history -a; history -c; history -r; $PROMPT_COMMAND"
 # export GPG_TTY so gpg-agent will work (to sign commits)
 export GPG_TTY=$(tty)
 
-#-----[ neofetch ]----------------------------------------------------------------------
-command -v neofetch &>/dev/null && { echo ; neofetch ; echo ; }
+#-----[ fastfetch ]----------------------------------------------------------------------
+command -v fastfetch &>/dev/null && { echo ; fastfetch ; echo ; }
 
 # output info on GPG, XDG, cb_ environment variables
 env | grep -E 'GPG|XDG|cb_' | sort
