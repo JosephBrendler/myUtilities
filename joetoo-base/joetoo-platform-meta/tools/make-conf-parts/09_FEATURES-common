@@ -30,10 +30,23 @@ FEATURES="${FEATURES} distcc"                 # participate in distributed compi
 FEATURES="${FEATURES} binpkg-signing"         # sign binpkgs
 BINPKG_GPG_SIGNING_GPG_HOME="/root/.gnupg"    # joetoo root signing keyring
 BINPKG_GPG_SIGNING_KEY="0x292986C3A20A8EF6"   # joetoo root signing keyid
-# build up a SANDBOX_WRITE whitelist, to allow sandboxed portage to communicate
-# with GnuPG daemons and sockets
-# (explicitly listing root's possible XDG_RUNTIME_DIR paths [now configured
-#  in ~/.bash_profile], to avoid empty variable)
+# Override to stabilize HOME=/root/ as environment for binpkg signing
+# (force portage binpkg-signing gpg process to use root's canonical/default gnupg context)
+# gnupg (invoked by portage) normally starts a keyboxd daemon process with
+#   socket /root/.gnupg/S.keyboxd for its /root/.gnupg/public-keys.d/pubring.db database,
+#   and portage buildpkg phases normally use a private HOME under /tmp/portage/.../homedir;
+# however, if /run/user/0 is available and BINPKG_GPG_SIGNING_BASE_COMMAND is not assigned,
+#   then gnupg may select /run/user/0/gnupg/ as the location for a d.<hash>/S.keyboxd socket
+#   rather than using /root/.gnupg/ -- starting a second keyboxd daemon
+#   which contends with root's existing keyboxd daemon and socket for the same pubring.db.
+BINPKG_GPG_SIGNING_BASE_COMMAND="/usr/bin/flock /run/lock/portage-binpkg-gpg.lock"
+BINPKG_GPG_SIGNING_BASE_COMMAND="${BINPKG_GPG_SIGNING_BASE_COMMAND} /usr/bin/env HOME=/root"
+BINPKG_GPG_SIGNING_BASE_COMMAND="${BINPKG_GPG_SIGNING_BASE_COMMAND} /usr/bin/gpg --sign --armor [PORTAGE_CONFIG]"
+# allow sandboxed portage operations to access the signing keyring and the possible root
+#   gnupg runtime/socket locations; this is independent of the HOME=/root override above, which
+#   stabilizes gnupg's keyboxd socket selection (interface for communication with gnupg daemon processes),
+#   explicitly listing root's possible runtime paths (/root/.gnupg and XDG_RUNTIME_DIR now configured
+#   in ~/.bash_profile), rather than expanding here the XDG_RUNTIME_DIR variable, which could be empty
 SANDBOX_WRITE="/root/.gnupg"
 SANDBOX_WRITE="${SANDBOX_WRITE}:/run/user/0"
 SANDBOX_WRITE="${SANDBOX_WRITE}:/run/user/0-runtime"
