@@ -122,9 +122,7 @@ The documentation is intended to distinguish the current architecture from histo
 
 ## Development Status
 
-joetoo is an actively developed personal Linux infrastructure project. Interfaces, package organization, platform definitions, and build procedures may change as the common platform architecture is consolidated.
-
-Existing naming sometimes reflects the project's origins in SBC support even where the underlying mechanism now applies more generally.
+joetoo is an actively developed personal Linux infrastructure project originally begun in 2014. Interfaces, package organization, platform definitions, and build procedures may change as the common platform architecture is consolidated. Existing naming sometimes reflects the project's origins in SBC support even where the underlying mechanism now applies more generally.
 
 ## License
 
