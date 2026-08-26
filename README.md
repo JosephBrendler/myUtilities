@@ -124,6 +124,14 @@ The documentation is intended to distinguish the current architecture from histo
 
 joetoo is an actively developed personal Linux infrastructure project originally begun in 2014. Interfaces, package organization, platform definitions, and build procedures may change as the common platform architecture is consolidated. Existing naming sometimes reflects the project's origins in SBC support even where the underlying mechanism now applies more generally.
 
+## Development and AI Assistance
+
+Development of this repository is AI-assisted. The human developer may use tools including ChatGPT, GitHub Copilot, Google Gemini, and AI-assisted search for research, discussion, debugging, design review, and suggestions.
+
+AI tools are used in an advisory capacity. No agentic AI system is authorized to independently modify the repository, execute its development workflow, or commit changes.
+
+All changes to this repository are selected, reviewed, tested as appropriate, documented, and committed by a human author. Human authors retain responsibility for the design, implementation, correctness, licensing, and provenance of committed content.
+
 ## License
 
 See the licensing information associated with the individual source components in this repository.
