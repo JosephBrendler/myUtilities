@@ -1,0 +1,43 @@
+#!/bin/bash
+source /usr/sbin/script_header_joetoo
+source /usr/sbin/script_header_joetoo_ssh
+
+checkroot
+
+user="joe"
+SSH_KEY="/home/"$user"/.ssh/id_ecdsa"
+remotes_list="/home/"$user"/scratch/joetoo_machine_list"
+
+# use script_header_joetoo_ssh so root can benefit from user ssh transport
+start_ssh_agent "$user" "$SSH_KEY"
+# source this to make SSH_KEY and SSH_AUTH_SOCK available
+source "$AGENT_ENV_FILE"
+# load the key (may require passphrase)
+load_key "$user"
+
+# enable || echo to report pipeline failure (starting with ssh)
+# - else it only reports on awk
+set -o pipefail
+
+# use arrays to preserve quoting/word-splitting
+# (and abbreviate otherwise really long command)
+ssh_args=( -n -q -o ConnectTimeout=2 -i "$SSH_KEY" )
+ssh_cmd=(ip addr)
+grep_cmd=(grep 'scope global')
+awk_cmd=(awk '{ ans=$2; sub(/\/.*/, "", ans); print ans; }')
+
+# iterate through remotes list
+while read -r x ; do
+    # print space and underlined heading
+    echo; echo $x; echo $(repeat '-' ${#x})
+    # run ssh as user to issue command to remotes
+    sudo -u "$user" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" ssh "${ssh_args[@]}" "${user}@${x}" "${ssh_cmd[@]}" | \
+        "${grep_cmd[@]}" | "${awk_cmd[@]}" || echo "(no response)"
+done <<<$(cat "$remotes_list")
+
+# restore normal state
+set +o pipefail
+
+# unload key and stop agent
+unload_key "$user"
+stop_ssh_agent "$user"
