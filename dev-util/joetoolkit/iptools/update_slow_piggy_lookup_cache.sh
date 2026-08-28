@@ -114,6 +114,7 @@ build_slow_piggy_list() {
     slow_piggies=(
         github.com
         github.githubassets.com
+        raw.github.com
     )
     # append static gentoo sites
     slow_piggies+=(
