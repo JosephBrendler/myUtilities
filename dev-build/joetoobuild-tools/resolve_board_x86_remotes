@@ -1,0 +1,62 @@
+#!/bin/sh
+
+# scan a list of remote hosts with a set of tools
+# Note: to both see and save output, run like this -->
+#   ./resolve_board_x86_remotes | tee resolve_board_x86_remotes.output
+
+PN=${##*/}  # script basename
+
+# run as user, not root, so scp and ssh will not need sudo -u
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Please run $PN as user, not root"
+    exit 1
+fi
+
+TRUE=0; FALSE=""
+repeat() { printf "%0${2}d\n" 0 | tr '0' "${1%${1#?}}" ; }
+
+# start with alterlake hybrids (performance) and their hosted vms
+remote_list="gmki91 gmki92 sandbox nugauss nueuler"
+# append alderlake-N [n97/n150] (efficiency) boxes
+remote_list+=" g5nuc01 iota01"
+# append alderlake-N [n100] (efficiency) boxes
+remote_list+=" elrond g3nuc01 x401 x402"
+# append skylake (core i7-6xxx) boxes
+remote_list+=" yorsqui q552u01"
+# append haswell (core i7-4xxx) boxes
+remote_list+=" nuoromis katahdin"
+# append ivybridge (core i7-3xxx) boxes
+remote_list+=" nuthuvia tahawus slim2"
+# append athlon 64 X2 boxes
+remote_list+=" retro"
+
+set -- $remote_list
+
+# scan each remote host with the several tools used below
+for x in "$@"; do
+    # create a title line with double underline for this host
+    echo ;
+    echo "$x" ;
+    echo $(repeat '=' ${#x}) ;
+
+    # transfer resolve_board_x86 script to the remote host (or abort this host)
+    if scp -q /home/joe/myUtilities/dev-build/joetoobuild-tools/resolve_board_x86 $x:/home/joe/ ; then
+        echo "scp resolve_board_x86 ok"
+    else
+        echo "scp resolve_board_x86 failed"
+        echo "skipping scans on $x"
+        continue   # skip to next host in for loop
+    fi
+    # execute shell command on remote host
+    ssh -t -q "$x" sh -c 'echo -n "" ;
+        # set up repeat function in remote shell
+        repeat() { printf "%0${2}d\n" 0 | tr "0" "${1%${1#?}}" ; } ;
+
+        # print title and run resolve_board_x86
+        y=resolve_board_x86 ;
+        echo; echo "$y" ; echo $(repeat "-" ${#y}) ;
+        /home/joe/resolve_board_x86
+
+    '   # end of shell command run via ssh
+
+done
