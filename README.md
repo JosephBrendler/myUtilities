@@ -1,4 +1,4 @@
-# myUtilities
+# myUtilities (deprecated - transition to joetoo-upstream ongoing)
 
 `myUtilities` is the source-code repository for **joetoo**, a collection of tools, development resources, system-building automation, configuration utilities, and platform-support and script-development support software used to build and maintain joetoo/Gentoo Linux systems across multiple hardware architectures.
 
@@ -119,11 +119,7 @@ That document provides the high-level architectural map and links to detailed do
 
 joetoo is an actively developed personal Linux infrastructure project originally begun in 2014. Interfaces, package organization, platform definitions, and build procedures may change as the common platform architecture is consolidated. Existing naming sometimes reflects the project's origins in SBC support even where the underlying mechanism now applies more generalized.
 
-## Development and AI Assistance
 
-joetoo's human developer(s) may use AI tools for research, discussion, debugging, design review, and suggestions. AI tools may be used in an advisory capacity only. Developers may not authorize any agentic AI system to modify the repository, execute its development workflow, or commit changes.
-
-All changes to this repository are made, reviewed, tested as appropriate, documented in the VCS workflow, and committed by a human developer. The human developer(s) retain responsibility for the design, implementation, correctness, licensing, and provenance of committed content.
 
 ## License
 
